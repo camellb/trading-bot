@@ -751,6 +751,14 @@ class TelegramNotifier:
                                         self.send("❌ /resume: order_manager not wired."),
                                         loop,
                                     )
+                            elif msg_text == "/confirm-config":
+                                asyncio.run_coroutine_threadsafe(
+                                    self._handle_confirm_config(), loop
+                                )
+                            elif msg_text == "/reject-config":
+                                asyncio.run_coroutine_threadsafe(
+                                    self._handle_reject_config(), loop
+                                )
                             elif msg_text.startswith("/reconciled"):
                                 # Targeted per-trade reconciliation.
                                 # Syntax: /reconciled <trade_id> <exit_price>
@@ -770,6 +778,8 @@ class TelegramNotifier:
                                         "/status — current bot status\n"
                                         "/resume — resume trading (blocked if reconciliation pending)\n"
                                         "/reconciled &lt;trade_id&gt; &lt;exit_price&gt; — update exit price for a pending trade\n"
+                                        "/confirm-config — apply pending dashboard config change\n"
+                                        "/reject-config — cancel pending dashboard config change\n"
                                         "/help — show this message"
                                     ),
                                     loop,
@@ -792,6 +802,43 @@ class TelegramNotifier:
         )
         t.start()
         print("[telegram] Command polling started (daemon thread).", flush=True)
+
+    async def _handle_confirm_config(self) -> None:
+        """
+        Apply the pending dashboard config change. Bot API holds the
+        pending value (set by /api/update-config); this command rewrites
+        config.py, reloads the module, and writes an audit row.
+        """
+        bot_api = getattr(self, "_bot_api", None)
+        if bot_api is None:
+            await self.send("❌ /confirm-config: dashboard API not wired.")
+            return
+        result = bot_api.apply_pending_config()
+        status = result.get("status")
+        if status == "applied":
+            await self.send(
+                f"✅ <b>Config applied</b>\n"
+                f"<code>{result['key']}</code>: "
+                f"{result['previous']} → {result['value']}"
+            )
+        elif status == "none":
+            await self.send("ℹ️ No pending config change.")
+        else:
+            await self.send(f"❌ /confirm-config failed: {result.get('reason')}")
+
+    async def _handle_reject_config(self) -> None:
+        bot_api = getattr(self, "_bot_api", None)
+        if bot_api is None:
+            await self.send("❌ /reject-config: dashboard API not wired.")
+            return
+        result = bot_api.reject_pending_config()
+        if result.get("status") == "rejected":
+            await self.send(
+                f"🚫 Pending config change rejected: "
+                f"<code>{result['key']}</code> = {result['value']}"
+            )
+        else:
+            await self.send("ℹ️ No pending config change.")
 
     async def _handle_reconciled(self, msg_text: str) -> None:
         """

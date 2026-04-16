@@ -24,6 +24,7 @@ from feeds.deribit_feed import DeribitFeed
 from engine.memory import MemoryManager
 from engine.scanner import Scanner
 from engine.strategist import Strategist
+from bot_api import BotAPI
 import config
 
 
@@ -196,6 +197,18 @@ async def main():
                 await deribit_feed._get_history(ccy)
             await asyncio.sleep(config.DERIBIT_IV_CACHE_SECONDS)
 
+    # ── Dashboard HTTP API (localhost only, X-Bot-Secret auth) ───────────────
+    bot_api = BotAPI(
+        scanner          = scanner,
+        order_manager    = order_manager,
+        position_monitor = position_monitor,
+        notifier         = notifier,
+        strategist       = strategist,
+        ws_manager       = ws_manager,
+    )
+    # Wire onto notifier so /confirm-config and /reject-config can reach it.
+    notifier._bot_api = bot_api
+
     await asyncio.gather(
         ws_manager.start(config.TRADING_PAIRS),
         news_feed.start(),
@@ -203,6 +216,7 @@ async def main():
         scanner.start(),
         _startup_notification(),
         _deribit_polling(),
+        bot_api.start(),
     )
 
 
