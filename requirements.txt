@@ -1,0 +1,13 @@
+ccxt
+anthropic
+pandas
+pandas-ta
+sqlalchemy
+psycopg2-binary
+python-dotenv
+aiohttp
+websockets
+APScheduler
+requests
+feedparser
+google-generativeai
