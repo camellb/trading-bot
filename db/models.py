@@ -1,113 +1,153 @@
 """
-PostgreSQL schema definitions using SQLAlchemy Core (not ORM).
+PostgreSQL schema — Polymarket prediction-market bot.
 
 Reads DATABASE_URL from environment. Call create_all_tables() to create all
 tables if they do not already exist. Safe to call on every startup.
+
+Legacy crypto tables (trades, positions, ticks, daily_pnl, backtest_*) are
+intentionally no longer declared here — they remain in the database from
+prior runs but are orphaned from the application. Drop them manually once
+you're sure you no longer want the history:
+
+    DROP TABLE IF EXISTS trades, positions, ticks, daily_pnl,
+        backtest_runs, backtest_trades, backtest_signals CASCADE;
 """
 
-import os
 from sqlalchemy import (
-    create_engine,
     MetaData,
     Table,
     Column,
     Integer,
-    BigInteger,
     String,
     Text,
     Float,
     Boolean,
     Date,
     TIMESTAMP,
-    ForeignKey,
-    UniqueConstraint,
     text as sa_text,
 )
 
 metadata = MetaData()
 
-ticks = Table(
-    "ticks",
+
+# ── Calibration ──────────────────────────────────────────────────────────────
+# Every prediction Claude makes — Polymarket evaluations, future Kalshi/Manifold
+# evaluations, backtest decisions. Scored against resolved outcomes to produce
+# Brier score, reliability diagrams, per-category attribution.
+predictions = Table(
+    "predictions",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("timestamp", TIMESTAMP(timezone=True), nullable=False),
-    Column("pair", Text, nullable=False),
-    Column("regime", Text, nullable=False),
-    Column("adx", Float),
-    Column("realized_vol_pct", Float),
-    Column("funding_pct", Float),
-    Column("oi_delta", Float),
-    Column("layer_b_signal", Text),
-    Column("layer_c_signal", Text),
-    Column("layer_d_result", Boolean),
-    Column("layer_d_reason", Text),
-    Column("decision", Text),
-    Column("decision_reason", Text),
-    Column("conviction_score", Float),
-    Column("conviction_label", Text),
-    Column("iv", Float),
-    Column("iv_spike", Boolean),
+    Column("created_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    # 'polymarket' | 'polymarket_live' | 'polymarket_shadow' | 'backtest' | …
+    Column("source",         Text, nullable=False),
+    # Stable key per prediction (e.g. 'polymarket:0xabc…').
+    Column("subject_key",    Text, nullable=False),
+    # Market category (politics, macro, sports, crypto, etc.).
+    Column("category",       Text, nullable=True),
+    # Probability YES resolves true (0..1) — the calibrated probability.
+    Column("probability",    Float, nullable=False),
+    # Claude's self-stated confidence in the estimate.
+    Column("confidence",     Float, nullable=True),
+    # Hours until expected resolution.
+    Column("horizon_hours",  Float, nullable=True),
+    Column("reasoning",      Text, nullable=True),
+    # JSON: market snapshot at prediction time (price, volume, end_date, …).
+    Column("metadata",       Text, nullable=True),
+    # Optional link to a realised position (pm_positions.id).
+    Column("trade_id",       Integer, nullable=True),
+    # Resolution (null = unresolved yet).
+    Column("resolved_at",       TIMESTAMP(timezone=True), nullable=True),
+    # 1 = correct (took a side that matched resolution), 0 = incorrect.
+    Column("resolved_outcome",  Integer, nullable=True),
+    Column("resolved_pnl_usd",  Float,   nullable=True),
+    Column("resolved_note",     Text,    nullable=True),
 )
 
-trades = Table(
-    "trades",
+
+# ── Polymarket positions ─────────────────────────────────────────────────────
+# A realised bet (shadow or live) on a Polymarket market.
+# Shadow rows simulate fills at observed mid/ask prices; live rows have real
+# order ids and tx hashes from the CLOB.
+pm_positions = Table(
+    "pm_positions",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("timestamp_open", TIMESTAMP(timezone=True), nullable=False),
-    Column("timestamp_close", TIMESTAMP(timezone=True), nullable=True),
-    Column("pair", Text, nullable=False),
-    Column("direction", Text, nullable=False),
-    Column("entry_price", Float, nullable=False),
-    Column("exit_price", Float, nullable=True),
-    Column("size_usd", Float, nullable=False),
-    Column("stop_loss", Float, nullable=False),
-    Column("take_profit", Float, nullable=False),
-    Column("regime_at_entry", Text, nullable=False),
-    Column("pnl_usd", Float, nullable=True),
-    Column("close_reason", Text, nullable=True),
-    Column("paper", Boolean, nullable=False),
-    Column("thesis", Text, nullable=True),
-    Column("trigger_event", Text, nullable=True),
-    Column("filled_qty", Float, nullable=True),
-    Column("playbook", String(30), nullable=True),
-    Column("time_horizon_days", Float, nullable=True),
-    Column("catalyst", Text, nullable=True),
-    Column("invalidation", Text, nullable=True),
-    Column("primary_signal", Text, nullable=True),
-    Column("risk_reward", Float, nullable=True),
-    Column("market_condition", String(30), nullable=True),
-    Column("exit_type", String(30), nullable=True),
-    Column("what_happened", Text, nullable=True),
-    Column("reconciliation_pending", Boolean, nullable=True, default=False),
-    Column("client_order_id", String(100), nullable=True),
-    Column("close_client_order_id", String(100), nullable=True),
+    Column("created_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    # Link back to the prediction that generated this position.
+    Column("prediction_id", Integer, nullable=True),
+    Column("market_id",     Text,    nullable=False),
+    Column("condition_id",  Text,    nullable=True),
+    Column("slug",          Text,    nullable=True),
+    Column("question",      Text,    nullable=False),
+    Column("category",      Text,    nullable=True),
+    # 'YES' or 'NO' — which side we bought.
+    Column("side",          String(3), nullable=False),
+    # Shares purchased (Polymarket shares pay $1 if winning, $0 if losing).
+    Column("shares",        Float,   nullable=False),
+    # Average fill price (0..1).
+    Column("entry_price",   Float,   nullable=False),
+    # USD cost = shares * entry_price.
+    Column("cost_usd",      Float,   nullable=False),
+    # Claude's probability for this side at entry (for edge computation).
+    Column("claude_probability", Float, nullable=True),
+    # Edge at entry in basis points (abs(claude_p - market_p) * 10000).
+    Column("edge_bps",      Float,   nullable=True),
+    Column("confidence",    Float,   nullable=True),
+    # 'shadow' | 'live'
+    Column("mode",          String(10), nullable=False),
+    # 'open' | 'settled' | 'invalid' | 'closed_early'
+    Column("status",        String(20), nullable=False,
+           server_default=sa_text("'open'")),
+    Column("expected_resolution_at", TIMESTAMP(timezone=True), nullable=True),
+    # Settlement fields (null until resolved).
+    Column("settled_at",    TIMESTAMP(timezone=True), nullable=True),
+    # Winning outcome: 'YES' | 'NO' | 'INVALID'.
+    Column("settlement_outcome", String(10), nullable=True),
+    # $1.00 if our side won, $0.00 if lost, $0.50 if invalid.
+    Column("settlement_price", Float, nullable=True),
+    # shares * settlement_price - cost_usd.
+    Column("realized_pnl_usd", Float, nullable=True),
+    # Event group slug for correlation caps (markets in the same event).
+    Column("event_slug",    Text, nullable=True),
+    # Live-mode metadata.
+    Column("clob_order_id", Text, nullable=True),
+    Column("tx_hash",       Text, nullable=True),
+    Column("reasoning",     Text, nullable=True),
 )
 
-positions = Table(
-    "positions",
+
+# ── Market evaluations cache ─────────────────────────────────────────────────
+# Snapshot of every Claude evaluation of a Polymarket market. Kept separately
+# from `predictions` so we can re-evaluate the same market multiple times
+# without polluting the calibration dataset (only first evaluation flows to
+# `predictions`).
+market_evaluations = Table(
+    "market_evaluations",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("trade_id", Integer, ForeignKey("trades.id"), nullable=False),
-    Column("pair", Text, nullable=False),
-    Column("direction", Text, nullable=False),
-    Column("entry_price", Float, nullable=False),
-    Column("size_usd", Float, nullable=False),
-    Column("stop_loss", Float, nullable=False),
-    Column("take_profit", Float, nullable=False),
-    Column("open_at", TIMESTAMP(timezone=True), nullable=False),
-    Column("paper", Boolean, nullable=False),
+    Column("evaluated_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    Column("market_id",        Text, nullable=False),
+    Column("condition_id",     Text, nullable=True),
+    Column("slug",             Text, nullable=True),
+    Column("question",         Text, nullable=False),
+    Column("category",         Text, nullable=True),
+    Column("market_price_yes", Float, nullable=False),
+    Column("claude_probability", Float, nullable=False),
+    Column("confidence",       Float, nullable=True),
+    Column("edge_bps",         Float, nullable=True),
+    Column("recommendation",   Text, nullable=True),   # 'BUY_YES' | 'BUY_NO' | 'SKIP'
+    Column("reasoning",        Text, nullable=True),
+    Column("research_sources", Text, nullable=True),   # JSON array of urls/titles
+    Column("prediction_id",    Integer, nullable=True),
+    Column("pm_position_id",   Integer, nullable=True),
 )
 
-daily_pnl = Table(
-    "daily_pnl",
-    metadata,
-    Column("date", Date, primary_key=True),
-    Column("pnl_usd", Float, nullable=False),
-    Column("trade_count", Integer, nullable=False),
-    Column("paper", Boolean, primary_key=True, nullable=False),
-    UniqueConstraint("date", "paper", name="uq_daily_pnl_date_paper"),
-)
 
+# ── Cross-cutting: feed health, events, config, macro, sentiment ─────────────
 event_log = Table(
     "event_log",
     metadata,
@@ -129,7 +169,6 @@ feed_health_log = Table(
     Column("detail", Text, nullable=True),
 )
 
-
 macro_context_log = Table(
     "macro_context_log",
     metadata,
@@ -142,44 +181,16 @@ macro_context_log = Table(
     Column("reasoning", Text, nullable=True),
     Column("watch_for", Text, nullable=True),
     Column("suggested_cap_adjustment", Float, nullable=True),
-    Column(
-        "generated_at",
-        TIMESTAMP(timezone=True),
-        server_default=sa_text("NOW()"),
-        nullable=False,
-    ),
+    Column("generated_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
 )
-
-strategy_performance = Table(
-    "strategy_performance",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("week_start", Date, nullable=False),
-    Column("playbook", Text, nullable=False),
-    Column("trades", Integer, nullable=False),
-    Column("wins", Integer, nullable=False),
-    Column("avg_pnl", Float, nullable=True),
-    Column("no_trade_pct", Float, nullable=True),
-    Column("recommendation", Text, nullable=True),
-    Column(
-        "recorded_at",
-        TIMESTAMP(timezone=True),
-        server_default=sa_text("NOW()"),
-        nullable=False,
-    ),
-)
-
 
 config_change_history = Table(
     "config_change_history",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column(
-        "changed_at",
-        TIMESTAMP(timezone=True),
-        server_default=sa_text("NOW()"),
-        nullable=False,
-    ),
+    Column("changed_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
     Column("param_name", Text, nullable=True),
     Column("old_value", Text, nullable=True),
     Column("new_value", Text, nullable=True),
@@ -195,105 +206,22 @@ performance_snapshots = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("snapshot_date", Date, nullable=False),
     Column("snapshot_type", Text, nullable=False),  # 'weekly' | 'monthly' | 'quarterly'
-    Column("total_trades", Integer, nullable=True),
-    Column("win_rate", Float, nullable=True),
-    Column("total_pnl", Float, nullable=True),
-    Column("avg_pnl_per_trade", Float, nullable=True),
-    Column("sharpe_ratio", Float, nullable=True),
-    Column("max_drawdown", Float, nullable=True),
-    Column("trend_win_rate", Float, nullable=True),
-    Column("range_win_rate", Float, nullable=True),
-    Column("dominant_regime", Text, nullable=True),
-    Column("no_trade_pct", Float, nullable=True),
-    Column("config_snapshot", Text, nullable=True),  # JSON of key config values
+    Column("total_predictions", Integer, nullable=True),
+    Column("resolved", Integer, nullable=True),
+    Column("brier", Float, nullable=True),
+    Column("accuracy", Float, nullable=True),
+    Column("realized_pnl_usd", Float, nullable=True),
+    Column("by_category", Text, nullable=True),      # JSON
+    Column("config_snapshot", Text, nullable=True),  # JSON
     Column("notes", Text, nullable=True),
-)
-
-
-backtest_runs = Table(
-    "backtest_runs",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column(
-        "run_at",
-        TIMESTAMP(timezone=True),
-        server_default=sa_text("NOW()"),
-        nullable=False,
-    ),
-    Column("pairs", Text, nullable=False),           # JSON array of pair strings
-    Column("start_date", Date, nullable=False),
-    Column("end_date", Date, nullable=False),
-    Column("initial_capital", Float, nullable=False),
-    Column("total_trades", Integer, nullable=True),
-    Column("win_rate", Float, nullable=True),
-    Column("total_pnl", Float, nullable=True),
-    Column("max_drawdown", Float, nullable=True),
-    Column("sharpe_ratio", Float, nullable=True),
-    Column("no_trade_pct", Float, nullable=True),    # fraction of bars with NO_TRADE
-    Column("notes", Text, nullable=True),
-)
-
-backtest_trades = Table(
-    "backtest_trades",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("run_id", Integer, ForeignKey("backtest_runs.id"), nullable=False),
-    Column("pair", Text, nullable=False),
-    Column("direction", Text, nullable=False),
-    Column("entry_time", TIMESTAMP(timezone=True), nullable=False),
-    Column("exit_time", TIMESTAMP(timezone=True), nullable=True),
-    Column("entry_price", Float, nullable=False),
-    Column("exit_price", Float, nullable=True),
-    Column("size_usd", Float, nullable=False),
-    Column("stop_loss", Float, nullable=False),
-    Column("take_profit", Float, nullable=False),
-    Column("pnl_usd", Float, nullable=True),
-    Column("close_reason", Text, nullable=True),     # 'TP' | 'SL' | 'EOD'
-    Column("regime_at_entry", Text, nullable=True),
-)
-
-backtest_signals = Table(
-    "backtest_signals",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("run_id", Integer, ForeignKey("backtest_runs.id"), nullable=False),
-    Column("timestamp", TIMESTAMP(timezone=True), nullable=False),
-    Column("pair", Text, nullable=False),
-    Column("regime", Text, nullable=True),
-    Column("layer_b_signal", Text, nullable=True),
-    Column("layer_c_confirmed", Boolean, nullable=True),
-    Column("layer_d_passed", Boolean, nullable=True),
-    Column("decision", Text, nullable=False),        # 'TRADE' | 'REJECT_*'
-    Column("reason", Text, nullable=True),
-)
-
-
-sentiment_scores = Table(
-    "sentiment_scores",
-    metadata,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("scored_at", TIMESTAMP(timezone=True), server_default=sa_text("NOW()"), nullable=False),
-    Column("price_momentum_score", Float),
-    Column("derivatives_score",    Float),
-    Column("fear_greed_score",     Float),
-    Column("macro_regime_score",   Float),
-    Column("news_catalyst_score",  Float),
-    Column("composite_score",      Float),
-    Column("composite_label",      Text),
-    Column("confidence",           Float),
-    Column("price_momentum_detail", Text),
-    Column("derivatives_detail",    Text),
-    Column("fear_greed_detail",     Text),
-    Column("macro_regime_detail",   Text),
-    Column("news_catalyst_detail",  Text),
-    Column("claude_summary",        Text),
 )
 
 news_event_log = Table(
     "news_event_log",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("logged_at", TIMESTAMP(timezone=True), server_default=sa_text("NOW()"), nullable=False),
+    Column("logged_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
     Column("headline",       Text),
     Column("urgency",        Text),
     Column("direction",      Text),
@@ -302,47 +230,98 @@ news_event_log = Table(
     Column("source",         Text),
 )
 
-
-reconciliation_log = Table(
-    "reconciliation_log",
+markouts = Table(
+    "markouts",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("created_at", TIMESTAMP(timezone=True), server_default=sa_text("NOW()"), nullable=False),
-    Column("pair", String(30), nullable=True),
-    Column("direction", String(10), nullable=True),
-    Column("entry_price", Float, nullable=True),
-    Column("exit_price", Float, nullable=True),
-    Column("filled_qty", Float, nullable=True),
-    Column("size_usd", Float, nullable=True),
-    Column("pnl_usd", Float, nullable=True),
-    # fill_confirmed_pending_log → logged → reconciled
-    # fill_confirmed_pending_log → emergency_close_required → reconciled
-    Column("status", String(50), nullable=True),
-    Column("client_order_id", String(100), nullable=True),
-    Column("trade_id", Integer, nullable=True),   # set when log_trade_open succeeds
-    Column("filled_at", TIMESTAMP(timezone=True), nullable=True),
-    Column("notes", Text, nullable=True),
+    Column("evaluation_id", Integer, nullable=False),
+    Column("market_id", Text, nullable=False),
+    Column("checked_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    Column("hours_after", Integer, nullable=False),       # 1, 6, or 24
+    Column("price_yes_at_check", Float, nullable=False),
+    Column("price_yes_at_eval", Float, nullable=False),
+    Column("claude_probability", Float, nullable=False),
+    Column("direction_correct", Boolean, nullable=False),  # price moved toward Claude's estimate?
+)
+
+
+sentiment_scores = Table(
+    "sentiment_scores",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("scored_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    Column("composite_score", Float),
+    Column("composite_label", Text),
+    Column("confidence",      Float),
+    Column("detail",          Text),
+    Column("claude_summary",  Text),
 )
 
 
 def create_all_tables() -> None:
     """Create all tables if they do not already exist. Safe to call on every startup."""
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL environment variable is not set.")
-    engine = create_engine(database_url)
+    from db.engine import get_engine
+    engine = get_engine()
     metadata.create_all(engine, checkfirst=True)
-    # Add columns introduced after initial schema — safe no-ops on fresh DBs.
+
     with engine.begin() as conn:
+        # Calibration indexes.
         conn.execute(sa_text(
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS "
-            "reconciliation_pending BOOLEAN DEFAULT FALSE"
+            "CREATE INDEX IF NOT EXISTS idx_predictions_source "
+            "ON predictions(source)"
         ))
         conn.execute(sa_text(
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS "
-            "client_order_id VARCHAR(100)"
+            "CREATE INDEX IF NOT EXISTS idx_predictions_trade_id "
+            "ON predictions(trade_id)"
         ))
         conn.execute(sa_text(
-            "ALTER TABLE trades ADD COLUMN IF NOT EXISTS "
-            "close_client_order_id VARCHAR(100)"
+            "CREATE INDEX IF NOT EXISTS idx_predictions_resolved "
+            "ON predictions(resolved_at) WHERE resolved_at IS NOT NULL"
+        ))
+        # PM position indexes.
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pm_positions_status "
+            "ON pm_positions(status)"
+        ))
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pm_positions_market "
+            "ON pm_positions(market_id)"
+        ))
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pm_positions_mode "
+            "ON pm_positions(mode)"
+        ))
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pm_positions_prediction "
+            "ON pm_positions(prediction_id)"
+        ))
+        # Migration: add event_slug to existing pm_positions tables.
+        conn.execute(sa_text(
+            "ALTER TABLE pm_positions ADD COLUMN IF NOT EXISTS event_slug TEXT"
+        ))
+        # Event-group correlation cap index (must come after ALTER TABLE).
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pm_positions_event_slug "
+            "ON pm_positions(event_slug) WHERE event_slug IS NOT NULL"
+        ))
+        # Partial unique index: prevent duplicate open positions on same market.
+        conn.execute(sa_text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_positions_open_market "
+            "ON pm_positions(market_id, mode) WHERE status = 'open'"
+        ))
+        # Market evaluation index for history lookups.
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_market_evaluations_market "
+            "ON market_evaluations(market_id, evaluated_at DESC)"
+        ))
+        # Markout indexes — fast lookups for pending checks and stats.
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_markouts_evaluation "
+            "ON markouts(evaluation_id, hours_after)"
+        ))
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_markouts_checked "
+            "ON markouts(checked_at DESC)"
         ))

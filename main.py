@@ -1,224 +1,335 @@
-# load_dotenv() MUST run before any other import that reads os.getenv() at
-# module level (e.g. feeds/telegram_notifier.py creates its singleton on import).
+"""
+Entry point for the Polymarket prediction-market bot.
+
+Architecture at a glance:
+
+    PolymarketFeed   — Gamma API client, pulls candidate markets
+            │
+            ▼
+    PMAnalyst        — skips stale markets, fetches research, asks Claude
+            │           for a calibrated probability, sizes via quarter-Kelly
+            │
+            ▼
+    PMExecutor       — opens shadow (or live) positions, settles them
+                        after resolution, feeds the calibration ledger
+
+Scheduled jobs (APScheduler):
+    PM scan          — every PM_SCAN_INTERVAL_MINUTES
+    PM resolve       — every PM_RESOLVE_INTERVAL_HOURS
+    Daily summary    — 08:30 MYT
+    Weekly summary   — Monday 08:30 MYT
+    Self-improvement — Sunday 08:30 MYT
+    Monthly report   — 1st of month 08:30 MYT
+
+Side services:
+    bot_api.BotAPI  — localhost HTTP API for the dashboard
+    TelegramNotifier poll thread for /status /scan /apply /skip /confirm-config
+
+Fatal-at-import-time: .env must provide DATABASE_URL, ANTHROPIC_API_KEY,
+BOT_API_SECRET. TELEGRAM_* is optional.
+"""
+
+# load_dotenv() must run before any module that reads os.getenv() at import.
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
 import asyncio
+import faulthandler
+import signal
+import sys
+import traceback
+
+# Dump all thread stacks on SIGUSR1 — invaluable for diagnosing hangs.
+faulthandler.enable()
+faulthandler.register(signal.SIGUSR1)
 from datetime import datetime, timezone, timedelta
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.date import DateTrigger
-from db.models import create_all_tables
-from feeds.feed_health_monitor import monitor
-from feeds.okx_ws import OKXWebSocketManager
-from feeds.book_manager import BookManager
-from feeds.news_feed import NewsFeed
-from feeds.macro_calendar import MacroCalendar
-from feeds.telegram_notifier import notifier
-from execution.order_manager import OrderManager
-from execution.position_monitor import PositionMonitor
-from engine.self_improvement import SelfImprovementAnalyser
-from engine.macro_context import MacroContextEngine
-from engine.portfolio_advisor import PortfolioAdvisor
-from feeds.deribit_feed import DeribitFeed
-from engine.memory import MemoryManager
-from engine.scanner import Scanner
-from engine.strategist import Strategist
-from bot_api import BotAPI
+from apscheduler.triggers.cron     import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+
 import config
+from db.models                import create_all_tables
+from feeds.feed_health_monitor import monitor
+from feeds.news_feed           import NewsFeed
+from feeds.macro_calendar      import MacroCalendar
+from feeds.telegram_notifier   import notifier
+from execution.pm_executor     import PMExecutor
+from engine.pm_analyst         import PMAnalyst
+from engine.memory             import MemoryManager
+from engine.self_improvement   import SelfImprovementAnalyser
+from bot_api                   import BotAPI
+from polymarket_runner         import scan_and_analyze, resolve_positions
+from engine.markout_tracker    import check_markouts
+from process_health            import health as proc_health
 
 
-async def main():
+async def main() -> None:
+    # Increase the default thread pool — the default (5 workers) gets
+    # saturated by research/Claude/feedparser calls during scans, blocking
+    # the event loop from processing API requests.
+    from concurrent.futures import ThreadPoolExecutor
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=20,
+                                                  thread_name_prefix="bot"))
+
     bot_start_time = datetime.now(timezone.utc)
+    monitor.set_bot_start_time(bot_start_time)
+    proc_health.set_start_time(bot_start_time)
 
-    print("Trading bot starting...")
-    print(f"PAPER_MODE: {config.PAPER_MODE}")
-    print(f"EXCHANGE: {config.EXCHANGE}")
-    print(f"TRADING_PAIRS: {config.TRADING_PAIRS}")
+    print("Polymarket bot starting…", flush=True)
+    print(f"PM_MODE: {config.PM_MODE}", flush=True)
+    print(
+        f"Starting cash: "
+        f"shadow=${config.PM_SHADOW_STARTING_CASH:.0f}, "
+        f"live=${config.PM_LIVE_STARTING_CASH:.0f}",
+        flush=True,
+    )
 
     create_all_tables()
-    print("Database tables verified.")
+    print("Database tables verified.", flush=True)
 
-    # ── Feeds ─────────────────────────────────────────────────────────────────
-    ws_manager = OKXWebSocketManager(monitor)
-    book_manager = BookManager(ws_manager)
-    news_feed = NewsFeed(monitor)
+    # ── Core singletons ──────────────────────────────────────────────────────
+    executor  = PMExecutor()
+    memory    = MemoryManager()
+
+    # ── Overlay feeds (advisory only — do not gate trading) ──────────────────
+    news_feed      = NewsFeed(monitor)
     macro_calendar = MacroCalendar(monitor)
-
-    # ── Feeds (overlay) ───────────────────────────────────────────────────────
-    deribit_feed = DeribitFeed(monitor)
-
-    # ── Execution ─────────────────────────────────────────────────────────────
-    order_manager = OrderManager(monitor)
-
-    position_monitor = PositionMonitor(
-        order_manager, ws_manager, None, monitor, None
-    )
-
-    # ── Macro context engine ──────────────────────────────────────────────────
-    macro_context = MacroContextEngine(news_feed, macro_calendar, notifier)
-    macro_context.set_ws_manager(ws_manager)
-
-    # ── Startup ───────────────────────────────────────────────────────────────
     await macro_calendar.start()
 
-    # ── Memory + Strategist + Scanner ────────────────────────────────────────
-    memory     = MemoryManager()
-    strategist = Strategist(
-        order_manager    = order_manager,
-        memory           = memory,
-        notifier         = notifier,
-        macro_context    = macro_context,
-        position_monitor = position_monitor,
-        health_monitor   = monitor,
-    )
-    scanner = Scanner(
-        ws_manager     = ws_manager,
-        news_feed      = news_feed,
-        macro_calendar = macro_calendar,
-        deribit_feed   = deribit_feed,
-        health_monitor = monitor,
-        memory         = memory,
-        strategist     = strategist,
-    )
-    scanner.macro_context = macro_context
+    analyst   = PMAnalyst(executor=executor, notifier=notifier, memory=memory,
+                          news_feed=news_feed)
 
-    # Wire Strategist ↔ PositionMonitor (enables thesis-driven exits and Obsidian
-    # post-mortems for mechanical closes).  Must happen after both are constructed.
-    # scanner.position_monitor enables large-loss and critical-news urgent reviews.
-    position_monitor.set_strategist(strategist)
-    scanner.position_monitor = position_monitor
+    # ── Self-improvement analyser ────────────────────────────────────────────
+    self_improvement = SelfImprovementAnalyser(notifier=notifier, memory=memory)
 
-    # ── Self-improvement analyser + portfolio advisor ─────────────────────────
-    self_improvement = SelfImprovementAnalyser(notifier)
-    self_improvement.set_strategist(strategist)   # closes the learning loop
-    portfolio_advisor = PortfolioAdvisor(notifier)
-
-    # Pass the running event loop to the notifier so the polling thread can
-    # schedule coroutines back onto it via run_coroutine_threadsafe.
-    notifier._loop = asyncio.get_running_loop()
-
-    # Wire live references into the notifier for rich /status and startup notice
+    # ── Wire notifier references used by /status and scheduled summaries ─────
+    notifier._loop            = asyncio.get_running_loop()
     notifier._bot_start_time  = bot_start_time
     notifier._monitor         = monitor
-    notifier._ws_manager      = ws_manager
-    notifier._macro_calendar  = macro_calendar
-    notifier._order_manager      = order_manager      # enables /resume command
-    notifier._position_monitor  = position_monitor   # enables reconciliation checks in /resume
-    order_manager._notifier      = notifier           # enables CRITICAL alerts from OrderManager
-    order_manager._ws_manager    = ws_manager         # enables mark-price fallback on paper close
+    notifier._executor        = executor
+    notifier._analyst         = analyst
 
+    # Telegram polling thread for commands (/apply /skip /status etc.)
     notifier.start_polling(self_improvement)
 
-    # ── Pre-flight checks (live mode only) ───────────────────────────────────
-    if not config.PAPER_MODE:
-        ok = await order_manager.verify_and_set_leverage()
-        if not ok:
-            raise RuntimeError(
-                "Leverage/margin verification failed. "
-                "Check OKX account settings before trading live."
+    # ── HTTP API (dashboard) ────────────────────────────────────────────────
+    bot_api = BotAPI(analyst=analyst, executor=executor, notifier=notifier)
+    notifier._bot_api = bot_api
+
+    # ── Scheduler ───────────────────────────────────────────────────────────
+    scheduler = AsyncIOScheduler()
+
+    # PM scan — cadence from config.
+    scan_interval_min = int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 60))
+
+    async def _run_scan():
+        try:
+            await scan_and_analyze(
+                limit          = int(getattr(config, "PM_SCAN_LIMIT", 20)),
+                min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
+                notifier       = notifier,
+                memory         = memory,
+                analyst        = analyst,
             )
+            proc_health.record_job_ok("pm_scan")
+        except Exception as exc:
+            proc_health.record_job_error("pm_scan")
+            print(f"[main] scan failed: {exc}", file=sys.stderr)
 
-    # Check for unresolved fill records from previous sessions.
-    # Must run after notifier is wired so alerts can be sent.
-    await order_manager.check_reconciliation_log()
+    scheduler.add_job(
+        _run_scan,
+        IntervalTrigger(minutes=scan_interval_min),
+        id="pm_scan",
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=60),
+        max_instances=1,
+        coalesce=True,
+    )
 
-    # ── Telegram summary + self-improvement + macro context scheduler ─────────
-    summary_scheduler = AsyncIOScheduler()
-    summary_scheduler.add_job(
+    # PM resolver.
+    resolve_interval_h = int(getattr(config, "PM_RESOLVE_INTERVAL_HOURS", 6))
+
+    async def _run_resolve():
+        try:
+            await resolve_positions(notifier=notifier, executor=executor)
+            proc_health.record_job_ok("pm_resolve")
+        except Exception as exc:
+            proc_health.record_job_error("pm_resolve")
+            print(f"[main] resolve failed: {exc}", file=sys.stderr)
+
+    scheduler.add_job(
+        _run_resolve,
+        IntervalTrigger(hours=resolve_interval_h),
+        id="pm_resolve",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Fast resolver for short-horizon markets (every 10 min).
+    fast_resolve_min = int(getattr(config, "PM_RESOLVE_FAST_INTERVAL_MINUTES", 10))
+
+    async def _run_resolve_fast():
+        try:
+            await resolve_positions(short_horizon_only=True, notifier=notifier, executor=executor)
+            proc_health.record_job_ok("pm_resolve_fast")
+        except Exception as exc:
+            proc_health.record_job_error("pm_resolve_fast")
+            print(f"[main] fast resolve failed: {exc}", file=sys.stderr)
+
+    scheduler.add_job(
+        _run_resolve_fast,
+        IntervalTrigger(minutes=fast_resolve_min),
+        id="pm_resolve_fast",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Markout tracker — check T+1h / T+6h / T+24h price moves.
+    async def _run_markouts():
+        try:
+            await check_markouts()
+            proc_health.record_job_ok("markout_check")
+        except Exception as exc:
+            proc_health.record_job_error("markout_check")
+            print(f"[main] markout check failed: {exc}", file=sys.stderr)
+
+    scheduler.add_job(
+        _run_markouts,
+        IntervalTrigger(hours=1),
+        id="markout_check",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=7),
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # Telegram summaries (MYT = UTC+8).
+    scheduler.add_job(
         notifier.send_daily_summary,
         CronTrigger(hour=8, minute=30, timezone="Asia/Kuala_Lumpur"),
         id="daily_summary",
     )
-    summary_scheduler.add_job(
+    scheduler.add_job(
         notifier.send_weekly_summary,
-        CronTrigger(day_of_week="sun", hour=8, minute=30, timezone="Asia/Kuala_Lumpur"),
+        CronTrigger(day_of_week="mon", hour=8, minute=30,
+                    timezone="Asia/Kuala_Lumpur"),
         id="weekly_summary",
     )
-    summary_scheduler.add_job(
+    scheduler.add_job(
         self_improvement.analyse_and_report,
-        CronTrigger(day_of_week="sun", hour=8, minute=30, timezone="Asia/Kuala_Lumpur"),
+        CronTrigger(day_of_week="sun", hour=8, minute=30,
+                    timezone="Asia/Kuala_Lumpur"),
         id="self_improvement",
     )
-    # Daily macro brief — 00:30 UTC = 08:30 MYT
-    summary_scheduler.add_job(
-        macro_context.generate_daily_brief,
-        CronTrigger(hour=0, minute=30, timezone="UTC"),
-        id="macro_daily_brief",
-    )
-    # Portfolio advisory — Monday 08:30 MYT (Mon 00:30 UTC), after weekly summary
-    async def _weekly_with_advisory() -> None:
-        await notifier.send_weekly_summary()
-        await portfolio_advisor.check_and_advise(order_manager)
-
-    summary_scheduler.add_job(
-        _weekly_with_advisory,
-        CronTrigger(day_of_week="mon", hour=0, minute=30, timezone="UTC"),
-        id="weekly_with_advisory",
-    )
-    # Monthly performance report — 1st of each month 00:30 UTC
-    summary_scheduler.add_job(
+    scheduler.add_job(
         self_improvement.generate_monthly_report,
-        CronTrigger(day=1, hour=0, minute=30, timezone="UTC"),
+        CronTrigger(day=1, hour=8, minute=30, timezone="Asia/Kuala_Lumpur"),
         id="monthly_report",
     )
-    # One-time startup brief — fires 45s after launch so feeds are healthy first
-    summary_scheduler.add_job(
-        macro_context.generate_daily_brief,
-        DateTrigger(run_date=datetime.now(timezone.utc) + timedelta(seconds=45)),
-        id="macro_startup_brief",
+
+    # ── Watchdog — alert if core jobs stop running ────────────────────────
+    _watchdog_alerted: set[str] = set()
+    _WATCHDOG_THRESHOLDS = {
+        "pm_scan":         timedelta(minutes=scan_interval_min * 3),
+        "pm_resolve":      timedelta(hours=resolve_interval_h * 3),
+        "pm_resolve_fast": timedelta(minutes=fast_resolve_min * 5),
+    }
+
+    async def _run_watchdog():
+        if proc_health.uptime_seconds < 300:
+            return
+        now = datetime.now(timezone.utc)
+        for job_name, max_gap in _WATCHDOG_THRESHOLDS.items():
+            last_ok = proc_health.last_ok(job_name)
+            if last_ok is None:
+                continue
+            gap = now - last_ok
+            if gap > max_gap and job_name not in _watchdog_alerted:
+                _watchdog_alerted.add(job_name)
+                mins = int(gap.total_seconds() / 60)
+                await notifier.notify_error(
+                    "watchdog",
+                    f"Job '{job_name}' has not completed in {mins}min "
+                    f"(threshold: {int(max_gap.total_seconds()/60)}min)"
+                )
+            elif gap <= max_gap and job_name in _watchdog_alerted:
+                _watchdog_alerted.discard(job_name)
+
+    scheduler.add_job(
+        _run_watchdog,
+        IntervalTrigger(minutes=10),
+        id="watchdog",
+        max_instances=1,
+        coalesce=True,
     )
-    summary_scheduler.start()
+
+    scheduler.start()
     print(
-        "[main] Scheduled: daily summary 08:30 MYT, "
-        "weekly summary Sun 08:30 MYT, "
-        "self-improvement review Sun 08:30 MYT, "
-        "macro brief 00:30 UTC daily (startup brief in 45s), "
-        "portfolio advisory Mon 08:30 MYT, "
-        "monthly report 1st of month 00:30 UTC",
+        f"[main] Scheduler started: "
+        f"PM scan every {scan_interval_min}min, "
+        f"resolver every {resolve_interval_h}h (fast every {fast_resolve_min}min), "
+        f"markouts every 1h, watchdog every 10min, "
+        f"daily 08:30 MYT, weekly Mon 08:30 MYT, "
+        f"self-improve Sun 08:30 MYT, monthly 1st 08:30 MYT.",
         flush=True,
     )
 
-    # ── Run ───────────────────────────────────────────────────────────────────
+    # ── Signal handling ────────────────────────────────────────────────────
+    shutdown_event = asyncio.Event()
+
+    # Ignore SIGHUP — we're a launchd daemon, not a terminal app.
+    # Without this, closing Claude Code (or any controlling terminal)
+    # sends SIGHUP which kills the bot unnecessarily.
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+
+    def _handle_signal(sig, _frame):
+        sig_name = signal.Signals(sig).name
+        print(f"[main] Received {sig_name} — shutting down gracefully", flush=True)
+        notifier.send_sync("🛑 <b>Bot stopping</b> — will restart automatically")
+        shutdown_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _handle_signal, sig, None)
+
+    # ── Tasks ───────────────────────────────────────────────────────────────
     async def _startup_notification() -> None:
-        """Wait 30s for feeds to initialise, then send BOT STARTED/RESTARTED."""
-        await asyncio.sleep(30)
+        await asyncio.sleep(20)
         await notifier.notify_startup()
 
-    async def _deribit_polling() -> None:
-        """
-        Poll Deribit DVOL every DERIBIT_IV_CACHE_SECONDS seconds.
-        Forces cache expiry before each fetch so _get_history() always refetches.
-        """
-        while True:
-            for ccy in ("BTC", "ETH"):
-                # Expire cache so _get_history() triggers a real fetch
-                deribit_feed._cache.pop(ccy, None)
-                await deribit_feed._get_history(ccy)
-            await asyncio.sleep(config.DERIBIT_IV_CACHE_SECONDS)
-
-    # ── Dashboard HTTP API (localhost only, X-Bot-Secret auth) ───────────────
-    bot_api = BotAPI(
-        scanner          = scanner,
-        order_manager    = order_manager,
-        position_monitor = position_monitor,
-        notifier         = notifier,
-        strategist       = strategist,
-        ws_manager       = ws_manager,
-    )
-    # Wire onto notifier so /confirm-config and /reject-config can reach it.
-    notifier._bot_api = bot_api
+    async def _shutdown_waiter() -> None:
+        await shutdown_event.wait()
+        print("[main] Shutdown event received — stopping scheduler", flush=True)
+        scheduler.shutdown(wait=False)
+        if bot_api._runner:
+            await bot_api._runner.cleanup()
+        raise SystemExit(0)
 
     await asyncio.gather(
-        ws_manager.start(config.TRADING_PAIRS),
         news_feed.start(),
-        position_monitor.start(),
-        scanner.start(),
-        _startup_notification(),
-        _deribit_polling(),
         bot_api.start(),
+        _startup_notification(),
+        _shutdown_waiter(),
     )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except SystemExit:
+        pass
+    except KeyboardInterrupt:
+        print("[main] KeyboardInterrupt — exiting", flush=True)
+    except Exception:
+        tb = traceback.format_exc()
+        print(f"[main] FATAL CRASH:\n{tb}", file=sys.stderr, flush=True)
+        try:
+            notifier.send_sync(
+                f"💀 <b>Bot crashed — restarting automatically</b>\n"
+                f"<pre>{tb[-500:]}</pre>"
+            )
+        except Exception:
+            pass
+        sys.exit(1)

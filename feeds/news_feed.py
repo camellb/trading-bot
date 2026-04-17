@@ -20,8 +20,7 @@ CryptoPanic items use a 2× longer deduplication window (60 min vs 30 min)
 and are processed before RSS/Nitter items because they are higher quality.
 
 Per the feed integrity policy: after NEWS_MAX_FAILED_POLLS consecutive polls
-where ALL sources returned nothing, the feed reports degraded and the engine
-continues at 50% size (NEWS_DEGRADED_SIZE_MULTIPLIER).
+where ALL sources returned nothing, the feed reports degraded via is_degraded().
 """
 
 import asyncio
@@ -29,7 +28,6 @@ import hashlib
 import json
 import os
 import sys
-import warnings
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from typing import Optional
@@ -41,14 +39,15 @@ from feeds.feed_health_monitor import FeedHealthMonitor
 
 # System prompt for Gemini relevance filtering
 _GEMINI_SYSTEM = (
-    "You are a crypto trading news filter. From the given news items, extract "
-    "only those relevant to: BTC or ETH price movements, major exchange events, "
-    "regulatory actions affecting crypto, protocol incidents, or macroeconomic "
-    "events that move crypto markets (Fed decisions, CPI prints, inflation data, "
-    "trade wars, geopolitical shocks). Ignore: sports, entertainment, unrelated "
-    "business news, altcoin promotions, NFT hype. "
-    "CryptoPanic posts are from a crypto-specific news aggregator and should be "
-    "weighted more heavily than general RSS feeds. "
+    "You are a prediction-market news filter. From the given news items, extract "
+    "those relevant to resolvable prediction markets across ALL domains: "
+    "politics (elections, polls, legislation), geopolitics (conflicts, treaties, "
+    "sanctions), economics (Fed decisions, CPI, inflation, trade policy), "
+    "crypto (BTC/ETH prices, exchange events, regulation, protocol incidents), "
+    "sports (major matchups, standings, injuries, transfers), "
+    "science/tech (launches, approvals, breakthroughs). "
+    "Ignore: celebrity gossip, product marketing, opinion pieces with no factual content, "
+    "altcoin promotions, NFT hype. "
     "Return ONLY a valid JSON array "
     "of strings. Each string is one clear headline under 15 words. Maximum 10 "
     "items. No explanation, no markdown, just the JSON array."
@@ -97,11 +96,12 @@ class NewsFeed:
 
         # Mark cryptopanic degraded immediately if no API key configured
         if not os.getenv("CRYPTOPANIC_API_KEY", ""):
-            self._monitor.report_degraded("cryptopanic", "API key not configured")
+            self._monitor.report_degraded("cryptopanic", "API key not configured",
+                                          expected=True)
 
         # Configure Gemini
         gemini_key = os.getenv("GEMINI_API_KEY", "")
-        self._gemini = None
+        self._gemini_client = None
         if not gemini_key:
             print(
                 "[news_feed] GEMINI_API_KEY not set — "
@@ -110,14 +110,8 @@ class NewsFeed:
             )
         else:
             try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", FutureWarning)
-                    import google.generativeai as genai
-                    genai.configure(api_key=gemini_key)
-                    self._gemini = genai.GenerativeModel(
-                        config.GEMINI_MODEL,
-                        system_instruction=_GEMINI_SYSTEM,
-                    )
+                from google import genai
+                self._gemini_client = genai.Client(api_key=gemini_key)
                 print(
                     f"[news_feed] Gemini configured: model={config.GEMINI_MODEL}",
                     flush=True,
@@ -132,20 +126,21 @@ class NewsFeed:
 
     async def start(self) -> None:
         """
-        Run an immediate poll then schedule recurring polls via APScheduler.
-        Returns after scheduling — APScheduler drives subsequent polls.
+        Schedule recurring polls via APScheduler, then fire the first poll
+        as a background task so it never blocks the event loop at startup.
         """
         print("[news_feed] Starting multi-source aggregator", flush=True)
-        await self._poll_all_sources()
 
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from apscheduler.triggers.interval import IntervalTrigger
 
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
             self._poll_all_sources,
             IntervalTrigger(minutes=config.NEWS_POLL_INTERVAL_MIN),
             id="news_poll",
+            next_run_time=_dt.now(_tz.utc) + _td(seconds=5),
         )
         scheduler.start()
         print(
@@ -230,6 +225,7 @@ class NewsFeed:
         if new_items:
             headlines = await self._summarise_with_gemini(new_items)
             self._latest_headlines = (self._latest_headlines + headlines)[-50:]
+            self._persist_headlines(headlines)
             cp_count  = sum(1 for i in new_items if i.get("source") == "cryptopanic")
             std_count = len(new_items) - cp_count
             print(
@@ -418,7 +414,7 @@ class NewsFeed:
 
         Falls back to raw titles if Gemini is unavailable or fails.
         """
-        if self._gemini is None:
+        if self._gemini_client is None:
             return [item["title"] for item in raw_items[:10]]
 
         user_content = json.dumps([
@@ -431,18 +427,15 @@ class NewsFeed:
 
         try:
             loop = asyncio.get_event_loop()
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", FutureWarning)
-                import google.generativeai as genai
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self._gemini.generate_content(
-                        user_content,
-                        generation_config=genai.types.GenerationConfig(
-                            response_mime_type="application/json"
-                        ),
-                    ),
-                )
+            client = self._gemini_client
+            response = await loop.run_in_executor(
+                None,
+                lambda: client.models.generate_content(
+                    model=config.GEMINI_MODEL,
+                    contents=f"{_GEMINI_SYSTEM}\n\n{user_content}",
+                    config={"response_mime_type": "application/json"},
+                ),
+            )
             text = response.text.strip()
             parsed = json.loads(text)
             if isinstance(parsed, list):
@@ -454,6 +447,25 @@ class NewsFeed:
         except Exception as exc:
             print(f"[news_feed] Gemini summarisation error: {exc}", file=sys.stderr)
             return [item["title"] for item in raw_items[:10]]
+
+    # ── Persistence ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _persist_headlines(headlines: list[str]) -> None:
+        """Write headlines to news_event_log so research/fetcher.py can query them."""
+        if not headlines:
+            return
+        try:
+            from db.engine import get_engine
+            from sqlalchemy import text as sa_text
+            with get_engine().begin() as conn:
+                for h in headlines:
+                    conn.execute(sa_text(
+                        "INSERT INTO news_event_log (headline, source) "
+                        "VALUES (:h, 'news_feed')"
+                    ), {"h": h[:500]})
+        except Exception as exc:
+            print(f"[news_feed] persist headlines failed: {exc}", file=sys.stderr)
 
     # ── Accessors ─────────────────────────────────────────────────────────────
 
