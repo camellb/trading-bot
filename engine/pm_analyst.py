@@ -22,6 +22,7 @@ are logged and the next market proceeds.
 from __future__ import annotations
 
 import asyncio
+import time
 import json
 import sys
 from dataclasses import dataclass, asdict
@@ -36,11 +37,32 @@ from db.engine import get_engine
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
 from execution.pm_executor import PMExecutor
 from execution.pm_sizer import size_position, SizingDecision
-from feeds.polymarket_feed import PolymarketFeed, PolyMarket
+from execution.risk_manager import RiskManager
+from engine.user_controls import UserControls
+from feeds.polymarket_feed import PolymarketFeed, PolyMarket, _as_market
 from research.fetcher import fetch_research, ResearchBundle
 
 
 SOURCE = "polymarket"
+
+
+async def _timeout_guard(coro, timeout: float):
+    """Like asyncio.wait_for but safe with run_in_executor.
+
+    Python's asyncio.wait_for() cancels the inner task on timeout,
+    then waits for the cancel to complete.  If the task is stuck in
+    loop.run_in_executor(), the cancel never completes (threads can't
+    be interrupted), so wait_for() hangs FOREVER.
+
+    This uses asyncio.wait() instead, which simply returns after the
+    timeout without cancelling anything.  The orphaned executor thread
+    will finish (or die with the process) — the event loop moves on.
+    """
+    task = asyncio.ensure_future(coro)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if done:
+        return task.result()
+    raise asyncio.TimeoutError()
 
 
 
@@ -70,6 +92,11 @@ class PMAnalyst:
         self.notifier  = notifier
         self.memory    = memory
         self.news_feed = news_feed
+        self.risk_mgr  = RiskManager()
+        self.user_controls = UserControls()
+        # Cache strategy block for the duration of a scan batch (refreshed per scan).
+        self._cached_strategy_block: Optional[str] = None
+        self._strategy_cache_valid = False
 
     # ── Single market ────────────────────────────────────────────────────────
     async def analyze_market(
@@ -78,8 +105,28 @@ class PMAnalyst:
         skip_existing_days: int = 3,
     ) -> AnalysisOutcome:
         q = market.question[:80]
+
+        # 0a. Global pause — stop all new position opening.
+        paused, pause_reason = await asyncio.to_thread(self.user_controls.is_paused)
+        if paused:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_PAUSED",
+                detail=f"trading paused: {pause_reason or 'no reason given'}",
+            )
+
+        # 0b. Market blocklist — never trade this specific market.
+        if await asyncio.to_thread(self.user_controls.is_blocked, market.id):
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_BLOCKED",
+                detail="market is on the blocklist",
+            )
+
         # 1. Already holding this market?
-        if self.executor.has_open_position_on_market(market.id):
+        if await asyncio.to_thread(
+            self.executor.has_open_position_on_market, market.id
+        ):
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_EXISTING_POSITION",
@@ -87,26 +134,55 @@ class PMAnalyst:
             )
 
         # 2. Recently evaluated?
-        if _recently_predicted(market.id, skip_existing_days):
+        if await asyncio.to_thread(_recently_predicted, market.id, skip_existing_days):
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_RECENT_EVAL",
                 detail=f"evaluated within {skip_existing_days}d",
             )
 
-        # 3. Research.
+        # 3. Research (hard timeout to prevent blocking the event loop).
         try:
-            research = await fetch_research(market.question, market.category_hint)
+            research = await _timeout_guard(
+                fetch_research(
+                    market.question, market.category_hint,
+                    market_id=market.id,
+                    event_slug=getattr(market, "event_slug", None),
+                    market_slug=getattr(market, "slug", None),
+                    resolution_source=getattr(market, "resolution_source", None),
+                ),
+                timeout=120,
+            )
+        except asyncio.TimeoutError:
+            print(f"[pm_analyst] research TIMEOUT (120s) for {market.id}",
+                  file=sys.stderr)
+            research = ResearchBundle(question=market.question)
         except Exception as exc:
             print(f"[pm_analyst] research failed for {market.id}: {exc}",
                   file=sys.stderr)
             research = ResearchBundle(question=market.question)
 
         research_block = research.to_prompt_block()
+        strategy_block = await asyncio.to_thread(self._build_strategy_block)
 
-        # 4. Evaluate.
+        # 4. Evaluate (hard timeout — Claude API can hang on network issues).
+        #    Use ensemble evaluator (Claude + Gemini) for more robust estimates.
         try:
-            evaluation = await self.evaluator.evaluate(market, research_block)
+            evaluation = await _timeout_guard(
+                self.evaluator.evaluate_ensemble(
+                    market,
+                    research_block=research_block,
+                    strategy_block=strategy_block,
+                ),
+                timeout=120,  # ensemble runs two models concurrently
+            )
+        except asyncio.TimeoutError:
+            print(f"[pm_analyst] evaluate TIMEOUT (90s) for {market.id}",
+                  file=sys.stderr)
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="ERROR", detail="evaluate: timeout (90s)",
+            )
         except Exception as exc:
             print(f"[pm_analyst] evaluate failed for {market.id}: {exc}",
                   file=sys.stderr)
@@ -119,6 +195,56 @@ class PMAnalyst:
                 market_id=market.id, question=q,
                 status="ERROR", detail="evaluator returned None",
             )
+
+        # 4b. Attach research quality to evaluation for downstream use.
+        evaluation.research_quality = getattr(research, "quality_score", 0.0)
+
+        # 4c. Extreme edge justification — if Claude's raw edge exceeds
+        # PM_EXTREME_EDGE_JUSTIFICATION_BPS, send a follow-up prompt
+        # asking for specific verifiable evidence.  This recovers alpha
+        # from high-edge markets with verifiable data while filtering
+        # out markets where Claude is simply wrong.
+        raw_edge = abs(evaluation.probability_yes - market.yes_price)
+        justify_threshold_bps = float(
+            getattr(config, "PM_EXTREME_EDGE_JUSTIFICATION_BPS", 1500)
+        )
+        _justification_skip = False  # set True if extreme edge is unjustified
+        if raw_edge * 10_000.0 > justify_threshold_bps:
+            try:
+                justification = await _timeout_guard(
+                    self.evaluator.justify_extreme_edge(
+                        market, evaluation, research_block=research_block,
+                    ),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                justification = None
+            except Exception as exc:
+                print(f"[pm_analyst] justification error for {market.id}: {exc}",
+                      file=sys.stderr)
+                justification = None
+
+            if justification is None:
+                justification = {"action": "skip", "cited_evidence": "justification call failed"}
+
+            action = justification.get("action", "skip")
+            if action == "skip":
+                _justification_skip = True
+                print(f"[pm_analyst] extreme edge {raw_edge*10000:.0f}bps REJECTED "
+                      f"for {market.id}: {justification.get('cited_evidence', '')[:100]}",
+                      file=sys.stderr, flush=True)
+            elif action == "revise":
+                revised_p = justification.get("revised_probability", evaluation.probability_yes)
+                old_p = evaluation.probability_yes
+                evaluation.probability_yes = float(max(0.0, min(1.0, revised_p)))
+                print(f"[pm_analyst] extreme edge REVISED for {market.id}: "
+                      f"{old_p:.3f} → {evaluation.probability_yes:.3f} "
+                      f"(quality={justification.get('justification_quality', 0):.2f})",
+                      file=sys.stderr, flush=True)
+            else:  # "allow"
+                print(f"[pm_analyst] extreme edge {raw_edge*10000:.0f}bps JUSTIFIED "
+                      f"for {market.id}: {justification.get('cited_evidence', '')[:100]}",
+                      file=sys.stderr, flush=True)
 
         # 5. Log prediction for calibration.
         pred_meta = {
@@ -135,8 +261,16 @@ class PMAnalyst:
             "research_sources":        research.sources,
             "research_keywords":       research.keywords,
             "key_factors":             evaluation.key_factors,
+            "market_archetype":        evaluation.market_archetype,
+            "resolution_style":        evaluation.resolution_style,
+            "resolution_quality_score": evaluation.resolution_quality_score,
+            "research_quality":        getattr(research, "quality_score", None),
+            "resolution_source_score": getattr(research, "resolution_source_score", None),
+            "model_disagreement":      getattr(evaluation, "model_disagreement", None),
+            "n_models":                getattr(evaluation, "n_models", None),
         }
-        prediction_id = calibration.log_prediction(
+        prediction_id = await asyncio.to_thread(
+            calibration.log_prediction,
             source        = SOURCE,
             subject_key   = f"polymarket:{market.id}",
             probability   = evaluation.probability_yes,
@@ -145,6 +279,8 @@ class PMAnalyst:
             horizon_hours = market.days_to_end * 24.0,
             reasoning     = evaluation.reasoning,
             metadata      = pred_meta,
+            market_archetype = evaluation.market_archetype,
+            resolution_style = evaluation.resolution_style,
         )
         if prediction_id is None or prediction_id <= 0:
             print(f"[pm_analyst] prediction log failed for {market.id} — "
@@ -156,8 +292,36 @@ class PMAnalyst:
                 evaluation=evaluation,
             )
 
+        # 5b. Extreme edge justification skip — prediction is logged for
+        # calibration, but we won't open a position.
+        if _justification_skip:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="LOGGED_NO_TRADE",
+                detail=(f"extreme edge {raw_edge*10000:.0f}bps — "
+                        f"justification insufficient"),
+                evaluation=evaluation,
+                prediction_id=prediction_id,
+            )
+
+        # 5c. Archetype pause — skip if this archetype is paused.
+        if evaluation.market_archetype:
+            arch_paused, arch_reason = await asyncio.to_thread(
+                self.user_controls.is_archetype_paused,
+                evaluation.market_archetype,
+            )
+            if arch_paused:
+                return AnalysisOutcome(
+                    market_id=market.id, question=q,
+                    status="SKIP_ARCHETYPE_PAUSED",
+                    detail=f"archetype '{evaluation.market_archetype}' paused: "
+                           f"{arch_reason or 'no reason given'}",
+                    evaluation=evaluation,
+                    prediction_id=prediction_id,
+                )
+
         # 6. Size.
-        bankroll = self.executor.get_bankroll()
+        bankroll = await asyncio.to_thread(self.executor.get_bankroll)
         news_mult = 1.0
         if self.news_feed is not None and hasattr(self.news_feed, "is_degraded"):
             if self.news_feed.is_degraded():
@@ -170,6 +334,10 @@ class PMAnalyst:
             days_to_end        = market.days_to_end,
             size_multiplier    = news_mult,
             mode               = self.executor.mode,
+            archetype          = evaluation.market_archetype,
+            resolution_quality = evaluation.resolution_quality_score,
+            resolution_source_score = getattr(research, "resolution_source_score", None),
+            research_quality   = evaluation.research_quality,
         )
 
         # Log a market_evaluations row regardless of trade outcome — this is
@@ -177,7 +345,8 @@ class PMAnalyst:
         recommendation = (
             f"BUY_{decision.side}" if decision.should_trade else "SKIP"
         )
-        eval_row_id = _log_market_evaluation(
+        eval_row_id = await asyncio.to_thread(
+            _log_market_evaluation,
             market=market,
             evaluation=evaluation,
             decision=decision,
@@ -197,7 +366,7 @@ class PMAnalyst:
             )
 
         max_concurrent = int(getattr(config, "PM_MAX_CONCURRENT_POSITIONS", 10))
-        if self.executor.open_position_count() >= max_concurrent:
+        if await asyncio.to_thread(self.executor.open_position_count) >= max_concurrent:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_MAX_CONCURRENT",
@@ -206,26 +375,66 @@ class PMAnalyst:
                 prediction_id=prediction_id,
             )
 
-        # 7b. Event-group correlation cap.
-        max_per_event = int(getattr(config, "PM_MAX_PER_EVENT", 3))
-        if market.event_slug:
-            event_count = self.executor.count_positions_for_event(market.event_slug)
-            if event_count >= max_per_event:
-                return AnalysisOutcome(
-                    market_id=market.id, question=q,
-                    status="SKIP_EVENT_CAP",
-                    detail=f"{event_count}/{max_per_event} positions in event '{market.event_slug}'",
-                    evaluation=evaluation, decision=decision,
-                    prediction_id=prediction_id,
-                )
+        # 7b. Portfolio-level risk checks (daily/weekly loss limit, heat, drawdown, etc.)
+        risk_ok, risk_reason = await asyncio.to_thread(
+            self.risk_mgr.check_risk,
+            decision=decision,
+            bankroll=bankroll,
+            mode=self.executor.mode,
+            event_slug=getattr(market, "event_slug", None),
+            archetype=evaluation.market_archetype,
+        )
+        if not risk_ok:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_RISK",
+                detail=risk_reason or "risk manager declined",
+                evaluation=evaluation, decision=decision,
+                prediction_id=prediction_id,
+            )
+
+        # 7c. Streak cooldown — reduce size if on a losing streak.
+        decision = self.risk_mgr.apply_streak_adjustment(decision)
+        if not decision.should_trade:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="LOGGED_NO_TRADE",
+                detail=decision.skip_reason or "streak cooldown — below min trade",
+                evaluation=evaluation, decision=decision,
+                prediction_id=prediction_id,
+            )
+
+        # 7d. Correlation-aware sizing — shrink stake based on correlation
+        #     with existing portfolio positions.
+        decision = await asyncio.to_thread(
+            self.risk_mgr.adjust_stake_for_correlation,
+            decision=decision,
+            event_slug=getattr(market, "event_slug", None),
+            archetype=evaluation.market_archetype,
+            category=evaluation.category,
+            mode=self.executor.mode,
+        )
+        if not decision.should_trade:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="LOGGED_NO_TRADE",
+                detail=decision.skip_reason or "correlation adjustment — below min trade",
+                evaluation=evaluation, decision=decision,
+                prediction_id=prediction_id,
+            )
 
         # 8. Open position.
-        pos_id = self.executor.open_position(
+        pos_id = await asyncio.to_thread(
+            self.executor.open_position,
             market=market, decision=decision,
             claude_probability=evaluation.probability_yes,
             prediction_id=prediction_id,
             reasoning=evaluation.reasoning,
             category=evaluation.category,
+            market_archetype=evaluation.market_archetype,
+            research_quality=getattr(evaluation, "research_quality", None),
+            model_disagreement=getattr(evaluation, "model_disagreement", None),
+            n_models=getattr(evaluation, "n_models", None),
         )
         if pos_id is None:
             return AnalysisOutcome(
@@ -236,7 +445,7 @@ class PMAnalyst:
             )
 
         # Link the evaluation row to the position for dashboard joins.
-        _link_evaluation_to_position(eval_row_id, pos_id)
+        await asyncio.to_thread(_link_evaluation_to_position, eval_row_id, pos_id)
 
         # 9. Side effects: Telegram + Obsidian.
         if self.notifier is not None:
@@ -247,7 +456,8 @@ class PMAnalyst:
 
         if self.memory is not None and hasattr(self.memory, "log_pm_entry"):
             try:
-                self.memory.log_pm_entry(
+                await asyncio.to_thread(
+                    self.memory.log_pm_entry,
                     market=market, evaluation=evaluation,
                     decision=decision, position_id=pos_id,
                     research=research,
@@ -264,16 +474,89 @@ class PMAnalyst:
             prediction_id=prediction_id, position_id=pos_id,
         )
 
+    def _build_strategy_block(self) -> Optional[str]:
+        # Return cached version if available (refreshed once per scan batch).
+        if self._strategy_cache_valid:
+            return self._cached_strategy_block
+
+        if self.memory is None or not hasattr(self.memory, "read_strategy_memory"):
+            return None
+        try:
+            memory = self.memory.read_strategy_memory() or {}
+        except Exception as exc:
+            print(f"[pm_analyst] read_strategy_memory failed: {exc}",
+                  file=sys.stderr)
+            return None
+
+        sections = []
+        for label, raw in [
+            ("What has been working recently", memory.get("what_works")),
+            ("What has not been working", memory.get("what_doesnt_work")),
+            ("Current thesis", memory.get("current_thesis")),
+        ]:
+            cleaned = self._clean_strategy_text(raw)
+            if cleaned:
+                sections.append(f"{label}: {cleaned}")
+
+        # Include archetype-specific lessons if available.
+        if hasattr(self.memory, "read_archetype_lessons"):
+            try:
+                arch_lessons = self.memory.read_archetype_lessons() or {}
+                if arch_lessons:
+                    arch_section_parts = []
+                    for arch, content in sorted(arch_lessons.items()):
+                        cleaned = self._clean_strategy_text(content)
+                        if cleaned:
+                            arch_section_parts.append(f"  {arch}: {cleaned[:300]}")
+                    if arch_section_parts:
+                        sections.append(
+                            "Archetype-specific lessons:\n" +
+                            "\n".join(arch_section_parts)
+                        )
+            except Exception as exc:
+                print(f"[pm_analyst] read_archetype_lessons failed: {exc}",
+                      file=sys.stderr)
+
+        result = "\n".join(sections)[:2500] or None
+        self._cached_strategy_block = result
+        self._strategy_cache_valid = True
+        return result
+
+    @staticmethod
+    def _clean_strategy_text(raw) -> str:
+        if not raw:
+            return ""
+        lines = []
+        for line in str(raw).splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith("#") or text.startswith("_Last updated:"):
+                continue
+            text = text.lstrip("-* ").strip()
+            if text:
+                lines.append(text)
+        return " ".join(lines)[:600]
+
     # ── Batch scan ───────────────────────────────────────────────────────────
     async def scan_and_analyze(
         self,
         limit:          int   = 20,
         min_volume_24h: float = 5_000.0,
+        max_seconds:    int   = 0,
     ) -> dict:
         """
         Fetch candidate markets and run the analyst pipeline on each.
         Returns a summary dict suitable for scheduler logging and /status.
+
+        max_seconds: if > 0, stop processing new markets when the elapsed
+            time exceeds (max_seconds - 120s buffer).  This prevents the
+            subprocess timeout from killing the scan and losing ALL results.
         """
+        deadline = (time.monotonic() + max_seconds - 120) if max_seconds > 0 else 0
+        # Invalidate strategy cache so it's refreshed once for this scan.
+        self._strategy_cache_valid = False
+
         skip_days = int(getattr(config, "PM_SKIP_EXISTING_DAYS", 3))
         min_days  = int(getattr(config, "PM_MIN_DAYS_TO_END", 0))
         max_days  = int(getattr(config, "PM_MAX_DAYS_TO_END", 90))
@@ -289,6 +572,7 @@ class PMAnalyst:
         }
 
         async with PolymarketFeed() as feed:
+            print("[pm_analyst] fetching candidate markets...", flush=True)
             try:
                 markets = await feed.fetch_candidate_markets(
                     limit=limit, min_volume_24h=min_volume_24h,
@@ -300,13 +584,62 @@ class PMAnalyst:
                 summary["errors"] += 1
                 return summary
 
+            # Merge priority markets that aren't already in the candidate list.
+            try:
+                priority_list = await asyncio.to_thread(
+                    self.user_controls.get_priority_markets,
+                )
+                if priority_list:
+                    existing_ids = {mk.id for mk in markets}
+                    priority_ids = [
+                        p["market_id"] for p in priority_list
+                        if p["market_id"] not in existing_ids
+                    ]
+                    if priority_ids:
+                        raw_markets = await feed.fetch_many(priority_ids)
+                        for mid, raw in raw_markets.items():
+                            pm = _as_market(raw)
+                            if pm is not None:
+                                markets.append(pm)
+                                print(f"[pm_analyst] added priority market: "
+                                      f"{pm.question[:60]}", flush=True)
+            except Exception as exc:
+                print(f"[pm_analyst] priority market merge failed: {exc}",
+                      file=sys.stderr)
+
             summary["fetched"] = len(markets)
+            print(f"[pm_analyst] got {len(markets)} candidates, starting evaluation",
+                  flush=True)
             if not markets:
                 return summary
 
             for mk in markets:
+                # Time budget: stop before the subprocess timeout kills us
+                # and we lose all results processed so far.
+                if deadline and time.monotonic() > deadline:
+                    remaining = len(markets) - summary["analyzed"] - summary["skipped"] - summary["errors"]
+                    print(f"[pm_analyst] time budget exhausted — "
+                          f"processed {summary['analyzed']} markets, "
+                          f"{remaining} skipped due to time",
+                          file=sys.stderr, flush=True)
+                    break
+                market_idx = markets.index(mk) + 1
+                scan_start = (deadline - max_seconds + 120) if deadline else time.monotonic()
+                elapsed = int(time.monotonic() - scan_start)
+                q_short = (mk.question or "")[:50]
+                print(f"[pm_analyst] [{market_idx}/{len(markets)}] "
+                      f"evaluating: {q_short} ({elapsed}s)",
+                      file=sys.stderr, flush=True)
                 try:
-                    outcome = await self.analyze_market(mk, skip_existing_days=skip_days)
+                    outcome = await _timeout_guard(
+                        self.analyze_market(mk, skip_existing_days=skip_days),
+                        timeout=300,  # 5 min max per market
+                    )
+                except asyncio.TimeoutError:
+                    print(f"[pm_analyst] TIMEOUT analyzing {mk.id} (300s) — skipping",
+                          file=sys.stderr)
+                    summary["errors"] += 1
+                    continue
                 except Exception as exc:
                     print(f"[pm_analyst] unexpected failure {mk.id}: {exc}",
                           file=sys.stderr)
@@ -314,12 +647,38 @@ class PMAnalyst:
                     continue
 
                 summary["analyzed"] += 1
-                summary["outcomes"].append({
+                done_elapsed = int(time.monotonic() - scan_start)
+                status_char = {"OPENED": "✓", "LOGGED_NO_TRADE": "—",
+                               "ERROR": "✗"}.get(outcome.status, "⊘")
+                print(f"[pm_analyst] [{market_idx}/{len(markets)}] "
+                      f"{status_char} {outcome.status} ({done_elapsed}s)",
+                      file=sys.stderr, flush=True)
+
+                outcome_dict = {
                     "market_id": outcome.market_id,
                     "question":  outcome.question,
                     "status":    outcome.status,
                     "detail":    outcome.detail,
-                })
+                }
+                # Include trade details for OPENED positions so the main
+                # process (which has the Telegram notifier) can send
+                # per-position notifications.
+                if outcome.status == "OPENED" and outcome.decision and outcome.evaluation:
+                    d = outcome.decision
+                    e = outcome.evaluation
+                    outcome_dict["trade"] = {
+                        "position_id":    outcome.position_id,
+                        "side":           d.side,
+                        "entry_price":    d.entry_price,
+                        "stake_usd":      d.stake_usd,
+                        "shares":         d.shares,
+                        "edge_bps":       d.edge * 10_000,
+                        "probability":    e.probability_yes,
+                        "confidence":     e.confidence,
+                        "market_price":   getattr(d, "market_price", None),
+                        "end_date":       getattr(mk, "end_date_iso", None),
+                    }
+                summary["outcomes"].append(outcome_dict)
                 if outcome.status == "OPENED":
                     summary["opened"] += 1
                 elif outcome.status == "LOGGED_NO_TRADE":
@@ -410,11 +769,13 @@ def _log_market_evaluation(
                 "  market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
                 "  edge_bps, recommendation, reasoning, research_sources, "
-                "  prediction_id"
+                "  prediction_id, market_archetype, resolution_style, "
+                "  resolution_quality_score, event_slug, skip_reason"
                 ") VALUES ("
                 "  :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
-                "  :edge_bps, :rec, :reason, :srcs, :pid"
+                "  :edge_bps, :rec, :reason, :srcs, :pid, "
+                "  :archetype, :res_style, :res_quality, :event_slug, :skip_reason"
                 ") RETURNING id"
             ), {
                 "mid":  market.id,
@@ -430,6 +791,11 @@ def _log_market_evaluation(
                 "reason": evaluation.reasoning,
                 "srcs": json.dumps(research_sources),
                 "pid":  prediction_id,
+                "archetype":   evaluation.market_archetype,
+                "res_style":   evaluation.resolution_style,
+                "res_quality": evaluation.resolution_quality_score,
+                "event_slug":  getattr(market, "event_slug", None),
+                "skip_reason": decision.skip_reason,
             }).fetchone()
             return int(row[0]) if row else None
     except Exception as exc:

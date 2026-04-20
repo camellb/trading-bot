@@ -39,15 +39,22 @@ from feeds.feed_health_monitor import FeedHealthMonitor
 
 # System prompt for Gemini relevance filtering
 _GEMINI_SYSTEM = (
-    "You are a prediction-market news filter. From the given news items, extract "
-    "those relevant to resolvable prediction markets across ALL domains: "
-    "politics (elections, polls, legislation), geopolitics (conflicts, treaties, "
-    "sanctions), economics (Fed decisions, CPI, inflation, trade policy), "
+    "You are a Polymarket prediction-market news filter. From the given news "
+    "items, extract those that could affect the outcome of binary prediction "
+    "markets. Relevant domains include: "
+    "politics (elections, polls, legislation, government appointments), "
+    "geopolitics (conflicts, treaties, sanctions, diplomacy), "
+    "economics (Fed/central bank decisions, CPI, jobs data, trade policy, tariffs), "
     "crypto (BTC/ETH prices, exchange events, regulation, protocol incidents), "
-    "sports (major matchups, standings, injuries, transfers), "
-    "science/tech (launches, approvals, breakthroughs). "
-    "Ignore: celebrity gossip, product marketing, opinion pieces with no factual content, "
-    "altcoin promotions, NFT hype. "
+    "sports (game results, standings, injuries, transfers, records, championships), "
+    "entertainment (awards shows, box office, TV ratings, release dates), "
+    "legal/judicial (court rulings, indictments, regulatory actions, investigations), "
+    "science/tech (launches, FDA approvals, AI milestones, space missions), "
+    "weather/climate (hurricanes, temperature records, natural disasters). "
+    "Prioritize news with clear, verifiable outcomes that prediction markets "
+    "could resolve on. "
+    "Ignore: celebrity gossip with no market-relevant outcome, product marketing, "
+    "opinion pieces with no factual content, generic promotional content. "
     "Return ONLY a valid JSON array "
     "of strings. Each string is one clear headline under 15 words. Maximum 10 "
     "items. No explanation, no markdown, just the JSON array."
@@ -93,6 +100,7 @@ class NewsFeed:
         self._seen_hashes_cp: dict[str, datetime] = {}  # CryptoPanic md5 → first_seen (60 min window)
         self._latest_headlines: list[str] = []
         self._consecutive_failures: int = 0
+        self._gemini_backoff_until: Optional[datetime] = None  # skip Gemini after 429
 
         # Mark cryptopanic degraded immediately if no API key configured
         if not os.getenv("CRYPTOPANIC_API_KEY", ""):
@@ -225,7 +233,7 @@ class NewsFeed:
         if new_items:
             headlines = await self._summarise_with_gemini(new_items)
             self._latest_headlines = (self._latest_headlines + headlines)[-50:]
-            self._persist_headlines(headlines)
+            await asyncio.to_thread(self._persist_headlines, headlines)
             cp_count  = sum(1 for i in new_items if i.get("source") == "cryptopanic")
             std_count = len(new_items) - cp_count
             print(
@@ -263,7 +271,7 @@ class NewsFeed:
         """
         try:
             import feedparser
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             feed = await loop.run_in_executor(None, feedparser.parse, url)
             items = []
             for entry in feed.entries:
@@ -290,7 +298,7 @@ class NewsFeed:
         """
         try:
             import feedparser
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             primary_url = f"{config.NITTER_BASE_URL}/{username}/rss"
             fallback_url = f"{config.NITTER_FALLBACK_URL}/{username}/rss"
@@ -359,7 +367,10 @@ class NewsFeed:
 
         try:
             timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            connector = aiohttp.TCPConnector(
+                resolver=aiohttp.resolver.ThreadedResolver(),
+            )
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 async with session.get(
                     config.CRYPTOPANIC_BASE_URL, params=params
                 ) as resp:
@@ -417,6 +428,11 @@ class NewsFeed:
         if self._gemini_client is None:
             return [item["title"] for item in raw_items[:10]]
 
+        # Skip Gemini if in backoff after a quota error
+        now = datetime.now(timezone.utc)
+        if self._gemini_backoff_until and now < self._gemini_backoff_until:
+            return [item["title"] for item in raw_items[:10]]
+
         user_content = json.dumps([
             {
                 "title":   i["title"],
@@ -426,7 +442,7 @@ class NewsFeed:
         ])
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             client = self._gemini_client
             response = await loop.run_in_executor(
                 None,
@@ -436,7 +452,15 @@ class NewsFeed:
                     config={"response_mime_type": "application/json"},
                 ),
             )
-            text = response.text.strip()
+            self._gemini_backoff_until = None  # reset on success
+            # Gemini can return None/empty or raise when no candidates
+            try:
+                raw_text = response.text or ""
+            except (ValueError, AttributeError):
+                raw_text = ""
+            text = raw_text.strip()
+            if not text:
+                return [item["title"] for item in raw_items[:10]]
             parsed = json.loads(text)
             if isinstance(parsed, list):
                 return [str(h) for h in parsed[:10] if h]
@@ -445,7 +469,15 @@ class NewsFeed:
             print("[news_feed] Gemini returned non-JSON — using raw titles", file=sys.stderr)
             return [item["title"] for item in raw_items[:10]]
         except Exception as exc:
-            print(f"[news_feed] Gemini summarisation error: {exc}", file=sys.stderr)
+            exc_str = str(exc)
+            if ("RESOURCE_EXHAUSTED" in exc_str or "429" in exc_str
+                    or "NOT_FOUND" in exc_str or "404" in exc_str
+                    or "UNAVAILABLE" in exc_str or "503" in exc_str):
+                self._gemini_backoff_until = now + timedelta(minutes=30)
+                print("[news_feed] Gemini unavailable — backing off 30min, using raw titles",
+                      file=sys.stderr)
+            else:
+                print(f"[news_feed] Gemini summarisation error: {exc}", file=sys.stderr)
             return [item["title"] for item in raw_items[:10]]
 
     # ── Persistence ─────────────────────────────────────────────────────────────

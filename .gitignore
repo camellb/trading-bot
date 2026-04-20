@@ -33,5 +33,12 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Claude Code local settings and user-installed skills
+.claude/settings.local.json
+.claude/skills/
+
+# macOS quarantine artifacts
+*.quarantined
+
 # Obsidian vault (personal notes, not code)
 trading-bot-memory/

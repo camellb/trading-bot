@@ -18,7 +18,21 @@ import sys
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+import threading
 from db import logger as db_logger
+
+
+def _log_feed_health_bg(feed_name: str, state: str, detail: str | None) -> None:
+    """Fire-and-forget feed health logging in a background thread.
+
+    The caller (report_healthy/report_degraded) is a sync method that runs
+    on the event loop thread.  Offloading the DB write avoids blocking the loop.
+    """
+    threading.Thread(
+        target=db_logger.log_feed_health,
+        args=(feed_name, state, detail),
+        daemon=True,
+    ).start()
 
 
 # ── Staleness thresholds ─────────────────────────────────────────────────────
@@ -70,7 +84,7 @@ class FeedHealthMonitor:
         self._state[feed_name]["detail"]      = None
 
         if prev != "healthy":
-            db_logger.log_feed_health(feed_name, "healthy", None)
+            _log_feed_health_bg(feed_name, "healthy", None)
             self._degradation_start.pop(feed_name, None)
             if not self._in_grace_period() and self._notification_sent.get(feed_name):
                 self._notification_sent[feed_name] = False
@@ -83,9 +97,9 @@ class FeedHealthMonitor:
         prev = self._state[feed_name]["state"]
         self._state[feed_name]["state"]  = "degraded"
         self._state[feed_name]["detail"] = detail
-        print(f"[feed_health] DEGRADED: {feed_name} — {detail}", file=sys.stderr)
         if prev != "degraded":
-            db_logger.log_feed_health(feed_name, "degraded", detail)
+            print(f"[feed_health] DEGRADED: {feed_name} — {detail}", file=sys.stderr)
+            _log_feed_health_bg(feed_name, "degraded", detail)
 
         if expected or self._in_grace_period():
             return

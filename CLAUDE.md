@@ -20,7 +20,7 @@ No manual rules, no hardcoded thresholds beyond safety guardrails.
 Learns from every prediction via Brier score calibration feedback loop.
 
 Current state: shadow mode (simulated fills), $1000 virtual bankroll.
-Go-live gates: Brier < 0.22, >= 30 resolved predictions, synthetic P&L > $0.
+Go-live gates: Brier < 0.22, >= 150 resolved predictions, synthetic P&L > $0.
 
 ---
 
@@ -52,14 +52,33 @@ Go-live gates: Brier < 0.22, >= 30 resolved predictions, synthetic P&L > $0.
 
 4. **Sizing** — execution/pm_sizer.py
    Quarter-Kelly with guardrails:
-   - Min edge gate: PM_MIN_EDGE_BPS (500 = 5 percentage points)
+   - Max edge ceiling: PM_MAX_EDGE_BPS (2500 = 25pp). Refuse when Claude
+     claims extreme disagreement with the market — almost always wrong.
+   - Cheap NO protection: refuse NO entries below 12c (88%+ favorites).
+   - Min edge gate: PM_MIN_EDGE_BPS (300 shadow, 500 live)
    - Lockup penalty: min edge *= sqrt(days_to_end / 7). A 30-day lockup
      needs 2.1x the edge of a 7-day trade. 45 days needs 2.5x.
-   - Min confidence gate: PM_MIN_CONFIDENCE (0.55)
+   - Min confidence gate: PM_MIN_CONFIDENCE (0.30 shadow, 0.45 live)
    - Confidence scaling: stake *= confidence
+   - Disagreement penalty: when edge > 15pp, linearly shrink the Kelly
+     fraction. Kelly is anti-robust to edge errors: the biggest bets
+     are where Claude is most likely wrong (data: -0.46 correlation).
    - Max position: PM_MAX_POSITION_PCT (5% of bankroll)
    - Absolute limits: PM_MIN_TRADE_USD ($2) to PM_MAX_TRADE_USD ($25)
    - Price sanity: refuse entry prices outside [0.02, 0.98]
+   - Per-archetype overrides: sports_match needs 800bps edge
+
+   After sizing, every trade passes through the portfolio-level risk manager:
+
+   **Risk Manager** — execution/risk_manager.py
+   - Drawdown circuit breaker: halt ALL trading at 40% drawdown from peak
+   - Daily loss limit: 10% of starting bankroll per day
+   - Weekly loss limit: 20% of starting bankroll per week
+   - Portfolio heat: max 30% of bankroll in open positions
+   - Consecutive loss cooldown: 3 losses → 50% size for next 3 trades
+   - Event concentration: max 3 positions per event group
+   - Archetype concentration: max 10 positions per archetype
+   API: GET /api/risk returns full risk state for dashboard.
 
 5. **Execution** — execution/pm_executor.py
    Shadow mode: simulates fill at market price, writes to DB.
@@ -91,12 +110,10 @@ Components:
   StatsStrip       — 4 KPIs: open positions, markets analysed, settled, skipped
   ActionsStrip     — scan now, resolve now, refresh
   PositionsTable   — open + settled tabs, resolution countdown
-  CalibrationPanel — scatter plot + Brier + per-category breakdown
-  BrierTrendChart  — cumulative Brier over resolved predictions
+  CalibrationPanel — scatter plot + Brier + trend + per-category breakdown
   GoLiveGate       — 3 gates with progress bars (Brier, resolved count, P&L)
   EvaluationsTable — all evaluations with expandable reasoning (click row)
   ConfigPanel      — edit PM config with Telegram confirmation
-  AskClaude        — ad-hoc market questions
 
 ### Backtester — backtester/
 
@@ -151,8 +168,8 @@ config_change_history — audit trail for config changes
 /resolve         Check for settled bets now
 /apply           Accept pending self-improvement suggestion
 /skip            Reject pending self-improvement suggestion
-/confirm-config  Apply a pending dashboard config change
-/reject-config   Cancel a pending dashboard config change
+/confirm         Approve a pending mode switch (shadow→live)
+/reject          Cancel a pending mode switch
 /help            List all commands
 
 ---
@@ -177,7 +194,8 @@ Self-improvement         Sunday 08:30 MYT
     Claude must justify deviations >10pp from the crowd price.
 6.  All predictions logged for calibration — traded AND skipped.
 7.  Resolution confirmed from Gamma API before marking settled.
-8.  Config changes require Telegram confirmation (/confirm-config or /reject-config).
+8.  Dashboard config changes apply immediately (no confirmation needed).
+    Mode switches (shadow→live) require Telegram confirmation (/confirm or /reject).
     Self-improvement suggestions use /apply or /skip.
 9.  Shadow mode and live mode use identical logic except order execution.
 10. Go-live gates are advisory — manual PM_MODE flip required.
@@ -190,7 +208,7 @@ Self-improvement         Sunday 08:30 MYT
 
 Gates (dashboard shows progress):
   Brier score < 0.22
-  >= 30 resolved predictions
+  >= 150 resolved predictions
   Synthetic P&L > $0
 
 Steps:

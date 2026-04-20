@@ -18,6 +18,16 @@ ALLOWED_CONFIG_KEYS: dict[str, type] = {
     "PM_MIN_VOLUME_24H_USD":       float,
     "PM_MAX_DAYS_TO_END":          int,
     "PM_SKIP_EXISTING_DAYS":       int,
+    "PM_MIN_RESOLUTION_QUALITY":   float,
+    "PM_SHADOW_SPREAD_ESTIMATE":   float,
+    "PM_SHADOW_FEE_RATE":          float,
+    "PM_DAILY_LOSS_LIMIT_PCT":     float,
+    "PM_WEEKLY_LOSS_LIMIT_PCT":    float,
+    "PM_LOSS_STREAK_THRESHOLD":    int,
+    "PM_LOSS_STREAK_SIZE_MULT":    float,
+    "PM_MAX_PORTFOLIO_HEAT_PCT":   float,
+    "PM_MAX_PER_ARCHETYPE":        int,
+    "PM_DRAWDOWN_HALT_PCT":        float,
 }
 
 

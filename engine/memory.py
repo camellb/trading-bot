@@ -46,6 +46,7 @@ class MemoryManager:
             "trades",
             "market-context",
             "strategy",
+            "strategy/archetypes",
             "patterns",
             "performance/weekly-reviews",
             "performance/monthly-reviews",
@@ -105,12 +106,19 @@ class MemoryManager:
         end_date = (getattr(market, "end_date_iso", None) or now).strftime("%Y-%m-%d")
         edge_bps = getattr(decision, "edge", 0.0) * 10_000
 
+        archetype = getattr(evaluation, 'market_archetype', 'other')
+        res_style = getattr(evaluation, 'resolution_style', 'broad')
+        res_quality = getattr(evaluation, 'resolution_quality_score', 0.5)
+
         content = f"""# Polymarket {side} — {date_str} {time_str}
 
 ## Market
 - Question: {getattr(market, 'question', '')}
 - Market ID: {getattr(market, 'id', '')}
 - Category: {getattr(evaluation, 'category', 'other')}
+- Archetype: {archetype}
+- Resolution style: {res_style}
+- Resolution quality: {res_quality:.2f}
 - Volume 24h: ${getattr(market, 'volume_24h_clob', 0):,.0f}
 - Resolves: {end_date}
 
@@ -228,6 +236,52 @@ class MemoryManager:
             fpath.write_text(
                 f"_Last updated: {now_str}_\n\n{content}", encoding="utf-8"
             )
+
+    # ── Archetype lessons ───────────────────────────────────────────────────────
+
+    def write_archetype_lessons(self, archetype_lessons: dict) -> None:
+        """
+        Write per-archetype lessons to strategy/archetypes/{archetype}.md.
+        Each archetype gets its own file with accumulated lessons.
+        """
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        for archetype, info in archetype_lessons.items():
+            if not isinstance(info, dict):
+                continue
+            lesson = info.get("lesson", "")
+            if not lesson:
+                continue
+            fpath = self.vault_path / "strategy" / "archetypes" / f"{archetype}.md"
+            # Append to existing or create new
+            entry = f"\n## {now_str}\n{lesson}\n"
+            if info.get("confidence_dampen") is not None:
+                entry += f"Confidence dampening: {info['confidence_dampen']}\n"
+            if fpath.exists():
+                existing = fpath.read_text(encoding="utf-8")
+                fpath.write_text(existing.rstrip() + "\n" + entry, encoding="utf-8")
+            else:
+                fpath.write_text(
+                    f"# Archetype: {archetype}\n\n"
+                    f"Lessons learned from self-improvement analysis.\n"
+                    f"{entry}",
+                    encoding="utf-8",
+                )
+
+    def read_archetype_lessons(self) -> dict[str, str]:
+        """
+        Read all archetype lesson files and return as {archetype: content}.
+        """
+        result = {}
+        arch_dir = self.vault_path / "strategy" / "archetypes"
+        if not arch_dir.exists():
+            return result
+        for fpath in arch_dir.glob("*.md"):
+            archetype = fpath.stem
+            try:
+                result[archetype] = fpath.read_text(encoding="utf-8")
+            except Exception:
+                pass
+        return result
 
     # ── Recent trades ─────────────────────────────────────────────────────────
 

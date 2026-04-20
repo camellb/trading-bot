@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiohttp
@@ -57,6 +58,7 @@ class PolyMarket:
     neg_risk:          bool = False   # part of a multi-outcome group
     group_item_title:  Optional[str] = None  # specific option label (e.g. "Spain")
     event_slug:        Optional[str] = None  # event group slug for correlation caps
+    resolution_source: Optional[str] = None  # URL of the resolution authority (e.g. ESPN, Reuters)
 
     @property
     def days_to_end(self) -> float:
@@ -99,6 +101,112 @@ def _parse_iso(raw: str | None) -> Optional[datetime]:
         return None
 
 
+def _has_explicit_time(raw: str | None) -> bool:
+    if not raw:
+        return False
+    text = str(raw)
+    return ("T" in text or " " in text) and ":" in text
+
+
+def parse_market_end_time(m: dict) -> Optional[datetime]:
+    """
+    Prefer the exact market end timestamp when Gamma provides one.
+
+    Gamma often returns `endDateIso` as a date-only string like `2026-04-18`,
+    which would parse as midnight UTC and make markets appear resolved hours
+    too early. We therefore prefer any field with an explicit time component.
+    """
+    for key in ("endDate", "endDateIso"):
+        raw = m.get(key)
+        if _has_explicit_time(raw):
+            dt = _parse_iso(raw)
+            if dt is not None:
+                return dt
+    for key in ("endDateIso", "endDate"):
+        dt = _parse_iso(m.get(key))
+        if dt is not None:
+            return dt
+    return None
+
+
+def parse_market_event_start_time(m: dict) -> Optional[datetime]:
+    raw = m.get("gameStartTime")
+    dt = _parse_iso(raw) if raw else None
+    return dt or parse_market_end_time(m)
+
+
+def looks_like_sports_market(m: dict) -> bool:
+    if m.get("sportsMarketType"):
+        return True
+    source = str(m.get("resolutionSource") or "").lower()
+    return any(
+        marker in source for marker in (
+            "nba.com",
+            "mlb.com",
+            "premierleague.com",
+            "mlssoccer.com",
+            "ufc.com",
+            "espn.com",
+        )
+    )
+
+
+def _sports_runtime_estimate(m: dict) -> timedelta:
+    blob = " ".join(
+        str(m.get(key) or "")
+        for key in ("question", "slug", "sportsMarketType", "resolutionSource", "description")
+    ).lower()
+    if any(token in blob for token in ("cricket", "t20", "odi", "test match")):
+        return timedelta(hours=8)
+    if any(token in blob for token in ("tennis", "atp", "wta")):
+        return timedelta(hours=4)
+    if any(token in blob for token in ("mlb", "baseball")):
+        return timedelta(hours=4)
+    if any(token in blob for token in ("nba", "basketball", "ufc", "mma", "boxing")):
+        return timedelta(hours=3)
+    if any(token in blob for token in ("soccer", "football", "premierleague", "mls", " fc ")):
+        return timedelta(hours=3)
+    return timedelta(hours=4)
+
+
+def _settlement_grace_from_description(m: dict, default: timedelta) -> timedelta:
+    desc = str(m.get("description") or "").lower()
+    match = re.search(
+        r"within\s+(\d+)\s+hours?\s+after\s+the\s+event'?s?\s+conclusion",
+        desc,
+    )
+    if match:
+        try:
+            return timedelta(hours=max(0, int(match.group(1))))
+        except Exception:
+            pass
+    custom_liveness = int(m.get("customLiveness") or 0)
+    if custom_liveness > 0:
+        return max(default, timedelta(seconds=custom_liveness))
+    return default
+
+
+def estimate_market_settlement_deadline(m: dict) -> Optional[datetime]:
+    """
+    Best-effort timestamp after which an unresolved market should be treated as
+    stale rather than merely awaiting the official result.
+
+    For sports markets, Gamma's `endDate` is typically the scheduled start time,
+    not the final settlement time, so we add an event-duration estimate plus the
+    resolution-source grace window when available.
+    """
+    event_start = parse_market_event_start_time(m)
+    if event_start is None:
+        return None
+    if looks_like_sports_market(m):
+        return (
+            event_start
+            + _sports_runtime_estimate(m)
+            + _settlement_grace_from_description(m, timedelta(hours=2))
+        )
+    return event_start + _settlement_grace_from_description(m, timedelta(minutes=30))
+
+
 def _as_market(m: dict) -> Optional[PolyMarket]:
     """Map a raw Gamma dict to a PolyMarket, or None if it isn't binary/parseable."""
     try:
@@ -108,7 +216,7 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
         outcomes = _parse_str_list(m.get("outcomes"))
         if len(prices) != 2 or len(outcomes) != 2:
             return None
-        end_iso = _parse_iso(m.get("endDateIso") or m.get("endDate"))
+        end_iso = parse_market_end_time(m)
         if end_iso is None:
             return None
         events = m.get("events") or []
@@ -135,6 +243,7 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
             neg_risk       = bool(m.get("negRisk")),
             group_item_title = (m.get("groupItemTitle") or "").strip() or None,
             event_slug     = event_slug,
+            resolution_source = (m.get("resolutionSource") or "").strip() or None,
         )
     except Exception as exc:
         print(f"[polymarket] parse failed for {m.get('id')}: {exc}",
@@ -149,7 +258,18 @@ class PolymarketFeed:
 
     async def __aenter__(self) -> "PolymarketFeed":
         if self._session is None:
+            # Force ThreadedResolver (getaddrinfo in executor) instead of
+            # aiodns/pycares.  Rapidly creating and destroying sessions with
+            # aiodns can corrupt the event loop's selector state — pycares
+            # registers/unregisters file descriptors on each channel, and a
+            # race during cleanup can accidentally remove the HTTP-server
+            # listen socket, permanently freezing the API.
+            connector = aiohttp.TCPConnector(
+                resolver=aiohttp.resolver.ThreadedResolver(),
+                ttl_dns_cache=300,
+            )
             self._session = aiohttp.ClientSession(
+                connector=connector,
                 headers={"User-Agent": "trading-bot/1.0"},
                 timeout=aiohttp.ClientTimeout(total=15),
             )
@@ -178,7 +298,7 @@ class PolymarketFeed:
     async def fetch_candidate_markets(
         self,
         limit:            int   = 25,
-        scan_pages:       int   = 4,       # 4 × 100 = top 400 by 24h volume
+        scan_pages:       int   = 10,      # 10 × 100 = top 1000 by 24h volume
         min_volume_24h:   float = DEFAULT_MIN_VOLUME_24H,
         min_p:            float = DEFAULT_MIN_P,
         max_p:            float = DEFAULT_MAX_P,

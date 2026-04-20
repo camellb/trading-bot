@@ -5,8 +5,8 @@
       "name": "dashboard",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "autoPort": true,
-      "cwd": "/Users/macmini/Desktop/trading-bot/dashboard"
+      "port": 3000,
+      "cwd": "dashboard"
     }
   ]
 }

@@ -57,9 +57,13 @@ predictions = Table(
     Column("metadata",       Text, nullable=True),
     # Optional link to a realised position (pm_positions.id).
     Column("trade_id",       Integer, nullable=True),
+    # Self-improvement: archetype + resolution classification at prediction time.
+    Column("market_archetype",  Text, nullable=True),
+    Column("resolution_style",  Text, nullable=True),
     # Resolution (null = unresolved yet).
     Column("resolved_at",       TIMESTAMP(timezone=True), nullable=True),
-    # 1 = correct (took a side that matched resolution), 0 = incorrect.
+    # Ground-truth outcome for the proposition being scored.
+    # For Polymarket rows: YES resolved true = 1, NO resolved true = 0.
     Column("resolved_outcome",  Integer, nullable=True),
     Column("resolved_pnl_usd",  Float,   nullable=True),
     Column("resolved_note",     Text,    nullable=True),
@@ -116,6 +120,8 @@ pm_positions = Table(
     Column("clob_order_id", Text, nullable=True),
     Column("tx_hash",       Text, nullable=True),
     Column("reasoning",     Text, nullable=True),
+    # Self-improvement: archetype classification.
+    Column("market_archetype", Text, nullable=True),
 )
 
 
@@ -144,6 +150,10 @@ market_evaluations = Table(
     Column("research_sources", Text, nullable=True),   # JSON array of urls/titles
     Column("prediction_id",    Integer, nullable=True),
     Column("pm_position_id",   Integer, nullable=True),
+    # Self-improvement fields — market archetype + resolution classification.
+    Column("market_archetype",        Text, nullable=True),   # price_threshold|binary_event|sports_match|...
+    Column("resolution_style",        Text, nullable=True),   # precise|broad|ambiguous|multi_factor
+    Column("resolution_quality_score", Float, nullable=True), # 0..1, how unambiguous the resolution criteria are
 )
 
 
@@ -214,6 +224,22 @@ performance_snapshots = Table(
     Column("by_category", Text, nullable=True),      # JSON
     Column("config_snapshot", Text, nullable=True),  # JSON
     Column("notes", Text, nullable=True),
+)
+
+calibration_snapshots = Table(
+    "calibration_snapshots",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("captured_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    Column("source", Text, nullable=False),
+    Column("resolved", Integer, nullable=True),
+    Column("total", Integer, nullable=True),
+    Column("brier", Float, nullable=True),
+    Column("mean_prob", Float, nullable=True),
+    Column("mean_outcome", Float, nullable=True),
+    Column("realized_pnl_usd", Float, nullable=True),
+    Column("note", Text, nullable=True),
 )
 
 news_event_log = Table(
@@ -311,6 +337,31 @@ def create_all_tables() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_positions_open_market "
             "ON pm_positions(market_id, mode) WHERE status = 'open'"
         ))
+        # Migration: add self-improvement columns to existing tables.
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS market_archetype TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS resolution_style TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS resolution_quality_score FLOAT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS event_slug TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS skip_reason TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE pm_positions ADD COLUMN IF NOT EXISTS market_archetype TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS market_archetype TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS resolution_style TEXT"
+        ))
         # Market evaluation index for history lookups.
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_market_evaluations_market "
@@ -324,4 +375,8 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_markouts_checked "
             "ON markouts(checked_at DESC)"
+        ))
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_calibration_snapshots_source_time "
+            "ON calibration_snapshots(source, captured_at DESC)"
         ))

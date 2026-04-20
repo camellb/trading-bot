@@ -134,6 +134,10 @@ class PMExecutor:
         prediction_id: Optional[int] = None,
         reasoning:     Optional[str] = None,
         category:      Optional[str] = None,
+        market_archetype: Optional[str] = None,
+        research_quality: Optional[float] = None,
+        model_disagreement: Optional[float] = None,
+        n_models: Optional[int] = None,
     ) -> Optional[int]:
         """
         Record a new position. In shadow mode this is an immediate fill at
@@ -149,10 +153,14 @@ class PMExecutor:
 
         if self.mode == "live":
             pos_id = self._open_live(market, decision, claude_probability,
-                                      prediction_id, reasoning, category)
+                                      prediction_id, reasoning, category,
+                                      market_archetype, research_quality,
+                                      model_disagreement, n_models)
         else:
             pos_id = self._open_shadow(market, decision, claude_probability,
-                                        prediction_id, reasoning, category)
+                                        prediction_id, reasoning, category,
+                                        market_archetype, research_quality,
+                                        model_disagreement, n_models)
 
         if pos_id and pos_id > 0:
             print(
@@ -165,7 +173,24 @@ class PMExecutor:
         return pos_id
 
     def _open_shadow(self, market, decision, claude_p,
-                     prediction_id, reasoning, category) -> Optional[int]:
+                     prediction_id, reasoning, category,
+                     market_archetype=None, research_quality=None,
+                     model_disagreement=None, n_models=None) -> Optional[int]:
+        # Build execution metadata for audit trail.
+        # Stored as a JSON appendix in the reasoning column so we don't need
+        # a schema migration. Parseable downstream via the [exec_meta] marker.
+        exec_meta = {
+            "research_quality": research_quality,
+            "model_disagreement": model_disagreement,
+            "n_models": n_models,
+            "eval_yes_price": getattr(market, "yes_price", None),
+            "spread_estimate": float(getattr(config, "PM_SHADOW_SPREAD_ESTIMATE", 0.01)),
+            "fee_rate": float(getattr(config, "PM_SHADOW_FEE_RATE", 0.002)),
+        }
+        # Truncate reasoning to leave room for metadata appendix
+        reasoning_with_meta = (reasoning or "")[:3500]
+        reasoning_with_meta += f"\n\n[exec_meta]{json.dumps(exec_meta)}"
+
         try:
             with get_engine().begin() as conn:
                 row = conn.execute(text(
@@ -173,12 +198,14 @@ class PMExecutor:
                     "  prediction_id, market_id, condition_id, slug, question, category, "
                     "  side, shares, entry_price, cost_usd, "
                     "  claude_probability, edge_bps, confidence, "
-                    "  mode, status, expected_resolution_at, reasoning, event_slug"
+                    "  mode, status, expected_resolution_at, reasoning, event_slug, "
+                    "  market_archetype"
                     ") VALUES ("
                     "  :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :edge_bps, :conf, "
-                    "  'shadow', 'open', :exp, :reason, :event_slug"
+                    "  'shadow', 'open', :exp, :reason, :event_slug, "
+                    "  :archetype"
                     ") RETURNING id"
                 ), {
                     "pid":   prediction_id,
@@ -195,8 +222,9 @@ class PMExecutor:
                     "edge_bps": decision.edge * 10_000.0,
                     "conf":  decision.confidence,
                     "exp":   market.end_date_iso,
-                    "reason": (reasoning or "")[:4000] or None,
+                    "reason": reasoning_with_meta,
                     "event_slug": getattr(market, "event_slug", None),
+                    "archetype": market_archetype,
                 }).fetchone()
                 return int(row[0]) if row else None
         except Exception as exc:
@@ -204,7 +232,9 @@ class PMExecutor:
             return None
 
     def _open_live(self, market, decision, claude_p,
-                   prediction_id, reasoning, category) -> Optional[int]:
+                   prediction_id, reasoning, category,
+                   market_archetype=None, research_quality=None,
+                   model_disagreement=None, n_models=None) -> Optional[int]:
         """
         Placeholder until Polymarket CLOB credentials are wired.
         """
@@ -273,13 +303,12 @@ class PMExecutor:
                 })
 
             # Feed the calibration ledger so Brier and reliability update.
-            # 'correct' means we took the winning side. INVALID markets
-            # aren't scored (outcome=None bucket).
+            # For Polymarket rows we always score against the actual market
+            # truth of the YES outcome, not whether our traded side won.
             if pred_id is not None and outcome != "INVALID":
-                claude_correct = 1 if side == outcome else 0
                 calibration.resolve_prediction_by_id(
                     prediction_id=pred_id,
-                    outcome=claude_correct,
+                    outcome=1 if outcome == "YES" else 0,
                     pnl_usd=pnl,
                     note=f"pm_settlement outcome={outcome} side={side}",
                 )
@@ -302,7 +331,8 @@ class PMExecutor:
                     "SELECT id, market_id, question, category, side, shares, "
                     "       entry_price, cost_usd, claude_probability, "
                     "       edge_bps, confidence, expected_resolution_at, "
-                    "       created_at, prediction_id, reasoning, slug "
+                    "       created_at, prediction_id, reasoning, slug, "
+                    "       event_slug "
                     "FROM pm_positions "
                     "WHERE mode = :m AND status = 'open' "
                     "ORDER BY created_at DESC"
@@ -326,6 +356,7 @@ class PMExecutor:
                         "prediction_id":     r[13],
                         "reasoning":         r[14],
                         "slug":              r[15],
+                        "event_slug":        r[16],
                     }
                     for r in rows
                 ]

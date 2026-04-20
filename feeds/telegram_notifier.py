@@ -9,8 +9,8 @@ Responsibilities:
   * Deliver scheduled daily + weekly summaries (bankroll, open positions,
     Brier score, resolved P&L).
   * Poll the Telegram Bot API for incoming commands from the configured
-    chat and dispatch /status, /apply, /skip, /confirm-config,
-    /reject-config, /help onto the running asyncio loop.
+    chat and dispatch /status, /apply, /skip, /confirm,
+    /reject, /help onto the running asyncio loop.
 
 Every public method is exception-safe. A broken Telegram path must never
 take the bot down.
@@ -24,6 +24,7 @@ import os
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone, timedelta
 from typing import Optional
@@ -36,6 +37,11 @@ from db.engine import get_engine
 
 
 _TELEGRAM_BASE = "https://api.telegram.org/bot{token}/sendMessage"
+
+# Exponential backoff constants for polling errors
+_POLL_BACKOFF_BASE = 5       # initial backoff (seconds)
+_POLL_BACKOFF_MAX  = 120     # cap (seconds)
+_POLL_BACKOFF_409  = 30      # longer pause for 409 Conflict
 
 
 class TelegramNotifier:
@@ -62,10 +68,20 @@ class TelegramNotifier:
         self._analyst                              = None   # PMAnalyst
         self._bot_api                              = None   # BotAPI
 
+        # Polling thread tracking — used for health monitoring
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_self_improvement = None   # stored for restart
+        self._poll_restart_count: int = 0
+
     # ── Core send ────────────────────────────────────────────────────────────
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10))
+            self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    resolver=aiohttp.resolver.ThreadedResolver(),
+                ),
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
         return self._session
 
     async def send(self, message: str) -> None:
@@ -106,7 +122,8 @@ class TelegramNotifier:
         balance_line = ""
         if self._executor:
             try:
-                balance_line = f"\nBalance: ${self._executor.get_bankroll():.2f}"
+                bankroll = await asyncio.to_thread(self._executor.get_bankroll)
+                balance_line = f"\nBalance: ${bankroll:.2f}"
             except Exception:
                 pass
         await self.send(
@@ -127,6 +144,14 @@ class TelegramNotifier:
         await self.send(
             f"🚨 <b>Something went wrong</b>\n"
             f"{context}: {detail[:200]}"
+        )
+
+    async def notify_info(self, title: str, detail: str) -> None:
+        if not self.enabled:
+            return
+        await self.send(
+            f"ℹ️ <b>{title}</b>\n"
+            f"{detail[:240]}"
         )
 
     def send_sync(self, message: str) -> None:
@@ -152,13 +177,14 @@ class TelegramNotifier:
         if not self.enabled:
             return
         try:
-            stats = self._executor.get_portfolio_stats() if self._executor else {}
+            stats = (await asyncio.to_thread(self._executor.get_portfolio_stats)
+                     if self._executor else {})
             mode = stats.get("mode", "shadow")
             sim = " (simulated)" if mode == "shadow" else ""
 
             import calibration
-            brier_report = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: calibration.get_report(source="polymarket")
+            brier_report = await asyncio.to_thread(
+                calibration.get_report, source="polymarket"
             )
             brier_val = brier_report.get("brier")
             accuracy = f"{brier_val:.3f}" if brier_val is not None else "n/a"
@@ -185,7 +211,7 @@ class TelegramNotifier:
         if not self.enabled or self._executor is None:
             return
         try:
-            stats = self._executor.get_portfolio_stats()
+            stats = await asyncio.to_thread(self._executor.get_portfolio_stats)
             mode  = stats.get("mode", "shadow")
 
             def _daily_db():
@@ -235,7 +261,7 @@ class TelegramNotifier:
         if not self.enabled or self._executor is None:
             return
         try:
-            stats = self._executor.get_portfolio_stats()
+            stats = await asyncio.to_thread(self._executor.get_portfolio_stats)
             mode  = stats.get("mode", "shadow")
 
             def _weekly_db():
@@ -284,18 +310,48 @@ class TelegramNotifier:
             print(f"[telegram] send_weekly_summary failed: {exc}", file=sys.stderr)
 
     # ── Polling thread ───────────────────────────────────────────────────────
+    def _delete_webhook(self) -> None:
+        """Call deleteWebhook on startup to prevent 409 Conflict errors.
+
+        A stale webhook (from a previous instance or external setup) causes
+        Telegram to reject getUpdates with 409, killing the polling thread.
+        """
+        url = f"https://api.telegram.org/bot{self._token}/deleteWebhook"
+        try:
+            req = urllib.request.Request(url, data=b"{}", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+            if result.get("ok"):
+                print("[telegram] deleteWebhook OK — cleared any stale webhook", flush=True)
+            else:
+                print(f"[telegram] deleteWebhook response: {result}", file=sys.stderr)
+        except Exception as exc:
+            print(f"[telegram] deleteWebhook failed (non-fatal): {exc}", file=sys.stderr)
+
     def start_polling(self, self_improvement=None) -> None:
         """
         Daemon thread that polls getUpdates and dispatches commands.
-        Accepts /apply, /skip, /status, /confirm-config, /reject-config, /help.
+        Accepts /apply, /skip, /status, /scan, /resolve, /confirm, /reject, /help.
+
+        Features exponential backoff on errors (5s → 120s cap, reset on success),
+        special handling for 409 Conflict, and deleteWebhook on startup.
         """
         if not self.enabled:
             return
+
+        # Store for restart_polling()
+        self._poll_self_improvement = self_improvement
+
         token    = self._token
         chat_id  = str(self._chat_id)
         url_base = f"https://api.telegram.org/bot{token}"
 
+        # Clear any stale webhook before polling
+        self._delete_webhook()
+
         def _poll_loop() -> None:
+            backoff = _POLL_BACKOFF_BASE
+            consecutive_errors = 0
             offset = 0
             try:
                 init_url = (f"{url_base}/getUpdates"
@@ -317,9 +373,35 @@ class TelegramNotifier:
                            f"?offset={offset}&timeout=5&allowed_updates=%5B%22message%22%5D")
                     with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
                         data = json.loads(resp.read())
+
                     if not data.get("ok"):
-                        time.sleep(5)
+                        # Check for 409 Conflict specifically
+                        desc = str(data.get("description", ""))
+                        if "409" in desc or "Conflict" in desc:
+                            consecutive_errors += 1
+                            if consecutive_errors <= 2:
+                                # First occurrence — try clearing webhook again
+                                print(f"[telegram] 409 Conflict — calling deleteWebhook "
+                                      f"(attempt {consecutive_errors})", file=sys.stderr)
+                                self._delete_webhook()
+                            backoff = min(_POLL_BACKOFF_409 * consecutive_errors,
+                                          _POLL_BACKOFF_MAX)
+                            print(f"[telegram] 409 Conflict — backing off {backoff}s",
+                                  file=sys.stderr)
+                            time.sleep(backoff)
+                        else:
+                            consecutive_errors += 1
+                            backoff = min(_POLL_BACKOFF_BASE * (2 ** min(consecutive_errors, 6)),
+                                          _POLL_BACKOFF_MAX)
+                            print(f"[telegram] getUpdates not ok: {desc} — "
+                                  f"backing off {backoff}s", file=sys.stderr)
+                            time.sleep(backoff)
                         continue
+
+                    # Success — reset backoff
+                    consecutive_errors = 0
+                    backoff = _POLL_BACKOFF_BASE
+
                     for update in data.get("result", []):
                         offset = update["update_id"] + 1
                         try:
@@ -354,11 +436,11 @@ class TelegramNotifier:
                                 asyncio.run_coroutine_threadsafe(
                                     self._handle_resolve(), loop
                                 )
-                            elif msg_text == "/confirm-config":
+                            elif msg_text in ("/confirm", "/confirm-config"):
                                 asyncio.run_coroutine_threadsafe(
                                     self._handle_confirm_config(), loop
                                 )
-                            elif msg_text == "/reject-config":
+                            elif msg_text in ("/reject", "/reject-config"):
                                 asyncio.run_coroutine_threadsafe(
                                     self._handle_reject_config(), loop
                                 )
@@ -369,11 +451,54 @@ class TelegramNotifier:
                         except Exception as exc:
                             print(f"[telegram] command dispatch error: {exc}",
                                   file=sys.stderr)
+                except urllib.error.HTTPError as exc:
+                    consecutive_errors += 1
+                    if exc.code == 409:
+                        if consecutive_errors <= 2:
+                            print(f"[telegram] HTTP 409 — calling deleteWebhook "
+                                  f"(attempt {consecutive_errors})", file=sys.stderr)
+                            self._delete_webhook()
+                        backoff = min(_POLL_BACKOFF_409 * consecutive_errors,
+                                      _POLL_BACKOFF_MAX)
+                        print(f"[telegram] HTTP 409 Conflict — backing off {backoff}s",
+                              file=sys.stderr)
+                    else:
+                        backoff = min(_POLL_BACKOFF_BASE * (2 ** min(consecutive_errors, 6)),
+                                      _POLL_BACKOFF_MAX)
+                        print(f"[telegram] HTTP {exc.code} — backing off {backoff}s",
+                              file=sys.stderr)
+                    time.sleep(backoff)
                 except Exception as exc:
-                    print(f"[telegram] poll loop error: {exc}", file=sys.stderr)
-                    time.sleep(5)
+                    consecutive_errors += 1
+                    backoff = min(_POLL_BACKOFF_BASE * (2 ** min(consecutive_errors, 6)),
+                                  _POLL_BACKOFF_MAX)
+                    print(f"[telegram] poll loop error: {exc} — "
+                          f"backing off {backoff}s (errors: {consecutive_errors})",
+                          file=sys.stderr)
+                    time.sleep(backoff)
 
-        threading.Thread(target=_poll_loop, daemon=True, name="telegram-poll").start()
+            # Should never reach here, but log if we do
+            print("[telegram] WARNING: poll loop exited unexpectedly", file=sys.stderr)
+
+        t = threading.Thread(target=_poll_loop, daemon=True, name="telegram-poll")
+        t.start()
+        self._poll_thread = t
+
+    def is_polling_alive(self) -> bool:
+        """Check if the polling thread is running."""
+        return self._poll_thread is not None and self._poll_thread.is_alive()
+
+    def restart_polling(self) -> None:
+        """Restart the polling thread if it died.
+
+        Called by the event-loop health monitor in main.py.
+        """
+        if not self.enabled:
+            return
+        self._poll_restart_count += 1
+        print(f"[telegram] Restarting polling thread "
+              f"(restart #{self._poll_restart_count})", flush=True)
+        self.start_polling(self._poll_self_improvement)
 
     # ── Command handlers ─────────────────────────────────────────────────────
     async def _handle_help(self) -> None:
@@ -384,8 +509,8 @@ class TelegramNotifier:
             "/resolve — check for settled bets\n"
             "/apply — accept a bot suggestion\n"
             "/skip — reject a bot suggestion\n"
-            "/confirm-config — apply a settings change\n"
-            "/reject-config — cancel a settings change"
+            "/confirm — apply a pending mode switch\n"
+            "/reject — cancel a pending mode switch"
         )
 
     async def _send_status(self) -> None:
@@ -393,7 +518,7 @@ class TelegramNotifier:
             await self.send("⚠️ Executor not wired — cannot produce status.")
             return
         try:
-            stats = self._executor.get_portfolio_stats()
+            stats = await asyncio.to_thread(self._executor.get_portfolio_stats)
             mode  = stats.get("mode", "shadow")
             uptime = ""
             if self._bot_start_time:
@@ -405,13 +530,13 @@ class TelegramNotifier:
             degraded_line = ", ".join(degraded) if degraded else "all healthy"
 
             import calibration
-            brier_report = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: calibration.get_report(source="polymarket")
+            brier_report = await asyncio.to_thread(
+                calibration.get_report, source="polymarket"
             )
             brier_val = brier_report.get("brier")
             brier_str = f"{brier_val:.3f}" if brier_val is not None else "n/a"
 
-            open_rows = self._executor.get_open_positions()
+            open_rows = await asyncio.to_thread(self._executor.get_open_positions)
             pos_lines = []
             for p in open_rows[:10]:
                 pos_lines.append(
@@ -424,6 +549,32 @@ class TelegramNotifier:
 
             wins = stats['settled_wins']
             losses = stats['settled_total'] - wins
+
+            # Risk state from the analyst's risk manager.
+            risk_block = ""
+            analyst = getattr(self, "_analyst", None)
+            risk_mgr = getattr(analyst, "risk_mgr", None) if analyst else None
+            if risk_mgr is not None:
+                try:
+                    rs = await asyncio.to_thread(risk_mgr.get_risk_state)
+                    alerts = []
+                    if rs.get("drawdown_halted"):
+                        alerts.append(f"🛑 DRAWDOWN HALT ({rs['drawdown_pct']:.0%} drawdown)")
+                    if rs.get("daily_limit_breached"):
+                        alerts.append(f"⚠️ Daily loss limit hit (${rs['daily_pnl']:+.2f})")
+                    if rs.get("weekly_limit_breached"):
+                        alerts.append(f"⚠️ Weekly loss limit hit (${rs['weekly_pnl']:+.2f})")
+                    if rs.get("heat_breached"):
+                        alerts.append(f"🔥 Heat limit ({rs['heat_pct']:.0%} deployed)")
+                    if rs.get("cooldown_trades_remaining", 0) > 0:
+                        alerts.append(f"❄️ Streak cooldown ({rs['cooldown_trades_remaining']} trades)")
+                    if alerts:
+                        risk_block = "\n\n<b>Risk alerts</b>\n" + "\n".join(alerts)
+                    else:
+                        risk_block = f"\n\nRisk: ✅ all clear (heat {rs['heat_pct']:.0%}, dd {rs['drawdown_pct']:.0%})"
+                except Exception:
+                    pass
+
             await self.send(
                 f"📊 <b>Status</b> (up {uptime or 'n/a'})\n"
                 f"Balance: ${stats['bankroll']:.2f}\n"
@@ -433,7 +584,8 @@ class TelegramNotifier:
                 f"Realized P&L: ${stats['realized_pnl']:+.2f}\n"
                 f"Accuracy: {brier_str} "
                 f"({brier_report.get('resolved', 0)} scored)\n"
-                f"Feeds: {degraded_line}\n"
+                f"Feeds: {degraded_line}"
+                f"{risk_block}\n"
                 f"\n<b>Open bets</b>\n{positions_block}"
             )
         except Exception as exc:
@@ -441,19 +593,30 @@ class TelegramNotifier:
             await self.send(f"⚠️ /status failed: {exc}")
 
     async def _handle_scan(self) -> None:
-        if self._analyst is None:
-            await self.send("⚠️ Analyst not wired — cannot scan.")
-            return
         await self.send("🔎 Looking for markets — this takes 1-2 min…")
         try:
-            from polymarket_runner import scan_and_analyze
-            summary = await scan_and_analyze(
+            from polymarket_runner import scan_via_subprocess
+            summary = await scan_via_subprocess(
                 limit=int(getattr(config, "PM_SCAN_LIMIT", 20)),
                 min_volume_24h=float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
-                analyst=self._analyst,
             )
-            if summary.get("skipped"):
-                await self.send("⏳ Already scanning — try again in a minute.")
+            if summary.get("error"):
+                await self.send(f"⚠️ Scan error: {summary['error']}")
+                return
+            if summary.get("skipped") is True:
+                reason = str(summary.get("reason") or "scan skipped")
+                if reason == "scan already in progress":
+                    await self.send("⏳ Already scanning — try again in a minute.")
+                elif reason == "stale positions pending settlement":
+                    catchup = summary.get("catchup") or {}
+                    stale = catchup.get("stale_after")
+                    await self.send(
+                        "⏸️ Scan paused — "
+                        f"{stale or 'some'} stale markets still need settlement. "
+                        "Run /resolve or wait for the resolver to catch up."
+                    )
+                else:
+                    await self.send(f"⏸️ Scan skipped — {reason}.")
                 return
             opened = summary.get('opened', 0)
             fetched = summary.get('fetched', 0)
@@ -463,6 +626,26 @@ class TelegramNotifier:
             else:
                 msg += ", no new bets"
             await self.send(msg)
+            # Send per-position details.
+            for oc in summary.get("outcomes", []):
+                if oc.get("status") != "OPENED":
+                    continue
+                t = oc.get("trade", {})
+                if not t:
+                    continue
+                try:
+                    side = t["side"]
+                    entry_c = t["entry_price"] * 100
+                    prob_c = t["probability"] * 100
+                    await self.send(
+                        f"🎯 <b>{oc['question'][:140]}</b>\n"
+                        f"Buy {side} at {entry_c:.1f}c — "
+                        f"${t['stake_usd']:.2f} stake, "
+                        f"{t['edge_bps']:.0f}bps edge\n"
+                        f"Position #{t['position_id']}"
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             await self.send(f"⚠️ Scan failed: {exc}")
 
@@ -470,9 +653,11 @@ class TelegramNotifier:
         await self.send("🔎 Checking for settled bets…")
         try:
             from polymarket_runner import resolve_positions
+            risk_mgr = getattr(self._analyst, "risk_mgr", None) if self._analyst else None
             result = await resolve_positions(
                 notifier=self,
                 executor=self._executor,
+                risk_mgr=risk_mgr,
             )
             settled = result.get("positions_settled", 0)
             checked = result.get("positions_checked", 0)
@@ -488,7 +673,7 @@ class TelegramNotifier:
             await self.send("⚠️ BotAPI not wired.")
             return
         try:
-            result = self._bot_api.apply_pending_config()
+            result = await asyncio.to_thread(self._bot_api.apply_pending_config)
         except Exception as exc:
             await self.send(f"⚠️ Config apply failed: {exc}")
             return

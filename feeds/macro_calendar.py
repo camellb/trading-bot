@@ -143,7 +143,11 @@ class MacroCalendar:
         current_year = datetime.now(timezone.utc).year
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    resolver=aiohttp.resolver.ThreadedResolver(),
+                ),
+            ) as session:
                 fomc_events = await self._scrape_fomc(session, current_year)
                 cpi_events = await self._scrape_bls(session, _BLS_CPI_URL, "CPI", current_year)
                 ppi_events = await self._scrape_bls(session, _BLS_PPI_URL, "PPI", current_year)

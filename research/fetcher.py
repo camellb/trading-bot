@@ -10,7 +10,7 @@ Sources (in priority order):
     5. NewsAPI — optional, if NEWSAPI_KEY is set.
     6. Historical base rates — past resolution rates by category from DB.
 
-Keyword extraction uses Gemini Flash (preferred) or Claude (fallback),
+Keyword extraction uses Claude Haiku (preferred) or Gemini Flash (fallback),
 with regex heuristics as a last resort.
 """
 
@@ -21,11 +21,12 @@ import json
 import os
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import aiohttp
 from sqlalchemy import text
@@ -71,33 +72,89 @@ class ResearchBundle:
     sports_context:  Optional[str] = None
     keywords:        list[str]     = field(default_factory=list)
     sources:         list[str]     = field(default_factory=list)
+    sentiment_summary: Optional[str] = None
+    related_markets: list[dict]    = field(default_factory=list)
+    polymarket_context: Optional[str] = None   # scraped from Polymarket event page
+    resolution_source_context: Optional[str] = None  # scraped from resolution authority URL
+    event_description: Optional[str] = None    # Gamma API event-level description
+    quality_score: float = 0.0                 # 0–1 composite research quality score
+    resolution_source_score: float = 1.0       # 0–1 resolution source reliability score
 
-    def to_prompt_block(self) -> str:
-        """Format everything into a compact context block for Claude."""
-        parts: list[str] = []
+    def to_prompt_block(self, max_chars: int = 7500) -> str:
+        """Format everything into a compact context block for Claude.
+
+        Sections are ordered by signal-to-noise ratio. The block is
+        budget-aware: lower-priority sections are dropped if the total
+        would exceed *max_chars* (the evaluator truncates at 8000 anyway,
+        but building within budget keeps the highest-value content).
+        """
+        sections: list[str] = []
+
+        # 1. Polymarket page — highest signal. Trader discussion, analysis,
+        #    injury reports, consensus view. Universal across all market types.
+        if self.polymarket_context:
+            sections.append(f"-- Polymarket event page context --\n{self.polymarket_context.strip()}")
+        # 2. Event description from Gamma API.
+        if self.event_description:
+            sections.append(f"-- Event description --\n{self.event_description.strip()}")
+        # 3. Resolution source — authoritative data the market resolves from.
+        if self.resolution_source_context:
+            sections.append(f"-- Resolution source data --\n{self.resolution_source_context.strip()}")
+        # 4. Sports-specific data (ESPN, SofaScore, API-Football, PandaScore).
+        if self.sports_context:
+            sections.append(f"-- Sports data --\n{self.sports_context.strip()}")
+        # 5. Live crypto prices.
+        if self.crypto_prices:
+            sections.append(f"-- Live market data --\n{self.crypto_prices.strip()}")
+        # 6. Full web pages (DDG results extracted via trafilatura).
         if self.web_pages:
-            pages = "\n\n".join(self.web_pages[:3])
-            parts.append(f"-- Detailed web research --\n{pages}")
+            pages = "\n\n".join(self.web_pages[:4])
+            sections.append(f"-- Detailed web research --\n{pages}")
+        # 7. Web search snippets.
         if self.web_search:
             web = "\n".join(f"• {s}" for s in self.web_search[:8])
-            parts.append(f"-- Web search results (current) --\n{web}")
-        if self.crypto_prices:
-            parts.append(f"-- Live market data --\n{self.crypto_prices.strip()}")
-        if self.sports_context:
-            parts.append(f"-- Sports data --\n{self.sports_context.strip()}")
-        if self.wikipedia:
-            parts.append(f"-- Wikipedia --\n{self.wikipedia.strip()}")
+            sections.append(f"-- Web search results (current) --\n{web}")
+        # 8. Related markets in the same event.
+        if self.related_markets:
+            rm_lines = []
+            for rm in self.related_markets[:5]:
+                q = rm.get("question", "?")
+                p = rm.get("yes_price", "?")
+                vol = rm.get("volume_24h", 0)
+                price_str = f"{float(p):.2f}" if isinstance(p, (int, float)) else str(p)
+                vol_str = f"${vol:,.0f}" if isinstance(vol, (int, float)) else str(vol)
+                rm_lines.append(f"• {q} — YES at {price_str} (24h vol: {vol_str})")
+            sections.append(f"-- Related markets in this event --\n" + "\n".join(rm_lines))
+        # 9. Recent headlines.
         if self.news_snippets:
-            headlines = "\n".join(f"• {h}" for h in self.news_snippets[:8])
-            parts.append(f"-- Recent headlines (RSS) --\n{headlines}")
+            headlines = "\n".join(f"• {h}" for h in self.news_snippets[:6])
+            sections.append(f"-- Recent headlines (RSS) --\n{headlines}")
         if self.external_news:
             ext = "\n".join(f"• {h}" for h in self.external_news[:5])
-            parts.append(f"-- Recent headlines (NewsAPI) --\n{ext}")
+            sections.append(f"-- Recent headlines (NewsAPI) --\n{ext}")
+        # 10. Wikipedia (lower priority — general background, not current).
+        if self.wikipedia:
+            sections.append(f"-- Wikipedia --\n{self.wikipedia.strip()}")
+        # 11. Sentiment + base rate (compact).
+        if self.sentiment_summary:
+            sections.append(f"-- News sentiment --\n{self.sentiment_summary}")
         if self.base_rate_note:
-            parts.append(f"-- Historical base rate --\n{self.base_rate_note}")
-        if not parts:
+            sections.append(f"-- Historical category base rate --\n{self.base_rate_note}")
+
+        if not sections:
             return "(no external research available)"
-        return "\n\n".join(parts)
+
+        # Build within budget: add sections in priority order, stop when full.
+        result_parts: list[str] = []
+        total = 0
+        for sec in sections:
+            sec_len = len(sec) + 2  # account for "\n\n" separator
+            if total + sec_len > max_chars and result_parts:
+                break
+            result_parts.append(sec)
+            total += sec_len
+
+        return "\n\n".join(result_parts)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -373,9 +430,11 @@ def _fetch_base_rate(category: Optional[str]) -> Optional[str]:
             n    = int(row[0] or 0)
             rate = float(row[1]) if row[1] is not None else None
         if n < 3 or rate is None:
-            return f"category={category}: insufficient history (n={n})"
-        return (f"category={category}: historical accuracy {rate*100:.0f}% "
-                f"(n={n} resolved predictions)")
+            return f"category={category}: insufficient YES/NO resolution history (n={n})"
+        return (
+            f"category={category}: historical YES resolution rate {rate*100:.0f}% "
+            f"(n={n} resolved predictions in this category; use as a weak base rate, not model accuracy)"
+        )
     except Exception as exc:
         print(f"[research] base rate failed: {exc}", file=sys.stderr)
         return None
@@ -406,19 +465,58 @@ async def _extract_keywords_llm(
     try:
         loop = asyncio.get_running_loop()
         raw = await loop.run_in_executor(None, call_fn)
+
+        # Guard: None or empty → skip parsing entirely
+        if not raw or not raw.strip():
+            return None
+
+        raw = raw.strip()
+
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        if raw.startswith("```"):
+            lines = raw.split("\n")
+            # Remove first line (```json or ```) and last line (```)
+            if lines[-1].strip() == "```":
+                lines = lines[1:-1]
+            else:
+                lines = lines[1:]
+            raw = "\n".join(lines).strip()
+
+        if not raw:
+            return None
+
         obj = json.loads(raw)
         if isinstance(obj, dict) and "search_terms" in obj:
             return obj
     except Exception as exc:
-        print(f"[research] {label} keyword extraction failed: {exc}", file=sys.stderr)
+        global _gemini_backoff_until
+        exc_str = str(exc)
+        if label == "gemini" and ("RESOURCE_EXHAUSTED" in exc_str or "429" in exc_str
+                                   or "NOT_FOUND" in exc_str or "404" in exc_str
+                                   or "UNAVAILABLE" in exc_str or "503" in exc_str):
+            _gemini_backoff_until = time.time() + 1800  # 30 min backoff
+            print("[research] Gemini unavailable — backing off 30min, will use Claude fallback",
+                  file=sys.stderr)
+        elif isinstance(exc, json.JSONDecodeError) and label == "gemini":
+            _gemini_backoff_until = time.time() + 1800
+            print("[research] Gemini returned malformed JSON — backing off 30min",
+                  file=sys.stderr)
+        else:
+            print(f"[research] {label} keyword extraction failed: {exc}", file=sys.stderr)
     return None
 
 
 _gemini_client = None
+_gemini_backoff_until: Optional[float] = None  # epoch time; skip Gemini until then
 _anthropic_kw_client = None
 
 
 async def _extract_keywords_gemini(question: str) -> Optional[dict]:
+    global _gemini_backoff_until
+    # Skip Gemini during backoff (quota exhausted)
+    if _gemini_backoff_until and time.time() < _gemini_backoff_until:
+        return None
+
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     if not gemini_key:
         return None
@@ -431,14 +529,22 @@ async def _extract_keywords_gemini(question: str) -> Optional[dict]:
     client = _gemini_client
 
     def _call():
-        return client.models.generate_content(
-            model="gemini-2.0-flash",
+        resp = client.models.generate_content(
+            model=config.GEMINI_MODEL,
             contents=prompt,
             config={"response_mime_type": "application/json",
                     "max_output_tokens": 300, "temperature": 0.1},
-        ).text
+        )
+        # Gemini 2.5 Flash: resp.text can be None, empty, or raise when
+        # response has no candidates (safety filter, empty finish).
+        try:
+            return resp.text or ""
+        except (ValueError, AttributeError):
+            # No candidates in response
+            return ""
 
-    return await _extract_keywords_llm(question, _call, "gemini")
+    result = await _extract_keywords_llm(question, _call, "gemini")
+    return result
 
 
 async def _extract_keywords_claude(question: str) -> Optional[dict]:
@@ -455,7 +561,7 @@ async def _extract_keywords_claude(question: str) -> Optional[dict]:
 
     def _call():
         return client.messages.create(
-            model=config.CLAUDE_MODEL, max_tokens=200, temperature=0,
+            model=config.CLAUDE_KEYWORD_MODEL, max_tokens=200, temperature=0,
             messages=[{"role": "user", "content": prompt}],
         ).content[0].text
 
@@ -542,6 +648,509 @@ async def _fetch_espn_scoreboard(
     return f"ESPN {sport.upper()} data:\n" + "\n".join(lines[:5])
 
 
+# ── API-Football (worldwide football/soccer coverage) ─────────────────────
+# Free tier: 100 req/day, all endpoints, 1100+ leagues worldwide.
+# Sign up at https://dashboard.api-football.com/ for a free key.
+# Set API_FOOTBALL_KEY in .env.
+
+_APIFOOTBALL_TEAM_CACHE: dict[str, int | None] = {}
+
+
+async def _fetch_apifootball(
+    session: aiohttp.ClientSession,
+    teams: list[str],
+    question: str,
+) -> Optional[str]:
+    """Fetch match/team data from API-Football for soccer markets."""
+    api_key = os.environ.get("API_FOOTBALL_KEY", "")
+    if not api_key:
+        return None
+    # Only for soccer/football markets
+    q_lower = question.lower()
+    soccer_signals = {"fc ", " fc", "united", "city", "real ", "atletico",
+                      "borussia", "bayern", "juventus", "inter ", "ac ",
+                      "psg", "lyon", "marseille", "ligue", "premier league",
+                      "la liga", "serie a", "bundesliga", "eredivisie",
+                      "championship", "soccer", "football", "o/u ", "spread:",
+                      "both teams", "win on 202", "end in a draw"}
+    if not teams and not any(s in q_lower for s in soccer_signals):
+        return None
+
+    headers = {"x-apisports-key": api_key}
+    base = "https://v3.football.api-sports.io"
+    lines: list[str] = []
+
+    # Strategy: search for fixtures involving these teams
+    search_teams = teams[:2] if teams else []
+    # Extract team name from question if no teams detected
+    if not search_teams:
+        # Try "Will X win on DATE?" pattern
+        win_match = re.search(r"Will (.+?) (?:win|vs|end)", question, re.IGNORECASE)
+        if win_match:
+            search_teams = [win_match.group(1).strip()]
+
+    for team_name in search_teams[:2]:
+        # Search for team ID (cached)
+        if team_name in _APIFOOTBALL_TEAM_CACHE:
+            team_id = _APIFOOTBALL_TEAM_CACHE[team_name]
+        else:
+            try:
+                async with session.get(
+                    f"{base}/teams", params={"search": team_name},
+                    headers=headers, timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    if r.status != 200:
+                        _APIFOOTBALL_TEAM_CACHE[team_name] = None
+                        continue
+                    data = await r.json()
+                    results = data.get("response") or []
+                    team_id = results[0]["team"]["id"] if results else None
+                    _APIFOOTBALL_TEAM_CACHE[team_name] = team_id
+            except Exception as exc:
+                print(f"[research] api-football team search failed: {exc}",
+                      file=sys.stderr)
+                _APIFOOTBALL_TEAM_CACHE[team_name] = None
+                continue
+
+        if not team_id:
+            continue
+
+        # Fetch next fixtures for this team
+        try:
+            async with session.get(
+                f"{base}/fixtures",
+                params={"team": team_id, "next": "3"},
+                headers=headers, timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
+                    continue
+                data = await r.json()
+                fixtures = data.get("response") or []
+        except Exception as exc:
+            print(f"[research] api-football fixtures failed: {exc}",
+                  file=sys.stderr)
+            continue
+
+        for fix in fixtures[:2]:
+            league = fix.get("league", {})
+            teams_data = fix.get("teams", {})
+            home = teams_data.get("home", {})
+            away = teams_data.get("away", {})
+            fixture = fix.get("fixture", {})
+            goals = fix.get("goals", {})
+            score_str = ""
+            if goals.get("home") is not None:
+                score_str = f" | Score: {goals['home']}-{goals['away']}"
+            status = fixture.get("status", {}).get("long", "")
+            date = fixture.get("date", "")[:10]
+            lines.append(
+                f"- {home.get('name', '?')} vs {away.get('name', '?')} "
+                f"[{league.get('name', '?')}, {league.get('country', '?')}] "
+                f"{date} {status}{score_str}"
+            )
+
+        # Fetch team standings in their league
+        try:
+            async with session.get(
+                f"{base}/standings",
+                params={"team": team_id, "season": "2025"},
+                headers=headers, timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    for lg in (data.get("response") or []):
+                        for standings_group in (lg.get("league", {}).get("standings") or []):
+                            for entry in standings_group:
+                                if entry.get("team", {}).get("id") == team_id:
+                                    t = entry
+                                    all_stats = t.get("all", {})
+                                    form = t.get("form", "")
+                                    lines.append(
+                                        f"- {t['team']['name']}: {t.get('description', '')} "
+                                        f"Rank #{t.get('rank', '?')} | "
+                                        f"{all_stats.get('played', 0)}P "
+                                        f"{all_stats.get('win', 0)}W "
+                                        f"{all_stats.get('draw', 0)}D "
+                                        f"{all_stats.get('lose', 0)}L | "
+                                        f"GF:{all_stats.get('goals', {}).get('for', 0)} "
+                                        f"GA:{all_stats.get('goals', {}).get('against', 0)} | "
+                                        f"Form: {form[-5:]}"
+                                    )
+                                    break
+        except Exception:
+            pass
+
+        # H2H if we have two teams
+        if len(search_teams) >= 2 and team_name == search_teams[0]:
+            team2_name = search_teams[1]
+            team2_id = _APIFOOTBALL_TEAM_CACHE.get(team2_name)
+            if team2_id:
+                try:
+                    async with session.get(
+                        f"{base}/fixtures/headtohead",
+                        params={"h2h": f"{team_id}-{team2_id}", "last": "5"},
+                        headers=headers, timeout=aiohttp.ClientTimeout(total=8),
+                    ) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            h2h = data.get("response") or []
+                            if h2h:
+                                h2h_lines = []
+                                for fix in h2h:
+                                    ht = fix.get("teams", {}).get("home", {})
+                                    at = fix.get("teams", {}).get("away", {})
+                                    g = fix.get("goals", {})
+                                    d = fix.get("fixture", {}).get("date", "")[:10]
+                                    h2h_lines.append(
+                                        f"  {d}: {ht.get('name','?')} {g.get('home','?')}"
+                                        f"-{g.get('away','?')} {at.get('name','?')}"
+                                    )
+                                lines.append(
+                                    f"- Last {len(h2h)} H2H meetings:\n"
+                                    + "\n".join(h2h_lines)
+                                )
+                except Exception:
+                    pass
+
+    if not lines:
+        return None
+    return f"API-Football data:\n" + "\n".join(lines)
+
+
+# ── PandaScore (esports data) ─────────────────────────────────────────────
+# Free tier: 1000 req/hour, covers LoL, CS2, Dota2, Valorant, R6, etc.
+# Sign up at https://pandascore.co/ for a free token.
+# Set PANDASCORE_TOKEN in .env.
+
+_ESPORT_SLUGS = {
+    "counter-strike": "csgo",
+    "cs2": "csgo",
+    "cs:go": "csgo",
+    "valorant": "valorant",
+    "dota": "dota2",
+    "dota 2": "dota2",
+    "league of legends": "lol",
+    "lol:": "lol",
+    "lol ": "lol",
+    "r6": "r6siege",
+    "rainbow six": "r6siege",
+    "overwatch": "ow",
+    "king of glory": "kog",
+    "call of duty": "codmw",
+    "rocket league": "rl",
+    "starcraft": "starcraft-2",
+}
+
+
+def _detect_esport(question: str) -> Optional[str]:
+    """Detect esport from market question, return PandaScore videogame slug."""
+    q_lower = question.lower()
+    for keyword, slug in _ESPORT_SLUGS.items():
+        if keyword in q_lower:
+            return slug
+    # Check for tournament names that imply esports
+    esport_tournaments = {
+        "iem ": "csgo", "esl ": "csgo", "blast ": "csgo",
+        "cct ": "csgo", "pgl ": "dota2",
+        "vct ": "valorant", "vcl ": "valorant",
+        "lpl ": "lol", "lck ": "lol", "lec ": "lol",
+        "lcs ": "lol", "cblol": "lol", "msi ": "lol",
+        "worlds ": "lol", "ti ": "dota2",
+    }
+    for keyword, slug in esport_tournaments.items():
+        if keyword in q_lower:
+            return slug
+    return None
+
+
+async def _fetch_pandascore(
+    session: aiohttp.ClientSession,
+    question: str,
+    teams: list[str],
+) -> Optional[str]:
+    """Fetch esports match data from PandaScore API."""
+    token = os.environ.get("PANDASCORE_TOKEN", "")
+    if not token:
+        return None
+
+    videogame = _detect_esport(question)
+    if not videogame:
+        return None
+
+    headers = {"Authorization": f"Bearer {token}"}
+    base = "https://api.pandascore.co"
+    lines: list[str] = []
+
+    # Extract team names from the question for searching
+    search_teams = list(teams) if teams else []
+    if not search_teams:
+        vs_match = _VS_RE.search(question)
+        if vs_match:
+            search_teams = [
+                vs_match.group(1).strip().rstrip("."),
+                vs_match.group(2).strip().rstrip("."),
+            ]
+
+    # Search for upcoming matches in this game
+    try:
+        params: dict = {
+            "filter[videogame]": videogame,
+            "filter[status]": "not_started,running",
+            "sort": "begin_at",
+            "per_page": "10",
+        }
+        async with session.get(
+            f"{base}/matches", params=params, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as r:
+            if r.status != 200:
+                return None
+            matches = await r.json()
+    except Exception as exc:
+        print(f"[research] pandascore matches failed: {exc}", file=sys.stderr)
+        return None
+
+    # Find matches involving our teams
+    team_lower = {t.lower() for t in search_teams}
+    relevant_matches = []
+    for match in matches:
+        opponents = match.get("opponents") or []
+        opp_names = [
+            (o.get("opponent") or {}).get("name", "").lower()
+            for o in opponents
+        ]
+        opp_acronyms = [
+            (o.get("opponent") or {}).get("acronym", "").lower()
+            for o in opponents
+        ]
+        all_identifiers = opp_names + opp_acronyms
+        if team_lower and any(
+            t in ident or ident in t
+            for t in team_lower for ident in all_identifiers if ident
+        ):
+            relevant_matches.append(match)
+
+    # If no team-specific match found, include top matches in that game
+    if not relevant_matches:
+        relevant_matches = matches[:3]
+
+    for match in relevant_matches[:3]:
+        opponents = match.get("opponents") or []
+        opp_strs = []
+        for o in opponents:
+            opp = o.get("opponent") or {}
+            name = opp.get("name", "?")
+            # Get recent stats if available
+            opp_strs.append(name)
+
+        tournament = match.get("tournament") or {}
+        serie = match.get("serie") or {}
+        league = match.get("league") or {}
+        match_type = match.get("match_type", "")
+        n_games = match.get("number_of_games", "")
+        status = match.get("status", "")
+        begin = (match.get("begin_at") or "")[:16]
+
+        # Results if available
+        results = match.get("results") or []
+        score_str = ""
+        if results and any(r.get("score", 0) > 0 for r in results):
+            scores = [f"{r.get('score', 0)}" for r in results]
+            score_str = f" | Score: {'-'.join(scores)}"
+
+        lines.append(
+            f"- {' vs '.join(opp_strs)} [{league.get('name', '')} "
+            f"— {tournament.get('name', '')}] "
+            f"{match_type} BO{n_games} | {begin} | {status}{score_str}"
+        )
+
+    # Search for team stats
+    for team_name in search_teams[:2]:
+        try:
+            async with session.get(
+                f"{base}/teams",
+                params={
+                    "search[name]": team_name,
+                    "filter[videogame]": videogame,
+                    "per_page": "1",
+                },
+                headers=headers, timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status == 200:
+                    team_data = await r.json()
+                    if team_data:
+                        t = team_data[0]
+                        name = t.get("name", "?")
+                        acronym = t.get("acronym", "")
+                        location = t.get("location", "")
+                        players = t.get("players") or []
+                        player_names = [p.get("name", "") for p in players[:5]]
+                        lines.append(
+                            f"- {name} ({acronym}) [{location}] "
+                            f"Roster: {', '.join(player_names)}"
+                        )
+        except Exception:
+            pass
+
+    if not lines:
+        return None
+    return f"PandaScore esports data ({videogame}):\n" + "\n".join(lines)
+
+
+# ── SofaScore direct scraping (no API key needed) ─────────────────────────
+# SofaScore's API returns 403 for direct requests, but trafilatura can fetch
+# their web pages successfully (handles TLS fingerprinting/cookies).
+# Strategy: DDG site-search to find the match URL, then trafilatura to fetch.
+
+async def _fetch_sofascore_match(
+    teams: list[str],
+    question: str,
+) -> Optional[str]:
+    """
+    Fetch match data from SofaScore by finding the match page via DDG
+    site-search, then extracting structured data with trafilatura.
+
+    This is the primary sports data source — works for football, tennis,
+    basketball, hockey, cricket, esports. No API key required.
+    """
+    if not _TRAFILATURA_AVAILABLE or not _DDGS_AVAILABLE:
+        return None
+
+    # Build search query — need at least one team name
+    search_teams = list(teams[:2]) if teams else []
+    if not search_teams:
+        vs_match = _VS_RE.search(question)
+        if vs_match:
+            search_teams = [
+                vs_match.group(1).strip().rstrip("."),
+                vs_match.group(2).strip().rstrip("."),
+            ]
+    if not search_teams:
+        # Try "Will X win on DATE?" pattern
+        win_match = re.search(r"Will (.+?) (?:win|vs|end)", question, re.IGNORECASE)
+        if win_match:
+            search_teams = [win_match.group(1).strip()]
+
+    if not search_teams:
+        return None
+
+    # DDG site-search for SofaScore match page (subprocess to avoid GIL starvation)
+    query = f"site:sofascore.com {' '.join(search_teams[:2])}"
+
+    try:
+        raw_results = await _ddg_search_subprocess(query, max_results=3)
+    except Exception as exc:
+        print(f"[research] sofascore DDG search failed: {exc}", file=sys.stderr)
+        return None
+
+    if not raw_results:
+        return None
+
+    # Find the best SofaScore URL
+    sofascore_url = None
+    for r in raw_results:
+        href = (r.get("href") or "").strip()
+        if "sofascore.com" in href and ("/match/" in href or "/team/" in href
+                                         or "sofascore.com/football/" in href
+                                         or "sofascore.com/tennis/" in href
+                                         or "sofascore.com/basketball/" in href):
+            sofascore_url = href
+            break
+    if not sofascore_url:
+        # Fall back to first result even if pattern doesn't match
+        for r in raw_results:
+            href = (r.get("href") or "").strip()
+            if "sofascore.com" in href:
+                sofascore_url = href
+                break
+
+    if not sofascore_url:
+        return None
+
+    # Fetch page with trafilatura (handles TLS fingerprinting that blocks curl)
+    try:
+        html = await asyncio.wait_for(
+            loop.run_in_executor(None, trafilatura.fetch_url, sofascore_url),
+            timeout=15,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:
+        print(f"[research] sofascore fetch failed: {exc}", file=sys.stderr)
+        return None
+
+    if not html:
+        return None
+
+    lines: list[str] = []
+
+    # Extract __NEXT_DATA__ JSON for structured data (embedded in the page)
+    try:
+        next_data_match = re.search(
+            r'<script\s+id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        if next_data_match:
+            next_data = json.loads(next_data_match.group(1))
+            props = next_data.get("props", {}).get("pageProps", {})
+            event = props.get("event") or {}
+
+            # Teams
+            home = event.get("homeTeam", {})
+            away = event.get("awayTeam", {})
+            if home.get("name") and away.get("name"):
+                lines.append(f"Match: {home['name']} vs {away['name']}")
+
+            # Tournament / league
+            tournament = event.get("tournament", {})
+            if tournament.get("name"):
+                cat = tournament.get("category", {}).get("name", "")
+                lines.append(f"Competition: {cat} — {tournament['name']}")
+
+            # Score / status
+            home_score = event.get("homeScore", {})
+            away_score = event.get("awayScore", {})
+            status = event.get("status", {})
+            if home_score.get("current") is not None:
+                lines.append(
+                    f"Score: {home_score['current']}-{away_score.get('current', '?')} "
+                    f"({status.get('description', '')})"
+                )
+
+            # Standings positions from team data
+            for label, team in [("Home", home), ("Away", away)]:
+                pos = team.get("position")
+                if pos:
+                    lines.append(f"{team.get('name', label)}: League position #{pos}")
+
+            # Round info
+            rnd = event.get("roundInfo", {})
+            if rnd.get("round"):
+                lines.append(f"Round: {rnd.get('name', '')} {rnd['round']}")
+
+            # Venue
+            venue = event.get("venue", {})
+            if venue.get("stadium", {}).get("name"):
+                cap = venue["stadium"].get("capacity", "")
+                cap_str = f" (capacity: {cap:,})" if isinstance(cap, int) else ""
+                lines.append(f"Venue: {venue['stadium']['name']}{cap_str}")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    # Also extract readable text via trafilatura for additional context
+    try:
+        text = await loop.run_in_executor(
+            None, trafilatura.extract, html,
+        )
+        if text and len(text) > 100:
+            # Truncate to key info
+            lines.append(f"Page content:\n{text[:2000]}")
+    except Exception:
+        pass
+
+    if not lines:
+        return None
+    return f"SofaScore ({sofascore_url.split('/')[2]}):\n" + "\n".join(lines)
+
+
 # ── Crypto prices (CoinGecko) ───────────────────────────────────────────────
 _CRYPTO_RE = re.compile(
     r"\b(btc|bitcoin|eth|ethereum|sol|solana|crypto|cryptocurrency)\b",
@@ -602,11 +1211,12 @@ async def _fetch_crypto_prices(
 
 
 # ── DuckDuckGo web search ──────────────────────────────────────────────────
-def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
+def _ddg_search_sync(query: str, max_results: int = 8,
+                     timeout: int = 30) -> list[dict]:
     if not _DDGS_AVAILABLE:
         return []
     try:
-        with DDGS() as ddg:
+        with DDGS(timeout=timeout) as ddg:
             return list(ddg.text(query, max_results=max_results, region="wt-wt") or [])
     except Exception as exc:
         print(f"[research] ddgs search failed for {query[:60]!r}: {exc}",
@@ -633,6 +1243,21 @@ def _format_ddg_results(results: list[dict], max_snippet: int = 300) -> list[str
     return out
 
 
+# ── Archetype-specific search hints ───────────────────────────────────────
+ARCHETYPE_SEARCH_HINTS: dict[str, list[str]] = {
+    "sports_match": ["odds", "injury report", "head to head record", "recent form"],
+    "sports_prop": ["stats", "season average", "last 5 games", "projection"],
+    "price_threshold": ["price prediction", "forecast", "technical analysis", "analyst target"],
+    "crypto": ["price prediction", "on-chain data", "whale activity", "market sentiment"],
+    "geopolitical": ["latest news", "diplomatic talks", "official statement", "analyst assessment"],
+    "macro_release": ["forecast", "consensus estimate", "previous reading", "economist survey"],
+    "entertainment": ["predictions", "odds", "critics", "early reviews"],
+    "scientific": ["study results", "trial data", "peer review", "expert opinion"],
+    "legal": ["court ruling", "legal analysis", "precedent", "timeline"],
+    "weather": ["forecast", "meteorological data", "climate model", "historical average"],
+}
+
+
 # ── Category-specific search strategies ────────────────────────────────────
 def _build_search_queries(
     question: str,
@@ -640,10 +1265,12 @@ def _build_search_queries(
     category: Optional[str],
     sport: Optional[str],
     teams: list[str],
+    archetype: Optional[str] = None,
 ) -> list[str]:
     """
-    Build targeted search queries based on market category.
+    Build targeted search queries based on market category and archetype.
     Different categories need fundamentally different information.
+    When an archetype is known, append targeted hints for deeper research.
     """
     queries = [question]
     cat = (category or "other").lower()
@@ -686,6 +1313,14 @@ def _build_search_queries(
         if keywords:
             queries.append(f"{' '.join(keywords[:3])} latest news 2025")
 
+    # Archetype-specific hint queries — append 1-2 targeted search terms
+    # to get more relevant results for the market type.
+    if archetype and keywords:
+        hints = ARCHETYPE_SEARCH_HINTS.get(archetype, [])
+        kw_prefix = " ".join(keywords[:2])
+        for hint in hints[:2]:
+            queries.append(f"{kw_prefix} {hint}")
+
     # Deduplicate while preserving order.
     seen: set[str] = set()
     unique: list[str] = []
@@ -727,7 +1362,7 @@ _ALL_PRIORITY_DOMAINS = frozenset().union(*_CATEGORY_PRIORITY_DOMAINS.values())
 def _pick_urls_for_category(
     results: list[dict],
     category: Optional[str],
-    max_urls: int = 3,
+    max_urls: int = 5,
 ) -> list[str]:
     cat = (category or "other").lower()
     cat_domains = _CATEGORY_PRIORITY_DOMAINS.get(cat, set())
@@ -762,29 +1397,129 @@ async def _fetch_web_search_raw(
     category: Optional[str] = None,
     sport: Optional[str] = None,
     teams: list[str] | None = None,
+    archetype: Optional[str] = None,
 ) -> list[dict]:
+    """Run DDG searches in a subprocess to avoid GIL starvation.
+
+    The duckduckgo_search library uses primp (a Rust HTTP client) which
+    holds the Python GIL during HTTP requests.  In a thread pool this
+    blocks the asyncio event loop and prevents ALL timeouts from firing
+    — the process hangs until the HTTP request finishes.
+
+    Running in a subprocess gives DDG its own GIL so the parent event
+    loop stays responsive.
+    """
     if not _DDGS_AVAILABLE:
         return []
 
     queries = _build_search_queries(
         question, keywords or [], category, sport, teams or [],
+        archetype=archetype,
     )
 
-    loop = asyncio.get_running_loop()
+    # Serialize queries as JSON, run a small helper script in a subprocess.
+    # The helper does the threaded DDG search and writes JSON results to stdout.
+    helper_code = (
+        "import sys, json\n"
+        "from concurrent.futures import ThreadPoolExecutor, wait as cf_wait\n"
+        "queries = json.loads(sys.argv[1])\n"
+        "try:\n"
+        "    from duckduckgo_search import DDGS\n"
+        "except ImportError:\n"
+        "    print('[]'); sys.exit(0)\n"
+        "def search(q):\n"
+        "    try:\n"
+        "        with DDGS(timeout=6) as ddg:\n"
+        "            return list(ddg.text(q, max_results=6, region='wt-wt') or [])\n"
+        "    except Exception:\n"
+        "        return []\n"
+        "pool = ThreadPoolExecutor(max_workers=min(len(queries), 4))\n"
+        "futs = [pool.submit(search, q) for q in queries]\n"
+        "done, _ = cf_wait(futs, timeout=10)\n"
+        "results = []\n"
+        "for f in done:\n"
+        "    try: results.extend(f.result())\n"
+        "    except: pass\n"
+        "pool.shutdown(wait=False, cancel_futures=True)\n"
+        "print(json.dumps(results))\n"
+    )
 
-    def _parallel_search():
-        all_results: list[dict] = []
-        with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as pool:
-            futures = [pool.submit(_ddg_search_sync, q, 8) for q in queries]
-            for f in futures:
-                try:
-                    all_results.extend(f.result())
-                except Exception:
-                    pass
-        return all_results
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", helper_code, json.dumps(queries),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=13,
+        )
+        if proc.returncode != 0:
+            return []
+        return json.loads(stdout.decode())
+    except asyncio.TimeoutError:
+        print("[research] DDG subprocess timed out (13s)", file=sys.stderr)
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        return []
+    except Exception as exc:
+        print(f"[research] DDG subprocess failed: {exc}", file=sys.stderr)
+        return []
 
-    return await loop.run_in_executor(None, _parallel_search)
 
+async def _ddg_search_subprocess(
+    query: str, max_results: int = 3, timeout_s: int = 8,
+) -> list[dict]:
+    """Run a single DDG query in a subprocess to avoid GIL starvation.
+
+    Same rationale as _fetch_web_search_raw — primp holds the GIL during
+    HTTP requests, blocking the asyncio event loop.  This lightweight
+    wrapper handles single queries (e.g. SofaScore site-search).
+    """
+    if not _DDGS_AVAILABLE:
+        return []
+
+    helper_code = (
+        "import sys, json\n"
+        "try:\n"
+        "    from duckduckgo_search import DDGS\n"
+        "except ImportError:\n"
+        "    print('[]'); sys.exit(0)\n"
+        "try:\n"
+        f"    with DDGS(timeout={timeout_s}) as ddg:\n"
+        f"        r = list(ddg.text(sys.argv[1], max_results={max_results}, region='wt-wt') or [])\n"
+        "    print(json.dumps(r))\n"
+        "except Exception:\n"
+        "    print('[]')\n"
+    )
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", helper_code, query,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_s + 5,
+        )
+        if proc.returncode != 0:
+            return []
+        return json.loads(stdout.decode())
+    except asyncio.TimeoutError:
+        print(f"[research] DDG single-query subprocess timed out ({timeout_s+5}s)",
+              file=sys.stderr)
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+        return []
+    except Exception as exc:
+        print(f"[research] DDG single-query subprocess failed: {exc}",
+              file=sys.stderr)
+        return []
 
 
 def _extract_text_from_html(html: str, max_chars: int = 3000) -> str:
@@ -826,7 +1561,10 @@ async def _fetch_page_text(
         print(f"[research] page fetch failed {url[:80]}: {exc}", file=sys.stderr)
         return None
 
-    text = _extract_text_from_html(html, max_chars)
+    # trafilatura is CPU-intensive — run off the event loop to avoid blocking
+    # the HTTP server and heartbeat.
+    loop = asyncio.get_running_loop()
+    text = await loop.run_in_executor(None, _extract_text_from_html, html, max_chars)
     if len(text) < 100:
         return None
 
@@ -838,7 +1576,7 @@ async def _fetch_top_pages(
     session: aiohttp.ClientSession,
     search_results: list[dict],
     category: Optional[str] = None,
-    max_pages: int = 3,
+    max_pages: int = 5,
 ) -> list[str]:
     """Fetch full text content from the most relevant search result pages."""
     urls = _pick_urls_for_category(search_results, category, max_urls=max_pages)
@@ -855,43 +1593,484 @@ async def _fetch_top_pages(
     return pages
 
 
+# ── News sentiment keyword counting ──────────────────────────────────────────
+_POSITIVE_KEYWORDS = [
+    "approved", "passed", "confirmed", "agreed", "deal", "win", "wins",
+    "surge", "record high", "breakthrough", "signed", "ratified", "victory",
+    "succeeds", "succeeded", "advances", "upgraded", "bullish",
+]
+_NEGATIVE_KEYWORDS = [
+    "rejected", "failed", "denied", "blocked", "crash", "collapse",
+    "delay", "postpone", "withdraw", "withdrawn", "vetoed", "sanctions",
+    "downgrade", "bearish", "losses", "defeated", "canceled", "cancelled",
+    "suspended", "stalled",
+]
+
+
+def _compute_sentiment_summary(bundle: ResearchBundle) -> Optional[str]:
+    """
+    Simple keyword-based sentiment signal from headlines and web snippets.
+    No LLM required — just counts positive/negative signal words across
+    all collected text sources. Returns a summary string or None if no
+    signals found.
+    """
+    # Gather all text sources into one lowercase blob for scanning.
+    texts: list[str] = []
+    for snippet in bundle.web_search:
+        texts.append(snippet.lower())
+    for page in bundle.web_pages:
+        # Only scan first 500 chars of each page (headlines/leads).
+        texts.append(page[:500].lower())
+    for headline in bundle.news_snippets:
+        texts.append(headline.lower())
+    for headline in bundle.external_news:
+        texts.append(headline.lower())
+
+    if not texts:
+        return None
+
+    combined = " ".join(texts)
+    total_sources = (len(bundle.web_search) + len(bundle.news_snippets)
+                     + len(bundle.external_news) + len(bundle.web_pages))
+
+    pos_count = sum(1 for kw in _POSITIVE_KEYWORDS if kw in combined)
+    neg_count = sum(1 for kw in _NEGATIVE_KEYWORDS if kw in combined)
+
+    if pos_count == 0 and neg_count == 0:
+        return None
+
+    return (
+        f"Sentiment: {pos_count} positive / {neg_count} negative "
+        f"signals from {total_sources} sources"
+    )
+
+
+# ── Polymarket page scraping (universal context) ─────────────────────────────
+# Every Polymarket market has a page at polymarket.com/event/{event_slug}.
+# This page contains trader discussion, community analysis, and context that
+# is relevant for ANY market type. This is the single most universal research
+# source — it works for sports, politics, crypto, entertainment, everything.
+
+def _urllib_fetch(url: str, timeout: int = 12) -> Optional[str]:
+    """Fetch a URL using urllib — works when trafilatura/aiohttp fail."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml",
+    })
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        return resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return None
+
+
+async def _fetch_polymarket_page(
+    event_slug: str | None,
+    market_slug: str | None,
+) -> Optional[str]:
+    """
+    Scrape the Polymarket event page for community context and discussion.
+    Returns extracted text or None.
+    """
+    # Build URL: prefer event page (has all related markets + discussion),
+    # fall back to individual market page.
+    url = None
+    if event_slug:
+        url = f"https://polymarket.com/event/{event_slug}"
+    elif market_slug:
+        url = f"https://polymarket.com/market/{market_slug}"
+    if not url:
+        return None
+
+    loop = asyncio.get_running_loop()
+
+    # Polymarket blocks trafilatura but accepts standard urllib requests.
+    try:
+        html = await asyncio.wait_for(
+            loop.run_in_executor(None, _urllib_fetch, url),
+            timeout=15,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:
+        print(f"[research] polymarket page fetch failed: {exc}", file=sys.stderr)
+        return None
+
+    if not html:
+        return None
+
+    lines: list[str] = []
+
+    # Extract __NEXT_DATA__ for structured event/market data.
+    try:
+        next_data_match = re.search(
+            r'<script\s+id="__NEXT_DATA__"[^>]*>(.*?)</script>',
+            html, re.DOTALL,
+        )
+        if next_data_match:
+            next_data = json.loads(next_data_match.group(1))
+            props = next_data.get("props", {}).get("pageProps", {})
+
+            # Event-level data.
+            event = props.get("event") or {}
+            if event.get("description"):
+                desc = event["description"].strip()
+                if len(desc) > 100:  # skip short boilerplate
+                    lines.append(f"Event context: {desc[:2000]}")
+
+            # Market-level comments/discussion data if available.
+            comments = props.get("comments") or event.get("comments") or []
+            if isinstance(comments, list) and comments:
+                comment_lines = []
+                for c in comments[:8]:
+                    body = ""
+                    if isinstance(c, dict):
+                        body = (c.get("body") or c.get("content") or
+                                c.get("text") or "").strip()
+                    elif isinstance(c, str):
+                        body = c.strip()
+                    if body and len(body) > 20:
+                        comment_lines.append(f"  - {body[:300]}")
+                if comment_lines:
+                    lines.append("Trader discussion:\n" + "\n".join(comment_lines))
+
+            # Resolution info from structured data.
+            for mkt in (event.get("markets") or []):
+                res_src = (mkt.get("resolutionSource") or "").strip()
+                if res_src and "http" in res_src:
+                    lines.append(f"Resolution source: {res_src}")
+                    break
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    # Also extract readable text via trafilatura (if available) or regex.
+    try:
+        text = await loop.run_in_executor(
+            None, _extract_text_from_html, html, 2500,
+        )
+        if text and len(text) > 150:
+            # Avoid duplicating what we already have from __NEXT_DATA__.
+            if not lines:
+                lines.append(f"Page content:\n{text[:2500]}")
+            elif len(text) > 500:
+                # Only add text content if it's substantially different from
+                # what __NEXT_DATA__ gave us (i.e. it has discussion/analysis).
+                existing = " ".join(lines).lower()
+                text_lower = text[:500].lower()
+                new_words = set(text_lower.split()) - set(existing.split())
+                if len(new_words) > 20:
+                    lines.append(f"Additional context:\n{text[:1500]}")
+    except Exception:
+        pass
+
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+# ── Resolution source scraping ───────────────────────────────────────────────
+# Many Polymarket markets have a `resolutionSource` URL pointing to the
+# authoritative data source (e.g., ESPN for sports, Reuters for politics,
+# CoinGecko for crypto). Scraping this URL gives the most relevant context
+# possible — it's literally what the market will resolve from.
+
+async def _fetch_resolution_source(
+    session: aiohttp.ClientSession,
+    resolution_source: str | None,
+    keywords: list[str],
+) -> Optional[str]:
+    """
+    Fetch and extract text from the market's resolution source URL.
+    Returns extracted text or None.
+    """
+    if not resolution_source or not resolution_source.startswith("http"):
+        return None
+
+    # Some resolution sources are just domain roots (e.g., "https://www.espn.com/").
+    # For those, do a targeted search on that domain instead.
+    is_root_url = resolution_source.rstrip("/").count("/") <= 2
+
+    if is_root_url and keywords:
+        # Search within the resolution source domain for specific content.
+        # Use subprocess to avoid GIL starvation from primp.
+        domain = resolution_source.split("/")[2]
+        query = f"site:{domain} {' '.join(keywords[:3])}"
+        try:
+            raw_results = await _ddg_search_subprocess(query, max_results=3)
+        except Exception:
+            return None
+
+        if not raw_results:
+            return None
+
+        # Fetch the first relevant result.
+        for r in raw_results:
+            href = (r.get("href") or "").strip()
+            if domain in href:
+                page_text = await _fetch_page_text(session, href, max_chars=3000)
+                if page_text:
+                    return f"[Resolution source: {domain}]\n{page_text}"
+        return None
+
+    # Direct URL — fetch the page.
+    page_text = await _fetch_page_text(session, resolution_source, max_chars=3000)
+    if page_text:
+        return page_text
+
+    # If aiohttp fails (e.g., Cloudflare), try trafilatura.
+    if _TRAFILATURA_AVAILABLE:
+        loop = asyncio.get_running_loop()
+        try:
+            html = await asyncio.wait_for(
+                loop.run_in_executor(None, trafilatura.fetch_url, resolution_source),
+                timeout=12,
+            )
+            if html:
+                text = await loop.run_in_executor(
+                    None, _extract_text_from_html, html, 3000,
+                )
+                if text and len(text) > 100:
+                    domain = resolution_source.split("/")[2] if "/" in resolution_source else resolution_source
+                    return f"[{domain}]\n{text}"
+        except Exception:
+            pass
+
+    return None
+
+
+# ── Page relevance filtering ─────────────────────────────────────────────────
+# DDG often returns pages that are technically "results" but contain zero
+# relevant information (e.g., Google support pages, login walls, generic
+# index pages). This filter drops pages that don't mention any keywords.
+
+def _is_page_relevant(page_text: str, keywords: list[str], question: str) -> bool:
+    """
+    Quick relevance check: does the page mention any of the keywords
+    or significant words from the question?
+    """
+    if not page_text or len(page_text) < 100:
+        return False
+
+    text_lower = page_text.lower()
+
+    # Check for keyword matches.
+    if keywords:
+        for kw in keywords:
+            if kw.lower() in text_lower:
+                return True
+
+    # Check for significant words from the question.
+    question_words = {
+        w.lower() for w in re.findall(r"[A-Za-z]{4,}", question)
+        if w.lower() not in STOPWORDS
+    }
+    matches = sum(1 for w in question_words if w in text_lower)
+    # Need at least 2 question-word matches to be considered relevant.
+    return matches >= 2
+
+
+# ── Related markets from Gamma API ──────────────────────────────────────────
+async def _fetch_related_markets(
+    session: aiohttp.ClientSession,
+    market_id: str,
+    event_slug: str | None,
+) -> tuple[list[dict], Optional[str]]:
+    """
+    Fetch other active markets in the same Polymarket event group.
+    Uses the /events endpoint (returns correct results; the /markets
+    endpoint's event_slug parameter is unreliable).
+    Returns (related_markets, event_description):
+      - up to 5 related markets with question, price, and volume
+      - event-level description text (often contains useful context)
+    Skips the current market_id to avoid self-reference.
+    """
+    if not event_slug:
+        return [], None
+    url = (
+        f"https://gamma-api.polymarket.com/events"
+        f"?slug={quote_plus(event_slug)}"
+    )
+    try:
+        async with session.get(
+            url, timeout=aiohttp.ClientTimeout(total=8),
+        ) as r:
+            if r.status != 200:
+                return [], None
+            data = await r.json()
+    except Exception as exc:
+        print(f"[research] related markets fetch failed: {exc}", file=sys.stderr)
+        return [], None
+
+    if not isinstance(data, list) or not data:
+        return [], None
+
+    event_obj = data[0] if data else {}
+
+    # Extract event-level description — often contains resolution criteria,
+    # background context, and other info not in individual market descriptions.
+    event_description = (event_obj.get("description") or "").strip()
+    if len(event_description) < 50:
+        event_description = None  # too short to be useful
+    elif len(event_description) > 2000:
+        event_description = event_description[:2000] + "…"
+
+    # The events endpoint wraps markets inside each event object.
+    markets = event_obj.get("markets") or []
+
+    related: list[dict] = []
+    for m in markets:
+        mid = str(m.get("id") or m.get("condition_id") or "")
+        if mid == market_id:
+            continue
+        question = (m.get("question") or "").strip()
+        if not question:
+            continue
+        # Parse YES price from outcomePrices field (JSON string like "[\"0.5\",\"0.5\"]")
+        yes_price = None
+        raw_prices = m.get("outcomePrices")
+        if raw_prices:
+            try:
+                if isinstance(raw_prices, str):
+                    prices = json.loads(raw_prices)
+                else:
+                    prices = raw_prices
+                if isinstance(prices, list) and len(prices) > 0:
+                    yes_price = float(prices[0])
+            except (json.JSONDecodeError, ValueError, IndexError):
+                pass
+        if yes_price is None:
+            continue
+        vol_24h = 0
+        try:
+            vol_24h = float(m.get("volume24hr") or m.get("volume_num") or 0)
+        except (TypeError, ValueError):
+            pass
+        related.append({
+            "question": question[:200],
+            "yes_price": yes_price,
+            "volume_24h": vol_24h,
+        })
+        if len(related) >= 5:
+            break
+
+    return related, event_description
+
+
+# ── Research quality scoring ────────────────────────────────────────────────
+
+def score_research_quality(bundle: ResearchBundle) -> float:
+    """Compute a 0–1 quality score for a research bundle.
+
+    Rewards breadth and depth of collected context. Higher scores mean
+    the evaluator has richer information to work with.
+    """
+    score = 0.0
+
+    # Substantive sections: +0.15 each
+    for section in [
+        bundle.polymarket_context,
+        bundle.event_description,
+        bundle.resolution_source_context,
+        bundle.wikipedia,
+    ]:
+        if section and len(section) > 200:
+            score += 0.15
+
+    # Web pages with real content: +0.10 each, up to 3
+    substantive_pages = sum(
+        1 for p in bundle.web_pages if len(p) > 200
+    )
+    score += 0.10 * min(substantive_pages, 3)
+
+    # News snippets: +0.05 each, up to 5
+    score += 0.05 * min(len(bundle.news_snippets), 5)
+
+    # Live data bonus: +0.10 if any live-data source is present
+    if bundle.sports_context or bundle.crypto_prices:
+        score += 0.10
+
+    return min(score, 1.0)
+
+
+def score_resolution_source(source_url: Optional[str]) -> float:
+    """Score resolution source reliability based on domain.
+
+    Uses PM_RESOLUTION_SOURCE_SCORES from config for known domains,
+    falls back to PM_RESOLUTION_SOURCE_DEFAULT_SCORE for unknown ones.
+    """
+    if not source_url or not source_url.startswith("http"):
+        return config.PM_RESOLUTION_SOURCE_DEFAULT_SCORE
+
+    try:
+        hostname = urlparse(source_url).hostname or ""
+    except Exception:
+        return config.PM_RESOLUTION_SOURCE_DEFAULT_SCORE
+
+    # Strip leading 'www.' for matching
+    hostname = hostname.lower().removeprefix("www.")
+
+    scores = config.PM_RESOLUTION_SOURCE_SCORES
+    if hostname in scores:
+        return scores[hostname]
+
+    # Check if hostname is a subdomain of a known domain
+    # e.g., 'api.coingecko.com' should match 'coingecko.com'
+    for domain, domain_score in scores.items():
+        if hostname.endswith("." + domain):
+            return domain_score
+
+    return config.PM_RESOLUTION_SOURCE_DEFAULT_SCORE
+
+
 # ── Public entrypoint ────────────────────────────────────────────────────────
 async def fetch_research(
     question:     str,
     category:     Optional[str] = None,
     max_wiki_kws: int           = 2,
+    archetype:    Optional[str] = None,
+    market_id:    Optional[str] = None,
+    event_slug:   Optional[str] = None,
+    market_slug:  Optional[str] = None,
+    resolution_source: Optional[str] = None,
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
     path — network errors are swallowed and the bundle degrades gracefully.
+
+    archetype:          market archetype for targeted search hints (e.g. 'sports_match').
+    market_id:          Polymarket market ID, used to exclude self from related markets.
+    event_slug:         event group slug, used to fetch related markets in the same event.
+    market_slug:        individual market slug for Polymarket page scraping.
+    resolution_source:  URL of the resolution authority (e.g., ESPN, Reuters).
     """
     bundle = ResearchBundle(question=question)
 
-    # 0. Gemini-powered keyword extraction (domain-aware, replaces regex).
-    gemini_meta = await _extract_keywords_gemini(question)
-    if gemini_meta:
-        bundle.keywords = (gemini_meta.get("search_terms") or [])[:4]
-        detected_category = gemini_meta.get("category")
-        detected_sport = gemini_meta.get("sport")
-        detected_teams = gemini_meta.get("teams") or []
-        bundle.sources.append("gemini_keywords")
+    # 0. LLM keyword extraction: Claude Haiku (primary), Gemini (fallback).
+    claude_meta = await _extract_keywords_claude(question)
+    if claude_meta:
+        bundle.keywords = (claude_meta.get("search_terms") or [])[:4]
+        detected_category = claude_meta.get("category")
+        detected_sport = claude_meta.get("sport")
+        detected_teams = claude_meta.get("teams") or []
+        bundle.sources.append("claude_keywords")
     else:
-        sports_meta = _detect_sports_matchup(question)
-        if sports_meta:
-            bundle.keywords = sports_meta["search_terms"][:4]
-            detected_category = "sports"
-            detected_sport = sports_meta.get("sport")
-            detected_teams = sports_meta.get("teams") or []
-            bundle.sources.append("sports_heuristic")
+        gemini_meta = await _extract_keywords_gemini(question)
+        if gemini_meta:
+            bundle.keywords = (gemini_meta.get("search_terms") or [])[:4]
+            detected_category = gemini_meta.get("category")
+            detected_sport = gemini_meta.get("sport")
+            detected_teams = gemini_meta.get("teams") or []
+            bundle.sources.append("gemini_keywords")
         else:
-            # Try Claude for keyword extraction before falling back to regex
-            claude_meta = await _extract_keywords_claude(question)
-            if claude_meta:
-                bundle.keywords = (claude_meta.get("search_terms") or [])[:4]
-                detected_category = claude_meta.get("category")
-                detected_sport = claude_meta.get("sport")
-                detected_teams = claude_meta.get("teams") or []
-                bundle.sources.append("claude_keywords")
+            sports_meta = _detect_sports_matchup(question)
+            if sports_meta:
+                bundle.keywords = sports_meta["search_terms"][:4]
+                detected_category = "sports"
+                detected_sport = sports_meta.get("sport")
+                detected_teams = sports_meta.get("teams") or []
+                bundle.sources.append("sports_heuristic")
             else:
                 bundle.keywords = extract_keywords(question)
                 detected_category = None
@@ -905,21 +2084,61 @@ async def fetch_research(
         None, _fetch_base_rate, category or detected_category)
     rss_fut = loop.run_in_executor(None, _fetch_rss_matches, bundle.keywords)
 
-    # Web search (runs in thread pool with parallel queries).
-    web_raw_task = asyncio.create_task(
-        _fetch_web_search_raw(
-            question, keywords=bundle.keywords or None,
-            category=detected_category, sport=detected_sport,
-            teams=detected_teams,
-        )
-    )
-
     wiki_task_keywords = bundle.keywords[:max_wiki_kws]
     newsapi_key        = os.environ.get("NEWSAPI_KEY")
     async with aiohttp.ClientSession(
-        headers={"User-Agent": "trading-bot/1.0 (research-fetcher)"}
+        connector=aiohttp.TCPConnector(
+            resolver=aiohttp.resolver.ThreadedResolver(),
+            ttl_dns_cache=300,
+        ),
+        headers={"User-Agent": "trading-bot/1.0 (research-fetcher)"},
     ) as session:
-        # Start wiki/crypto/sports immediately so they overlap with DDG.
+        # Fetch related markets FIRST — their questions often contain
+        # opponent names and matchup details that the primary question lacks
+        # (e.g., "Will FC Metz win?" → related: "FC Metz vs. Paris FC: O/U 2.5").
+        related_markets: list[dict] = []
+        gamma_event_description: Optional[str] = None
+        if event_slug:
+            try:
+                related_markets, gamma_event_description = await _fetch_related_markets(
+                    session, market_id or "", event_slug)
+            except Exception:
+                related_markets = []
+                gamma_event_description = None
+
+        # Enrich keywords and team detection from related market questions.
+        # Many single-team markets ("Will X win on DATE?") don't name the
+        # opponent, but the related markets do (via "X vs Y" variants).
+        if related_markets and (detected_category == "sports" or not detected_teams):
+            for rm in related_markets:
+                rm_q = rm.get("question", "")
+                rm_match = _VS_RE.search(rm_q)
+                if rm_match:
+                    rm_a = rm_match.group(1).strip().rstrip(".")
+                    rm_b = rm_match.group(2).strip().rstrip(".")
+                    # Add opponent to detected_teams if not already present.
+                    existing_lower = {t.lower() for t in detected_teams}
+                    for team in [rm_a, rm_b]:
+                        if team.lower() not in existing_lower:
+                            detected_teams.append(team)
+                            existing_lower.add(team.lower())
+                    # If we didn't have teams before, also add a better keyword.
+                    if len(bundle.keywords) < 4:
+                        vs_kw = f"{rm_a} vs {rm_b}"
+                        if vs_kw.lower() not in {k.lower() for k in bundle.keywords}:
+                            bundle.keywords.insert(0, vs_kw)
+                    break  # one matchup extraction is enough
+
+        # Web search (runs in thread pool with parallel queries).
+        web_raw_task = asyncio.create_task(
+            _fetch_web_search_raw(
+                question, keywords=bundle.keywords or None,
+                category=detected_category, sport=detected_sport,
+                teams=detected_teams, archetype=archetype,
+            )
+        )
+
+        # Start wiki/crypto/sports/esports immediately so they overlap with DDG.
         wiki_tasks = {kw: asyncio.create_task(_fetch_wikipedia(session, kw))
                       for kw in wiki_task_keywords}
         crypto_task = asyncio.create_task(_fetch_crypto_prices(session, question))
@@ -927,10 +2146,31 @@ async def fetch_research(
         if detected_sport and detected_sport != "null" and detected_teams:
             sports_task = asyncio.create_task(
                 _fetch_espn_scoreboard(session, detected_sport, detected_teams))
+        # API-Football: worldwide football/soccer data (free, 100 req/day).
+        apifootball_task = asyncio.create_task(
+            _fetch_apifootball(session, detected_teams, question))
+        # PandaScore: esports data (free, 1000 req/hour).
+        pandascore_task = asyncio.create_task(
+            _fetch_pandascore(session, question, detected_teams))
+        # SofaScore: direct page scraping via trafilatura (no API key needed).
+        # Covers football, tennis, basketball, hockey, cricket, esports.
+        sofascore_task = asyncio.create_task(
+            _fetch_sofascore_match(detected_teams, question))
         newsapi_task = None
         if newsapi_key and bundle.keywords:
             newsapi_task = asyncio.create_task(
                 _fetch_newsapi(session, bundle.keywords[0], newsapi_key, limit=5))
+
+        # Polymarket page scraping — universal context for ALL market types.
+        # This is the single most reliable research source since every market
+        # has a Polymarket page with community discussion and context.
+        polymarket_page_task = asyncio.create_task(
+            _fetch_polymarket_page(event_slug, market_slug))
+
+        # Resolution source — fetch the authoritative data source the market
+        # resolves from (e.g., ESPN for sports, Reuters for politics).
+        resolution_source_task = asyncio.create_task(
+            _fetch_resolution_source(session, resolution_source, bundle.keywords))
 
         # Collect DB results.
         bundle.base_rate_note = await base_rate_fut
@@ -948,7 +2188,7 @@ async def fetch_research(
             bundle.sources.append(f"ddg_web:{len(bundle.web_search)}")
 
         page_task = asyncio.create_task(
-            _fetch_top_pages(session, web_raw, category=detected_category, max_pages=3)
+            _fetch_top_pages(session, web_raw, category=detected_category, max_pages=5)
         ) if web_raw else None
 
         # Await all remaining tasks (most already running).
@@ -981,6 +2221,43 @@ async def fetch_research(
                 bundle.sports_context = sports_res
                 bundle.sources.append(f"espn:{detected_sport}")
 
+        # API-Football — worldwide football/soccer.
+        try:
+            apifb_res = await apifootball_task
+        except Exception:
+            apifb_res = None
+        if isinstance(apifb_res, str):
+            # Append to sports_context (or create it)
+            if bundle.sports_context:
+                bundle.sports_context += f"\n\n{apifb_res}"
+            else:
+                bundle.sports_context = apifb_res
+            bundle.sources.append("api-football")
+
+        # PandaScore — esports.
+        try:
+            panda_res = await pandascore_task
+        except Exception:
+            panda_res = None
+        if isinstance(panda_res, str):
+            if bundle.sports_context:
+                bundle.sports_context += f"\n\n{panda_res}"
+            else:
+                bundle.sports_context = panda_res
+            bundle.sources.append("pandascore")
+
+        # SofaScore — direct page scraping (no API key).
+        try:
+            sofa_res = await sofascore_task
+        except Exception:
+            sofa_res = None
+        if isinstance(sofa_res, str):
+            if bundle.sports_context:
+                bundle.sports_context += f"\n\n{sofa_res}"
+            else:
+                bundle.sports_context = sofa_res
+            bundle.sources.append("sofascore")
+
         if newsapi_task:
             try:
                 ext = await newsapi_task
@@ -996,13 +2273,101 @@ async def fetch_research(
             except Exception:
                 pages = []
             if pages:
-                bundle.web_pages = pages
-                bundle.sources.append(f"pages:{len(pages)}")
+                # Filter out irrelevant pages — DDG often returns garbage
+                # (Google support pages, login walls, generic index pages).
+                filtered = [
+                    p for p in pages
+                    if _is_page_relevant(p, bundle.keywords, question)
+                ]
+                if filtered:
+                    bundle.web_pages = filtered
+                    bundle.sources.append(f"pages:{len(filtered)}")
+                elif pages:
+                    # Keep at most 2 unfiltered pages as a fallback — better
+                    # than nothing, but clearly less valuable.
+                    bundle.web_pages = pages[:2]
+                    bundle.sources.append(f"pages:{len(pages[:2])}(unfiltered)")
+
+        # Polymarket page — universal context (community discussion, event context).
+        try:
+            pm_page_res = await polymarket_page_task
+        except Exception:
+            pm_page_res = None
+        if isinstance(pm_page_res, str) and len(pm_page_res) > 50:
+            bundle.polymarket_context = pm_page_res
+            bundle.sources.append("polymarket_page")
+
+        # Resolution source — authoritative data the market resolves from.
+        try:
+            res_src_result = await resolution_source_task
+        except Exception:
+            res_src_result = None
+        if isinstance(res_src_result, str) and len(res_src_result) > 50:
+            bundle.resolution_source_context = res_src_result
+            bundle.sources.append("resolution_source")
+
+        # Related markets — already fetched at the top of the function.
+        if related_markets:
+            bundle.related_markets = related_markets
+            bundle.sources.append(f"related_markets:{len(related_markets)}")
+
+        # Event description from Gamma API — often has resolution criteria
+        # and background context not in individual market descriptions.
+        if gamma_event_description:
+            bundle.event_description = gamma_event_description
+            bundle.sources.append("event_description")
+
+        # Fallback search pass: if the first search returned very few results,
+        # try alternative keyword formulations to fill in gaps.
+        if len(bundle.web_search) < 3 and bundle.keywords:
+            try:
+                alt_query = f"{' '.join(bundle.keywords[:3])} latest update analysis"
+                alt_raw = await _fetch_web_search_raw(
+                    alt_query, keywords=bundle.keywords,
+                    category=detected_category, sport=detected_sport,
+                    teams=detected_teams, archetype=archetype,
+                )
+                if alt_raw:
+                    alt_formatted = _format_ddg_results(alt_raw, max_snippet=300)
+                    # Merge without duplicates.
+                    existing = set(s.lower() for s in bundle.web_search)
+                    for item in alt_formatted:
+                        if item.lower() not in existing:
+                            bundle.web_search.append(item)
+                            existing.add(item.lower())
+                    bundle.web_search = bundle.web_search[:15]
+                    # Fetch additional pages from fallback results if we
+                    # still have room.
+                    if len(bundle.web_pages) < 5 and alt_raw:
+                        extra_pages = await _fetch_top_pages(
+                            session, alt_raw,
+                            category=detected_category,
+                            max_pages=5 - len(bundle.web_pages),
+                        )
+                        if extra_pages:
+                            bundle.web_pages.extend(extra_pages)
+                    bundle.sources.append("ddg_fallback")
+            except Exception as exc:
+                print(f"[research] fallback search failed: {exc}",
+                      file=sys.stderr)
 
     if bundle.news_snippets:
         bundle.sources.append(f"rss:{len(bundle.news_snippets)}")
     if bundle.base_rate_note:
         bundle.sources.append("base_rate")
+
+    # Sentiment summary from collected headlines and snippets.
+    try:
+        bundle.sentiment_summary = _compute_sentiment_summary(bundle)
+        if bundle.sentiment_summary:
+            bundle.sources.append("sentiment")
+    except Exception as exc:
+        print(f"[research] sentiment computation failed: {exc}",
+              file=sys.stderr)
+
+    # Score research quality and resolution source reliability.
+    bundle.quality_score = score_research_quality(bundle)
+    bundle.resolution_source_score = score_resolution_source(resolution_source)
 
     return bundle
 
