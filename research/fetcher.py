@@ -717,6 +717,8 @@ def _format_ddg_results(results: list[dict], max_snippet: int = 300) -> list[str
             continue
         seen_titles.add(title.lower())
         source = href.split("/")[2] if href.count("/") >= 2 else ""
+        title = _scrub_prediction_market_echoes(title)
+        body = _scrub_prediction_market_echoes(body)
         if body:
             tag = f" [{source}]" if source else ""
             out.append(f"{title}: {body[:max_snippet]}{tag}")
@@ -792,17 +794,37 @@ _SKIP_DOMAINS = {"youtube.com", "twitter.com", "x.com", "reddit.com",
                  "facebook.com", "instagram.com", "tiktok.com"}
 
 # Domains that DDG may surface but we refuse to trafilatura-scrape full pages
-# from. Distinct from _SKIP_DOMAINS: these domains may still appear in the
-# short web-search snippet list (capped at 300 chars, low leak surface), but
-# their full page body reintroduces the market-price anchor we strip from
-# polymarket.com. CoinGecko renders Polymarket price widgets directly on
-# asset pages — e.g. CoinGecko's BTC page embeds the live Polymarket BTC
-# price-ladder with percentages. OKX live data (research/live_crypto.py)
-# already provides superior spot/candle/order-book data for short-horizon
-# crypto markets, and the CoinGecko /simple/price API (_fetch_crypto_prices)
-# still contributes a structured spot number. The full-page scrape adds
-# encyclopedia boilerplate Wikipedia covers better, plus the widget leak.
-_SCRAPE_BLOCKLIST = {"coingecko.com"}
+# from. Distinct from _SKIP_DOMAINS: DDG snippets from these domains still
+# pass through (capped at 300 chars), but the snippet path is also scrubbed
+# for prediction-market echoes below.
+#
+# Criterion for inclusion: the domain's primary function is to *display*
+# prediction-market odds (its own or someone else's), so scraping the page
+# body reintroduces the same market-price anchor we already show Claude in
+# the explicit context block. Independent expert forecasts (FiveThirtyEight
+# models, Nate Silver, sportsbook odds, polls) are NOT blocklisted — they
+# are independent evidence, not echoes.
+#
+#   * coingecko.com — embeds live Polymarket price-ladder widgets on asset
+#     pages. CoinGecko's /simple/price API (_fetch_crypto_prices) still
+#     contributes a structured spot number; OKX live_crypto provides
+#     superior short-horizon data.
+#   * predictit.org — competitor prediction market. Its prices are
+#     heavily correlated with Polymarket on overlapping markets, so
+#     scraping PredictIt is effectively re-showing Polymarket in disguise.
+#   * polyfire.co — Polymarket-aggregator site; pages explicitly quote
+#     live Polymarket odds as their primary content.
+#   * metaculus.com — community forecast aggregator. Borderline
+#     (sometimes independent signal), but on politics markets that also
+#     trade on Polymarket the community number is highly correlated. Out
+#     for now; revisit if we find markets where Metaculus is uniquely
+#     informative.
+_SCRAPE_BLOCKLIST = {
+    "coingecko.com",
+    "predictit.org",
+    "polyfire.co",
+    "metaculus.com",
+}
 
 _CATEGORY_PRIORITY_DOMAINS: dict[str, set[str]] = {
     "sports": {
@@ -935,6 +957,42 @@ _POLYMARKET_SCRUB_PATTERNS: list[re.Pattern] = [
 
 _REDACTED = "[redacted]"
 
+# Prediction-market echoes on non-blocklisted sites. These patterns fire on
+# news / aggregator pages (realclearpolitics.com, forbes.com, bloomberg.com,
+# the DDG snippet surface, etc.) that embed or narrate Polymarket / PredictIt
+# numbers. Replaced with a VISIBLE marker rather than silently deleted so
+# Claude can interpret "there used to be a market-price citation here" as
+# information rather than as an unexplained gap. Independent forecasts —
+# "538's model gives 62%", "Nate Silver's projection", "a Siena poll shows
+# Trump +3 (47-44)" — are deliberately NOT matched.
+_PREDICTION_MARKET_ECHO_PATTERNS: list[re.Pattern] = [
+    re.compile(r"Polymarket (?:gives|prices|has|shows) .{0,30}? \d{1,3}%",
+               re.IGNORECASE),
+    re.compile(r"PredictIt (?:gives|prices|has|shows) .{0,30}? \d{1,3}%",
+               re.IGNORECASE),
+    re.compile(r"On Polymarket, .{0,100}? \d{1,3}%", re.IGNORECASE),
+    re.compile(r"Prediction markets? (?:give|price|show) .{0,50}? \d{1,3}%",
+               re.IGNORECASE),
+    re.compile(r"\d{1,3}% on (?:Polymarket|PredictIt|prediction markets?)",
+               re.IGNORECASE),
+]
+
+_PM_ECHO_REDACTED = "[prediction market odds redacted]"
+
+
+def _scrub_prediction_market_echoes(text: str) -> str:
+    """Replace prediction-market price citations with a visible marker.
+
+    Applied to every non-blocklisted page body and to every DDG snippet
+    before it enters the research bundle. Does NOT drop paragraphs — just
+    rewrites the offending span so surrounding narrative (which may be
+    independent evidence) is preserved.
+    """
+    out = text
+    for pat in _PREDICTION_MARKET_ECHO_PATTERNS:
+        out = pat.sub(_PM_ECHO_REDACTED, out)
+    return out
+
 
 def _scrub_polymarket_text(text: str) -> str:
     """Remove price/consensus leaks from a polymarket.com scrape.
@@ -992,6 +1050,9 @@ async def _fetch_page_text(
         text = _scrub_polymarket_text(text)
         if len(text) < 100:
             return None
+    # Every page goes through the echo scrub — even third-party news and
+    # aggregator sites may embed "Polymarket has this at 65%" widgets.
+    text = _scrub_prediction_market_echoes(text)
     return f"[{domain}]\n{text}"
 
 

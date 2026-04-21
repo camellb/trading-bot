@@ -13,9 +13,12 @@ import unittest
 
 from research.fetcher import (
     _POLYMARKET_SCRUB_PATTERNS,
+    _PM_ECHO_REDACTED,
     _SCRAPE_BLOCKLIST,
+    _format_ddg_results,
     _pick_urls_for_category,
     _scrub_polymarket_text,
+    _scrub_prediction_market_echoes,
 )
 
 
@@ -180,6 +183,125 @@ class ScrapeBlocklistExcludesCoinGecko(unittest.TestCase):
         picked = _pick_urls_for_category(fake_results, category="politics",
                                          max_urls=3)
         self.assertEqual(len(picked), 2)
+
+
+class ScrapeBlocklistCoversPredictionMarketEchoes(unittest.TestCase):
+    """Sites that primarily echo prediction-market prices are blocklisted."""
+
+    def test_predictit_blocklisted(self):
+        self.assertIn("predictit.org", _SCRAPE_BLOCKLIST)
+
+    def test_polyfire_blocklisted(self):
+        self.assertIn("polyfire.co", _SCRAPE_BLOCKLIST)
+
+    def test_metaculus_blocklisted(self):
+        self.assertIn("metaculus.com", _SCRAPE_BLOCKLIST)
+
+
+class PredictionMarketEchoScrub(unittest.TestCase):
+    """Third-party pages echoing Polymarket / PredictIt prices are rewritten
+    with a visible marker; independent expert forecasts are preserved."""
+
+    def test_rcp_polymarket_widget_scrubbed(self):
+        text = ("The latest polls are tight, but Polymarket gives this 65% "
+                "as of this morning, reflecting late movement toward Trump.")
+        out = _scrub_prediction_market_echoes(text)
+        self.assertIn(_PM_ECHO_REDACTED, out)
+        self.assertNotIn("65%", out)
+        self.assertIn("late movement toward Trump", out)
+
+    def test_predictit_widget_scrubbed(self):
+        text = "PredictIt shows this at 42% while Polymarket has similar pricing."
+        out = _scrub_prediction_market_echoes(text)
+        self.assertIn(_PM_ECHO_REDACTED, out)
+        self.assertNotIn("42%", out)
+
+    def test_prediction_markets_phrase_scrubbed(self):
+        text = ("Prediction markets price the incumbent at 58%, while the "
+                "historical base rate is closer to 70%.")
+        out = _scrub_prediction_market_echoes(text)
+        self.assertIn(_PM_ECHO_REDACTED, out)
+        self.assertNotIn("58%", out)
+        # The independent base-rate sentence survives.
+        self.assertIn("historical base rate is closer to 70%", out)
+
+    def test_percent_on_polymarket_scrubbed(self):
+        text = "As of Tuesday, Biden was trading at 48% on Polymarket."
+        out = _scrub_prediction_market_echoes(text)
+        self.assertIn(_PM_ECHO_REDACTED, out)
+        self.assertNotIn("48%", out)
+
+    def test_538_forecast_preserved(self):
+        text = ("538's model gives Biden a 62% chance of winning, up from "
+                "55% last week as polling tightened in the Rust Belt.")
+        out = _scrub_prediction_market_echoes(text)
+        self.assertNotIn(_PM_ECHO_REDACTED, out)
+        self.assertIn("62%", out)
+        self.assertIn("55%", out)
+        self.assertIn("Rust Belt", out)
+
+    def test_nate_silver_preserved(self):
+        text = ("Nate Silver's personal model puts Harris at 51%, a sharp "
+                "divergence from his prior estimate of 47%.")
+        out = _scrub_prediction_market_echoes(text)
+        self.assertNotIn(_PM_ECHO_REDACTED, out)
+        self.assertIn("51%", out)
+        self.assertIn("47%", out)
+
+    def test_poll_result_preserved(self):
+        text = ("Trump leads 47-43 in the latest NYT/Siena poll of likely "
+                "voters, with 10% undecided.")
+        out = _scrub_prediction_market_echoes(text)
+        self.assertNotIn(_PM_ECHO_REDACTED, out)
+        self.assertIn("47-43", out)
+        self.assertIn("10%", out)
+
+    def test_sportsbook_odds_preserved(self):
+        text = ("Chiefs are -175 favorites at DraftKings, implying roughly "
+                "64% win probability on raw odds.")
+        out = _scrub_prediction_market_echoes(text)
+        self.assertNotIn(_PM_ECHO_REDACTED, out)
+        self.assertIn("64%", out)
+
+
+class SnippetLevelEchoScrub(unittest.TestCase):
+    """DDG snippets go through the echo scrub before entering the bundle."""
+
+    def test_polyfire_snippet_scrubbed(self):
+        ddg_results = [
+            {"title": "BTC April — PolyFire",
+             "body": "Polymarket has Bitcoin at 12% to reach $80k.",
+             "href": "https://polyfire.co/some-market"},
+        ]
+        formatted = _format_ddg_results(ddg_results, max_snippet=300)
+        joined = "\n".join(formatted)
+        self.assertIn(_PM_ECHO_REDACTED, joined)
+        self.assertNotIn("12%", joined)
+
+    def test_on_polymarket_snippet_scrubbed(self):
+        ddg_results = [
+            {"title": "Senate race analysis",
+             "body": ("On Polymarket, the Democratic nominee is trading "
+                      "around 55% heading into the final week."),
+             "href": "https://example.com/senate"},
+        ]
+        formatted = _format_ddg_results(ddg_results, max_snippet=300)
+        joined = "\n".join(formatted)
+        self.assertIn(_PM_ECHO_REDACTED, joined)
+        self.assertNotIn("55%", joined)
+
+    def test_independent_snippet_passes(self):
+        ddg_results = [
+            {"title": "NYT/Siena poll release",
+             "body": ("The latest NYT/Siena poll shows Harris +3, 48-45, "
+                      "with 7% undecided likely voters."),
+             "href": "https://nytimes.com/poll"},
+        ]
+        formatted = _format_ddg_results(ddg_results, max_snippet=300)
+        joined = "\n".join(formatted)
+        self.assertNotIn(_PM_ECHO_REDACTED, joined)
+        self.assertIn("48-45", joined)
+        self.assertIn("7%", joined)
 
 
 if __name__ == "__main__":
