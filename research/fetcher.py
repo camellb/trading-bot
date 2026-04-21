@@ -791,6 +791,19 @@ def _build_search_queries(
 _SKIP_DOMAINS = {"youtube.com", "twitter.com", "x.com", "reddit.com",
                  "facebook.com", "instagram.com", "tiktok.com"}
 
+# Domains that DDG may surface but we refuse to trafilatura-scrape full pages
+# from. Distinct from _SKIP_DOMAINS: these domains may still appear in the
+# short web-search snippet list (capped at 300 chars, low leak surface), but
+# their full page body reintroduces the market-price anchor we strip from
+# polymarket.com. CoinGecko renders Polymarket price widgets directly on
+# asset pages — e.g. CoinGecko's BTC page embeds the live Polymarket BTC
+# price-ladder with percentages. OKX live data (research/live_crypto.py)
+# already provides superior spot/candle/order-book data for short-horizon
+# crypto markets, and the CoinGecko /simple/price API (_fetch_crypto_prices)
+# still contributes a structured spot number. The full-page scrape adds
+# encyclopedia boilerplate Wikipedia covers better, plus the widget leak.
+_SCRAPE_BLOCKLIST = {"coingecko.com"}
+
 _CATEGORY_PRIORITY_DOMAINS: dict[str, set[str]] = {
     "sports": {
         "sofascore.com", "flashscore.com", "espn.com", "sportsreference.com",
@@ -809,7 +822,7 @@ _CATEGORY_PRIORITY_DOMAINS: dict[str, set[str]] = {
         "foreignaffairs.com", "cfr.org", "crisisgroup.org",
     },
     "crypto": {
-        "coingecko.com", "coindesk.com", "theblock.co", "messari.io",
+        "coindesk.com", "theblock.co", "messari.io",
         "glassnode.com", "defillama.com", "cryptoquant.com",
     },
 }
@@ -839,6 +852,8 @@ def _pick_urls_for_category(
         except (IndexError, AttributeError):
             continue
         if any(skip in domain for skip in _SKIP_DOMAINS):
+            continue
+        if any(block in domain for block in _SCRAPE_BLOCKLIST):
             continue
         if any(prio in domain for prio in all_priority):
             priority.append(href)

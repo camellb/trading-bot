@@ -13,6 +13,8 @@ import unittest
 
 from research.fetcher import (
     _POLYMARKET_SCRUB_PATTERNS,
+    _SCRAPE_BLOCKLIST,
+    _pick_urls_for_category,
     _scrub_polymarket_text,
 )
 
@@ -140,6 +142,44 @@ class ScrubberPatternsExposed(unittest.TestCase):
         self.assertTrue(len(_POLYMARKET_SCRUB_PATTERNS) >= 3)
         for pat in _POLYMARKET_SCRUB_PATTERNS:
             self.assertIsInstance(pat, re.Pattern)
+
+
+class ScrapeBlocklistExcludesCoinGecko(unittest.TestCase):
+    """CoinGecko embeds Polymarket price widgets on asset pages — the full-
+    page scrape must not pull coingecko.com even if DDG surfaces it."""
+
+    def test_coingecko_in_blocklist(self):
+        self.assertIn("coingecko.com", _SCRAPE_BLOCKLIST)
+
+    def test_coingecko_url_is_not_picked(self):
+        fake_results = [
+            {"href": "https://www.coingecko.com/en/coins/bitcoin",
+             "title": "Bitcoin Price", "body": "BTC price"},
+            {"href": "https://www.coindesk.com/bitcoin-analysis",
+             "title": "BTC analysis", "body": "btc trend"},
+            {"href": "https://www.theblock.co/btc-report",
+             "title": "The Block BTC", "body": "report"},
+        ]
+        picked = _pick_urls_for_category(fake_results, category="crypto",
+                                         max_urls=3)
+        self.assertFalse(
+            any("coingecko.com" in u for u in picked),
+            f"coingecko.com should not appear in scraped URLs, got {picked}",
+        )
+        # The legitimate crypto sources are still picked.
+        self.assertTrue(any("coindesk.com" in u for u in picked))
+        self.assertTrue(any("theblock.co"  in u for u in picked))
+
+    def test_non_crypto_domains_unaffected(self):
+        fake_results = [
+            {"href": "https://www.bbc.com/news/politics-story",
+             "title": "Politics", "body": "news"},
+            {"href": "https://www.reuters.com/world/analysis",
+             "title": "Reuters", "body": "news"},
+        ]
+        picked = _pick_urls_for_category(fake_results, category="politics",
+                                         max_urls=3)
+        self.assertEqual(len(picked), 2)
 
 
 if __name__ == "__main__":
