@@ -440,7 +440,7 @@ async def _extract_keywords_gemini(question: str) -> Optional[dict]:
 
     def _call():
         return client.models.generate_content(
-            model="gemini-2.0-flash",
+            model=config.GEMINI_MODEL,
             contents=prompt,
             config={"response_mime_type": "application/json",
                     "max_output_tokens": 300, "temperature": 0.1},

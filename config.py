@@ -73,7 +73,7 @@ CLAUDE_MAX_TOKENS = 700
 
 
 # ── Gemini (optional, for news pre-filter) ───────────────────────────────────
-GEMINI_MODEL = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 
 
 # ── News aggregator — RSS sources ────────────────────────────────────────────
