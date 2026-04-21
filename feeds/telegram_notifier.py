@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -36,6 +37,42 @@ from db.engine import get_engine
 
 
 _TELEGRAM_BASE = "https://api.telegram.org/bot{token}/sendMessage"
+
+
+# Telegram's HTML parse_mode rejects the whole message on any stray "<",
+# ">", or un-escaped "&", or on any tag it does not recognize. Dynamic text
+# (market questions, Claude reasoning, error details) routinely contains
+# these. We sanitize before sending: keep allowed tags as-is, escape the
+# rest. Already-escaped entities (&lt; &amp; &#39; …) pass through untouched.
+_TG_ALLOWED_TAGS = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "a", "code", "pre", "tg-spoiler", "tg-emoji", "blockquote",
+}
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9\-]*)(\s[^>]*)?>")
+_RAW_AMP = re.compile(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)")
+
+
+def _escape_text(s: str) -> str:
+    s = _RAW_AMP.sub("&amp;", s)
+    return s.replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _sanitize_html(msg: str) -> str:
+    """Escape bare <, >, & while preserving the Telegram-allowed HTML tags."""
+    if not msg:
+        return msg
+    out: list[str] = []
+    last = 0
+    for m in _TAG_RE.finditer(msg):
+        tag = m.group(2).lower()
+        out.append(_escape_text(msg[last:m.start()]))
+        if tag in _TG_ALLOWED_TAGS:
+            out.append(m.group(0))
+        else:
+            out.append(_escape_text(m.group(0)))
+        last = m.end()
+    out.append(_escape_text(msg[last:]))
+    return "".join(out)
 
 
 class TelegramNotifier:
@@ -72,7 +109,8 @@ class TelegramNotifier:
         if not self.enabled:
             return
         url = _TELEGRAM_BASE.format(token=self._token)
-        payload = {"chat_id": self._chat_id, "text": message, "parse_mode": "HTML"}
+        safe = _sanitize_html(message)
+        payload = {"chat_id": self._chat_id, "text": safe, "parse_mode": "HTML"}
         try:
             session = await self._get_session()
             async with session.post(url, json=payload) as resp:
@@ -134,8 +172,9 @@ class TelegramNotifier:
         if not self.enabled:
             return
         url = _TELEGRAM_BASE.format(token=self._token)
+        safe = _sanitize_html(message)
         payload = json.dumps(
-            {"chat_id": self._chat_id, "text": message, "parse_mode": "HTML"}
+            {"chat_id": self._chat_id, "text": safe, "parse_mode": "HTML"}
         ).encode("utf-8")
         req = urllib.request.Request(
             url, data=payload,
