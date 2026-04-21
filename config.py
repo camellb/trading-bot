@@ -127,8 +127,6 @@ HEARTBEAT_TIMEOUT_S = 5
 MACRO_CALENDAR_REFRESH_DAYS = 7
 
 
-# ── Obsidian memory vault ────────────────────────────────────────────────────
-OBSIDIAN_VAULT_PATH = "~/Documents/trading-bot-memory"
 
 
 # ── Legacy knobs kept for back-compat with cross-cutting modules ─────────────

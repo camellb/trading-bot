@@ -43,7 +43,6 @@ async def scan_and_analyze(
     limit:          int   = 20,
     min_volume_24h: float = 5_000.0,
     notifier:       object = None,
-    memory:         object = None,
     analyst:        PMAnalyst | None = None,
 ) -> dict:
     """
@@ -56,7 +55,7 @@ async def scan_and_analyze(
         return {"skipped": True, "reason": "scan already in progress"}
     async with _scan_lock:
         if analyst is None:
-            analyst = PMAnalyst(notifier=notifier, memory=memory)
+            analyst = PMAnalyst(notifier=notifier)
         return await analyst.scan_and_analyze(limit=limit,
                                                 min_volume_24h=min_volume_24h)
 
@@ -283,12 +282,9 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     async def _main():
-        from engine.memory import MemoryManager
-        memory = MemoryManager()
         if args.mode in ("scan", "both"):
             await scan_and_analyze(limit=args.limit,
-                                    min_volume_24h=args.min_volume,
-                                    memory=memory)
+                                    min_volume_24h=args.min_volume)
         if args.mode in ("resolve", "both"):
             await resolve_positions()
 

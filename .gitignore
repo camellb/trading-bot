@@ -32,6 +32,3 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
-
-# Obsidian vault (personal notes, not code)
-trading-bot-memory/

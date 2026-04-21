@@ -59,7 +59,6 @@ from feeds.macro_calendar      import MacroCalendar
 from feeds.telegram_notifier   import notifier
 from execution.pm_executor     import PMExecutor
 from engine.pm_analyst         import PMAnalyst
-from engine.memory             import MemoryManager
 from engine.user_config        import ensure_default_user_config
 from bot_api                   import BotAPI
 from polymarket_runner         import scan_and_analyze, resolve_positions
@@ -97,14 +96,13 @@ async def main() -> None:
 
     # ── Core singletons ──────────────────────────────────────────────────────
     executor  = PMExecutor()
-    memory    = MemoryManager()
 
     # ── Overlay feeds (advisory only — do not gate trading) ──────────────────
     news_feed      = NewsFeed(monitor)
     macro_calendar = MacroCalendar(monitor)
     await macro_calendar.start()
 
-    analyst   = PMAnalyst(executor=executor, notifier=notifier, memory=memory,
+    analyst   = PMAnalyst(executor=executor, notifier=notifier,
                           news_feed=news_feed)
 
     # ── Wire notifier references used by /status and scheduled summaries ─────
@@ -134,7 +132,6 @@ async def main() -> None:
                 limit          = int(getattr(config, "PM_SCAN_LIMIT", 20)),
                 min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
                 notifier       = notifier,
-                memory         = memory,
                 analyst        = analyst,
             )
             proc_health.record_job_ok("pm_scan")

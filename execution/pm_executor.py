@@ -11,8 +11,8 @@ Live mode (stubbed until CLOB credentials are wired):
     we wire credentials the live path raises explicitly.
 
 All position bookkeeping and P&L flow through the same database, so the
-dashboard, self-improvement loop, and Obsidian memory treat shadow and
-live positions uniformly — only the `mode` column differs.
+dashboard treats shadow and live positions uniformly — only the `mode`
+column differs.
 
 Bankroll model:
     bankroll = STARTING_CASH + Σ realized_pnl_usd(settled) - Σ cost_usd(open)

@@ -13,7 +13,7 @@ Pipeline per market:
     7. Run the sizer (positive-EV with flat, confidence-scaled stake).
     8. If the sizer approves and we're under the concurrent cap,
        open a shadow/live position via PMExecutor.
-    9. Send Telegram notification + Obsidian memory entry.
+    9. Send Telegram notification.
 
 The analyst never crashes the caller. Every stage is wrapped; failures
 are logged and the next market proceeds.
@@ -64,13 +64,11 @@ class PMAnalyst:
         executor:  Optional[PMExecutor]          = None,
         evaluator: Optional[PolymarketEvaluator] = None,
         notifier:  Optional[object]              = None,
-        memory:    Optional[object]              = None,
         news_feed: Optional[object]              = None,
     ):
         self.executor  = executor  or PMExecutor()
         self.evaluator = evaluator or PolymarketEvaluator()
         self.notifier  = notifier
-        self.memory    = memory
         self.news_feed = news_feed
 
     # ── Single market ────────────────────────────────────────────────────────
@@ -262,22 +260,12 @@ class PMAnalyst:
         # Link the evaluation row to the position for dashboard joins.
         _link_evaluation_to_position(eval_row_id, pos_id)
 
-        # 9. Side effects: Telegram + Obsidian.
+        # 9. Side effects: Telegram.
         if self.notifier is not None:
             try:
                 await self._notify_open(market, evaluation, decision, pos_id)
             except Exception as exc:
                 print(f"[pm_analyst] notify failed: {exc}", file=sys.stderr)
-
-        if self.memory is not None and hasattr(self.memory, "log_pm_entry"):
-            try:
-                self.memory.log_pm_entry(
-                    market=market, evaluation=evaluation,
-                    decision=decision, position_id=pos_id,
-                    research=research,
-                )
-            except Exception as exc:
-                print(f"[pm_analyst] memory log failed: {exc}", file=sys.stderr)
 
         return AnalysisOutcome(
             market_id=market.id, question=q,
