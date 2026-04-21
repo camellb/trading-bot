@@ -24,6 +24,7 @@ logs/
 # Database
 *.db
 *.sqlite
+db_backup_*.sql
 
 # OS
 .DS_Store
