@@ -107,6 +107,9 @@ class MarketEvaluation:
 
 
 def _parse_json(raw: str) -> Optional[dict]:
+    """Parse JSON leniently: strip fences, extract first {...} substring."""
+    if not raw:
+        return None
     t = raw.strip()
     if t.startswith("```"):
         nl = t.find("\n")
@@ -114,11 +117,21 @@ def _parse_json(raw: str) -> Optional[dict]:
             t = t[nl + 1:]
         if t.endswith("```"):
             t = t[:-3]
+        t = t.strip()
     try:
         obj = json.loads(t)
         return obj if isinstance(obj, dict) else None
     except Exception:
-        return None
+        pass
+    start = t.find("{")
+    end = t.rfind("}")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(t[start:end + 1])
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+    return None
 
 
 def _clamp01(x, default=0.5):
@@ -162,7 +175,7 @@ class PolymarketEvaluator:
                     None,
                     lambda: self._client.messages.create(
                         model      = config.CLAUDE_MODEL,
-                        max_tokens = 1000,
+                        max_tokens = 2000,
                         system     = _system_prompt(),
                         messages   = [{"role": "user", "content": user}],
                     ),
@@ -180,7 +193,8 @@ class PolymarketEvaluator:
 
         obj = _parse_json(raw)
         if obj is None:
-            print(f"[polymarket_eval] unparseable JSON for {market.id}: {raw[:200]}",
+            print(f"[polymarket_eval] unparseable JSON for {market.id} "
+                  f"(raw_len={len(raw)}): {raw[:500]!r} ... tail={raw[-200:]!r}",
                   file=sys.stderr)
             return None
 
