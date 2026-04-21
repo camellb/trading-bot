@@ -118,13 +118,13 @@ class FeedHealthMonitor:
 
     @staticmethod
     async def _notify_recovered(feed_name: str) -> None:
-        from feeds.telegram_notifier import notifier
-        await notifier.notify_feed_recovered(feed_name)
+        # Spec v1 removes feed health from the user channel.
+        print(f"[feed_health][admin] recovered: {feed_name}", file=sys.stderr)
 
     @staticmethod
     async def _notify_degraded(feed_name: str, detail: str) -> None:
-        from feeds.telegram_notifier import notifier
-        await notifier.notify_feed_degraded(feed_name, detail)
+        print(f"[feed_health][admin] degraded: {feed_name} — {detail}",
+              file=sys.stderr)
 
     # ── Queries ──────────────────────────────────────────────────────────────
     def is_healthy(self, feed_name: str) -> bool:

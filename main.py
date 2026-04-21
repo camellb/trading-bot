@@ -57,6 +57,7 @@ from feeds.feed_health_monitor import monitor
 from feeds.news_feed           import NewsFeed
 from feeds.macro_calendar      import MacroCalendar
 from feeds.telegram_notifier   import notifier
+from feeds                     import telegram_messages as tm
 from execution.pm_executor     import PMExecutor
 from engine.pm_analyst         import PMAnalyst
 from engine.user_config        import ensure_default_user_config
@@ -279,7 +280,7 @@ async def main() -> None:
     def _handle_signal(sig, _frame):
         sig_name = signal.Signals(sig).name
         print(f"[main] Received {sig_name} — shutting down gracefully", flush=True)
-        notifier.send_sync("🛑 <b>Bot stopping</b> — will restart automatically")
+        notifier.send_sync(tm.restart_planned())
         shutdown_event.set()
 
     loop = asyncio.get_running_loop()
@@ -336,10 +337,7 @@ if __name__ == "__main__":
         tb = traceback.format_exc()
         print(f"[main] FATAL CRASH:\n{tb}", file=sys.stderr, flush=True)
         try:
-            notifier.send_sync(
-                f"💀 <b>Bot crashed — restarting automatically</b>\n"
-                f"<pre>{tb[-500:]}</pre>"
-            )
+            notifier.send_sync(tm.restart_crash())
         except Exception:
             pass
         sys.exit(1)

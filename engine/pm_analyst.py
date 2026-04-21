@@ -33,11 +33,13 @@ from sqlalchemy import text
 import calibration
 import config
 from db.engine import get_engine
+from engine.notifier_state import is_trading_paused
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
 from engine.risk_manager import evaluate as evaluate_risk
 from engine.user_config import get_user_config
 from execution.pm_executor import PMExecutor
 from execution.pm_sizer import size_position, SizingDecision
+from feeds import telegram_messages as tm
 from feeds.polymarket_feed import PolymarketFeed, PolyMarket
 from research.fetcher import fetch_research, ResearchBundle
 
@@ -78,6 +80,15 @@ class PMAnalyst:
         skip_existing_days: int = 3,
     ) -> AnalysisOutcome:
         q = market.question[:80]
+        # 0. User has paused trading? Skip all entries; open positions
+        #    continue to resolve normally (see resolver).
+        if is_trading_paused():
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_PAUSED",
+                detail="trading paused via /pause",
+            )
+
         # 1. Already holding this market?
         if self.executor.has_open_position_on_market(market.id):
             return AnalysisOutcome(
@@ -360,27 +371,24 @@ class PMAnalyst:
                             position_id: int) -> None:
         if self.notifier is None or not hasattr(self.notifier, "send"):
             return
-        entry_cents = decision.entry_price * 100.0
-        crowd_price = market.yes_price * 100.0
-        bot_estimate = evaluation.probability_yes * 100.0
-        ev_pct = decision.ev * 100.0
-        why_line = (
-            f"Estimated probability {decision.p_win:.2f}, paying "
-            f"{decision.entry_price:.2f} — expected value +{ev_pct:.2f}% "
-            f"after costs."
-        )
-        msg = (
-            f"🎯 <b>New PM position</b> [{self.executor.mode}]\n"
-            f"<b>{market.question[:140]}</b>\n"
-            f"Bet: buy {decision.side} at {entry_cents:.1f}c\n"
-            f"Stake: ${decision.stake_usd:.2f} for {decision.shares:.1f} shares\n"
-            f"Bot estimate: {bot_estimate:.1f}%\n"
-            f"Crowd price: {crowd_price:.1f}%\n"
-            f"EV: {ev_pct:+.2f}% (after costs)\n"
-            f"Confidence: {evaluation.confidence:.2f}\n"
-            f"{why_line}\n"
-            f"Resolves: {market.end_date_iso.strftime('%Y-%m-%d')}\n"
-            f"Position: #{position_id}"
+        bankroll_after = 0.0
+        try:
+            bankroll_after = float(self.executor.get_bankroll())
+        except Exception:
+            pass
+        msg = tm.new_position(
+            question=market.question,
+            side=decision.side,
+            entry_cents=decision.entry_price * 100.0,
+            stake_usd=decision.stake_usd,
+            shares=decision.shares,
+            bot_estimate_pct=evaluation.probability_yes * 100.0,
+            crowd_price_pct=market.yes_price * 100.0,
+            ev_pct=decision.ev * 100.0,
+            confidence=evaluation.confidence,
+            bankroll_after=bankroll_after,
+            resolve_date=market.end_date_iso.strftime("%Y-%m-%d"),
+            mode="live" if self.executor.mode == "live" else "simulation",
         )
         try:
             await self.notifier.send(msg)

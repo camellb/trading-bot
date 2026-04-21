@@ -583,24 +583,22 @@ class BotAPI:
         if mode == current:
             return web.json_response({"status": "no_change", "mode": current})
 
-        self._pending_config = {"key": "PM_MODE", "value": mode, "previous": current}
-
-        if self._notifier is not None and hasattr(self._notifier, "send"):
-            try:
-                await self._notifier.send(
-                    f"⚠️ <b>Mode switch requested</b>\n"
-                    f"<code>PM_MODE</code>: {current} → {mode}\n"
-                    f"Reply /confirm-config to apply, /reject-config to cancel.\n"
-                    f"A bot restart (./bot.sh restart) is required after confirming."
-                )
-            except Exception as exc:
-                print(f"[bot_api] Telegram notify failed: {exc}", file=sys.stderr)
+        # Dashboard changes apply immediately — no Telegram confirmation round-trip.
+        try:
+            persist_config_value("PM_MODE", mode)
+            self._disk_mode = mode
+            _audit_config_change("PM_MODE", current, mode, "dashboard")
+        except Exception as exc:
+            return web.json_response(
+                {"status": "error", "reason": str(exc)}, status=500)
 
         return web.json_response({
-            "status": "pending",
+            "status": "applied",
+            "key": "PM_MODE",
             "previous": current,
-            "mode": mode,
-            "message": "Telegram confirmation sent. Awaiting /confirm-config or /reject-config. Restart required after confirming.",
+            "value": mode,
+            "restart_required": True,
+            "message": f"PM_MODE set to '{mode}'. Restart required: ./bot.sh restart",
         })
 
     async def _handle_update_config(self, request: web.Request) -> web.Response:
@@ -623,24 +621,21 @@ class BotAPI:
             }, status=400)
 
         current = getattr(config, key, None)
-        self._pending_config = {"key": key, "value": value, "previous": current}
 
-        if self._notifier is not None and hasattr(self._notifier, "send"):
-            try:
-                await self._notifier.send(
-                    f"⚙️ <b>Dashboard config change requested</b>\n"
-                    f"<code>{key}</code>: {current} → {value}\n"
-                    f"Reply /confirm-config to apply, /reject-config to cancel."
-                )
-            except Exception as exc:
-                print(f"[bot_api] Telegram notify failed: {exc}", file=sys.stderr)
+        # Dashboard changes apply immediately — no Telegram confirmation round-trip.
+        try:
+            persist_config_value(key, value)
+            importlib.reload(config)
+            _audit_config_change(key, current, value, "dashboard")
+        except Exception as exc:
+            return web.json_response(
+                {"status": "error", "reason": str(exc)}, status=500)
 
         return web.json_response({
-            "status": "pending",
+            "status": "applied",
             "key": key,
             "previous": current,
             "value": value,
-            "message": "Telegram confirmation sent. Awaiting /confirm-config or /reject-config.",
         })
 
     def apply_pending_config(self) -> dict:
