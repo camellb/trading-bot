@@ -9,3 +9,5 @@ feedparser
 google-genai
 ddgs
 trafilatura
+ccxt
+yfinance
