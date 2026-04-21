@@ -96,7 +96,11 @@ class PMAnalyst:
 
         # 3. Research.
         try:
-            research = await fetch_research(market.question, market.category_hint)
+            research = await fetch_research(
+                market.question,
+                market.category_hint,
+                days_to_resolution=market.days_to_end,
+            )
         except Exception as exc:
             print(f"[pm_analyst] research failed for {market.id}: {exc}",
                   file=sys.stderr)

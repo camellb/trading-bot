@@ -32,6 +32,7 @@ from sqlalchemy import text
 
 import config
 from db.engine import get_engine
+from research import live_crypto, live_equity
 
 try:
     from ddgs import DDGS
@@ -67,22 +68,29 @@ class ResearchBundle:
     news_snippets:   list[str]     = field(default_factory=list)
     base_rate_note:  Optional[str] = None
     external_news:   list[str]     = field(default_factory=list)
-    crypto_prices:   Optional[str] = None
-    sports_context:  Optional[str] = None
-    keywords:        list[str]     = field(default_factory=list)
-    sources:         list[str]     = field(default_factory=list)
+    crypto_prices:    Optional[str] = None
+    sports_context:   Optional[str] = None
+    live_market_data: Optional[str] = None
+    keywords:         list[str]     = field(default_factory=list)
+    sources:          list[str]     = field(default_factory=list)
 
     def to_prompt_block(self) -> str:
         """Format everything into a compact context block for Claude."""
         parts: list[str] = []
+        if self.live_market_data:
+            parts.append(
+                f"-- LIVE MARKET DATA (REAL-TIME) --\n"
+                f"{self.live_market_data.strip()}"
+            )
         if self.web_pages:
             pages = "\n\n".join(self.web_pages[:3])
             parts.append(f"-- Detailed web research --\n{pages}")
         if self.web_search:
             web = "\n".join(f"• {s}" for s in self.web_search[:8])
             parts.append(f"-- Web search results (current) --\n{web}")
-        if self.crypto_prices:
-            parts.append(f"-- Live market data --\n{self.crypto_prices.strip()}")
+        # CoinGecko spot fallback — only if live_market_data did not fire.
+        if self.crypto_prices and not self.live_market_data:
+            parts.append(f"-- Spot price (CoinGecko) --\n{self.crypto_prices.strip()}")
         if self.sports_context:
             parts.append(f"-- Sports data --\n{self.sports_context.strip()}")
         if self.wikipedia:
@@ -601,6 +609,90 @@ async def _fetch_crypto_prices(
     return "Current crypto prices (live):\n" + "\n".join(lines)
 
 
+# ── Live market data (OKX crypto + yfinance equity) ─────────────────────────
+_EQUITY_RE = re.compile(
+    r"\b(spx|s&p\s*500|sp500|spy|nasdaq|ndx|qqq|dow|dji|djia)\b",
+    re.IGNORECASE,
+)
+
+_CRYPTO_TOKEN_RE = re.compile(
+    r"\b(bitcoin|btc|ethereum|eth|solana|sol)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_crypto_symbols(question: str) -> list[str]:
+    """Return unique CCXT spot symbols implied by a question."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for tok in _CRYPTO_TOKEN_RE.findall(question):
+        sym = live_crypto.resolve_symbol(tok)
+        if sym and sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+    return out
+
+
+def _detect_equity_tickers(question: str) -> list[str]:
+    """Return unique Yahoo tickers implied by a question."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in _EQUITY_RE.findall(question):
+        # Normalise match ("S&P 500" / "sp500" / "spx" all → ^GSPC).
+        key = re.sub(r"\s+", "", raw).upper()
+        key = key.replace("S&P500", "SPX").replace("SP500", "SPX")
+        tk = live_equity.resolve_ticker(key)
+        if tk and tk not in seen:
+            seen.add(tk)
+            out.append(tk)
+    return out
+
+
+async def _fetch_live_market_data(
+    question:            str,
+    days_to_resolution:  Optional[float],
+) -> tuple[Optional[str], list[str]]:
+    """
+    Gate live crypto (<2 days) and live equity (<3 days) fetches.
+
+    Returns (block, sources). Both empty when no applicable symbol/ticker
+    matches or both adapters fail.
+    """
+    if days_to_resolution is None:
+        return None, []
+
+    blocks: list[str] = []
+    sources: list[str] = []
+
+    if days_to_resolution < 2.0:
+        symbols = _detect_crypto_symbols(question)
+        if symbols:
+            results = await asyncio.gather(
+                *(live_crypto.get_context(s) for s in symbols),
+                return_exceptions=True,
+            )
+            for sym, ctx in zip(symbols, results):
+                if isinstance(ctx, live_crypto.LiveCryptoContext):
+                    blocks.append(ctx.to_prompt_block())
+                    sources.append(f"okx:{sym}")
+
+    if days_to_resolution < 3.0:
+        tickers = _detect_equity_tickers(question)
+        if tickers:
+            results = await asyncio.gather(
+                *(live_equity.get_context(t) for t in tickers),
+                return_exceptions=True,
+            )
+            for tk, ctx in zip(tickers, results):
+                if isinstance(ctx, live_equity.LiveEquityContext):
+                    blocks.append(ctx.to_prompt_block())
+                    sources.append(f"yfinance:{tk}")
+
+    if not blocks:
+        return None, sources
+    return "\n\n".join(blocks), sources
+
+
 # ── DuckDuckGo web search ──────────────────────────────────────────────────
 def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
     if not _DDGS_AVAILABLE:
@@ -857,9 +949,10 @@ async def _fetch_top_pages(
 
 # ── Public entrypoint ────────────────────────────────────────────────────────
 async def fetch_research(
-    question:     str,
-    category:     Optional[str] = None,
-    max_wiki_kws: int           = 2,
+    question:            str,
+    category:            Optional[str] = None,
+    max_wiki_kws:        int           = 2,
+    days_to_resolution:  Optional[float] = None,
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
@@ -923,6 +1016,9 @@ async def fetch_research(
         wiki_tasks = {kw: asyncio.create_task(_fetch_wikipedia(session, kw))
                       for kw in wiki_task_keywords}
         crypto_task = asyncio.create_task(_fetch_crypto_prices(session, question))
+        live_md_task = asyncio.create_task(
+            _fetch_live_market_data(question, days_to_resolution)
+        )
         sports_task = None
         if detected_sport and detected_sport != "null" and detected_teams:
             sports_task = asyncio.create_task(
@@ -971,6 +1067,16 @@ async def fetch_research(
         if isinstance(crypto_res, str):
             bundle.crypto_prices = crypto_res
             bundle.sources.append("coingecko")
+
+        try:
+            live_md_res = await live_md_task
+        except Exception:
+            live_md_res = (None, [])
+        if live_md_res and isinstance(live_md_res, tuple):
+            live_block, live_sources = live_md_res
+            if live_block:
+                bundle.live_market_data = live_block
+                bundle.sources.extend(live_sources)
 
         if sports_task:
             try:
