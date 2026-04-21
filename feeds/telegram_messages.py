@@ -40,9 +40,7 @@ def new_position(
     entry_cents: float,
     stake_usd: float,
     shares: float,
-    bot_estimate_pct: float,
-    crowd_price_pct: float,
-    ev_pct: float,
+    forecast_pct: float,
     confidence: float,
     bankroll_after: float,
     resolve_date: str,
@@ -53,13 +51,11 @@ def new_position(
         f"🎯 <b>New position</b>{mode_suffix}\n"
         f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
         f"\n"
-        f"Side: {side} at {entry_cents:.1f}¢\n"
-        f"Stake: ${stake_usd:.2f} ({shares:.1f} shares)\n"
-        f"Delfi estimate: {bot_estimate_pct:.1f}%\n"
-        f"Market price: {crowd_price_pct:.1f}%\n"
-        f"Expected value: +{ev_pct:.2f}% after costs\n"
+        f"Delfi forecasts: {side} ({forecast_pct:.0f}% probability)\n"
         f"Confidence: {confidence:.2f}\n"
         f"\n"
+        f"Buying {side} at {entry_cents:.1f}¢\n"
+        f"Stake: ${stake_usd:.2f} ({shares:.1f} shares)\n"
         f"Balance: ${bankroll_after:.2f}\n"
         f"Resolves: {resolve_date}"
     )

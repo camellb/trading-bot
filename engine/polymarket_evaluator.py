@@ -4,8 +4,10 @@ a single binary prediction market.
 
 Design goals:
   * Claude sees the question + description + resolution horizon + market price.
-  * Market price is shown as a prior that Claude should correct — the prompt
-    asks Claude to evaluate whether the crowd price is too high, too low, or fair.
+  * Market price is context only, not a prior. The prompt explicitly tells
+    Claude to forecast what the evidence says regardless of the crowd price
+    and never to anchor or hedge toward it. Side selection downstream is
+    based on Claude's forecast alone (back-the-forecast doctrine).
   * Output is strict JSON:
       {
         "probability_yes": 0..1,

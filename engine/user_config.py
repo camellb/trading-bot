@@ -26,8 +26,12 @@ DEFAULT_USER_ID = "default"
 
 @dataclass
 class UserConfig:
-    # EV / sizing.
-    min_ev_threshold:       float = 0.03
+    # Sizer thresholds — three gates + confidence softener.
+    min_p_win:                      float = 0.50
+    min_expected_return:            float = 0.05
+    confidence_full_stake:          float = 0.70
+    confidence_override_threshold:  float = 0.75
+
     base_stake_pct:         float = 0.02
     max_stake_pct:          float = 0.05
 
@@ -41,9 +45,7 @@ class UserConfig:
     # Diagnostic-driven overrides (populated by learning cadence proposals).
     # None / empty mean "use the sizer default".
     cost_assumption_override: Optional[float]   = None
-    probability_cap:          Optional[float]   = None
     archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
-    ev_bucket_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -53,43 +55,59 @@ class UserConfig:
 # Diagnostic-driven overrides use None to mean "unset"; bounds only apply
 # when a concrete value is supplied.
 USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
-    "min_ev_threshold":         (0.01, 0.10),
-    "base_stake_pct":           (0.005, 0.05),
-    "max_stake_pct":            (0.01, 0.10),
-    "daily_loss_limit_pct":     (0.05, 0.25),
-    "weekly_loss_limit_pct":    (0.10, 0.40),
-    "drawdown_halt_pct":        (0.20, 0.60),
-    "streak_cooldown_losses":   (2, 10),
-    "dry_powder_reserve_pct":   (0.10, 0.40),
-    "cost_assumption_override": (0.0, 0.10),
-    "probability_cap":          (0.50, 0.99),
+    "min_p_win":                     (0.50, 0.90),
+    "min_expected_return":           (0.01, 0.20),
+    "confidence_full_stake":         (0.50, 0.90),
+    "confidence_override_threshold": (0.60, 0.95),
+    "base_stake_pct":                (0.005, 0.05),
+    "max_stake_pct":                 (0.01, 0.10),
+    "daily_loss_limit_pct":          (0.05, 0.25),
+    "weekly_loss_limit_pct":         (0.10, 0.40),
+    "drawdown_halt_pct":             (0.20, 0.60),
+    "streak_cooldown_losses":        (2, 10),
+    "dry_powder_reserve_pct":        (0.10, 0.40),
+    "cost_assumption_override":      (0.0, 0.10),
 }
 
-# Fields whose concrete values are collections of archetype or bucket labels,
+# Fields whose concrete values are collections of archetype labels,
 # not numerics. `None` / empty means "no override"; bounds do not apply.
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = (
     "archetype_skip_list",
-    "ev_bucket_skip_list",
 )
 
 # Fields whose numeric values may legally be `None` (unset).
 USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
     "cost_assumption_override",
-    "probability_cap",
 )
 
 
 # Inline explanations rendered alongside each field on the dashboard.
 USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
-    "min_ev_threshold":
-        "Minimum expected value after costs required to take a bet. "
-        "Higher values mean fewer, higher-conviction trades.",
+    "min_p_win":
+        "Minimum probability the chosen side must have to take a bet. "
+        "Side is the side Claude's forecast favors; p_win is Claude's "
+        "probability for that side. Higher values filter out low-conviction "
+        "bets even when direction agrees with the market.",
+    "min_expected_return":
+        "Minimum payoff after costs required to take a bet. Computed as "
+        "(1 / ask_price) − 1 − cost_assumption. Prevents trades where the "
+        "ask is so close to $1 that there is nothing left to win.",
+    "confidence_full_stake":
+        "Confidence at which the sizer applies the full configured stake. "
+        "At confidence 0 the multiplier is 1%; it scales linearly to 100% "
+        "at this threshold, then holds at 100% above. The softener never "
+        "skips — only shrinks size when confidence is low.",
+    "confidence_override_threshold":
+        "Confidence at or above which the sizer ignores the market and "
+        "follows Claude's forecast directly. Below this value the side is "
+        "picked by the mean of Claude's probability and the market's "
+        "implied probability.",
     "base_stake_pct":
-        "Baseline stake as a fraction of bankroll when Claude's "
-        "confidence is in the 0.5–0.8 range.",
+        "Baseline stake as a fraction of bankroll at full confidence, "
+        "before the confidence softener and max_stake cap apply.",
     "max_stake_pct":
         "Hard cap per trade as a fraction of bankroll, regardless of "
-        "confidence or expected value.",
+        "confidence.",
     "daily_loss_limit_pct":
         "Halts new trades if today's realized loss exceeds this fraction "
         "of starting bankroll.",
@@ -109,32 +127,27 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Override the sizer's default cost assumption (spread + fees + "
         "slippage). Set when realised cost drifts above the default; leave "
         "unset to use the built-in 1.5% estimate.",
-    "probability_cap":
-        "Cap on emitted probabilities. When calibration shows overconfidence "
-        "in high-p bins, capping p at the observed ceiling prevents sizing "
-        "from amplifying the overshoot. Leave unset to disable.",
     "archetype_skip_list":
         "Archetypes the sizer will refuse to trade. Populated by the "
         "learning cadence when an archetype's Brier score exceeds the "
         "uninformed baseline over a reliable sample.",
-    "ev_bucket_skip_list":
-        "EV buckets the sizer will refuse to trade in. Populated when a "
-        "bucket's realised ROI is persistently negative.",
 }
 
 
 # Type caster per field — applied when accepting updates from the dashboard.
 _CASTERS: dict[str, type] = {
-    "min_ev_threshold":         float,
-    "base_stake_pct":           float,
-    "max_stake_pct":            float,
-    "daily_loss_limit_pct":     float,
-    "weekly_loss_limit_pct":    float,
-    "drawdown_halt_pct":        float,
-    "streak_cooldown_losses":   int,
-    "dry_powder_reserve_pct":   float,
-    "cost_assumption_override": float,
-    "probability_cap":          float,
+    "min_p_win":                     float,
+    "min_expected_return":           float,
+    "confidence_full_stake":         float,
+    "confidence_override_threshold": float,
+    "base_stake_pct":                float,
+    "max_stake_pct":                 float,
+    "daily_loss_limit_pct":          float,
+    "weekly_loss_limit_pct":         float,
+    "drawdown_halt_pct":             float,
+    "streak_cooldown_losses":        int,
+    "dry_powder_reserve_pct":        float,
+    "cost_assumption_override":      float,
 }
 
 
@@ -237,29 +250,31 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
         from db.engine import get_engine
         with get_engine().begin() as conn:
             row = conn.execute(text(
-                "SELECT min_ev_threshold, base_stake_pct, max_stake_pct, "
+                "SELECT base_stake_pct, max_stake_pct, "
                 "       daily_loss_limit_pct, weekly_loss_limit_pct, "
                 "       drawdown_halt_pct, streak_cooldown_losses, "
                 "       dry_powder_reserve_pct, "
-                "       cost_assumption_override, probability_cap, "
-                "       archetype_skip_list, ev_bucket_skip_list "
+                "       cost_assumption_override, archetype_skip_list, "
+                "       min_p_win, min_expected_return, "
+                "       confidence_full_stake, confidence_override_threshold "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
             if row is None:
                 return UserConfig()
             return UserConfig(
-                min_ev_threshold         = float(row[0]),
-                base_stake_pct           = float(row[1]),
-                max_stake_pct            = float(row[2]),
-                daily_loss_limit_pct     = float(row[3]),
-                weekly_loss_limit_pct    = float(row[4]),
-                drawdown_halt_pct        = float(row[5]),
-                streak_cooldown_losses   = int(row[6]),
-                dry_powder_reserve_pct   = float(row[7]),
-                cost_assumption_override = (float(row[8]) if row[8] is not None else None),
-                probability_cap          = (float(row[9]) if row[9] is not None else None),
-                archetype_skip_list      = _decode_csv(row[10]),
-                ev_bucket_skip_list      = _decode_csv(row[11]),
+                base_stake_pct                = float(row[0]),
+                max_stake_pct                 = float(row[1]),
+                daily_loss_limit_pct          = float(row[2]),
+                weekly_loss_limit_pct         = float(row[3]),
+                drawdown_halt_pct             = float(row[4]),
+                streak_cooldown_losses        = int(row[5]),
+                dry_powder_reserve_pct        = float(row[6]),
+                cost_assumption_override      = (float(row[7]) if row[7] is not None else None),
+                archetype_skip_list           = _decode_csv(row[8]),
+                min_p_win                     = float(row[9]),
+                min_expected_return           = float(row[10]),
+                confidence_full_stake         = float(row[11]),
+                confidence_override_threshold = float(row[12]),
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",

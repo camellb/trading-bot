@@ -41,26 +41,19 @@ MIN_BUCKET_N = 20
 
 # Stricter per-diagnostic gates (in trade-count) for proposers where the
 # downside of acting on a noisy bucket is higher.
-STRICT_BUCKET_N = 30          # archetype- and EV-bucket-level decisions.
+STRICT_BUCKET_N = 30          # archetype-level decisions.
 COST_CORRECTION_MIN_N = 50    # cost assumption correction.
-SELECTION_LOOSEN_MIN_N = 50   # selection-gate loosening.
 
-# UserConfig fields that do NOT exist yet — proposals on these are advisory
-# (surfaced to the user, backtest_delta=None) until Commit 4 adds the fields
-# and teaches the sizer/backtester to honour them.
+# Proposals whose target field is list-shaped. `_attach_backtest_delta` still
+# builds a modified config and runs the simulation, but these proposals
+# surface without a numeric backtest_delta in the dashboard for now.
 ADVISORY_PARAMS = {
-    "cost_assumption_override",
-    "probability_cap",
     "archetype_skip_list",
-    "ev_bucket_skip_list",
 }
 
 # 0.25 is the Brier score of uninformed forecasts on binary outcomes; an
 # archetype scoring worse than that is demonstrably mis-forecast.
 ARCHETYPE_BRIER_THRESHOLD = 0.25
-
-# Predicted-vs-actual gap in a high-confidence bin that signals overconfidence.
-CALIBRATION_GAP_THRESHOLD = 0.10
 
 # Realised-vs-assumed cost gap meaningful enough to act on.
 COST_DELTA_THRESHOLD = 0.005
@@ -74,9 +67,9 @@ class Proposal:
     evidence:       str
     backtest_delta: Optional[float] = None
     backtest_trades: Optional[int]   = None
-    # In-memory only: carries the specific item (archetype, EV bucket, etc.)
-    # and a suggested new tuple/value that `_attach_backtest_delta` can use
-    # to construct the modified UserConfig for the simulation.
+    # In-memory only: carries the specific item (archetype, etc.) and a
+    # suggested new tuple/value that `_attach_backtest_delta` can use to
+    # construct the modified UserConfig for the simulation.
     proposal_metadata: Optional[dict] = None
 
 
@@ -145,51 +138,6 @@ def propose_suggestions(stats: dict, current: UserConfig,
     if n < MIN_BUCKET_N:
         return out
 
-    roi = float(recent.get("roi", 0.0))
-    win_rate = float(recent.get("win_rate", 0.0))
-
-    # Sustained losing streak → raise threshold (fewer, higher-conviction bets).
-    if roi < -0.05 and win_rate < 0.45:
-        lo, hi = USER_CONFIG_BOUNDS["min_ev_threshold"]
-        proposed = min(round(current.min_ev_threshold * 1.3, 4), hi)
-        if proposed > current.min_ev_threshold + 0.005:
-            out.append(Proposal(
-                param_name="min_ev_threshold",
-                current_value=current.min_ev_threshold,
-                proposed_value=proposed,
-                evidence=(
-                    f"Last {n} settled trades: ROI {roi*100:+.1f}%, win rate "
-                    f"{win_rate*100:.1f}%. Raising the EV threshold selects for "
-                    f"higher-conviction bets and should reduce noise trades."
-                ),
-                proposal_metadata={
-                    "operation": "scalar_set",
-                    "field":     "min_ev_threshold",
-                    "value":     proposed,
-                },
-            ))
-
-    # Sustained winning pattern → lower threshold (capture more +EV).
-    if roi > 0.08 and win_rate > 0.55:
-        lo, hi = USER_CONFIG_BOUNDS["min_ev_threshold"]
-        proposed = max(round(current.min_ev_threshold * 0.8, 4), lo)
-        if proposed < current.min_ev_threshold - 0.005:
-            out.append(Proposal(
-                param_name="min_ev_threshold",
-                current_value=current.min_ev_threshold,
-                proposed_value=proposed,
-                evidence=(
-                    f"Last {n} settled trades: ROI {roi*100:+.1f}%, win rate "
-                    f"{win_rate*100:.1f}%. Lowering the EV threshold captures "
-                    f"more positive-EV trades the book is handling well."
-                ),
-                proposal_metadata={
-                    "operation": "scalar_set",
-                    "field":     "min_ev_threshold",
-                    "value":     proposed,
-                },
-            ))
-
     # Drawdown pressure → cut max stake.
     peak_dd = float(recent.get("peak_drawdown_pct", 0.0))
     if peak_dd >= 0.25 and current.max_stake_pct > 0.02:
@@ -218,10 +166,7 @@ def propose_suggestions(stats: dict, current: UserConfig,
         diag = _collect_diagnostics()
 
     out.extend(_propose_archetype_threshold(diag, current))
-    out.extend(_propose_calibration_shrinkage(diag, current))
     out.extend(_propose_cost_correction(diag, current))
-    out.extend(_propose_selection_loosening(diag, current))
-    out.extend(_propose_ev_bucket_exclude(diag, current))
 
     return out
 
@@ -233,10 +178,7 @@ def _collect_diagnostics() -> dict:
         from engine import diagnostics as D
         return {
             "brier_by_archetype": D.brier_by_archetype("all"),
-            "calibration_curve":  D.calibration_curve("all"),
             "cost_validation":    D.cost_validation(),
-            "selection_quality":  D.selection_quality(),
-            "roi_by_ev_bucket":   D.roi_by_ev_bucket(),
         }
     except Exception as exc:
         print(f"[learning_cadence] diag collection failed: {exc}",
@@ -249,9 +191,8 @@ def _propose_archetype_threshold(diag: dict,
                                  current: UserConfig) -> list[Proposal]:
     """
     Flag archetypes whose Brier score exceeds the uninformed baseline with
-    a reliable sample. Proposal is advisory — skip that archetype until
-    the forecaster improves — pending the Commit 4 `archetype_skip_list`
-    sizer field.
+    a reliable sample. Proposal: add the archetype to archetype_skip_list so
+    the sizer stops trading markets the forecaster demonstrably mis-calibrates.
     """
     out: list[Proposal] = []
     rows = diag.get("brier_by_archetype") or []
@@ -283,63 +224,12 @@ def _propose_archetype_threshold(diag: dict,
     return out
 
 
-def _propose_calibration_shrinkage(diag: dict,
-                                   current: UserConfig) -> list[Proposal]:
-    """
-    Detect systematic overconfidence at the top of the reliability diagram:
-    when the mean predicted probability in a high-p bin (>= 0.7) exceeds the
-    mean actual resolution rate by more than CALIBRATION_GAP_THRESHOLD.
-    Proposal: cap predictions above the observed ceiling. Advisory —
-    `probability_cap` sizer field lands in Commit 4.
-    """
-    out: list[Proposal] = []
-    cc = diag.get("calibration_curve") or {}
-    bins = cc.get("bins") or []
-    # Find the worst offender in the high-p half.
-    worst = None
-    worst_gap = 0.0
-    for b in bins:
-        lo = float(b.get("lo", 0.0) or 0.0)
-        n  = int(b.get("n", 0) or 0)
-        mp = b.get("mean_pred")
-        ma = b.get("mean_actual")
-        if lo < 0.7 or n < STRICT_BUCKET_N or mp is None or ma is None:
-            continue
-        gap = float(mp) - float(ma)
-        if gap > worst_gap:
-            worst_gap = gap
-            worst = b
-    if worst is None or worst_gap < CALIBRATION_GAP_THRESHOLD:
-        return out
-    cap = round(max(0.5, min(0.95, float(worst["mean_actual"]) + 0.02)), 3)
-    out.append(Proposal(
-        param_name="probability_cap",
-        current_value=None,
-        proposed_value=cap,
-        evidence=(
-            f"Reliability bin [{worst['lo']:.1f}, {worst['hi']:.1f}]: mean "
-            f"predicted {worst['mean_pred']:.3f} vs mean actual "
-            f"{worst['mean_actual']:.3f} over n={worst['n']} — the forecaster "
-            f"is overconfident by {worst_gap*100:.1f}pp. Proposal: cap "
-            f"emitted probabilities at {cap:.2f} so sizing stops amplifying "
-            f"the overshoot."
-        ),
-        proposal_metadata={
-            "operation": "scalar_set",
-            "field":     "probability_cap",
-            "value":     cap,
-        },
-    ))
-    return out
-
-
 def _propose_cost_correction(diag: dict,
                              current: UserConfig) -> list[Proposal]:
     """
     If the realised implied cost exceeds the sizer's assumed cost by more
     than COST_DELTA_THRESHOLD over a meaningful sample, propose raising the
-    assumed cost so EV math reflects reality. Advisory —
-    `cost_assumption_override` sizer field lands in Commit 4.
+    assumed cost so the expected-return gate reflects reality.
     """
     out: list[Proposal] = []
     cv = diag.get("cost_validation") or {}
@@ -359,8 +249,8 @@ def _propose_cost_correction(diag: dict,
         evidence=(
             f"Realised implied cost {implied*100:.2f}% exceeds assumed cost "
             f"{assumed*100:.2f}% by {delta*100:.2f}pp across n={n} settled "
-            f"positions. EV math currently over-estimates by that amount. "
-            f"Proposal: set cost_assumption_override={proposed}."
+            f"positions. Gate 3 (min expected return) currently over-estimates "
+            f"by that amount. Proposal: set cost_assumption_override={proposed}."
         ),
         proposal_metadata={
             "operation": "scalar_set",
@@ -368,89 +258,6 @@ def _propose_cost_correction(diag: dict,
             "value":     proposed,
         },
     ))
-    return out
-
-
-def _propose_selection_loosening(diag: dict,
-                                 current: UserConfig) -> list[Proposal]:
-    """
-    If the $10-flat-stake counterfactual ROI on *skipped* predictions is
-    higher than the realised ROI on *traded* positions, the selection gate
-    is rejecting too much. Propose lowering `min_ev_threshold`. Actionable —
-    target field already exists on UserConfig.
-    """
-    out: list[Proposal] = []
-    sq = diag.get("selection_quality") or {}
-    traded = sq.get("traded") or {}
-    skipped = sq.get("skipped_counterfactual") or {}
-
-    t_n = int(traded.get("n", 0) or 0)
-    s_n = int(skipped.get("n", 0) or 0)
-    t_roi = traded.get("roi")
-    s_roi = skipped.get("roi")
-
-    if (t_n < SELECTION_LOOSEN_MIN_N or s_n < SELECTION_LOOSEN_MIN_N
-            or t_roi is None or s_roi is None):
-        return out
-    if float(s_roi) <= float(t_roi):
-        return out
-
-    lo, hi = USER_CONFIG_BOUNDS["min_ev_threshold"]
-    proposed = max(round(current.min_ev_threshold * 0.8, 4), lo)
-    if proposed >= current.min_ev_threshold - 0.005:
-        return out
-    out.append(Proposal(
-        param_name="min_ev_threshold",
-        current_value=current.min_ev_threshold,
-        proposed_value=proposed,
-        evidence=(
-            f"Skipped counterfactual ROI {float(s_roi)*100:+.1f}% (n={s_n}) "
-            f"beats traded ROI {float(t_roi)*100:+.1f}% (n={t_n}). The "
-            f"selection gate is discarding winners. Proposal: lower "
-            f"min_ev_threshold from {current.min_ev_threshold*100:.1f}% to "
-            f"{proposed*100:.1f}% so more +EV opportunities pass through."
-        ),
-        proposal_metadata={
-            "operation": "scalar_set",
-            "field":     "min_ev_threshold",
-            "value":     proposed,
-        },
-    ))
-    return out
-
-
-def _propose_ev_bucket_exclude(diag: dict,
-                               current: UserConfig) -> list[Proposal]:
-    """
-    For each EV bucket with persistent negative ROI over a reliable sample,
-    propose adding it to the skip list. Advisory — `ev_bucket_skip_list`
-    sizer field lands in Commit 4.
-    """
-    out: list[Proposal] = []
-    rows = diag.get("roi_by_ev_bucket") or []
-    for r in rows:
-        n = int(r.get("n", 0) or 0)
-        roi = r.get("roi")
-        bucket = r.get("bucket")
-        if n < MIN_BUCKET_N or roi is None or not bucket:
-            continue
-        if float(roi) >= 0.0:
-            continue
-        out.append(Proposal(
-            param_name="ev_bucket_skip_list",
-            current_value=None,
-            proposed_value=None,
-            evidence=(
-                f"EV bucket '{bucket}' has ROI {float(roi)*100:+.1f}% over "
-                f"n={n} settled positions — persistently negative. Proposal: "
-                f"add '{bucket}' to ev_bucket_skip_list."
-            ),
-            proposal_metadata={
-                "operation":    "list_append",
-                "target_field": "ev_bucket_skip_list",
-                "items":        [bucket],
-            },
-        ))
     return out
 
 
@@ -554,18 +361,17 @@ def _gather_stats(mode: str, limit: int) -> dict:
 
 
 def _attach_backtest_delta(prop: Proposal, current: UserConfig) -> None:
-    """Populate backtest_delta on a proposal using the EV backtester.
+    """Populate backtest_delta on a proposal using the backtester.
 
-    Scalar proposals (min_ev_threshold, max_stake_pct, cost_assumption_override,
-    probability_cap) are applied via dataclass replace. List proposals
-    (archetype_skip_list, ev_bucket_skip_list) read proposal_metadata['add']
-    and append to the existing tuple."""
+    Scalar proposals (max_stake_pct, cost_assumption_override) are applied
+    via dataclass replace. List proposals (archetype_skip_list) read
+    proposal_metadata['items'] and append to the existing tuple."""
     try:
         modified = _build_modified_config(prop, current)
         if modified is None:
             return
 
-        from backtester.ev_backtester import load_evaluations, simulate_with_config
+        from backtester.forecast_backtester import load_evaluations, simulate_with_config
         evals = load_evaluations(since_days=90)
         if not evals:
             return

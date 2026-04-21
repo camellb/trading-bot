@@ -51,8 +51,10 @@ HORIZON_BUCKETS: list[tuple[str, float, Optional[float]]] = [
     ("30d+",  720.0, None),
 ]
 
-# EV buckets mirror backtester.ev_backtester.EV_BUCKETS so proposers can
-# compare realised-vs-simulated across the same grid.
+# EV buckets mirror backtester.forecast_backtester.EV_BUCKETS so diagnostics
+# can compare realised-vs-simulated across the same grid. Under the
+# three-gate sizer doctrine EV is no longer a fire condition — these
+# buckets exist for schema continuity and historical reporting only.
 EV_BUCKETS: list[tuple[str, float, float]] = [
     ("3-5%",   0.03, 0.05),
     ("5-10%",  0.05, 0.10),

@@ -1,10 +1,10 @@
 """
-Phase 5 tests — EV backtester analytics.
+Forecast-backtester analytics tests.
 
 The real 90-day pass needs a live database. These tests drive the
 pure-function simulator with synthetic evaluations so the distribution
-roll-ups (EV buckets, archetype breakdown) and core totals are
-exercised deterministically.
+roll-ups (EV buckets — retained for schema continuity, not as a gate —
+and archetype breakdown) and core totals are exercised deterministically.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backtester.ev_backtester import (
+from backtester.forecast_backtester import (
     EV_BUCKETS,
     Evaluation,
     archetype_distribution,
@@ -37,21 +37,27 @@ def e(market_id: str, yes: float, claude_p: float, conf: float,
 
 class ReplayStructureTests(unittest.TestCase):
     def test_deduplicates_by_market_id(self):
+        # Direction-agreeing fixtures so Gate 1 passes: ask_yes > 0.50.
         evals = [
-            e("m1", 0.40, 0.70, 0.70, "politics", outcome=1),
-            e("m1", 0.42, 0.72, 0.75, "politics", outcome=1),
+            e("m1", 0.60, 0.70, 0.70, "politics", outcome=1),
+            e("m1", 0.62, 0.72, 0.75, "politics", outcome=1),
         ]
         r = simulate_with_config(evals, UserConfig(), starting_cash=1000.0)
         self.assertEqual(r["trades_taken"], 1)
 
-    def test_skips_below_threshold(self):
-        # ev ≈ 0.55/0.54 - 1 - 0.015 ≈ +0.35% → under 3% threshold.
+    def test_no_coin_flip_dead_zone(self):
+        # Under the mean-rule + override doctrine Gate 1 never skips. A
+        # claude_p right next to 0.50 with market support still fires as
+        # long as Gate 2 (p_win >= min_p_win) and Gate 3 (expected_return)
+        # pass. claude_p=0.55, ask_yes=0.54, conf=0.70 (below override):
+        # mean = 0.545 → YES, p_win = 0.55 passes default 0.50, exp_ret
+        # ≈ 0.837 passes default 0.05. Trade fires.
         r = simulate_with_config(
             [e("m1", 0.54, 0.55, 0.70, "other")],
             UserConfig(),
             starting_cash=1000.0,
         )
-        self.assertEqual(r["trades_taken"], 0)
+        self.assertEqual(r["trades_taken"], 1)
 
 
 class BucketDistributionTests(unittest.TestCase):
@@ -72,23 +78,29 @@ class BucketDistributionTests(unittest.TestCase):
         labels = {b["bucket"] for b in r["ev_buckets"]}
         self.assertSetEqual(labels, {"3-5%", "5-10%", "10-20%", "20%+"})
 
-    def test_bucket_totals_match_trade_count(self):
+    def test_bucket_totals_are_empty_under_doctrine(self):
+        # Under the back-the-forecast doctrine, SizingDecision.ev is always
+        # 0.0, so every simulated trade falls below the first bucket's 3%
+        # floor. Bucket n should be zero while trades_taken is positive —
+        # the buckets are retained for schema continuity, not reporting.
         evals = [
-            e("m1", 0.50, 0.80, 0.80, "sports", outcome=1),
+            e("m1", 0.55, 0.80, 0.80, "sports", outcome=1),
             e("m2", 0.55, 0.65, 0.70, "politics", outcome=0),
             e("m3", 0.56, 0.60, 0.70, "macro", outcome=1),
         ]
         r = simulate_with_config(evals, UserConfig(), starting_cash=1000.0)
         total_in_buckets = sum(b["n"] for b in r["ev_buckets"])
-        self.assertEqual(total_in_buckets, r["trades_taken"])
+        self.assertEqual(total_in_buckets, 0)
+        self.assertGreater(r["trades_taken"], 0)
 
 
 class ArchetypeDistributionTests(unittest.TestCase):
     def test_groups_by_category(self):
+        # All direction-agreeing (ask_yes > 0.50) and p_win >= 0.65.
         evals = [
-            e("m1", 0.50, 0.80, 0.80, "sports", outcome=1),
-            e("m2", 0.55, 0.80, 0.80, "sports", outcome=1),
-            e("m3", 0.55, 0.65, 0.70, "politics", outcome=0),
+            e("m1", 0.55, 0.80, 0.80, "sports", outcome=1),
+            e("m2", 0.60, 0.80, 0.80, "sports", outcome=1),
+            e("m3", 0.60, 0.70, 0.70, "politics", outcome=0),
         ]
         r = simulate_with_config(evals, UserConfig(), starting_cash=1000.0)
         cats = {b["category"]: b for b in r["by_archetype"]}
@@ -109,7 +121,7 @@ class ArchetypeDistributionTests(unittest.TestCase):
 class DecisionRuleReportTests(unittest.TestCase):
     def test_report_mentions_required_sections(self):
         r = simulate_with_config(
-            [e("m1", 0.50, 0.80, 0.80, "sports", outcome=1)],
+            [e("m1", 0.55, 0.80, 0.80, "sports", outcome=1)],
             UserConfig(),
             starting_cash=1000.0,
         )
@@ -126,13 +138,13 @@ class PnlArithmeticTests(unittest.TestCase):
     def test_win_pays_one_per_share_minus_cost(self):
         # Single YES bet at $0.50 with winning outcome: proceeds = shares
         # (since settlement_price = 1.0 for winners).
-        evals = [e("m1", 0.50, 0.80, 0.80, "sports", outcome=1)]
+        evals = [e("m1", 0.55, 0.80, 0.80, "sports", outcome=1)]
         r = simulate_with_config(evals, UserConfig(), starting_cash=1000.0)
         self.assertEqual(r["wins"], 1)
         self.assertGreater(r["total_pnl"], 0.0)
 
     def test_loss_costs_the_full_stake(self):
-        evals = [e("m1", 0.50, 0.80, 0.80, "sports", outcome=0)]
+        evals = [e("m1", 0.55, 0.80, 0.80, "sports", outcome=0)]
         r = simulate_with_config(evals, UserConfig(), starting_cash=1000.0)
         self.assertEqual(r["wins"], 0)
         self.assertLess(r["total_pnl"], 0.0)

@@ -13,10 +13,14 @@ PM_LIVE_STARTING_CASH   = 200.0
 
 
 # ── Sizing ───────────────────────────────────────────────────────────────────
-# All sizing is positive-EV with flat stakes. See execution/pm_sizer.py for
-# the math and engine/user_config.py for per-user thresholds (min_ev_threshold,
-# base_stake_pct, max_stake_pct). No global Kelly, no edge floors — those are
-# a deliberately abandoned paradigm.
+# All sizing runs the three-gate sizer: direction agreement (Gate 1), min
+# p_win (Gate 2), min expected return (Gate 3), then a confidence softener
+# that never skips — only shrinks the stake when confidence is low.
+# See execution/pm_sizer.py for the implementation and
+# engine/user_config.py for the per-user thresholds (min_p_win,
+# min_expected_return, base_stake_pct, max_stake_pct). No Kelly, no
+# EV-as-primary-gate, no market-anchored filters — those are a
+# deliberately abandoned paradigm.
 
 # Max simultaneous open positions across all markets.
 PM_MAX_CONCURRENT_POSITIONS = 100
@@ -36,8 +40,9 @@ PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving mar
 
 # ── Scheduler cadence ────────────────────────────────────────────────────────
 # Market scan: how often we look for new opportunities.
-# 1H is a good balance — PM markets move slowly, but news-driven pricing
-# shifts can create short-lived edges.
+# 30m is a good balance — PM markets move slowly, but news-driven pricing
+# shifts can move the forecasted probability into or out of the tradeable
+# band quickly.
 PM_SCAN_INTERVAL_MINUTES = 30
 
 # Position resolver: checks for settled markets and updates P&L.

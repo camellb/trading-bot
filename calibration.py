@@ -1,6 +1,6 @@
 """
-Calibration instrument — the foundation for knowing whether any of the
-bot's strategies actually have edge.
+Calibration instrument — the foundation for knowing whether the
+forecaster is well-calibrated, per category and overall.
 
 Design:
   * Every actionable prediction (a crypto TRADE, a Polymarket bet, a backtest

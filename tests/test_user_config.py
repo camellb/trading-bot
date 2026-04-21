@@ -32,9 +32,15 @@ class DefaultsMatchDoctrineTests(unittest.TestCase):
 
     def test_defaults(self):
         u = UserConfig()
-        self.assertAlmostEqual(u.min_ev_threshold,       0.03)
+        # Three-gate sizer thresholds + confidence softener.
+        self.assertAlmostEqual(u.min_p_win,                     0.50)
+        self.assertAlmostEqual(u.min_expected_return,           0.05)
+        self.assertAlmostEqual(u.confidence_full_stake,         0.70)
+        self.assertAlmostEqual(u.confidence_override_threshold, 0.75)
+        # Stake sizing.
         self.assertAlmostEqual(u.base_stake_pct,         0.02)
         self.assertAlmostEqual(u.max_stake_pct,          0.05)
+        # Circuit breakers.
         self.assertAlmostEqual(u.daily_loss_limit_pct,   0.10)
         self.assertAlmostEqual(u.weekly_loss_limit_pct,  0.20)
         self.assertAlmostEqual(u.drawdown_halt_pct,      0.40)
@@ -54,14 +60,14 @@ class DefaultsMatchDoctrineTests(unittest.TestCase):
 class BoundsValidationTests(unittest.TestCase):
     def test_in_range_accepted(self):
         # At the lower bound, at the upper bound, and in the middle.
-        validate_user_config_value("min_ev_threshold", 0.01)
-        validate_user_config_value("min_ev_threshold", 0.10)
-        validate_user_config_value("min_ev_threshold", 0.05)
+        validate_user_config_value("min_expected_return", 0.01)
+        validate_user_config_value("min_expected_return", 0.20)
+        validate_user_config_value("min_expected_return", 0.05)
 
     def test_below_min_rejected(self):
         with self.assertRaises(ValueError) as ctx:
-            validate_user_config_value("min_ev_threshold", 0.009)
-        self.assertIn("min_ev_threshold", str(ctx.exception))
+            validate_user_config_value("min_expected_return", 0.009)
+        self.assertIn("min_expected_return", str(ctx.exception))
 
     def test_above_max_rejected(self):
         with self.assertRaises(ValueError):
@@ -85,8 +91,8 @@ class BoundsValidationTests(unittest.TestCase):
 
 class CastValueTests(unittest.TestCase):
     def test_float_field_accepts_str_and_int(self):
-        self.assertEqual(cast_value("min_ev_threshold", "0.05"), 0.05)
-        self.assertEqual(cast_value("min_ev_threshold", 1),      1.0)
+        self.assertEqual(cast_value("min_expected_return", "0.05"), 0.05)
+        self.assertEqual(cast_value("base_stake_pct",      "0.02"), 0.02)
 
     def test_int_field_requires_int_like(self):
         self.assertEqual(cast_value("streak_cooldown_losses", 4),   4)
@@ -101,13 +107,13 @@ class CastValueTests(unittest.TestCase):
 
 class ValidatedUpdatePayloadTests(unittest.TestCase):
     def test_valid_multi_field_update(self):
-        payload = {"min_ev_threshold": "0.04", "base_stake_pct": 0.015}
+        payload = {"min_expected_return": "0.04", "base_stake_pct": 0.015}
         clean = validated_update_payload(payload)
-        self.assertEqual(clean["min_ev_threshold"], 0.04)
-        self.assertEqual(clean["base_stake_pct"],   0.015)
+        self.assertEqual(clean["min_expected_return"], 0.04)
+        self.assertEqual(clean["base_stake_pct"],      0.015)
 
     def test_mixed_valid_and_invalid_raises(self):
-        payload = {"min_ev_threshold": 0.04, "max_stake_pct": 0.50}
+        payload = {"min_expected_return": 0.04, "max_stake_pct": 0.50}
         with self.assertRaises(ValueError):
             validated_update_payload(payload)
 
@@ -121,21 +127,23 @@ class ValidatedUpdatePayloadTests(unittest.TestCase):
 
 
 class DiagnosticOverrideFieldsTests(unittest.TestCase):
-    """Commit 4 — diagnostic-driven override fields on UserConfig."""
+    """Diagnostic-driven override fields on UserConfig.
+
+    After the doctrine change to three-gate sizing, only two override
+    surfaces remain: `cost_assumption_override` (nullable float) and
+    `archetype_skip_list` (tuple of strings).
+    """
 
     def test_defaults_are_unset(self):
         u = UserConfig()
         self.assertIsNone(u.cost_assumption_override)
-        self.assertIsNone(u.probability_cap)
         self.assertEqual(u.archetype_skip_list, tuple())
-        self.assertEqual(u.ev_bucket_skip_list, tuple())
 
     def test_nullable_cast_accepts_none_and_empty(self):
         self.assertIsNone(cast_value("cost_assumption_override", None))
         self.assertIsNone(cast_value("cost_assumption_override", ""))
-        self.assertIsNone(cast_value("probability_cap", "null"))
+        self.assertIsNone(cast_value("cost_assumption_override", "null"))
         self.assertAlmostEqual(cast_value("cost_assumption_override", "0.02"), 0.02)
-        self.assertAlmostEqual(cast_value("probability_cap", 0.85), 0.85)
 
     def test_list_cast_accepts_csv_and_tuple(self):
         self.assertEqual(cast_value("archetype_skip_list", "politics,sports"),
@@ -146,23 +154,20 @@ class DiagnosticOverrideFieldsTests(unittest.TestCase):
         self.assertEqual(cast_value("archetype_skip_list", ""), tuple())
 
     def test_list_cast_strips_and_drops_empties(self):
-        self.assertEqual(cast_value("ev_bucket_skip_list", "0-2%, ,2-5%,"),
-                         ("0-2%", "2-5%"))
+        self.assertEqual(cast_value("archetype_skip_list", "politics, ,sports,"),
+                         ("politics", "sports"))
 
     def test_validate_accepts_none_for_nullable(self):
         # Must not raise.
         validate_user_config_value("cost_assumption_override", None)
-        validate_user_config_value("probability_cap", None)
 
     def test_validate_enforces_bounds_when_value_set(self):
         with self.assertRaises(ValueError):
             validate_user_config_value("cost_assumption_override", 0.5)   # above 0.10
-        with self.assertRaises(ValueError):
-            validate_user_config_value("probability_cap", 0.30)           # below 0.50
 
     def test_validate_list_accepts_any_tuple(self):
         validate_user_config_value("archetype_skip_list", ("politics",))
-        validate_user_config_value("ev_bucket_skip_list", tuple())
+        validate_user_config_value("archetype_skip_list", tuple())
 
     def test_validate_list_rejects_non_tuple(self):
         with self.assertRaises(ValueError):
@@ -171,15 +176,11 @@ class DiagnosticOverrideFieldsTests(unittest.TestCase):
     def test_validated_payload_accepts_new_fields(self):
         payload = {
             "cost_assumption_override": "0.025",
-            "probability_cap": "0.85",
-            "archetype_skip_list": "politics,sports",
-            "ev_bucket_skip_list": ["0-2%", "<0%"],
+            "archetype_skip_list":      "politics,sports",
         }
         clean = validated_update_payload(payload)
         self.assertAlmostEqual(clean["cost_assumption_override"], 0.025)
-        self.assertAlmostEqual(clean["probability_cap"], 0.85)
         self.assertEqual(clean["archetype_skip_list"], ("politics", "sports"))
-        self.assertEqual(clean["ev_bucket_skip_list"], ("0-2%", "<0%"))
 
 
 class SystemSafetyBoundsTests(unittest.TestCase):
@@ -193,9 +194,15 @@ class SystemSafetyBoundsTests(unittest.TestCase):
         _, hi = USER_CONFIG_BOUNDS["base_stake_pct"]
         self.assertLessEqual(hi, 0.05)
 
-    def test_min_ev_threshold_always_positive(self):
-        lo, _ = USER_CONFIG_BOUNDS["min_ev_threshold"]
+    def test_min_expected_return_always_positive(self):
+        lo, _ = USER_CONFIG_BOUNDS["min_expected_return"]
         self.assertGreater(lo, 0.0)
+
+    def test_min_p_win_cannot_go_below_50pct(self):
+        # A sub-50% p_win floor would let the sizer fire on picks the
+        # forecaster thinks are worse than a coin flip.
+        lo, _ = USER_CONFIG_BOUNDS["min_p_win"]
+        self.assertGreaterEqual(lo, 0.50)
 
     def test_dry_powder_reserve_always_at_least_10pct(self):
         lo, _ = USER_CONFIG_BOUNDS["dry_powder_reserve_pct"]

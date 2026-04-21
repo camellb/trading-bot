@@ -1,12 +1,17 @@
 """
-Regression tests for the EV-based sizer.
+Regression tests for the sizer.
 
-Covers the cases called out in the project doctrine:
+Gate 1 — side selection (never skips):
+    - confidence >= confidence_override_threshold (default 0.75):
+      ignore the market, side = YES if claude_p >= 0.50 else NO.
+    - confidence <  confidence_override_threshold:
+      mean = (claude_p + ask_yes) / 2, side = YES if mean >= 0.50 else NO.
 
-    - Agrees-with-market bets produce +EV and take YES.
-    - Longshot-NO when Claude is confident YES is very unlikely.
-    - Uncertain estimates (0.45..0.55) are skipped.
-    - Extreme-EV bets still stake flat — no Kelly amplification.
+Gate 2 — minimum p_win (default 0.50).
+Gate 3 — minimum expected return (default 0.05), using (1/ask) - 1 - cost.
+
+Confidence softener (size only — never skip):
+    multiplier = min(1.0, 0.01 + (confidence / confidence_full_stake) * 0.99)
 """
 
 from __future__ import annotations
@@ -14,17 +19,14 @@ from __future__ import annotations
 import os
 import sys
 import unittest
-from dataclasses import dataclass
 
-# Allow running via `python -m unittest tests.test_pm_sizer` from repo root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from execution.pm_sizer import size_position
+from execution.pm_sizer import size_position, COST_ASSUMPTION
 from engine.user_config import UserConfig
 
 
 def default_cfg() -> UserConfig:
-    """Fresh dataclass defaults — no DB hit."""
     return UserConfig()
 
 
@@ -35,318 +37,302 @@ def cfg(**overrides) -> UserConfig:
     return base
 
 
-class AgreesWithMarketTests(unittest.TestCase):
-    """Claude 0.85, market ask YES 0.82 — old bot skipped, new bot bets YES."""
+def call(**kwargs):
+    defaults = dict(
+        claude_p    = 0.70,
+        confidence  = 0.60,
+        ask_yes     = 0.55,
+        ask_no      = 0.45,
+        bankroll    = 1000.0,
+        user_config = default_cfg(),
+        archetype   = None,
+    )
+    defaults.update(kwargs)
+    return size_position(**defaults)
 
-    def test_picks_yes_side_and_positive_ev(self):
-        d = size_position(
-            claude_p=0.85, confidence=0.70,
-            ask_yes=0.82, ask_no=0.20,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        # The sizer's first job is to identify the +EV side. This case gives
-        # ev_yes ≈ +2.16% and ev_no ≈ −26.5%; YES is the correct side.
+
+# ── Gate 1 (side selection): high-confidence override ────────────────────────
+class HighConfidenceOverrideTests(unittest.TestCase):
+    def test_override_follows_claude_yes_against_market(self):
+        # Claude 0.70 YES, market 0.10 YES, confidence 0.80 → YES override.
+        d = call(claude_p=0.70, confidence=0.80, ask_yes=0.10, ask_no=0.90)
         self.assertEqual(d.side, "YES")
-        self.assertGreater(d.ev, 0.0)
-
-    def test_bets_when_threshold_allows(self):
-        # With default min_ev_threshold=3% this marginal case would skip
-        # (+2.16% EV doesn't clear). Lower the threshold and it bets.
-        d = size_position(
-            claude_p=0.85, confidence=0.70,
-            ask_yes=0.82, ask_no=0.20,
-            bankroll=1000.0, user_config=cfg(min_ev_threshold=0.02),
-        )
+        # With ask_yes=0.10, entry is 0.10, exp_ret = 1/0.10 - 1 - 0.015 ≈ 8.89
         self.assertTrue(d.should_trade)
-        self.assertEqual(d.side, "YES")
-        self.assertAlmostEqual(d.entry_price, 0.82, places=3)
 
-
-class LongshotNoTests(unittest.TestCase):
-    """Claude 0.15, market ask NO 0.18 — clear NO bet."""
-
-    def test_bets_no(self):
-        d = size_position(
-            claude_p=0.15, confidence=0.70,
-            ask_yes=0.84, ask_no=0.18,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        self.assertTrue(d.should_trade)
+    def test_override_follows_claude_no_against_market(self):
+        # Claude 0.15 YES (→ NO lean 0.85), market 0.80 YES, confidence 0.82.
+        d = call(claude_p=0.15, confidence=0.82, ask_yes=0.80, ask_no=0.20)
         self.assertEqual(d.side, "NO")
-        self.assertAlmostEqual(d.entry_price, 0.18, places=3)
-        self.assertGreater(d.ev, 0.03)
-
-
-class UncertainBandTests(unittest.TestCase):
-    """Claude 0.48 — right in the coin-flip band, sizer skips regardless."""
-
-    def test_skips_uncertain(self):
-        d = size_position(
-            claude_p=0.48, confidence=0.90,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        self.assertFalse(d.should_trade)
-        self.assertIsNotNone(d.skip_reason)
-        self.assertIn("uncertain", d.skip_reason.lower())
-
-    def test_skips_uncertain_upper_edge(self):
-        d = size_position(
-            claude_p=0.54, confidence=0.90,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        self.assertFalse(d.should_trade)
-
-    def test_edge_of_uncertain_band_not_skipped(self):
-        # 0.45 and 0.55 are boundaries — strictly outside (sizer uses <).
-        d = size_position(
-            claude_p=0.45, confidence=0.70,
-            ask_yes=0.42, ask_no=0.60,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        self.assertIsNone(d.skip_reason if d.skip_reason and "uncertain" in d.skip_reason.lower() else None)
-
-
-class FlatSizingTests(unittest.TestCase):
-    """Claude 0.85 with market ask YES 0.30 — huge EV, but stake stays flat."""
-
-    def test_extreme_ev_does_not_amplify_stake(self):
-        user_config = default_cfg()
-        bankroll = 1000.0
-        d = size_position(
-            claude_p=0.85, confidence=0.85,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=bankroll, user_config=user_config,
-        )
+        self.assertAlmostEqual(d.p_win, 0.85, places=6)
         self.assertTrue(d.should_trade)
+
+    def test_override_tie_breaks_to_yes(self):
+        # claude_p exactly 0.50, confidence above override → YES.
+        d = call(claude_p=0.50, confidence=0.80, ask_yes=0.40, ask_no=0.60)
         self.assertEqual(d.side, "YES")
-        # EV is enormous here; Kelly would push 60%+ of bankroll. The new
-        # sizer must cap at max_stake_pct (5% default) regardless.
-        max_allowed = bankroll * user_config.max_stake_pct + 1e-6
-        self.assertLessEqual(d.stake_usd, max_allowed)
 
-    def test_confidence_scaling_not_ev_scaling(self):
-        # Same huge EV, but confidence 0.4 → half the baseline stake.
-        low = size_position(
-            claude_p=0.85, confidence=0.40,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        high = size_position(
-            claude_p=0.85, confidence=0.85,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        self.assertTrue(low.should_trade)
-        self.assertTrue(high.should_trade)
-        self.assertLess(low.stake_usd, high.stake_usd)
+    def test_override_threshold_is_inclusive(self):
+        # confidence exactly at the threshold fires the override.
+        d = call(claude_p=0.80, confidence=0.75, ask_yes=0.10, ask_no=0.90,
+                 user_config=cfg(confidence_override_threshold=0.75))
+        self.assertEqual(d.side, "YES")  # follows Claude, ignores market
 
 
-class EvComputationTests(unittest.TestCase):
-    """The doctrine formula: EV = p_win × (1 / ask) − 1 − cost_assumption."""
-
-    def test_ev_matches_formula(self):
-        d = size_position(
-            claude_p=0.70, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        # YES side: 0.70 / 0.50 - 1 - 0.015 = 1.4 - 1.015 = 0.385
+# ── Gate 1 (side selection): low-confidence mean rule ────────────────────────
+class MeanRuleTests(unittest.TestCase):
+    def test_agreement_fires_yes(self):
+        # Claude 0.70, market 0.60, confidence 0.50 → mean 0.65 → YES.
+        d = call(claude_p=0.70, confidence=0.50, ask_yes=0.60, ask_no=0.40)
         self.assertEqual(d.side, "YES")
-        self.assertAlmostEqual(d.ev, 0.385, places=4)
-        self.assertAlmostEqual(d.p_win, 0.70, places=6)
 
-
-class ConfidenceStakeTiersTests(unittest.TestCase):
-    """Stake scales with confidence tiers, not continuously."""
-
-    def _stake(self, confidence: float) -> float:
-        d = size_position(
-            claude_p=0.80, confidence=confidence,
-            ask_yes=0.40, ask_no=0.62,
-            bankroll=10000.0, user_config=default_cfg(),
-        )
-        return d.stake_usd
-
-    def test_tier_low(self):
-        # confidence < 0.5 → 0.5 × base_stake_pct = 1% of bankroll = $100
-        self.assertAlmostEqual(self._stake(0.40), 100.0, places=2)
-
-    def test_tier_base(self):
-        # 0.5 ≤ confidence < 0.8 → base_stake_pct = 2% = $200
-        self.assertAlmostEqual(self._stake(0.60), 200.0, places=2)
-
-    def test_tier_high(self):
-        # confidence ≥ 0.8 → 1.5 × base = 3% = $300 (capped at max 5%)
-        self.assertAlmostEqual(self._stake(0.85), 300.0, places=2)
-
-
-class BelowThresholdTests(unittest.TestCase):
-    def test_skip_reason_when_ev_below_min(self):
-        d = size_position(
-            claude_p=0.55, confidence=0.60,
-            ask_yes=0.54, ask_no=0.47,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        # ev_yes = 0.55/0.54 - 1 - 0.015 ≈ 0.0035 — well under 3%
-        self.assertFalse(d.should_trade)
-        self.assertIsNotNone(d.skip_reason)
-        self.assertIn("ev", d.skip_reason.lower())
-
-
-class MinAbsoluteStakeTests(unittest.TestCase):
-    def test_small_bankroll_still_meets_min_stake(self):
-        # 0.5% of $100 = $0.50, below the $2 absolute floor.
-        d = size_position(
-            claude_p=0.85, confidence=0.40,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=100.0, user_config=default_cfg(),
-        )
-        if d.should_trade:
-            self.assertGreaterEqual(d.stake_usd, 2.0)
-
-
-class ArchetypeSkipListTests(unittest.TestCase):
-    """The sizer must honour `archetype_skip_list` regardless of EV."""
-
-    def test_skips_when_archetype_on_list(self):
-        d = size_position(
-            claude_p=0.85, confidence=0.70,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0,
-            user_config=cfg(archetype_skip_list=("politics",)),
-            archetype="politics",
-        )
-        self.assertFalse(d.should_trade)
-        self.assertIsNotNone(d.skip_reason)
-        self.assertIn("skip list", d.skip_reason.lower())
-
-    def test_trades_when_archetype_not_on_list(self):
-        d = size_position(
-            claude_p=0.85, confidence=0.70,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0,
-            user_config=cfg(archetype_skip_list=("sports",)),
-            archetype="politics",
-        )
-        self.assertTrue(d.should_trade)
-
-    def test_empty_list_is_no_op(self):
-        d = size_position(
-            claude_p=0.85, confidence=0.70,
-            ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0, user_config=default_cfg(),
-            archetype="politics",
-        )
-        self.assertTrue(d.should_trade)
-
-
-class ProbabilityCapTests(unittest.TestCase):
-    """`probability_cap` clips `cp` symmetrically on both tails before EV."""
-
-    def test_cap_reduces_ev_but_still_trades(self):
-        uncapped = size_position(
-            claude_p=0.90, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        capped = size_position(
-            claude_p=0.90, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=cfg(probability_cap=0.85),
-        )
-        self.assertTrue(uncapped.should_trade)
-        self.assertTrue(capped.should_trade)
-        self.assertLess(capped.ev, uncapped.ev)
-        self.assertAlmostEqual(capped.p_win, 0.85, places=6)
-
-    def test_cap_can_push_into_uncertain_band_and_skip(self):
-        d = size_position(
-            claude_p=0.99, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=cfg(probability_cap=0.54),
-        )
-        self.assertFalse(d.should_trade)
-        self.assertIn("uncertain", (d.skip_reason or "").lower())
-
-    def test_cap_is_symmetric_on_low_tail(self):
-        # claude_p=0.05 with cap=0.80 raises cp to 0.20 — still below
-        # uncertain floor, so NO is still the chosen side.
-        d = size_position(
-            claude_p=0.05, confidence=0.70,
-            ask_yes=0.90, ask_no=0.15,
-            bankroll=1000.0, user_config=cfg(probability_cap=0.80),
-        )
+    def test_agreement_fires_no(self):
+        # Claude 0.20, market 0.30, confidence 0.50 → mean 0.25 → NO.
+        d = call(claude_p=0.20, confidence=0.50, ask_yes=0.30, ask_no=0.70)
         self.assertEqual(d.side, "NO")
         self.assertAlmostEqual(d.p_win, 0.80, places=6)
 
+    def test_mean_can_fire_claudes_side_on_disagreement(self):
+        # Claude 0.80, market 0.30 → mean 0.55 → YES (Claude's side).
+        d = call(claude_p=0.80, confidence=0.60, ask_yes=0.30, ask_no=0.70)
+        self.assertEqual(d.side, "YES")
 
-class CostAssumptionOverrideTests(unittest.TestCase):
-    """`cost_assumption_override` replaces the sizer default cost."""
-
-    def test_higher_cost_lowers_ev_by_exact_delta(self):
-        default = size_position(
-            claude_p=0.70, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=default_cfg(),
-        )
-        overridden = size_position(
-            claude_p=0.70, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=cfg(cost_assumption_override=0.05),
-        )
-        # Delta = new_cost (0.05) - default_cost (0.015) = 0.035
-        self.assertAlmostEqual(default.ev - overridden.ev, 0.035, places=6)
-
-    def test_override_can_push_below_min_ev(self):
-        d = size_position(
-            claude_p=0.55, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0,
-            user_config=cfg(cost_assumption_override=0.08),
-        )
+    def test_mean_can_fire_markets_side_on_disagreement(self):
+        # Claude 0.70, market 0.10 → mean 0.40 → NO (market's side).
+        # Gate 2 will block because p_win on NO = 0.30, below default 0.50.
+        d = call(claude_p=0.70, confidence=0.60, ask_yes=0.10, ask_no=0.90)
+        self.assertEqual(d.side, "NO")
         self.assertFalse(d.should_trade)
-        self.assertIn("ev", (d.skip_reason or "").lower())
+        self.assertIsNotNone(d.skip_reason)
+        self.assertIn("p_win", d.skip_reason)
 
-
-class EvBucketSkipListTests(unittest.TestCase):
-    """`ev_bucket_skip_list` refuses bets whose EV lands in a skipped bucket."""
-
-    def test_skips_bucket_on_list(self):
-        # claude_p=0.60, ask_yes=0.56 → ev ≈ 0.60/0.56 - 1 - 0.015 ≈ 0.0564
-        # That's the "5-10%" bucket.
-        d = size_position(
-            claude_p=0.60, confidence=0.70,
-            ask_yes=0.56, ask_no=0.46,
-            bankroll=1000.0,
-            user_config=cfg(ev_bucket_skip_list=("5-10%",)),
-        )
-        self.assertFalse(d.should_trade)
-        self.assertIn("bucket", (d.skip_reason or "").lower())
-
-    def test_trades_bucket_not_on_list(self):
-        d = size_position(
-            claude_p=0.60, confidence=0.70,
-            ask_yes=0.56, ask_no=0.46,
-            bankroll=1000.0,
-            user_config=cfg(ev_bucket_skip_list=("20%+",)),
-        )
+    def test_claude_exactly_half_with_market_support_fires_yes(self):
+        # Claude 0.50, market 0.55 → mean 0.525 → YES, p_win = 0.50 passes
+        # Gate 2 (min_p_win defaults to 0.50, test uses >=).
+        d = call(claude_p=0.50, confidence=0.40, ask_yes=0.55, ask_no=0.45)
+        self.assertEqual(d.side, "YES")
+        # Gate 3 check: 1/0.55 - 1 - 0.015 ≈ 0.803; passes default 0.05.
         self.assertTrue(d.should_trade)
 
+    def test_mean_boundary_goes_yes(self):
+        # Mean exactly 0.50 → YES.
+        d = call(claude_p=0.55, confidence=0.40, ask_yes=0.45, ask_no=0.55)
+        self.assertEqual(d.side, "YES")
 
-class NoKellyFieldsTests(unittest.TestCase):
-    """SizingDecision must not expose Kelly-era fields."""
 
-    def test_sizing_decision_has_no_kelly_fields(self):
-        d = size_position(
-            claude_p=0.70, confidence=0.70,
-            ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=default_cfg(),
+# ── Gate 2: minimum p_win ────────────────────────────────────────────────────
+class Gate2MinPwinTests(unittest.TestCase):
+    def test_row_20_pattern_blocked_by_gate2(self):
+        # Claude 0.25 YES (→ prefers NO with p_win 0.75), market 0.855 YES,
+        # confidence 0.60 (below 0.75 override). Mean = (0.25 + 0.855)/2
+        # = 0.5525 → side YES, p_win = 0.25. Default min_p_win = 0.50 →
+        # Gate 2 skips.
+        d = call(claude_p=0.25, confidence=0.60, ask_yes=0.855, ask_no=0.145)
+        self.assertEqual(d.side, "YES")
+        self.assertAlmostEqual(d.p_win, 0.25, places=6)
+        self.assertFalse(d.should_trade)
+        self.assertIsNotNone(d.skip_reason)
+        self.assertIn("p_win", d.skip_reason)
+
+    def test_default_floor_is_point_five(self):
+        u = UserConfig()
+        self.assertEqual(u.min_p_win, 0.50)
+
+    def test_exactly_at_threshold_passes(self):
+        # p_win exactly 0.50 passes.
+        d = call(claude_p=0.50, confidence=0.40, ask_yes=0.55, ask_no=0.45)
+        self.assertTrue(d.should_trade)
+
+    def test_below_threshold_skips(self):
+        # claude_p=0.45, mean rule fires NO (p_win = 0.55) with market < 0.5.
+        # To get p_win below 0.50 we need a mean-rule trade where Claude
+        # leans weakly and market picks the side. Use claude_p=0.60,
+        # market=0.10, confidence=0.60 → mean 0.35 → NO, p_win=0.40.
+        d = call(claude_p=0.60, confidence=0.60, ask_yes=0.10, ask_no=0.90)
+        self.assertEqual(d.side, "NO")
+        self.assertAlmostEqual(d.p_win, 0.40, places=6)
+        self.assertFalse(d.should_trade)
+        self.assertIn("p_win", d.skip_reason)
+
+    def test_user_can_raise_threshold(self):
+        # With min_p_win=0.75 a p_win of 0.70 is blocked.
+        d = call(claude_p=0.70, confidence=0.80, ask_yes=0.10, ask_no=0.90,
+                 user_config=cfg(min_p_win=0.75))
+        self.assertFalse(d.should_trade)
+        self.assertIn("p_win", d.skip_reason)
+
+
+# ── Gate 3: minimum expected return ──────────────────────────────────────────
+class Gate3ExpectedReturnTests(unittest.TestCase):
+    def test_expensive_favourite_trap_blocked(self):
+        # Claude 0.95, market 0.97, confidence 0.80 (override). Side YES at
+        # ask 0.97 → exp_ret = 1/0.97 - 1 - 0.015 ≈ 0.016. Below 0.05 → skip.
+        d = call(claude_p=0.95, confidence=0.80, ask_yes=0.97, ask_no=0.03)
+        self.assertEqual(d.side, "YES")
+        self.assertFalse(d.should_trade)
+        self.assertIn("expected return", d.skip_reason)
+
+    def test_cost_override_changes_expected_return(self):
+        # ask_yes 0.90 → base exp_ret = 1/0.90 - 1 ≈ 0.111. With default
+        # cost 0.015 it passes; with cost override 0.10 it falls to ~0.011,
+        # below the 0.05 floor → Gate 3 skips.
+        d_default = call(claude_p=0.95, confidence=0.80,
+                         ask_yes=0.90, ask_no=0.10)
+        self.assertTrue(d_default.should_trade)
+
+        d_override = call(claude_p=0.95, confidence=0.80,
+                          ask_yes=0.90, ask_no=0.10,
+                          user_config=cfg(cost_assumption_override=0.10))
+        self.assertIn("expected return", d_override.skip_reason or "")
+
+    def test_user_can_raise_min_expected_return(self):
+        # exp_ret on 0.60 = 1/0.60 - 1 - 0.015 ≈ 0.652. Still comfortable
+        # at 0.60 threshold.
+        d = call(claude_p=0.80, confidence=0.80, ask_yes=0.60, ask_no=0.40,
+                 user_config=cfg(min_expected_return=0.60))
+        self.assertTrue(d.should_trade)
+        # But raising to 0.70 trips the gate.
+        d2 = call(claude_p=0.80, confidence=0.80, ask_yes=0.60, ask_no=0.40,
+                  user_config=cfg(min_expected_return=0.70))
+        self.assertIn("expected return", d2.skip_reason or "")
+
+
+# ── Confidence softener ──────────────────────────────────────────────────────
+class ConfidenceSoftenerTests(unittest.TestCase):
+    def _stake_at(self, confidence: float) -> float:
+        # Use claude_p/ask that easily passes Gates 2 and 3.
+        # Force override so confidence is the only softener input.
+        d = call(
+            claude_p=0.85, confidence=confidence,
+            ask_yes=0.50, ask_no=0.50,
+            user_config=cfg(
+                confidence_override_threshold=0.01,  # always override
+                base_stake_pct=0.02,
+                max_stake_pct=0.05,
+            ),
+            bankroll=10_000.0,
         )
-        self.assertFalse(hasattr(d, "kelly_full"))
-        self.assertFalse(hasattr(d, "kelly_frac"))
-        self.assertFalse(hasattr(d, "edge"))
+        return d.stake_usd
+
+    def test_zero_confidence_is_one_percent_of_base(self):
+        # base = 0.02, multiplier at conf=0 is 0.01 → stake_pct 0.0002 →
+        # bankroll 10_000 → $2.00, which equals the $2 absolute floor.
+        self.assertGreater(self._stake_at(0.0), 0.0)
+        self.assertAlmostEqual(self._stake_at(0.0), 2.0, places=4)
+
+    def test_mid_confidence_is_about_half(self):
+        # confidence=0.35 on default full_stake=0.70 → multiplier ≈ 0.505
+        # → stake_pct ≈ 0.0101 → bankroll 10_000 → ~$101.
+        s = self._stake_at(0.35)
+        self.assertAlmostEqual(s, 101.0, delta=2.0)
+
+    def test_full_confidence_is_full_stake(self):
+        # confidence=0.70 → multiplier 1.0 → stake_pct = 0.02 → $200.
+        self.assertAlmostEqual(self._stake_at(0.70), 200.0, delta=0.5)
+
+    def test_above_full_stays_full(self):
+        # confidence=1.0 is capped at 1.0 multiplier → still $200.
+        self.assertAlmostEqual(self._stake_at(1.00), 200.0, delta=0.5)
+
+    def test_monotonic_in_confidence(self):
+        stakes = [self._stake_at(c) for c in (0.0, 0.1, 0.3, 0.5, 0.7, 0.9)]
+        # Non-decreasing — the softener never drops with more confidence.
+        for a, b in zip(stakes, stakes[1:]):
+            self.assertLessEqual(a, b + 1e-9)
+
+    def test_softener_never_skips(self):
+        # Confidence 0.0 still trades (at $2 absolute floor), as long as
+        # Gates 2 and 3 are satisfied. Historical "confidence_skip_floor"
+        # is gone.
+        d = call(claude_p=0.85, confidence=0.0,
+                 ask_yes=0.50, ask_no=0.50,
+                 user_config=cfg(confidence_override_threshold=0.01),
+                 bankroll=10_000.0)
+        self.assertTrue(d.should_trade)
+        self.assertGreater(d.stake_usd, 0.0)
+
+
+# ── Invariants ──────────────────────────────────────────────────────────────
+class InvariantTests(unittest.TestCase):
+    def test_ev_field_always_zero(self):
+        d = call(claude_p=0.80, confidence=0.80, ask_yes=0.60, ask_no=0.40)
+        self.assertEqual(d.ev, 0.0)
+
+    def test_max_stake_cap(self):
+        # base=0.05 with max=0.03 and full confidence → stake capped at 3%.
+        d = call(claude_p=0.85, confidence=0.80, ask_yes=0.50, ask_no=0.50,
+                 user_config=cfg(base_stake_pct=0.05, max_stake_pct=0.03),
+                 bankroll=10_000.0)
+        self.assertAlmostEqual(d.stake_usd, 300.0, delta=0.5)
+
+    def test_min_absolute_stake_two_dollars(self):
+        # Tiny bankroll — the $2 floor still applies.
+        d = call(claude_p=0.85, confidence=0.80, ask_yes=0.50, ask_no=0.50,
+                 bankroll=1.0)
+        # Absolute floor overrides bankroll percentage.
+        self.assertGreaterEqual(d.stake_usd, 2.0)
+
+    def test_zero_bankroll_skips(self):
+        d = call(claude_p=0.85, confidence=0.80, ask_yes=0.50, ask_no=0.50,
+                 bankroll=0.0)
+        self.assertFalse(d.should_trade)
+
+    def test_archetype_skip_outranks_gates(self):
+        d = call(
+            claude_p=0.90, confidence=0.90, ask_yes=0.20, ask_no=0.80,
+            user_config=cfg(archetype_skip_list=("tennis",)),
+            archetype="tennis",
+        )
+        self.assertFalse(d.should_trade)
+        self.assertIn("skip list", d.skip_reason or "")
+
+    def test_no_direction_skip_reason_emitted(self):
+        # No combination of inputs should produce a "direction" skip; the
+        # new Gate 1 never skips. Probe the old contrarian case that used
+        # to trip direction-disagreement.
+        d = call(claude_p=0.25, confidence=0.60, ask_yes=0.85, ask_no=0.15)
+        reason = (d.skip_reason or "").lower()
+        self.assertNotIn("direction disagreement", reason)
+        self.assertNotIn("no direction", reason)
+
+    def test_no_confidence_floor_skip_reason_emitted(self):
+        d = call(claude_p=0.85, confidence=0.00, ask_yes=0.50, ask_no=0.50,
+                 user_config=cfg(confidence_override_threshold=0.01),
+                 bankroll=10_000.0)
+        self.assertIsNone(d.skip_reason)
+
+
+# ── Row-#20 regression (the "big NO win" the prior rule killed) ─────────────
+class Row20ScenarioTests(unittest.TestCase):
+    """
+    The exact market the user recalled: ask_yes=0.855 (so NO is cheap at
+    ~0.145), Claude forecast 0.25 for YES (→ prefers NO with p_win 0.75),
+    confidence 0.60.
+
+    Under the new rule (confidence below 0.75 override):
+        mean = (0.25 + 0.855) / 2 = 0.5525 → side YES
+        p_win on YES = 0.25 → Gate 2 blocks (0.25 < 0.50).
+
+    This is the spec's documented expected behaviour — SKIP via Gate 2,
+    not via Gate 1.
+    """
+
+    def test_skips_via_gate2(self):
+        d = call(claude_p=0.25, confidence=0.60,
+                 ask_yes=0.855, ask_no=0.145)
+        self.assertEqual(d.side, "YES")  # mean rule picked YES
+        self.assertAlmostEqual(d.p_win, 0.25, places=6)
+        self.assertFalse(d.should_trade)
+        self.assertIn("p_win", d.skip_reason)
+
+    def test_would_fire_under_confidence_override(self):
+        # Same market but with confidence 0.80 — override follows Claude,
+        # side NO, p_win 0.75 passes Gate 2, ask_no=0.145 passes Gate 3.
+        d = call(claude_p=0.25, confidence=0.80,
+                 ask_yes=0.855, ask_no=0.145)
+        self.assertEqual(d.side, "NO")
+        self.assertAlmostEqual(d.p_win, 0.75, places=6)
+        self.assertTrue(d.should_trade)
 
 
 if __name__ == "__main__":

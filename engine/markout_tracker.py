@@ -3,8 +3,9 @@ Markout tracker — measures whether the market moved toward Claude's estimate.
 
 After each evaluation, the market YES price is recorded. This module checks
 the price at T+1h, T+6h, and T+24h to see if the market agreed with Claude's
-view. A consistently positive direction_correct rate means the edge was real;
-the market eventually priced in what Claude already saw.
+view. A consistently positive direction_correct rate is a diagnostic that
+the forecaster saw something the market had not yet priced in — used to
+track forecaster health, not as a trading gate.
 
 Run via scheduler every hour (same cadence as the resolver).
 """
@@ -117,7 +118,9 @@ async def check_markouts() -> None:
                     direction_correct = price_now < price_at_eval
                 else:
                     # Claude agreed with the market exactly — mark as correct
-                    # if price didn't move (no edge predicted, no edge needed).
+                    # regardless of where price drifted. The forecaster
+                    # did not claim a directional move, so the markout
+                    # shouldn't punish the absence of one.
                     direction_correct = True
 
                 conn.execute(text(

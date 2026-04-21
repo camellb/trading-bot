@@ -1,15 +1,34 @@
 """
-Polymarket position sizer — positive-EV with flat, confidence-scaled stakes.
+Polymarket position sizer — three gates plus a confidence softener.
 
-For every market, the sizer estimates expected value on each side at its
-current ask and takes the better side when it clears the user's minimum EV
-threshold after costs:
+Gate 1 — side selection (never skips)
+    Two modes based on confidence.
 
-    EV_side = p_win × (1 / ask_price) − 1 − cost_assumption
+    High-confidence override (confidence >= confidence_override_threshold,
+    default 0.75): ignore the market, side is YES if claude_p >= 0.50 else NO.
 
-Stake scales with Claude's confidence only. Not with EV, not with edge,
-not with disagreement. Flat sizing keeps variance per trade low so the
-portfolio learns fast about what actually works.
+    Low-confidence mean rule (confidence < confidence_override_threshold):
+    compute mean = (claude_p + market_p_yes) / 2. Side is YES if mean >= 0.50
+    else NO. When Claude and the market disagree, the mean pulls the chosen
+    side toward whichever one is further from 0.50. Gate 2 then decides
+    whether Claude's probability on that side is strong enough to fire.
+
+Gate 2 — minimum p_win
+    p_win = claude_p on YES, 1 - claude_p on NO. Must be >= min_p_win
+    (default 0.50). Implicitly rejects trades where the mean rule picked
+    a side Claude doesn't believe in.
+
+Gate 3 — minimum expected return
+    (1 / ask) - 1 - cost_assumption must be >= min_expected_return
+    (default 0.05). Prevents the "Claude 95% / price 97¢" trap.
+
+Confidence softener (size only — never skips)
+    multiplier = min(1.0, 0.01 + (confidence / confidence_full_stake) * 0.99)
+    At confidence 0 the stake is 1% of base; at confidence_full_stake (default
+    0.70) the stake is full; above that the multiplier is capped at 1.0.
+
+Final stake = bankroll * base_stake_pct * multiplier, capped at
+bankroll * max_stake_pct, with an absolute $2 minimum.
 """
 
 from __future__ import annotations
@@ -17,41 +36,21 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-# Cost model — Polymarket spread + fees + slippage, conservative.
-COST_ASSUMPTION = 0.015
 
-# Genuinely uncertain markets are skipped — no information, no bet.
-_UNCERTAIN_LO = 0.45
-_UNCERTAIN_HI = 0.55
-
-# Floor for an absolute tradeable stake in USD.
+# Absolute floor for a tradeable stake in USD.
 _MIN_ABSOLUTE_STAKE_USD = 2.0
 
-# EV-bucket labels used for the skip-list check. Must match the labels
-# emitted by `engine.diagnostics.roi_by_ev_bucket` and the dashboard.
-_EV_BUCKETS: tuple[tuple[str, float, float], ...] = (
-    ("<0%",    -float("inf"), 0.0),
-    ("0-2%",   0.0,  0.02),
-    ("2-5%",   0.02, 0.05),
-    ("5-10%",  0.05, 0.10),
-    ("10-20%", 0.10, 0.20),
-    ("20%+",   0.20, float("inf")),
-)
-
-
-def _ev_bucket_label(ev: float) -> Optional[str]:
-    """Return the bucket label containing the given EV fraction, or None."""
-    for label, lo, hi in _EV_BUCKETS:
-        if lo <= ev < hi:
-            return label
-    return None
+# Cost assumption: spread + fees + slippage, as a fraction of the payoff.
+# Enters Gate 3 (min expected return). User can override via user_config
+# field `cost_assumption_override` when realised cost drifts above this.
+COST_ASSUMPTION = 0.015
 
 
 @dataclass
 class SizingDecision:
-    side:         str             # 'YES' | 'NO' | '' (when skipped pre-sidechoice)
+    side:         str             # 'YES' | 'NO' | '' (only if pre-side failure)
     entry_price:  float           # ask price of the chosen side (0..1)
-    ev:           float           # expected value at chosen side (fractional, e.g. 0.08 = +8%)
+    ev:           float           # retained for schema compatibility; always 0.0
     p_win:        float           # probability chosen side wins (0..1)
     confidence:   float           # Claude confidence (0..1)
     stake_usd:    float           # final stake in USD
@@ -78,111 +77,122 @@ def size_position(
     archetype:   Optional[str] = None,
 ) -> SizingDecision:
     """
-    Decide whether to take YES or NO (or skip), and size the stake.
-
-    Returns a SizingDecision. Check .should_trade before acting; .skip_reason
-    explains the skip for logging / dashboard.
+    Apply side selection + Gate 2 + Gate 3 + confidence softener and return
+    a SizingDecision. `skip_reason` is None iff the bet is taken.
     """
     cp  = _clamp01(claude_p)
     cf  = _clamp01(confidence)
     ay  = _clamp_price(ask_yes)
     an  = _clamp_price(ask_no)
 
-    # Archetype skip-list: the learning cadence has flagged this category as
-    # mis-forecast. Refuse to trade it regardless of EV.
+    # Thresholds come from user_config so the dashboard can edit them.
+    min_p_win                       = float(getattr(user_config, "min_p_win", 0.50))
+    min_expected_return             = float(getattr(user_config, "min_expected_return", 0.05))
+    confidence_full_stake           = float(getattr(user_config, "confidence_full_stake", 0.70))
+    confidence_override_threshold   = float(getattr(user_config, "confidence_override_threshold", 0.75))
+
+    cost = COST_ASSUMPTION
+    override = getattr(user_config, "cost_assumption_override", None)
+    if override is not None:
+        cost = float(override)
+
+    # ── Safety gate: archetype skip list ────────────────────────────────────
     archetype_skip = tuple(getattr(user_config, "archetype_skip_list", ()) or ())
     if archetype is not None and archetype in archetype_skip:
-        return SizingDecision(
-            side="", entry_price=0.0, ev=0.0, p_win=cp,
-            confidence=cf, stake_usd=0.0, shares=0.0,
-            skip_reason=f"archetype '{archetype}' is on the skip list",
-        )
+        return _skip(cp, cf, f"category '{archetype}' is on the skip list")
 
-    # Probability cap: when calibration shows overconfidence at high p, the
-    # learning cadence may cap emitted probabilities. Apply symmetrically on
-    # both tails so sizing doesn't amplify the observed overshoot.
-    cap = getattr(user_config, "probability_cap", None)
-    if cap is not None:
-        cap = float(cap)
-        cp = min(max(cp, 1.0 - cap), cap)
-
-    # Skip genuinely uncertain markets — no defensible side. Note: cap can
-    # collapse a high-p call into the uncertain band; that's intentional.
-    if _UNCERTAIN_LO < cp < _UNCERTAIN_HI:
-        return SizingDecision(
-            side="", entry_price=0.0, ev=0.0, p_win=cp,
-            confidence=cf, stake_usd=0.0, shares=0.0,
-            skip_reason=f"uncertain estimate {cp:.2f} in "
-                        f"[{_UNCERTAIN_LO:.2f}, {_UNCERTAIN_HI:.2f}]",
-        )
-
-    # Cost assumption: user may override the sizer default when realised cost
-    # has drifted above assumed (diagnostic-driven proposal).
-    cost_override = getattr(user_config, "cost_assumption_override", None)
-    cost_assumption = float(cost_override) if cost_override is not None else COST_ASSUMPTION
-
-    # Compute EV for each side.
-    ev_yes = cp * (1.0 / ay) - 1.0 - cost_assumption
-    ev_no  = (1.0 - cp) * (1.0 / an) - 1.0 - cost_assumption
-
-    if ev_yes >= ev_no:
-        side, entry, ev, p_win = "YES", ay, ev_yes, cp
+    # ── Gate 1: side selection (never skips) ────────────────────────────────
+    # High-confidence: follow Claude directly, ignore market.
+    # Low-confidence: pick the side whose mean(Claude, market) is >= 0.50.
+    market_p_yes = ay
+    if cf >= confidence_override_threshold:
+        side_is_yes = cp >= 0.50
     else:
-        side, entry, ev, p_win = "NO",  an, ev_no,  1.0 - cp
+        mean_p_yes = (cp + market_p_yes) / 2.0
+        side_is_yes = mean_p_yes >= 0.50
 
-    # Does the better side clear the user's minimum EV threshold?
-    min_ev = float(user_config.min_ev_threshold)
-    if ev < min_ev:
-        return SizingDecision(
-            side=side, entry_price=entry, ev=ev, p_win=p_win,
-            confidence=cf, stake_usd=0.0, shares=0.0,
-            skip_reason=(f"ev {ev*100:.2f}% < min {min_ev*100:.2f}% "
-                         f"(YES {ev_yes*100:+.2f}%, NO {ev_no*100:+.2f}%)"),
+    if side_is_yes:
+        side, entry, p_win = "YES", ay, cp
+    else:
+        side, entry, p_win = "NO", an, 1.0 - cp
+
+    # ── Gate 2: minimum p_win ───────────────────────────────────────────────
+    if p_win < min_p_win:
+        return _skip(
+            cp, cf,
+            f"p_win {p_win:.2f} below min_p_win {min_p_win:.2f}",
+            side=side, entry=entry, p_win=p_win,
         )
 
-    # EV-bucket skip-list: even above the min threshold, the user may have
-    # disabled specific EV buckets whose realised ROI is persistently negative.
-    bucket_skip = tuple(getattr(user_config, "ev_bucket_skip_list", ()) or ())
-    bucket = _ev_bucket_label(ev)
-    if bucket is not None and bucket in bucket_skip:
-        return SizingDecision(
-            side=side, entry_price=entry, ev=ev, p_win=p_win,
-            confidence=cf, stake_usd=0.0, shares=0.0,
-            skip_reason=f"ev bucket '{bucket}' is on the skip list",
+    # ── Gate 3: minimum expected return ─────────────────────────────────────
+    if entry <= 0:
+        return _skip(
+            cp, cf, f"non-positive entry price ({entry})",
+            side=side, entry=entry, p_win=p_win,
+        )
+    expected_return = (1.0 / entry) - 1.0 - cost
+    if expected_return < min_expected_return:
+        return _skip(
+            cp, cf,
+            f"expected return {expected_return:.3f} below "
+            f"min_expected_return {min_expected_return:.3f}",
+            side=side, entry=entry, p_win=p_win,
         )
 
-    # Flat, confidence-scaled stake.
+    # ── Confidence softener (size only, never skip) ─────────────────────────
+    multiplier = _confidence_multiplier(cf, full_stake=confidence_full_stake)
+
+    # ── Stake sizing ────────────────────────────────────────────────────────
     base_pct = float(user_config.base_stake_pct)
     max_pct  = float(user_config.max_stake_pct)
 
-    if cf >= 0.8:
-        stake_pct = min(base_pct * 1.5, max_pct)
-    elif cf >= 0.5:
-        stake_pct = base_pct
-    else:
-        stake_pct = base_pct * 0.5
+    stake_pct = min(base_pct * multiplier, max_pct)
 
-    # Hard cap at max_stake_pct regardless of the branch above.
-    stake_pct = min(stake_pct, max_pct)
+    if bankroll <= 0:
+        return _skip(
+            cp, cf, f"non-positive bankroll (${bankroll:.2f})",
+            side=side, entry=entry, p_win=p_win,
+        )
 
     stake = max(
         _MIN_ABSOLUTE_STAKE_USD,
         min(bankroll * stake_pct, bankroll * max_pct),
     )
 
-    if bankroll <= 0 or stake <= 0:
-        return SizingDecision(
-            side=side, entry_price=entry, ev=ev, p_win=p_win,
-            confidence=cf, stake_usd=0.0, shares=0.0,
-            skip_reason=f"non-positive stake (bankroll=${bankroll:.2f})",
-        )
-
     shares = stake / entry if entry > 0 else 0.0
 
     return SizingDecision(
-        side=side, entry_price=entry, ev=ev, p_win=p_win,
+        side=side, entry_price=entry, ev=0.0, p_win=p_win,
         confidence=cf, stake_usd=stake, shares=shares,
         skip_reason=None,
+    )
+
+
+def _confidence_multiplier(confidence: float, *, full_stake: float) -> float:
+    """
+    Map confidence to a stake multiplier. Never zero, never skip:
+        confidence 0                      → 0.01
+        confidence == full_stake          → 1.00
+        confidence  > full_stake          → 1.00 (capped)
+    """
+    if full_stake <= 0:
+        return 1.0
+    raw = 0.01 + (confidence / full_stake) * 0.99
+    return min(1.0, max(0.0, raw))
+
+
+def _skip(
+    cp: float, cf: float, reason: str,
+    *,
+    side: str = "",
+    entry: float = 0.0,
+    p_win: Optional[float] = None,
+) -> SizingDecision:
+    return SizingDecision(
+        side=side, entry_price=entry, ev=0.0,
+        p_win=p_win if p_win is not None else cp,
+        confidence=cf, stake_usd=0.0, shares=0.0,
+        skip_reason=reason,
     )
 
 
@@ -191,5 +201,4 @@ def _clamp01(x: float) -> float:
 
 
 def _clamp_price(x: float) -> float:
-    # Ask prices must be strictly positive for 1/ask. Cap to 1.0 upper.
     return max(1e-6, min(1.0, float(x)))

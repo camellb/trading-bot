@@ -1,13 +1,14 @@
 """
-EV-based backtester shared by the learning cadence (Phase 3) and the
-full backtest validation pass (Phase 5).
+Forecast backtester shared by the learning cadence and the full
+backtest validation pass.
 
-Replays historical market evaluations through the real sizer with a
-caller-supplied UserConfig, then measures the hypothetical outcomes
-against the resolved predictions. This does not call Claude — the
-language-model forecast happened at evaluation time and is stored.
+Replays historical market evaluations through the real three-gate sizer
+with a caller-supplied UserConfig, then measures the hypothetical
+outcomes against the resolved predictions. This does not call Claude —
+the language-model forecast happened at evaluation time and is stored.
 
-Fee / slippage assumptions match the sizer's COST_ASSUMPTION.
+Sizing uses the sizer's cost model (spread + fees + slippage) so every
+simulation reflects the same COST_ASSUMPTION as live execution.
 """
 
 from __future__ import annotations
@@ -57,10 +58,16 @@ def simulate_with_config(
     bankroll = starting_cash
     trades: list[SimulatedTrade] = []
     seen: set[str] = set()
+    skip_tally: dict[str, int] = {
+        "direction": 0, "p_win": 0, "return": 0,
+        "confidence": 0, "archetype": 0, "other": 0,
+    }
+    evaluated_unique = 0
 
     for ev in evaluations:
         if ev.market_id in seen:
             continue
+        evaluated_unique += 1
         # Approximate ask_no from ask_yes since historical evaluations only
         # persist yes_price. The doctrine's EV formula doesn't require a
         # separate NO ask beyond this — over-approximating slightly narrows
@@ -76,6 +83,7 @@ def simulate_with_config(
             archetype   = ev.category,
         )
         if not decision.should_trade:
+            skip_tally[_classify_skip_reason(decision.skip_reason)] += 1
             continue
         seen.add(ev.market_id)
 
@@ -117,6 +125,7 @@ def simulate_with_config(
     return {
         "starting_cash":     starting_cash,
         "final_bankroll":    bankroll,
+        "evaluated_unique":  evaluated_unique,
         "trades_taken":      len(trades),
         "trades_resolved":   len(resolved_trades),
         "trades_open":       len(trades) - len(resolved_trades),
@@ -129,6 +138,47 @@ def simulate_with_config(
         "cost_assumption":   COST_ASSUMPTION,
         "ev_buckets":        ev_bucket_distribution(trades),
         "by_archetype":      archetype_distribution(trades),
+        "skip_tally":        skip_tally,
+        "stake_distribution": stake_distribution(trades),
+    }
+
+
+def _classify_skip_reason(reason: Optional[str]) -> str:
+    """Map free-text skip_reason from the sizer into tally buckets."""
+    if not reason:
+        return "other"
+    r = reason.lower()
+    if "direction disagreement" in r or "no direction" in r:
+        return "direction"
+    if "p_win" in r and "below min_p_win" in r:
+        return "p_win"
+    if "expected return" in r and "below" in r:
+        return "return"
+    if "confidence" in r and "below confidence_skip_floor" in r:
+        return "confidence"
+    if "skip list" in r:
+        return "archetype"
+    return "other"
+
+
+def stake_distribution(trades: list[SimulatedTrade]) -> dict:
+    """Summarize stake sizes under the confidence softener."""
+    stakes = [t.stake_usd for t in trades]
+    if not stakes:
+        return {"n": 0, "min": 0.0, "max": 0.0, "mean": 0.0, "median": 0.0,
+                "p25": 0.0, "p75": 0.0}
+    s = sorted(stakes)
+    def q(frac: float) -> float:
+        idx = min(len(s) - 1, int(frac * (len(s) - 1)))
+        return s[idx]
+    return {
+        "n":     len(s),
+        "min":   s[0],
+        "max":   s[-1],
+        "mean":  sum(s) / len(s),
+        "median": q(0.50),
+        "p25":   q(0.25),
+        "p75":   q(0.75),
     }
 
 
@@ -245,6 +295,39 @@ def format_phase5_report(result: dict, old_trade_count: int = 35) -> str:
             f"  {b['category'][:20]:<20} {b['n']:>5} {b['resolved']:>5} "
             f"{b['wins']:>5} {wr:>7} ${b['pnl']:>+8.2f} {br:>8}"
         )
+
+    tally = result.get("skip_tally") or {}
+    if tally:
+        total_skips = sum(tally.values())
+        lines.append("")
+        lines.append("  Skip-reason breakdown")
+        lines.append("  " + "-" * 66)
+        lines.append(f"  {'Reason':<14} {'N':>6} {'Share':>8}")
+        order = ["direction", "p_win", "return", "confidence",
+                 "archetype", "other"]
+        for key in order:
+            n = tally.get(key, 0)
+            share = (n / total_skips * 100) if total_skips else 0.0
+            lines.append(f"  {key:<14} {n:>6} {share:>7.1f}%")
+        lines.append(f"  {'TOTAL':<14} {total_skips:>6}")
+        evaluated = result.get("evaluated_unique")
+        if evaluated:
+            lines.append(f"  (Evaluated unique markets: {evaluated}; "
+                         f"traded {result.get('trades_taken', 0)}, "
+                         f"skipped {total_skips})")
+
+    stakes = result.get("stake_distribution") or {}
+    if stakes.get("n"):
+        lines.append("")
+        lines.append("  Stake distribution under confidence softener")
+        lines.append("  " + "-" * 66)
+        lines.append(f"  n={stakes['n']}  "
+                     f"min=${stakes['min']:.2f}  "
+                     f"p25=${stakes['p25']:.2f}  "
+                     f"median=${stakes['median']:.2f}  "
+                     f"p75=${stakes['p75']:.2f}  "
+                     f"max=${stakes['max']:.2f}  "
+                     f"mean=${stakes['mean']:.2f}")
 
     lines.append("=" * 70)
     lines.append("  Decision rule:")

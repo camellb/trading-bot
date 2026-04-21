@@ -313,8 +313,6 @@ user_config = Table(
     Column("user_id", Text, nullable=False, unique=True),
 
     # Sizer-side.
-    Column("min_ev_threshold",       Float, nullable=False,
-           server_default=sa_text("0.03")),
     Column("base_stake_pct",         Float, nullable=False,
            server_default=sa_text("0.02")),
     Column("max_stake_pct",          Float, nullable=False,
@@ -336,9 +334,7 @@ user_config = Table(
     # these in when a proposal is applied; the sizer treats NULL / empty as
     # "use the built-in default".
     Column("cost_assumption_override", Float, nullable=True),
-    Column("probability_cap",          Float, nullable=True),
     Column("archetype_skip_list",      Text,  nullable=True),   # CSV
-    Column("ev_bucket_skip_list",      Text,  nullable=True),   # CSV
 
     Column("created_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
@@ -388,9 +384,10 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "ALTER TABLE pm_positions ADD COLUMN IF NOT EXISTS event_slug TEXT"
         ))
-        # Migration: rename edge_bps → ev_bps. The EV paradigm replaces
-        # edge-based sizing entirely; the column's semantics changed in
-        # Phase 1 (writes now store ev × 10000). Idempotent — runs once.
+        # Migration: historical rename edge_bps → ev_bps. The column stores
+        # expected return × 10000 at entry, kept for diagnostic attribution.
+        # Under the three-gate doctrine expected return is one gate, not
+        # the primary signal. Idempotent — runs once on legacy databases.
         for tbl in ("pm_positions", "market_evaluations"):
             conn.execute(sa_text(
                 f"DO $$ BEGIN "
@@ -433,13 +430,21 @@ def create_all_tables() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
             "ON user_config(user_id)"
         ))
-        # Migration: diagnostic-driven override columns. Idempotent — adds
-        # only when the column is absent, so existing rows keep their state.
+        # Migration: three-gate doctrine columns + cleanup of deprecated
+        # fields from the prior EV-as-primary-gate paradigm. Idempotent —
+        # ADD ... IF NOT EXISTS and DROP ... IF EXISTS.
         for col_sql in (
             "ADD COLUMN IF NOT EXISTS cost_assumption_override DOUBLE PRECISION",
-            "ADD COLUMN IF NOT EXISTS probability_cap          DOUBLE PRECISION",
             "ADD COLUMN IF NOT EXISTS archetype_skip_list      TEXT",
-            "ADD COLUMN IF NOT EXISTS ev_bucket_skip_list      TEXT",
+            "ADD COLUMN IF NOT EXISTS min_p_win                      DOUBLE PRECISION NOT NULL DEFAULT 0.50",
+            "ADD COLUMN IF NOT EXISTS min_expected_return            DOUBLE PRECISION NOT NULL DEFAULT 0.05",
+            "ADD COLUMN IF NOT EXISTS confidence_full_stake          DOUBLE PRECISION NOT NULL DEFAULT 0.70",
+            "ADD COLUMN IF NOT EXISTS confidence_override_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.75",
+            "DROP COLUMN IF EXISTS confidence_skip_floor",
+            "DROP COLUMN IF EXISTS min_ev_threshold",
+            "DROP COLUMN IF EXISTS probability_cap",
+            "DROP COLUMN IF EXISTS ev_bucket_skip_list",
+            "ALTER COLUMN min_p_win SET DEFAULT 0.50",
         ):
             conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))
         # Migration: metadata JSONB column for list-append and future

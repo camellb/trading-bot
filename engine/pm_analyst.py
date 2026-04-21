@@ -286,7 +286,8 @@ class PMAnalyst:
             market_id=market.id, question=q,
             status="OPENED",
             detail=f"pm_position={pos_id} side={decision.side} "
-                   f"stake=${decision.stake_usd:.2f} ev={decision.ev*100:+.2f}%",
+                   f"stake=${decision.stake_usd:.2f} "
+                   f"forecast_p={decision.p_win:.2f} conf={decision.confidence:.2f}",
             evaluation=evaluation, decision=decision,
             prediction_id=prediction_id, position_id=pos_id,
         )
@@ -376,15 +377,15 @@ class PMAnalyst:
             bankroll_after = float(self.executor.get_bankroll())
         except Exception:
             pass
+        # `forecast_pct` is Delfi's probability for the side we're buying.
+        forecast_pct = decision.p_win * 100.0
         msg = tm.new_position(
             question=market.question,
             side=decision.side,
             entry_cents=decision.entry_price * 100.0,
             stake_usd=decision.stake_usd,
             shares=decision.shares,
-            bot_estimate_pct=evaluation.probability_yes * 100.0,
-            crowd_price_pct=market.yes_price * 100.0,
-            ev_pct=decision.ev * 100.0,
+            forecast_pct=forecast_pct,
             confidence=evaluation.confidence,
             bankroll_after=bankroll_after,
             resolve_date=market.end_date_iso.strftime("%Y-%m-%d"),

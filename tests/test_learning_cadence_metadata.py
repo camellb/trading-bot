@@ -29,7 +29,7 @@ class DecodeMetadataTests(unittest.TestCase):
         self.assertIs(_decode_metadata(d), d)
 
     def test_json_string_is_parsed(self):
-        payload = {"operation": "scalar_set", "field": "min_ev_threshold",
+        payload = {"operation": "scalar_set", "field": "max_stake_pct",
                    "value": 0.04}
         raw = json.dumps(payload)
         self.assertEqual(_decode_metadata(raw), payload)
@@ -68,12 +68,12 @@ class ProposalMetadataShapeTests(unittest.TestCase):
 
     def test_scalar_set_shape_roundtrips(self):
         prop = Proposal(
-            param_name="min_ev_threshold",
-            current_value=0.03, proposed_value=0.04,
+            param_name="max_stake_pct",
+            current_value=0.05, proposed_value=0.04,
             evidence="irrelevant",
             proposal_metadata={
                 "operation": "scalar_set",
-                "field":     "min_ev_threshold",
+                "field":     "max_stake_pct",
                 "value":     0.04,
             },
         )
@@ -192,14 +192,14 @@ class ApplyScalarDispatchTests(unittest.TestCase):
         self.lc.update_user_config = self._saved_upd
 
     def test_scalar_write(self):
-        result = self.lc._apply_scalar("default", "min_ev_threshold", 0.04)
-        self.assertEqual(self.writes, [{"min_ev_threshold": 0.04}])
+        result = self.lc._apply_scalar("default", "max_stake_pct", 0.04)
+        self.assertEqual(self.writes, [{"max_stake_pct": 0.04}])
         self.assertEqual(result["operation"], "scalar_set")
         self.assertAlmostEqual(result["value"], 0.04, places=6)
 
     def test_scalar_with_none_value_raises(self):
         with self.assertRaises(ValueError):
-            self.lc._apply_scalar("default", "min_ev_threshold", None)
+            self.lc._apply_scalar("default", "max_stake_pct", None)
 
 
 if __name__ == "__main__":
