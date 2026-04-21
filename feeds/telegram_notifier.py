@@ -9,7 +9,7 @@ Responsibilities:
   * Deliver scheduled daily + weekly summaries (bankroll, open positions,
     Brier score, resolved P&L).
   * Poll the Telegram Bot API for incoming commands from the configured
-    chat and dispatch /status, /apply, /skip, /confirm-config,
+    chat and dispatch /status, /scan, /resolve, /confirm-config,
     /reject-config, /help onto the running asyncio loop.
 
 Every public method is exception-safe. A broken Telegram path must never
@@ -284,10 +284,12 @@ class TelegramNotifier:
             print(f"[telegram] send_weekly_summary failed: {exc}", file=sys.stderr)
 
     # ── Polling thread ───────────────────────────────────────────────────────
-    def start_polling(self, self_improvement=None) -> None:
+    def start_polling(self) -> None:
         """
         Daemon thread that polls getUpdates and dispatches commands.
-        Accepts /apply, /skip, /status, /confirm-config, /reject-config, /help.
+        Accepts /status, /scan, /resolve, /confirm-config, /reject-config,
+        /help. Tuning suggestions now live on the dashboard — there is no
+        /apply or /skip here any more.
         """
         if not self.enabled:
             return
@@ -331,18 +333,7 @@ class TelegramNotifier:
                             loop = self._loop
                             if loop is None or not loop.is_running():
                                 continue
-                            if msg_text == "/apply":
-                                if self_improvement is not None:
-                                    asyncio.run_coroutine_threadsafe(
-                                        self_improvement.apply_suggestions(), loop
-                                    )
-                            elif msg_text == "/skip":
-                                if self_improvement is not None and hasattr(
-                                        self_improvement, "skip_suggestions"):
-                                    asyncio.run_coroutine_threadsafe(
-                                        self_improvement.skip_suggestions(), loop
-                                    )
-                            elif msg_text == "/status":
+                            if msg_text == "/status":
                                 asyncio.run_coroutine_threadsafe(
                                     self._send_status(), loop
                                 )
@@ -382,10 +373,9 @@ class TelegramNotifier:
             "/status — balance, open bets, win rate\n"
             "/scan — look for new markets now\n"
             "/resolve — check for settled bets\n"
-            "/apply — accept a bot suggestion\n"
-            "/skip — reject a bot suggestion\n"
             "/confirm-config — apply a settings change\n"
-            "/reject-config — cancel a settings change"
+            "/reject-config — cancel a settings change\n\n"
+            "Tuning suggestions now live on the dashboard."
         )
 
     async def _send_status(self) -> None:

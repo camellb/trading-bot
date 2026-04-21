@@ -51,6 +51,12 @@ from engine.user_config import (
     get_user_config,
     update_user_config,
 )
+from engine.learning_cadence import (
+    apply_suggestion,
+    list_pending_suggestions,
+    skip_suggestion,
+    snooze_suggestion,
+)
 from process_health import health as proc_health
 
 
@@ -296,6 +302,51 @@ class BotAPI:
                              for k, (lo, hi) in USER_CONFIG_BOUNDS.items()},
             "descriptions": USER_CONFIG_DESCRIPTIONS,
         })
+
+    async def _handle_list_suggestions(self, request: web.Request) -> web.Response:
+        user_id = request.query.get("user_id") or DEFAULT_USER_ID
+        include_snoozed = request.query.get("include_snoozed", "1") != "0"
+        loop = asyncio.get_running_loop()
+        rows = await loop.run_in_executor(
+            self._pool,
+            lambda: list_pending_suggestions(user_id, include_snoozed),
+        )
+        return web.json_response({"user_id": user_id, "suggestions": rows})
+
+    async def _handle_apply_suggestion(self, request: web.Request) -> web.Response:
+        return await self._suggestion_action(request, apply_suggestion)
+
+    async def _handle_skip_suggestion(self, request: web.Request) -> web.Response:
+        return await self._suggestion_action(request, skip_suggestion)
+
+    async def _handle_snooze_suggestion(self, request: web.Request) -> web.Response:
+        return await self._suggestion_action(request, snooze_suggestion)
+
+    async def _suggestion_action(self, request: web.Request, fn) -> web.Response:
+        try:
+            suggestion_id = int(request.match_info.get("suggestion_id", "0"))
+        except ValueError:
+            return web.json_response({"error": "invalid suggestion id"}, status=400)
+
+        user_id = DEFAULT_USER_ID
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict) and body.get("user_id"):
+            user_id = str(body["user_id"])
+
+        loop = asyncio.get_running_loop()
+        try:
+            result = await loop.run_in_executor(
+                self._pool,
+                lambda: fn(suggestion_id, user_id=user_id, resolved_by="user"),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        return web.json_response(result)
 
     async def _handle_update_user_config(self, request: web.Request) -> web.Response:
         """Validate and apply user_config changes. Takes effect immediately."""
@@ -644,6 +695,13 @@ class BotAPI:
         app.router.add_get ("/api/config",      self._handle_config)
         app.router.add_get ("/api/user-config", self._handle_get_user_config)
         app.router.add_put ("/api/user-config", self._handle_update_user_config)
+        app.router.add_get ("/api/suggestions", self._handle_list_suggestions)
+        app.router.add_post("/api/suggestions/{suggestion_id}/apply",
+                            self._handle_apply_suggestion)
+        app.router.add_post("/api/suggestions/{suggestion_id}/skip",
+                            self._handle_skip_suggestion)
+        app.router.add_post("/api/suggestions/{suggestion_id}/snooze",
+                            self._handle_snooze_suggestion)
         app.router.add_get ("/api/markouts",    self._handle_markouts)
         app.router.add_post("/api/scan-now",    self._handle_scan_now)
         app.router.add_post("/api/resolve-now", self._handle_resolve_now)

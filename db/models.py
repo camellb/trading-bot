@@ -260,6 +260,39 @@ sentiment_scores = Table(
 )
 
 
+# ── Pending learning suggestions ─────────────────────────────────────────────
+# Every 50 settled trades the learning cadence proposes user_config tweaks.
+# Each suggestion includes the evidence and the backtester's hypothetical
+# ROI delta. The dashboard surfaces these with Apply/Skip/Snooze buttons.
+# No suggestion ever modifies runtime state on its own — a user Apply must
+# flow through the user_config update path.
+pending_suggestions = Table(
+    "pending_suggestions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("created_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    Column("user_id", Text, nullable=False,
+           server_default=sa_text("'default'")),
+    Column("param_name", Text, nullable=False),
+    Column("current_value", Float, nullable=True),
+    Column("proposed_value", Float, nullable=True),
+    Column("evidence", Text, nullable=True),
+    # Backtester's hypothetical ROI delta on historical evaluations
+    # (expressed as a fraction, e.g. 0.02 = +2 pp ROI).
+    Column("backtest_delta", Float, nullable=True),
+    Column("backtest_trades", Integer, nullable=True),
+    # settled_trade_count at the time of creation — used by the learning
+    # cadence to decide whether enough new trades have accumulated.
+    Column("settled_count_at_creation", Integer, nullable=True),
+    # 'pending' | 'applied' | 'skipped' | 'snoozed'
+    Column("status", Text, nullable=False,
+           server_default=sa_text("'pending'")),
+    Column("resolved_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("resolved_by", Text, nullable=True),
+)
+
+
 # ── Per-user risk configuration ──────────────────────────────────────────────
 # Each user configures their own risk tolerance within system-defined bounds.
 # The sizer and risk manager read from this table at decision time. The
@@ -367,4 +400,13 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
             "ON user_config(user_id)"
+        ))
+        # Pending suggestions — fast filter on status for the dashboard.
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pending_suggestions_status "
+            "ON pending_suggestions(status, created_at DESC)"
+        ))
+        conn.execute(sa_text(
+            "CREATE INDEX IF NOT EXISTS idx_pending_suggestions_user "
+            "ON pending_suggestions(user_id, status)"
         ))

@@ -57,7 +57,6 @@ from feeds.telegram_notifier   import notifier
 from execution.pm_executor     import PMExecutor
 from engine.pm_analyst         import PMAnalyst
 from engine.memory             import MemoryManager
-from engine.self_improvement   import SelfImprovementAnalyser
 from engine.user_config        import ensure_default_user_config
 from bot_api                   import BotAPI
 from polymarket_runner         import scan_and_analyze, resolve_positions
@@ -105,9 +104,6 @@ async def main() -> None:
     analyst   = PMAnalyst(executor=executor, notifier=notifier, memory=memory,
                           news_feed=news_feed)
 
-    # ── Self-improvement analyser ────────────────────────────────────────────
-    self_improvement = SelfImprovementAnalyser(notifier=notifier, memory=memory)
-
     # ── Wire notifier references used by /status and scheduled summaries ─────
     notifier._loop            = asyncio.get_running_loop()
     notifier._bot_start_time  = bot_start_time
@@ -115,8 +111,9 @@ async def main() -> None:
     notifier._executor        = executor
     notifier._analyst         = analyst
 
-    # Telegram polling thread for commands (/apply /skip /status etc.)
-    notifier.start_polling(self_improvement)
+    # Telegram polling thread for commands (/status /scan /resolve /help etc.).
+    # Config-change suggestions and tuning proposals now live on the dashboard.
+    notifier.start_polling()
 
     # ── HTTP API (dashboard) ────────────────────────────────────────────────
     bot_api = BotAPI(analyst=analyst, executor=executor, notifier=notifier)
@@ -221,17 +218,8 @@ async def main() -> None:
                     timezone="Asia/Kuala_Lumpur"),
         id="weekly_summary",
     )
-    scheduler.add_job(
-        self_improvement.analyse_and_report,
-        CronTrigger(day_of_week="sun", hour=8, minute=30,
-                    timezone="Asia/Kuala_Lumpur"),
-        id="self_improvement",
-    )
-    scheduler.add_job(
-        self_improvement.generate_monthly_report,
-        CronTrigger(day=1, hour=8, minute=30, timezone="Asia/Kuala_Lumpur"),
-        id="monthly_report",
-    )
+    # Learning cadence is trade-volume-gated, not calendar-gated — see
+    # engine.learning_cadence.maybe_run_learning_cycle (hooked into settlement).
 
     # ── Watchdog — alert if core jobs stop running ────────────────────────
     _watchdog_alerted: set[str] = set()

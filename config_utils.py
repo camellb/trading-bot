@@ -1,4 +1,4 @@
-"""Shared config manipulation utilities used by bot_api and self_improvement."""
+"""Shared config manipulation utilities used by bot_api."""
 
 import os
 import re

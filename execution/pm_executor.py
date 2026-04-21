@@ -297,6 +297,15 @@ class PMExecutor:
                 f"outcome={outcome}, side={side}, pnl=${pnl:+.2f}",
                 flush=True,
             )
+
+            # Trade-volume learning cadence — cheap no-op until the
+            # 50-settled-trade gate is crossed for this user.
+            try:
+                from engine.learning_cadence import maybe_run_learning_cycle
+                maybe_run_learning_cycle(mode=self.mode)
+            except Exception as exc:
+                print(f"[pm_executor] learning_cadence hook failed: {exc}",
+                      file=sys.stderr)
             return True
         except Exception as exc:
             print(f"[pm_executor] settle_position failed: {exc}", file=sys.stderr)
