@@ -10,7 +10,7 @@ Pipeline per market:
        PolymarketEvaluator (now research-aware).
     5. Log a `predictions` row so the outcome feeds calibration.
     6. Log a `market_evaluations` row for the dashboard/audit trail.
-    7. Run the sizer (quarter-Kelly with guardrails).
+    7. Run the sizer (positive-EV with flat, confidence-scaled stake).
     8. If the sizer approves and we're under the concurrent cap,
        open a shadow/live position via PMExecutor.
     9. Send Telegram notification + Obsidian memory entry.
@@ -34,6 +34,7 @@ import calibration
 import config
 from db.engine import get_engine
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
+from engine.user_config import UserConfig, get_default_user_config
 from execution.pm_executor import PMExecutor
 from execution.pm_sizer import size_position, SizingDecision
 from feeds.polymarket_feed import PolymarketFeed, PolyMarket
@@ -158,18 +159,15 @@ class PMAnalyst:
 
         # 6. Size.
         bankroll = self.executor.get_bankroll()
-        news_mult = 1.0
-        if self.news_feed is not None and hasattr(self.news_feed, "is_degraded"):
-            if self.news_feed.is_degraded():
-                news_mult = float(getattr(config, "NEWS_DEGRADED_SIZE_MULTIPLIER", 0.5))
+        user_config = get_default_user_config()
         decision = size_position(
-            market_price_yes   = market.yes_price,
-            claude_probability = evaluation.probability_yes,
-            confidence         = evaluation.confidence,
-            bankroll_usd       = bankroll,
-            days_to_end        = market.days_to_end,
-            size_multiplier    = news_mult,
-            mode               = self.executor.mode,
+            claude_p    = evaluation.probability_yes,
+            confidence  = evaluation.confidence,
+            ask_yes     = market.yes_price,
+            ask_no      = market.no_price,
+            bankroll    = bankroll,
+            user_config = user_config,
+            archetype   = evaluation.category,
         )
 
         # Log a market_evaluations row regardless of trade outcome — this is
@@ -259,7 +257,7 @@ class PMAnalyst:
             market_id=market.id, question=q,
             status="OPENED",
             detail=f"pm_position={pos_id} side={decision.side} "
-                   f"stake=${decision.stake_usd:.2f} edge={decision.edge*10000:.0f}bps",
+                   f"stake=${decision.stake_usd:.2f} ev={decision.ev*100:+.2f}%",
             evaluation=evaluation, decision=decision,
             prediction_id=prediction_id, position_id=pos_id,
         )
@@ -347,13 +345,11 @@ class PMAnalyst:
         entry_cents = decision.entry_price * 100.0
         crowd_price = market.yes_price * 100.0
         bot_estimate = evaluation.probability_yes * 100.0
-        mispricing = decision.edge * 10_000.0
+        ev_pct = decision.ev * 100.0
         why_line = (
-            f"Why: the bot estimate for YES ({bot_estimate:.1f}%) is above "
-            f"the crowd price ({crowd_price:.1f}%)."
-            if decision.side == "YES" else
-            f"Why: the bot estimate for YES ({bot_estimate:.1f}%) is below "
-            f"the crowd price ({crowd_price:.1f}%)."
+            f"Estimated probability {decision.p_win:.2f}, paying "
+            f"{decision.entry_price:.2f} — expected value +{ev_pct:.2f}% "
+            f"after costs."
         )
         msg = (
             f"🎯 <b>New PM position</b> [{self.executor.mode}]\n"
@@ -362,7 +358,7 @@ class PMAnalyst:
             f"Stake: ${decision.stake_usd:.2f} for {decision.shares:.1f} shares\n"
             f"Bot estimate: {bot_estimate:.1f}%\n"
             f"Crowd price: {crowd_price:.1f}%\n"
-            f"Mispricing: {mispricing:.0f} bps\n"
+            f"EV: {ev_pct:+.2f}% (after costs)\n"
             f"Confidence: {evaluation.confidence:.2f}\n"
             f"{why_line}\n"
             f"Resolves: {market.end_date_iso.strftime('%Y-%m-%d')}\n"
@@ -425,7 +421,9 @@ def _log_market_evaluation(
                 "mp":   market.yes_price,
                 "cp":   evaluation.probability_yes,
                 "conf": evaluation.confidence,
-                "edge_bps": decision.edge * 10_000.0,
+                # edge_bps DB column temporarily stores EV-in-bps; Phase 4
+                # renames the column to ev_bps and updates the dashboard copy.
+                "edge_bps": decision.ev * 10_000.0,
                 "rec":  recommendation,
                 "reason": evaluation.reasoning,
                 "srcs": json.dumps(research_sources),

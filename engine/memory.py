@@ -103,7 +103,7 @@ class MemoryManager:
                 research_md = "\n".join(f"- {s}" for s in sources[:10])
 
         end_date = (getattr(market, "end_date_iso", None) or now).strftime("%Y-%m-%d")
-        edge_bps = getattr(decision, "edge", 0.0) * 10_000
+        ev_pct = getattr(decision, "ev", 0.0) * 100.0
 
         content = f"""# Polymarket {side} — {date_str} {time_str}
 
@@ -121,7 +121,7 @@ class MemoryManager:
 - Stake: ${getattr(decision, 'stake_usd', 0):.2f}
 - Claude p(YES): {getattr(evaluation, 'probability_yes', 0):.3f}
 - Market p(YES): {getattr(market, 'yes_price', 0):.3f}
-- Edge: {edge_bps:.0f} bps
+- EV: {ev_pct:+.2f}% (after costs)
 - Confidence: {getattr(evaluation, 'confidence', 0):.2f}
 - Position ID: #{position_id}
 

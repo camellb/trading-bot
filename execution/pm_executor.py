@@ -159,7 +159,7 @@ class PMExecutor:
                 f"[pm_executor][{self.mode}] opened pm_position {pos_id}: "
                 f"{market.question[:60]!r} {decision.side} "
                 f"{decision.shares:.2f} shares @ {decision.entry_price:.3f} "
-                f"(cost ${decision.stake_usd:.2f}, edge {decision.edge*10000:.0f}bps)",
+                f"(cost ${decision.stake_usd:.2f}, ev {decision.ev*100:+.2f}%)",
                 flush=True,
             )
         return pos_id
@@ -192,7 +192,9 @@ class PMExecutor:
                     "ep":    decision.entry_price,
                     "cost":  decision.stake_usd,
                     "cp":    claude_p,
-                    "edge_bps": decision.edge * 10_000.0,
+                    # edge_bps DB column temporarily stores EV-in-bps;
+                    # Phase 4 renames the column to ev_bps.
+                    "edge_bps": decision.ev * 10_000.0,
                     "conf":  decision.confidence,
                     "exp":   market.end_date_iso,
                     "reason": (reasoning or "")[:4000] or None,

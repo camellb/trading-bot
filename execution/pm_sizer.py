@@ -1,192 +1,141 @@
 """
-Polymarket position sizer — quarter-Kelly with guardrails.
+Polymarket position sizer — positive-EV with flat, confidence-scaled stakes.
 
-Kelly formula for binary prediction markets:
+For every market, the sizer estimates expected value on each side at its
+current ask and takes the better side when it clears the user's minimum EV
+threshold after costs:
 
-    If claude_p > market_p:  buy YES at market_p, win $1 if YES resolves
-        kelly_fraction = (claude_p - market_p) / (1 - market_p)
+    EV_side = p_win × (1 / ask_price) − 1 − cost_assumption
 
-    If claude_p < market_p:  buy NO at (1 - market_p), win $1 if NO resolves
-        kelly_fraction = (market_p - claude_p) / market_p
-
-Both reduce to: edge / payoff_if_won.
-
-We apply the following guardrails on top of quarter-Kelly:
-
-    1. Minimum edge threshold — skip if edge_bps < MIN_EDGE_BPS
-    2. Lockup penalty — minimum edge scales with sqrt(days_to_end / 7).
-       A 2-month lockup needs ~3x the edge of a 1-week trade.
-    3. Minimum confidence — skip if confidence < MIN_CONFIDENCE
-    4. Confidence scaling — size *= confidence (0..1)
-    5. Max position pct — cap at MAX_POSITION_PCT of bankroll
-    6. Absolute min/max — PM_MIN_TRADE_USD / PM_MAX_TRADE_USD
-    7. Price sanity — refuse prices outside [0.02, 0.98] (no edge near
-       certainty; round-lot friction dominates)
-
-Rationale for quarter-Kelly:
-    Full Kelly maximises log-wealth but assumes perfectly calibrated
-    probabilities. When our Brier score indicates overconfidence, full
-    Kelly can produce catastrophic drawdowns. Quarter-Kelly gives up
-    ~15% of log-wealth growth in exchange for ~4x lower drawdown risk
-    and is the standard choice for real-money implementations.
+Stake scales with Claude's confidence only. Not with EV, not with edge,
+not with disagreement. Flat sizing keeps variance per trade low so the
+portfolio learns fast about what actually works.
 """
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Optional
 
-import config
+# Cost model — Polymarket spread + fees + slippage, conservative.
+COST_ASSUMPTION = 0.015
 
-LOCKUP_BASELINE_DAYS = 7.0
+# Genuinely uncertain markets are skipped — no information, no bet.
+_UNCERTAIN_LO = 0.45
+_UNCERTAIN_HI = 0.55
+
+# Floor for an absolute tradeable stake in USD.
+_MIN_ABSOLUTE_STAKE_USD = 2.0
 
 
 @dataclass
 class SizingDecision:
-    side:         str            # 'YES' | 'NO'
-    entry_price:  float          # market price of the side we're buying (0..1)
-    edge:         float          # absolute edge (0..1)
-    kelly_full:   float          # uncapped Kelly fraction (0..1)
-    kelly_frac:   float          # applied Kelly multiplier (e.g. 0.25)
-    confidence:   float          # Claude confidence (0..1)
-    stake_usd:    float          # final stake in USD
-    shares:       float          # shares purchased
-    skip_reason:  Optional[str]  # non-None => don't trade
+    side:         str             # 'YES' | 'NO' | '' (when skipped pre-sidechoice)
+    entry_price:  float           # ask price of the chosen side (0..1)
+    ev:           float           # expected value at chosen side (fractional, e.g. 0.08 = +8%)
+    p_win:        float           # probability chosen side wins (0..1)
+    confidence:   float           # Claude confidence (0..1)
+    stake_usd:    float           # final stake in USD
+    shares:       float           # shares purchased
+    skip_reason:  Optional[str]   # non-None → don't trade
 
     @property
     def should_trade(self) -> bool:
         return self.skip_reason is None and self.stake_usd > 0
 
     def to_dict(self) -> dict:
-        return {
-            "side":        self.side,
-            "entry_price": self.entry_price,
-            "edge":        self.edge,
-            "kelly_full":  self.kelly_full,
-            "kelly_frac":  self.kelly_frac,
-            "confidence":  self.confidence,
-            "stake_usd":   self.stake_usd,
-            "shares":      self.shares,
-            "skip_reason": self.skip_reason,
-        }
+        d = asdict(self)
+        d["should_trade"] = self.should_trade
+        return d
 
 
 def size_position(
-    market_price_yes: float,
-    claude_probability: float,
-    confidence: float,
-    bankroll_usd: float,
-    days_to_end: Optional[float] = None,
-    size_multiplier: float = 1.0,
-    mode: Optional[str] = None,
+    claude_p:    float,
+    confidence:  float,
+    ask_yes:     float,
+    ask_no:      float,
+    bankroll:    float,
+    user_config,
+    archetype:   Optional[str] = None,
 ) -> SizingDecision:
     """
-    Compute the staked USD + shares for a single market.
-    Returns a SizingDecision; check .should_trade before acting.
+    Decide whether to take YES or NO (or skip), and size the stake.
+
+    Returns a SizingDecision. Check .should_trade before acting; .skip_reason
+    explains the skip for logging / dashboard.
     """
-    # ── Sanity clamps ────────────────────────────────────────────────────────
-    mp = float(max(0.0, min(1.0, market_price_yes)))
-    cp = float(max(0.0, min(1.0, claude_probability)))
-    cf = float(max(0.0, min(1.0, confidence)))
+    cp  = _clamp01(claude_p)
+    cf  = _clamp01(confidence)
+    ay  = _clamp_price(ask_yes)
+    an  = _clamp_price(ask_no)
 
-    # Which side?
-    if cp > mp:
-        side         = "YES"
-        entry_price  = mp
-        win_payoff   = 1.0 - mp     # what you gain per share on a win
+    # Skip genuinely uncertain markets — no defensible side.
+    if _UNCERTAIN_LO < cp < _UNCERTAIN_HI:
+        return SizingDecision(
+            side="", entry_price=0.0, ev=0.0, p_win=cp,
+            confidence=cf, stake_usd=0.0, shares=0.0,
+            skip_reason=f"uncertain estimate {cp:.2f} in "
+                        f"[{_UNCERTAIN_LO:.2f}, {_UNCERTAIN_HI:.2f}]",
+        )
+
+    # Compute EV for each side.
+    ev_yes = cp * (1.0 / ay) - 1.0 - COST_ASSUMPTION
+    ev_no  = (1.0 - cp) * (1.0 / an) - 1.0 - COST_ASSUMPTION
+
+    if ev_yes >= ev_no:
+        side, entry, ev, p_win = "YES", ay, ev_yes, cp
     else:
-        side         = "NO"
-        entry_price  = 1.0 - mp
-        win_payoff   = mp
+        side, entry, ev, p_win = "NO",  an, ev_no,  1.0 - cp
 
-    edge = abs(cp - mp)
+    # Does the better side clear the user's minimum EV threshold?
+    min_ev = float(user_config.min_ev_threshold)
+    if ev < min_ev:
+        return SizingDecision(
+            side=side, entry_price=entry, ev=ev, p_win=p_win,
+            confidence=cf, stake_usd=0.0, shares=0.0,
+            skip_reason=(f"ev {ev*100:.2f}% < min {min_ev*100:.2f}% "
+                         f"(YES {ev_yes*100:+.2f}%, NO {ev_no*100:+.2f}%)"),
+        )
 
-    # ── Gate: min edge (with horizon scaling) ─────────────────────────────
-    if mode is None:
-        mode = getattr(config, "PM_MODE", "shadow")
-    if mode == "live":
-        base_min_edge_bps = float(getattr(config, "PM_LIVE_MIN_EDGE_BPS", 500))
+    # Flat, confidence-scaled stake.
+    base_pct = float(user_config.base_stake_pct)
+    max_pct  = float(user_config.max_stake_pct)
+
+    if cf >= 0.8:
+        stake_pct = min(base_pct * 1.5, max_pct)
+    elif cf >= 0.5:
+        stake_pct = base_pct
     else:
-        base_min_edge_bps = float(getattr(config, "PM_SHADOW_MIN_EDGE_BPS", 300))
-    horizon_mult = 1.0
-    if days_to_end is not None and days_to_end > 0:
-        if days_to_end < LOCKUP_BASELINE_DAYS:
-            horizon_mult = 1.0
-        else:
-            horizon_mult = math.sqrt(days_to_end / LOCKUP_BASELINE_DAYS)
-    min_edge_bps = base_min_edge_bps * horizon_mult
-    if edge * 10_000.0 < min_edge_bps:
+        stake_pct = base_pct * 0.5
+
+    # Hard cap at max_stake_pct regardless of the branch above.
+    stake_pct = min(stake_pct, max_pct)
+
+    stake = max(
+        _MIN_ABSOLUTE_STAKE_USD,
+        min(bankroll * stake_pct, bankroll * max_pct),
+    )
+
+    if bankroll <= 0 or stake <= 0:
         return SizingDecision(
-            side=side, entry_price=entry_price, edge=edge,
-            kelly_full=0.0, kelly_frac=0.0, confidence=cf,
-            stake_usd=0.0, shares=0.0,
-            skip_reason=(f"edge {edge*10000:.0f}bps < min {min_edge_bps:.0f}bps"
-                         f" (base {base_min_edge_bps:.0f} × {horizon_mult:.1f}x horizon)"),
+            side=side, entry_price=entry, ev=ev, p_win=p_win,
+            confidence=cf, stake_usd=0.0, shares=0.0,
+            skip_reason=f"non-positive stake (bankroll=${bankroll:.2f})",
         )
 
-    # ── Gate: min confidence ─────────────────────────────────────────────────
-    if mode == "live":
-        min_conf = float(getattr(config, "PM_LIVE_MIN_CONFIDENCE", 0.55))
-    else:
-        min_conf = float(getattr(config, "PM_SHADOW_MIN_CONFIDENCE", 0.30))
-    if cf < min_conf:
-        return SizingDecision(
-            side=side, entry_price=entry_price, edge=edge,
-            kelly_full=0.0, kelly_frac=0.0, confidence=cf,
-            stake_usd=0.0, shares=0.0,
-            skip_reason=f"confidence {cf:.2f} < min {min_conf:.2f}",
-        )
-
-    # ── Gate: price sanity ───────────────────────────────────────────────────
-    if entry_price <= 0.02 or entry_price >= 0.98:
-        return SizingDecision(
-            side=side, entry_price=entry_price, edge=edge,
-            kelly_full=0.0, kelly_frac=0.0, confidence=cf,
-            stake_usd=0.0, shares=0.0,
-            skip_reason=f"entry price {entry_price:.3f} outside [0.02, 0.98]",
-        )
-
-    # ── Kelly ────────────────────────────────────────────────────────────────
-    # kelly_full = edge / win_payoff (equivalent to the formulas in the docstring)
-    # Guard against divide-by-zero when win_payoff is tiny (shouldn't happen
-    # after the 0.02/0.98 gate but defensive coding is cheap).
-    kelly_full = edge / win_payoff if win_payoff > 1e-6 else 0.0
-    kelly_full = max(0.0, min(1.0, kelly_full))
-
-    kelly_frac = float(getattr(config, "PM_KELLY_FRACTION", 0.25))
-    confidence_scale = cf  # 0..1 linear — low confidence => smaller bet
-
-    fraction = kelly_full * kelly_frac * confidence_scale
-
-    # ── Cap to max pct of bankroll ───────────────────────────────────────────
-    max_pct = float(getattr(config, "PM_MAX_POSITION_PCT", 0.05))
-    fraction = min(fraction, max_pct)
-
-    stake_usd = bankroll_usd * fraction
-
-    # ── Degraded-feed multiplier ─────────────────────────────────────────
-    if 0 < size_multiplier < 1.0:
-        stake_usd *= size_multiplier
-
-    # ── Absolute min/max ─────────────────────────────────────────────────────
-    min_trade = float(getattr(config, "PM_MIN_TRADE_USD", 2.0))
-    max_trade = float(getattr(config, "PM_MAX_TRADE_USD", 25.0))
-
-    if stake_usd < min_trade:
-        return SizingDecision(
-            side=side, entry_price=entry_price, edge=edge,
-            kelly_full=kelly_full, kelly_frac=kelly_frac, confidence=cf,
-            stake_usd=0.0, shares=0.0,
-            skip_reason=f"computed stake ${stake_usd:.2f} < min ${min_trade:.2f}",
-        )
-
-    stake_usd = min(stake_usd, max_trade)
-    shares    = stake_usd / entry_price if entry_price > 0 else 0.0
+    shares = stake / entry if entry > 0 else 0.0
 
     return SizingDecision(
-        side=side, entry_price=entry_price, edge=edge,
-        kelly_full=kelly_full, kelly_frac=kelly_frac, confidence=cf,
-        stake_usd=stake_usd, shares=shares,
+        side=side, entry_price=entry, ev=ev, p_win=p_win,
+        confidence=cf, stake_usd=stake, shares=shares,
         skip_reason=None,
     )
+
+
+def _clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+
+def _clamp_price(x: float) -> float:
+    # Ask prices must be strictly positive for 1/ask. Cap to 1.0 upper.
+    return max(1e-6, min(1.0, float(x)))
