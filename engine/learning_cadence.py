@@ -162,6 +162,11 @@ def propose_suggestions(stats: dict, current: UserConfig,
                     f"{win_rate*100:.1f}%. Raising the EV threshold selects for "
                     f"higher-conviction bets and should reduce noise trades."
                 ),
+                proposal_metadata={
+                    "operation": "scalar_set",
+                    "field":     "min_ev_threshold",
+                    "value":     proposed,
+                },
             ))
 
     # Sustained winning pattern → lower threshold (capture more +EV).
@@ -178,6 +183,11 @@ def propose_suggestions(stats: dict, current: UserConfig,
                     f"{win_rate*100:.1f}%. Lowering the EV threshold captures "
                     f"more positive-EV trades the book is handling well."
                 ),
+                proposal_metadata={
+                    "operation": "scalar_set",
+                    "field":     "min_ev_threshold",
+                    "value":     proposed,
+                },
             ))
 
     # Drawdown pressure → cut max stake.
@@ -195,6 +205,11 @@ def propose_suggestions(stats: dict, current: UserConfig,
                     f"Reducing max_stake_pct from {current.max_stake_pct*100:.1f}% "
                     f"to {proposed*100:.1f}% limits single-trade risk."
                 ),
+                proposal_metadata={
+                    "operation": "scalar_set",
+                    "field":     "max_stake_pct",
+                    "value":     proposed,
+                },
             ))
 
     # ── Diagnostic-driven proposers ────────────────────────────────────────
@@ -260,8 +275,9 @@ def _propose_archetype_threshold(diag: dict,
                 f"mis-calibrates."
             ),
             proposal_metadata={
-                "field": "archetype_skip_list",
-                "add":   archetype,
+                "operation":    "list_append",
+                "target_field": "archetype_skip_list",
+                "items":        [archetype],
             },
         ))
     return out
@@ -309,8 +325,9 @@ def _propose_calibration_shrinkage(diag: dict,
             f"the overshoot."
         ),
         proposal_metadata={
-            "field": "probability_cap",
-            "value": cap,
+            "operation": "scalar_set",
+            "field":     "probability_cap",
+            "value":     cap,
         },
     ))
     return out
@@ -346,8 +363,9 @@ def _propose_cost_correction(diag: dict,
             f"Proposal: set cost_assumption_override={proposed}."
         ),
         proposal_metadata={
-            "field": "cost_assumption_override",
-            "value": proposed,
+            "operation": "scalar_set",
+            "field":     "cost_assumption_override",
+            "value":     proposed,
         },
     ))
     return out
@@ -392,6 +410,11 @@ def _propose_selection_loosening(diag: dict,
             f"min_ev_threshold from {current.min_ev_threshold*100:.1f}% to "
             f"{proposed*100:.1f}% so more +EV opportunities pass through."
         ),
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "min_ev_threshold",
+            "value":     proposed,
+        },
     ))
     return out
 
@@ -423,8 +446,9 @@ def _propose_ev_bucket_exclude(diag: dict,
                 f"add '{bucket}' to ev_bucket_skip_list."
             ),
             proposal_metadata={
-                "field": "ev_bucket_skip_list",
-                "add":   bucket,
+                "operation":    "list_append",
+                "target_field": "ev_bucket_skip_list",
+                "items":        [bucket],
             },
         ))
     return out
@@ -563,28 +587,36 @@ def _build_modified_config(prop: Proposal,
     """
     Derive the simulated UserConfig for this proposal. Returns None when the
     proposal lacks enough information to simulate.
+
+    Reads `proposal_metadata['operation']` to pick the merge strategy. Falls
+    back to "scalar_set" when metadata is missing, matching the apply path.
     """
-    name = prop.param_name
     meta = prop.proposal_metadata or {}
+    operation = meta.get("operation", "scalar_set")
 
-    # List-append proposals (skip lists): tuple-union the existing list with
-    # the new item from metadata.
-    if name in ("archetype_skip_list", "ev_bucket_skip_list"):
-        item = meta.get("add")
-        if not item:
+    if operation == "list_append":
+        target = meta.get("target_field") or prop.param_name
+        items = meta.get("items") or []
+        if not items:
             return None
-        existing = tuple(getattr(current, name, ()) or ())
-        if item in existing:
+        existing = tuple(getattr(current, target, ()) or ())
+        merged = list(existing)
+        for raw in items:
+            s = str(raw)
+            if s and s not in merged:
+                merged.append(s)
+        if tuple(merged) == existing:
             return None
-        return dataclasses.replace(current, **{name: existing + (str(item),)})
+        return dataclasses.replace(current, **{target: tuple(merged)})
 
-    # Scalar proposals: prefer proposed_value; fall back to metadata.
+    # Scalar path: prefer proposed_value; fall back to metadata['value'].
+    target = meta.get("field") or prop.param_name
     value = prop.proposed_value
     if value is None:
         value = meta.get("value")
     if value is None:
         return None
-    return dataclasses.replace(current, **{name: value})
+    return dataclasses.replace(current, **{target: value})
 
 
 def _store_pending_suggestion(prop: Proposal, user_id: str,

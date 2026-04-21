@@ -363,5 +363,70 @@ class AdvisoryProposalsHaveNoBacktestTests(unittest.TestCase):
         self.assertIsNone(prop.backtest_trades)
 
 
+class ProposalMetadataShapeTests(unittest.TestCase):
+    """Every proposer must tag proposals with an `operation` so apply_suggestion
+    can dispatch. List-append proposers use target_field + items; scalar
+    proposers use field + value."""
+
+    def _only(self, props, name):
+        hits = [p for p in props if p.param_name == name]
+        self.assertEqual(len(hits), 1, f"expected exactly one {name} proposal")
+        return hits[0]
+
+    def test_archetype_skip_list_metadata(self):
+        diag = dict(EMPTY_DIAG, brier_by_archetype=[
+            {"archetype": "politics", "n": STRICT_BUCKET_N + 5,
+             "brier": ARCHETYPE_BRIER_THRESHOLD + 0.06},
+        ])
+        p = self._only(
+            propose_suggestions(neutral_stats(), UserConfig(), diag=diag),
+            "archetype_skip_list",
+        )
+        self.assertEqual(p.proposal_metadata, {
+            "operation":    "list_append",
+            "target_field": "archetype_skip_list",
+            "items":        ["politics"],
+        })
+
+    def test_ev_bucket_skip_list_metadata(self):
+        diag = dict(EMPTY_DIAG, roi_by_ev_bucket=[
+            {"bucket": "0-2%", "n": MIN_BUCKET_N + 5, "roi": -0.10},
+        ])
+        p = self._only(
+            propose_suggestions(neutral_stats(), UserConfig(), diag=diag),
+            "ev_bucket_skip_list",
+        )
+        self.assertEqual(p.proposal_metadata, {
+            "operation":    "list_append",
+            "target_field": "ev_bucket_skip_list",
+            "items":        ["0-2%"],
+        })
+
+    def test_scalar_min_ev_metadata_on_losing_streak(self):
+        cfg = UserConfig(min_ev_threshold=0.03)
+        out = propose_suggestions(
+            stats(n=50, roi=-0.10, win_rate=0.35),
+            cfg, diag=EMPTY_DIAG,
+        )
+        p = self._only(out, "min_ev_threshold")
+        self.assertEqual(p.proposal_metadata["operation"], "scalar_set")
+        self.assertEqual(p.proposal_metadata["field"], "min_ev_threshold")
+        self.assertAlmostEqual(p.proposal_metadata["value"], p.proposed_value)
+
+    def test_scalar_cost_override_metadata(self):
+        diag = dict(EMPTY_DIAG, cost_validation={
+            "n": COST_CORRECTION_MIN_N + 10,
+            "assumed_cost": 0.015,
+            "implied_cost": 0.024,
+        })
+        p = self._only(
+            propose_suggestions(neutral_stats(), UserConfig(), diag=diag),
+            "cost_assumption_override",
+        )
+        self.assertEqual(p.proposal_metadata["operation"], "scalar_set")
+        self.assertEqual(p.proposal_metadata["field"], "cost_assumption_override")
+        self.assertAlmostEqual(p.proposal_metadata["value"], 0.024, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
