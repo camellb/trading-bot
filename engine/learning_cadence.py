@@ -679,15 +679,24 @@ def apply_suggestion(suggestion_id: int,
                      user_id: str = DEFAULT_USER_ID,
                      resolved_by: str = "user") -> dict:
     """
-    Apply a pending suggestion: update user_config, mark the row applied.
-    Validation of bounds happens inside update_user_config.
+    Apply a pending suggestion to user_config and mark the row applied.
+
+    Dispatches on `metadata['operation']`:
+      - "scalar_set" (default): write `proposed_value` to `param_name`.
+      - "list_append": union `metadata['items']` onto the existing list at
+        `metadata['target_field']`, preserving order of existing items and
+        not re-adding duplicates.
+
+    Validation of bounds still happens inside `update_user_config`.
+    Rows written before the metadata column existed (metadata=NULL) are
+    treated as "scalar_set" for backward compatibility.
     """
     from sqlalchemy import text
     from db.engine import get_engine
 
     with get_engine().begin() as conn:
         row = conn.execute(text(
-            "SELECT param_name, proposed_value, status "
+            "SELECT param_name, proposed_value, status, metadata "
             "FROM pending_suggestions WHERE id = :id AND user_id = :uid"
         ), {"id": suggestion_id, "uid": user_id}).fetchone()
         if row is None:
@@ -696,10 +705,17 @@ def apply_suggestion(suggestion_id: int,
             return {"status": "already_resolved", "current_status": row[2]}
 
         param_name = str(row[0])
-        proposed = float(row[1])
+        proposed_value = row[1]
+        metadata = _decode_metadata(row[3]) or {}
 
-    # This validates against bounds and raises ValueError on any problem.
-    update_user_config(user_id, **{param_name: proposed})
+    operation = metadata.get("operation", "scalar_set")
+
+    if operation == "scalar_set":
+        result = _apply_scalar(user_id, param_name, proposed_value)
+    elif operation == "list_append":
+        result = _apply_list_append(user_id, metadata)
+    else:
+        raise ValueError(f"unknown proposal operation: {operation!r}")
 
     with get_engine().begin() as conn:
         conn.execute(text(
@@ -708,9 +724,48 @@ def apply_suggestion(suggestion_id: int,
             "WHERE id = :id AND user_id = :uid"
         ), {"id": suggestion_id, "uid": user_id, "rb": resolved_by})
 
-    return {"status": "applied",
-            "param_name": param_name,
-            "value": proposed}
+    result["status"] = "applied"
+    return result
+
+
+def _apply_scalar(user_id: str, param_name: str, proposed_value) -> dict:
+    if proposed_value is None:
+        raise ValueError(
+            f"scalar_set proposal for {param_name!r} has no proposed_value"
+        )
+    value = float(proposed_value)
+    update_user_config(user_id, **{param_name: value})
+    return {"param_name": param_name, "value": value, "operation": "scalar_set"}
+
+
+def _apply_list_append(user_id: str, metadata: dict) -> dict:
+    target_field = metadata.get("target_field")
+    items_raw = metadata.get("items")
+    if not target_field or not isinstance(items_raw, (list, tuple)):
+        raise ValueError(
+            "list_append proposal requires 'target_field' and 'items'"
+        )
+    new_items = [str(x) for x in items_raw if x is not None and str(x) != ""]
+    if not new_items:
+        raise ValueError("list_append proposal has no items to add")
+
+    current_cfg = get_user_config(user_id)
+    current_list = getattr(current_cfg, target_field, None) or ()
+    merged = list(current_list)
+    added: list[str] = []
+    for item in new_items:
+        if item not in merged:
+            merged.append(item)
+            added.append(item)
+
+    update_user_config(user_id, **{target_field: tuple(merged)})
+    return {
+        "param_name":   target_field,
+        "operation":    "list_append",
+        "added":        added,
+        "skipped_dups": [x for x in new_items if x not in added],
+        "value":        list(merged),
+    }
 
 
 def skip_suggestion(suggestion_id: int,
