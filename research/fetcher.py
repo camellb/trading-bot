@@ -405,20 +405,52 @@ _KW_EXTRACTION_PROMPT = (
 )
 
 
+def _tolerant_json_object(raw: str) -> Optional[dict]:
+    """Parse JSON leniently: strip ```json fences / prose, extract first {...}."""
+    if not raw:
+        return None
+    t = raw.strip()
+    if t.startswith("```"):
+        nl = t.find("\n")
+        if nl != -1:
+            t = t[nl + 1:]
+        if t.endswith("```"):
+            t = t[:-3]
+        t = t.strip()
+    try:
+        obj = json.loads(t)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+    start = t.find("{")
+    end = t.rfind("}")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(t[start:end + 1])
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+    return None
+
+
 async def _extract_keywords_llm(
     question: str,
     call_fn,
     label: str,
 ) -> Optional[dict]:
     """Shared LLM keyword extraction: run call_fn in executor, parse JSON."""
+    raw = ""
     try:
         loop = asyncio.get_running_loop()
-        raw = await loop.run_in_executor(None, call_fn)
-        obj = json.loads(raw)
+        raw = await loop.run_in_executor(None, call_fn) or ""
+        obj = _tolerant_json_object(raw)
         if isinstance(obj, dict) and "search_terms" in obj:
             return obj
+        print(f"[research] {label} keyword parse miss — raw[:200]={raw[:200]!r}",
+              file=sys.stderr)
     except Exception as exc:
-        print(f"[research] {label} keyword extraction failed: {exc}", file=sys.stderr)
+        print(f"[research] {label} keyword extraction failed: {exc} — "
+              f"raw[:200]={raw[:200]!r}", file=sys.stderr)
     return None
 
 
@@ -443,7 +475,7 @@ async def _extract_keywords_gemini(question: str) -> Optional[dict]:
             model=config.GEMINI_MODEL,
             contents=prompt,
             config={"response_mime_type": "application/json",
-                    "max_output_tokens": 300, "temperature": 0.1},
+                    "max_output_tokens": 800, "temperature": 0.1},
         ).text
 
     return await _extract_keywords_llm(question, _call, "gemini")
@@ -463,7 +495,7 @@ async def _extract_keywords_claude(question: str) -> Optional[dict]:
 
     def _call():
         return client.messages.create(
-            model=config.CLAUDE_MODEL, max_tokens=200, temperature=0,
+            model=config.CLAUDE_MODEL, max_tokens=500, temperature=0,
             messages=[{"role": "user", "content": prompt}],
         ).content[0].text
 
