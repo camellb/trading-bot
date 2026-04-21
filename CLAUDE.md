@@ -1,258 +1,170 @@
-# Trading Bot — Project Context for Claude Code
+# Delfi — Project Doctrine
 
-## Read this first, every time
+## What Delfi is
 
-This file is the single source of truth. It overrides everything else.
-Read it fully before touching any code.
+Delfi is an autonomous prediction market trader. It watches Polymarket continuously, evaluates the probability of every tradeable market using an ensemble of language models, and takes positions wherever the expected value is positive after costs. It manages those positions dynamically — entering, adding, taking profit, cutting losses — and learns from every resolution. Over time, the bankroll grows.
 
----
+The product is both the trader and the experience of watching it trade. Users connect their Polymarket account. Delfi goes to work. They watch its reasoning on a live dashboard, see its positions in real time, and witness the calibrated intelligence of a system that treats every market as a solvable problem.
 
-## What this is
+## The goal
 
-A personal autonomous prediction-market bot on a Mac Mini M4.
-Trades binary outcomes on Polymarket using calibrated probability estimates.
-Python 3.12 backend. Next.js dashboard.
-Runs 24/7 as a launchd service. Control: ./bot.sh start|stop|restart|status|logs|errors
+Make money. Specifically: maximize ROI on bankroll across all trades.
 
-Core philosophy: Claude evaluates markets, estimates probabilities, and the
-system sizes positions using quarter-Kelly when there's sufficient edge.
-No manual rules, no hardcoded thresholds beyond safety guardrails.
-Learns from every prediction via Brier score calibration feedback loop.
+This is the only metric that matters. Every design decision, every code change, every feature exists to serve this goal. Win rate, calibration, Brier score, framework elegance — these are diagnostics. They help us understand whether we're making money and why. They are not themselves the point.
 
-Current state: shadow mode (simulated fills), $1000 virtual bankroll.
-Go-live gates: Brier < 0.22, >= 30 resolved predictions, synthetic P&L > $0.
+If a proposed change improves expected ROI, ship it. If it doesn't, don't. That's the decision rule.
 
----
+## The vision
 
-## Architecture
+Delfi is not a wrapper around an LLM. It is a trading intelligence that happens to use LLMs as its primary forecaster. The distinction matters.
 
-### Pipeline
+A wrapper asks Claude "what's the probability of this market?" and bets accordingly. That is what the first version of this project did. It lost money.
 
-1. **Market Discovery** — feeds/polymarket_feed.py
-   Fetches candidate markets from Polymarket Gamma API (public, read-only).
-   Filters: volume > PM_MIN_VOLUME_24H_USD, days to end PM_MIN/MAX_DAYS_TO_END,
-   price band 0.08–0.92. Short-horizon markets (≤7d) prioritized.
-   Scans every PM_SCAN_INTERVAL_MINUTES (default 30).
+Delfi is more ambitious. It is a synthesis — language model forecasting, market microstructure awareness, empirical base rates from its own trading history, dynamic position management, and a portfolio of distinct trading strategies running in parallel. The LLM is the brain that estimates probabilities. Everything else is how those estimates are turned into consistent profit.
 
-2. **Research** — research/fetcher.py
-   Category-aware multi-source research pipeline:
-   - LLM keyword extraction (Gemini Flash preferred, Claude fallback)
-   - DuckDuckGo web search with category-specific queries
-   - Full page extraction via trafilatura for top results
-   - Wikipedia lead sections, ESPN/CoinGecko structured data
-   - RSS headlines from news_event_log, NewsAPI (optional)
-   - Historical base rates from calibration DB
+The long-term vision is a system that:
 
-3. **Evaluation** — engine/polymarket_evaluator.py
-   Claude Sonnet estimates p(YES) + confidence for each market.
-   Market price IS shown as a prior — Claude is asked to evaluate whether
-   the crowd price is too high, too low, or fair, and must justify large
-   deviations (>10pp). Days to resolution and volume are provided as context.
-   Retry with exponential backoff on API failures (3 attempts).
+- **Forecasts with genuine calibration.** Its probability estimates are trustworthy across archetypes, time horizons, and market conditions. When it says 70%, it happens 70% of the time.
+- **Trades multiple strategies simultaneously.** Expected-value betting on LLM forecasts. Longshot-NO plays exploiting favorite-longshot bias. Cross-market arbitrage when related contracts are mispriced against each other. Microstructure mean-reversion after sharp moves without news. Each strategy is a distinct source of ROI, uncorrelated with the others.
+- **Manages positions as a living portfolio.** It doesn't just enter and hold. It takes profit when the thesis is realized. It cuts losses when the thesis is invalidated. It scales in when edge widens. It thinks about correlation across open positions and sizes accordingly.
+- **Learns continuously.** Every resolved market adds to the empirical base rate library. Every losing trade is diagnosed against a feature vector to find patterns it has been blind to. Its calibration improves with data.
+- **Is genuinely transparent.** Every trade shows the reasoning. Every loss has an honest post-mortem. Users see the full decision logic, not a black box, because transparency is both the ethical stance and the retention mechanism.
 
-4. **Sizing** — execution/pm_sizer.py
-   Quarter-Kelly with guardrails:
-   - Min edge gate: PM_MIN_EDGE_BPS (500 = 5 percentage points)
-   - Lockup penalty: min edge *= sqrt(days_to_end / 7). A 30-day lockup
-     needs 2.1x the edge of a 7-day trade. 45 days needs 2.5x.
-   - Min confidence gate: PM_MIN_CONFIDENCE (0.55)
-   - Confidence scaling: stake *= confidence
-   - Max position: PM_MAX_POSITION_PCT (5% of bankroll)
-   - Absolute limits: PM_MIN_TRADE_USD ($2) to PM_MAX_TRADE_USD ($25)
-   - Price sanity: refuse entry prices outside [0.02, 0.98]
+This is the product. Delfi is a trader that gets smarter over time, runs multiple strategies, manages its book dynamically, and shows its work.
 
-5. **Execution** — execution/pm_executor.py
-   Shadow mode: simulates fill at market price, writes to DB.
-   Live mode: NOT YET IMPLEMENTED — raises NotImplementedError.
-   Will use py-clob-client when Polymarket CLOB credentials are provided.
+## The core principle
 
-6. **Resolution** — polymarket_runner.py
-   Checks every PM_RESOLVE_INTERVAL_HOURS (1h) for settled markets.
-   Updates P&L, feeds calibration system, sends Telegram notifications.
+**Every trade has positive expected value after costs.**
 
-7. **Calibration** — calibration.py
-   Tracks Brier score, reliability diagram, per-category breakdown.
-   All predictions scored (traded AND skipped) — measures Claude's
-   forecasting accuracy, not just trading accuracy.
+For any market, Delfi estimates probabilities and considers both sides. It computes expected value for each side at its current ask price. If any side clears a minimum EV threshold after realistic costs, it takes that side. If neither side does, it skips.
 
-8. **Self-improvement** — engine/self_improvement.py
-   Weekly analysis: per-category Brier, P&L attribution, sizing review.
-   Updates Obsidian memory files. Telegram sends suggestions.
-   /apply or /skip via Telegram to accept/reject config changes.
+EV_side = p_win × (1 / ask_price) − 1 − cost_assumption
 
-### Dashboard — dashboard/
+Whether the estimate agrees with the market or disagrees with it is irrelevant. What matters is the payoff math. This is the framework bookmakers use, the framework professional bettors use, the framework that extracts value regardless of whether the edge comes from agreeing with informed flow or correcting uninformed flow.
 
-Next.js app at localhost:65002 (dev) or via launchd.
-Proxies all data through bot_api.py (aiohttp on localhost:8765).
-Auto-refreshes every 30s with JSON-stringify dedup to prevent no-op renders.
+This principle is the foundation. Strategies layered on top may exploit additional sources of edge — arbitrage, longshot bias, microstructure — but all of them reduce to the same underlying criterion: take the trade if the expected payoff exceeds the cost.
 
-Components:
-  HeaderBar        — mode, bankroll, equity, uptime
-  StatsStrip       — 4 KPIs: open positions, markets analysed, settled, skipped
-  ActionsStrip     — scan now, resolve now, refresh
-  PositionsTable   — open + settled tabs, resolution countdown
-  CalibrationPanel — scatter plot + Brier + per-category breakdown
-  BrierTrendChart  — cumulative Brier over resolved predictions
-  GoLiveGate       — 3 gates with progress bars (Brier, resolved count, P&L)
-  EvaluationsTable — all evaluations with expandable reasoning (click row)
-  ConfigPanel      — edit PM config with Telegram confirmation
-  AskClaude        — ad-hoc market questions
+## Claude as the brain
 
-### Backtester — backtester/
+The ensemble of language models is the primary intelligence. Claude estimates probability and confidence. The system's job is to translate those estimates into positive-EV positions as faithfully as possible. It is not to second-guess the model with layers of mechanical filters.
 
-Parameter-sensitivity backtester. Replays historical evaluations from DB
-through the sizer with configurable params. Does NOT call Claude.
-  python -m backtester.pm_backtest              # single config
-  python -m backtester.pm_backtest --sweep      # 144-config grid search
+If the forecaster is wrong in systematic ways, the fix is to improve the forecasting — better prompts, multi-stage reasoning, richer research, stronger ensembles. The fix is not to bolt heuristics on top that try to compensate for bad forecasts. Heuristic compensation creates compounding distortions.
 
----
+Trust the model. Improve the model when it needs improving. Keep the sizer narrow.
 
-## Key files
+## Sizing philosophy
 
-config.py                      All PM_* sizing/discovery/scheduling params
-main.py                        Startup: scheduler, feeds, bot_api, Telegram
-bot_api.py                     HTTP API for dashboard (aiohttp, localhost:8765)
-calibration.py                 Brier scoring, prediction logging, reliability
-polymarket_runner.py            Resolution loop, settlement detection
+Flat or near-flat sizing. Scale by confidence, not by any other factor. Hard cap every trade at a small percentage of bankroll.
 
-feeds/polymarket_feed.py       Gamma API client, market filtering
-engine/pm_analyst.py           Main evaluation loop, orchestrates pipeline
-engine/polymarket_evaluator.py Claude prompt, JSON parsing, retry logic
-execution/pm_sizer.py          Quarter-Kelly + lockup penalty + guardrails
-execution/pm_executor.py       Shadow fills, live stub, settlement logic
-research/fetcher.py            Wikipedia + news research for context
+Starting defaults:
+- 2% of bankroll per trade at baseline
+- 1% when confidence is below 0.5
+- 3% when confidence is above 0.8
+- 5% hard ceiling per trade regardless
 
-engine/self_improvement.py     Weekly analysis + Obsidian memory update
-engine/memory.py               Obsidian vault read/write
-feeds/telegram_notifier.py     Telegram notifications + command handler
+Simple sizing produces lower variance per trade, which produces faster learning about what actually works. Aggressive compounding can come later if and when there is a proven strategy to compound. Until then, the priority is signal, not size.
 
-dashboard/hooks/use-dashboard-data.ts   Central data hook (30s poll)
-dashboard/lib/format.ts                 Shared formatters
-dashboard/lib/bot-proxy.ts              Next.js → bot_api proxy
-dashboard/components/PmDashboard.tsx    Main layout
+## Strategy pluralism
 
-backtester/pm_backtest.py      Parameter sensitivity backtester
+Delfi is not one strategy. It is a portfolio of approaches, each evaluated on its own ROI contribution.
 
----
+The base strategy is positive-EV betting on ensemble forecasts. Others may be added:
 
-## Database schema
+- **Longshot-NO systematic.** Bet NO on markets trading at extreme lows (3-8%) with decent liquidity, exploiting favorite-longshot bias documented across decades of betting market research.
+- **Cross-market arbitrage.** Detect mutually exclusive outcome sets that sum to less than 1.00 and lock in guaranteed returns by buying all sides at the discount.
+- **Microstructure reversion.** Bet on partial reversion after sharp price moves that occur without corresponding news.
+- **Others as discovered.** The system is open to any strategy that demonstrably adds ROI.
 
-predictions          — every Claude evaluation (for Brier scoring)
-pm_positions         — open/settled positions (mode: shadow|live)
-market_evaluations   — audit trail: question, prices, recommendation, reasoning
-config_change_history — audit trail for config changes
+Each strategy is measured independently. Profitable strategies get more allocation. Unprofitable strategies are cut. The portfolio is whatever mix of approaches historically makes money across a meaningful sample.
 
----
+## Risk management
 
-## Telegram commands
+Circuit breakers protect the bankroll from catastrophic loss. They run identically in shadow and live modes so shadow actually simulates live.
 
-/status          Balance, open bets, win rate, accuracy
-/scan            Trigger a market scan now
-/resolve         Check for settled bets now
-/apply           Accept pending self-improvement suggestion
-/skip            Reject pending self-improvement suggestion
-/confirm-config  Apply a pending dashboard config change
-/reject-config   Cancel a pending dashboard config change
-/help            List all commands
+All risk parameters below are **per-user editable** in the dashboard settings. Each user configures their own risk tolerance within system-defined bounds. Defaults shown are sensible starting values for a new account.
 
----
+- Daily loss limit: 10% of bankroll (user-editable, bounded 5-25%)
+- Weekly loss limit: 20% of bankroll (user-editable, bounded 10-40%)
+- Drawdown halt: 40% from peak triggers manual review (user-editable, bounded 20-60%)
+- Streak cooldown: 3 consecutive losses halves position sizes for 5 trades (user-editable, bounded 2-10 losses)
+- Dry powder reserve: 20% of bankroll never deployed (user-editable, bounded 10-40%)
+- Maximum stake per trade: 5% of bankroll (user-editable, bounded 1-10%)
+- Baseline stake: 2% of bankroll (user-editable, bounded 0.5-5%)
+- Minimum EV threshold: 3% after costs (user-editable, bounded 1-10%)
 
-## Scheduled jobs (MYT = UTC+8)
+Bounds exist so users cannot configure obviously catastrophic settings. Within the bounds, the user is in control. The UI explains what each parameter means and shows expected impact on trade frequency and drawdown risk.
 
-Market scan              every PM_SCAN_INTERVAL_MINUTES (60)
-Resolution check         every PM_RESOLVE_INTERVAL_HOURS (1)
-Daily summary            08:30 MYT
-Weekly summary           Monday 08:30 MYT
-Self-improvement         Sunday 08:30 MYT
+These protections apply without exception once configured. They exist so a bad run cannot end a user's participation in the product.
 
----
+## Learning and iteration
 
-## Non-negotiable rules
+Delfi learns continuously and suggests config changes autonomously — but it does not apply them autonomously. Every config change is a deliberate user decision, presented with evidence, acknowledged explicitly.
 
-1.  Claude evaluates; the sizer decides size. No manual overrides.
-2.  Never deploy more than PM_MAX_POSITION_PCT per position.
-3.  Max PM_MAX_CONCURRENT_POSITIONS open at once.
-4.  Lockup penalty: longer markets need proportionally more edge.
-5.  Market price IS shown to Claude as a prior during evaluation.
-    Claude must justify deviations >10pp from the crowd price.
-6.  All predictions logged for calibration — traded AND skipped.
-7.  Resolution confirmed from Gamma API before marking settled.
-8.  Config changes require Telegram confirmation (/confirm-config or /reject-config).
-    Self-improvement suggestions use /apply or /skip.
-9.  Shadow mode and live mode use identical logic except order execution.
-10. Go-live gates are advisory — manual PM_MODE flip required.
-11. Never modify backtester/ for live bot changes.
-12. Live execution stub must not be filled without CLOB credentials.
+The learning cadence is **trade-volume-based, not calendar-based**. Every 50 settled trades, Delfi runs a full analysis pass:
 
----
+- Computes ROI, win rate, calibration, and P&L attribution by strategy and archetype
+- Identifies patterns in wins and losses
+- Proposes specific config adjustments when the data supports them (minimum sample size gates still apply — no suggestions on bucket-level patterns below n=20)
+- Runs proposed changes through the backtester against historical predictions
+- Surfaces suggestions with backtest evidence attached
 
-## Go-live checklist
+Suggestions are presented to the user in the dashboard with:
+- What change is proposed
+- What data supports it
+- Backtester delta (hypothetical ROI improvement)
+- Apply / Skip / Snooze buttons
 
-Gates (dashboard shows progress):
-  Brier score < 0.22
-  >= 30 resolved predictions
-  Synthetic P&L > $0
+The user decides. Nothing changes runtime behavior without approval.
 
-Steps:
-1.  Run shadow for 2–4 weeks, monitor dashboard daily
-2.  Verify Brier trend is stable or improving
-3.  Review per-category calibration — look for systematic biases
-4.  Get Polymarket CLOB credentials (API key, proxy address, private key)
-5.  Add to .env: POLYMARKET_API_KEY, POLYMARKET_API_SECRET, PROXY_ADDRESS, PRIVATE_KEY
-6.  pip install py-clob-client
-7.  Implement _open_live() in execution/pm_executor.py
-8.  Set PM_MODE = "live" in config.py
-9.  Set PM_LIVE_STARTING_CASH to match actual USDC deposit
-10. Restart bot: ./bot.sh restart
-11. Monitor first 5 live trades manually
+Learning cadence rationale: calendar-based tuning (weekly, monthly) suggests changes on whatever sample has accumulated in that window, which is often too small and noisy. Trade-volume gating ensures every suggestion is backed by a meaningful sample. An active bot might hit 50 trades in days; a quiet one might take weeks. Either way, suggestions arrive when the data justifies them.
 
----
+The empirical base rate library — the accumulated resolution data from every market Delfi has ever evaluated — is a durable asset. It grows with every trade and every skipped-but-evaluated market. It is the foundation of long-term calibration edge over competitors who start from scratch.
 
-## Module map
+## The product experience
 
-trading-bot/
-├── config.py
-├── main.py
-├── bot_api.py
-├── calibration.py
-├── polymarket_runner.py
-├── .env
-├── bot.sh
-├── logs/
-├── feeds/
-│   ├── polymarket_feed.py       Gamma API, market filtering
-│   ├── news_feed.py             RSS + Gemini filter
-│   ├── macro_calendar.py        FOMC + BLS events
-│   └── telegram_notifier.py     notifications + commands
-├── engine/
-│   ├── pm_analyst.py            main evaluation loop
-│   ├── polymarket_evaluator.py  Claude prompt + retry
-│   ├── memory.py                Obsidian vault
-│   ├── self_improvement.py      weekly analysis
-│   └── portfolio_advisor.py     capital advisory
-├── execution/
-│   ├── pm_executor.py           shadow fills, live stub
-│   └── pm_sizer.py              quarter-Kelly + lockup penalty
-├── research/
-│   └── fetcher.py               Wikipedia + news
-├── db/
-│   └── models.py                schema definitions
-├── backtester/
-│   └── pm_backtest.py           parameter sensitivity
-└── dashboard/
-    ├── app/
-    │   ├── page.tsx
-    │   ├── globals.css
-    │   └── api/                 proxy routes to bot_api
-    ├── components/              React components
-    ├── hooks/                   data fetching
-    └── lib/                     formatters, proxy helpers
+Delfi is a character as much as a system. Its dashboard feels alive because it is doing real work in real time, not because of decorative animations. Its reasoning is visible because transparency is both ethical and retention-positive. Its losses are narrated honestly because hiding them destroys trust and users will find out anyway.
 
----
+The UI reflects reality. Animations are bound to real pipeline events, not to scripted theater. Win celebrations are proportional to the win. Loss post-mortems are precise about what happened and honest about whether there's a lesson.
 
-## Legacy (archived)
+ROI is the most prominent metric on every surface. P&L is shown in dollars. Win rate is secondary. Brier is a diagnostic visible to users who care but not presented as the scoreboard.
 
-The _archive/ directory contains the original OKX crypto futures engine
-(Gemini scanner + Claude strategist, Layer A-F, risk engine, etc).
-This code is NOT active. The project pivoted to Polymarket prediction
-markets. Do not reference archived code for current functionality.
+The Delfi persona — the oracle, the prophecy metaphor, the ethereal visual language — is marketing. It belongs in hero copy and brand assets. Product surfaces use clinical precision: "Estimated probability 0.62. Resolved NO. P&L −$4.12."
+
+## What we optimize for
+
+1. ROI across the portfolio of strategies
+2. ROI per strategy (to decide allocation)
+3. Calibration quality (as a diagnostic of forecaster health)
+4. Sample size per strategy (to distinguish signal from variance)
+
+Not: win rate alone, Brier alone, framework fidelity, engineering elegance, or feature count.
+
+## How we decide
+
+For every proposed change:
+
+1. Does this improve expected ROI?
+2. Is there evidence — from backtest, from historical data, from live performance — supporting the improvement?
+3. What is the smallest possible version of this change that tests the hypothesis?
+
+If the answers are yes, yes, and clear — ship the small version. Measure it. If it works, expand. If it doesn't, revert.
+
+Elegance, theoretical optimality, and framework consistency are not reasons to ship changes. Evidence of ROI improvement is.
+
+## What we have learned so far
+
+This project has accumulated several hard-won lessons. They should not be re-litigated. They should inform every future decision.
+
+- Edge-hunting (betting only when the model disagrees with the market, sized by disagreement magnitude) selects for cases where the model is wrong. It is not a viable primary strategy with a language-model forecaster. The EV framework replaces it.
+- Kelly sizing amplifies estimator errors. With a mediocre estimator, it produces win-small-lose-big patterns. Flat sizing until calibration is proven.
+- Autonomous config changes tuning on small samples drift in harmful directions. All config changes require user approval, even when Delfi proposes them.
+- Shadow mode with disabled risk brakes does not simulate live trading. It produces data that is systematically biased toward the strategy's best case. Shadow and live run identical risk parameters.
+- Brier score is not profit. A bot can be well-calibrated and still lose money. Brier is a diagnostic of forecaster health, not a performance target.
+
+These are settled questions. Future sessions should not reopen them.
+
+## Closing
+
+Delfi exists to make money for its users by being a better trader than the crowd it trades against. Every feature, every line of code, every design decision serves that goal. When the goal and the process conflict, the goal wins. When a sophisticated idea costs money, a simpler idea that makes money is better. When the vision and the data conflict, the data wins.
+
+Build toward the vision. Measure against the goal. Let evidence drive the rest.
