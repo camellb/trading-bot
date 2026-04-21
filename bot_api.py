@@ -42,6 +42,7 @@ from sqlalchemy import text
 
 import calibration
 import config
+from engine import diagnostics
 from config_utils import ALLOWED_CONFIG_KEYS, persist_config_value
 from db.engine import get_engine
 from engine.user_config import (
@@ -274,6 +275,19 @@ class BotAPI:
                 source=None if source == "all" else source,
                 since_days=since_int,
             )
+        )
+        return web.json_response(report)
+
+    async def _handle_diagnostics(self, request: web.Request) -> web.Response:
+        """
+        Read-only diagnostic report for the dashboard + learning cadence.
+        `scope` ∈ {all, traded, skipped}. 5-min cache inside engine.diagnostics.
+        """
+        scope = (request.query.get("scope") or "all").lower()
+        if scope not in ("all", "traded", "skipped"):
+            scope = "all"
+        report = await asyncio.get_running_loop().run_in_executor(
+            self._pool, lambda: diagnostics.full_report(scope)
         )
         return web.json_response(report)
 
@@ -692,6 +706,7 @@ class BotAPI:
         app.router.add_get ("/api/positions",   self._handle_positions)
         app.router.add_get ("/api/evaluations", self._handle_evaluations)
         app.router.add_get ("/api/calibration", self._handle_calibration)
+        app.router.add_get ("/api/diagnostics", self._handle_diagnostics)
         app.router.add_get ("/api/brier-trend", self._handle_brier_trend)
         app.router.add_get ("/api/config",      self._handle_config)
         app.router.add_get ("/api/user-config", self._handle_get_user_config)
