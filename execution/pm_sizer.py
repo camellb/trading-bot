@@ -27,6 +27,25 @@ _UNCERTAIN_HI = 0.55
 # Floor for an absolute tradeable stake in USD.
 _MIN_ABSOLUTE_STAKE_USD = 2.0
 
+# EV-bucket labels used for the skip-list check. Must match the labels
+# emitted by `engine.diagnostics.roi_by_ev_bucket` and the dashboard.
+_EV_BUCKETS: tuple[tuple[str, float, float], ...] = (
+    ("<0%",    -float("inf"), 0.0),
+    ("0-2%",   0.0,  0.02),
+    ("2-5%",   0.02, 0.05),
+    ("5-10%",  0.05, 0.10),
+    ("10-20%", 0.10, 0.20),
+    ("20%+",   0.20, float("inf")),
+)
+
+
+def _ev_bucket_label(ev: float) -> Optional[str]:
+    """Return the bucket label containing the given EV fraction, or None."""
+    for label, lo, hi in _EV_BUCKETS:
+        if lo <= ev < hi:
+            return label
+    return None
+
 
 @dataclass
 class SizingDecision:
@@ -69,7 +88,26 @@ def size_position(
     ay  = _clamp_price(ask_yes)
     an  = _clamp_price(ask_no)
 
-    # Skip genuinely uncertain markets — no defensible side.
+    # Archetype skip-list: the learning cadence has flagged this category as
+    # mis-forecast. Refuse to trade it regardless of EV.
+    archetype_skip = tuple(getattr(user_config, "archetype_skip_list", ()) or ())
+    if archetype is not None and archetype in archetype_skip:
+        return SizingDecision(
+            side="", entry_price=0.0, ev=0.0, p_win=cp,
+            confidence=cf, stake_usd=0.0, shares=0.0,
+            skip_reason=f"archetype '{archetype}' is on the skip list",
+        )
+
+    # Probability cap: when calibration shows overconfidence at high p, the
+    # learning cadence may cap emitted probabilities. Apply symmetrically on
+    # both tails so sizing doesn't amplify the observed overshoot.
+    cap = getattr(user_config, "probability_cap", None)
+    if cap is not None:
+        cap = float(cap)
+        cp = min(max(cp, 1.0 - cap), cap)
+
+    # Skip genuinely uncertain markets — no defensible side. Note: cap can
+    # collapse a high-p call into the uncertain band; that's intentional.
     if _UNCERTAIN_LO < cp < _UNCERTAIN_HI:
         return SizingDecision(
             side="", entry_price=0.0, ev=0.0, p_win=cp,
@@ -78,9 +116,14 @@ def size_position(
                         f"[{_UNCERTAIN_LO:.2f}, {_UNCERTAIN_HI:.2f}]",
         )
 
+    # Cost assumption: user may override the sizer default when realised cost
+    # has drifted above assumed (diagnostic-driven proposal).
+    cost_override = getattr(user_config, "cost_assumption_override", None)
+    cost_assumption = float(cost_override) if cost_override is not None else COST_ASSUMPTION
+
     # Compute EV for each side.
-    ev_yes = cp * (1.0 / ay) - 1.0 - COST_ASSUMPTION
-    ev_no  = (1.0 - cp) * (1.0 / an) - 1.0 - COST_ASSUMPTION
+    ev_yes = cp * (1.0 / ay) - 1.0 - cost_assumption
+    ev_no  = (1.0 - cp) * (1.0 / an) - 1.0 - cost_assumption
 
     if ev_yes >= ev_no:
         side, entry, ev, p_win = "YES", ay, ev_yes, cp
@@ -95,6 +138,17 @@ def size_position(
             confidence=cf, stake_usd=0.0, shares=0.0,
             skip_reason=(f"ev {ev*100:.2f}% < min {min_ev*100:.2f}% "
                          f"(YES {ev_yes*100:+.2f}%, NO {ev_no*100:+.2f}%)"),
+        )
+
+    # EV-bucket skip-list: even above the min threshold, the user may have
+    # disabled specific EV buckets whose realised ROI is persistently negative.
+    bucket_skip = tuple(getattr(user_config, "ev_bucket_skip_list", ()) or ())
+    bucket = _ev_bucket_label(ev)
+    if bucket is not None and bucket in bucket_skip:
+        return SizingDecision(
+            side=side, entry_price=entry, ev=ev, p_win=p_win,
+            confidence=cf, stake_usd=0.0, shares=0.0,
+            skip_reason=f"ev bucket '{bucket}' is on the skip list",
         )
 
     # Flat, confidence-scaled stake.

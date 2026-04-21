@@ -324,6 +324,14 @@ user_config = Table(
     Column("dry_powder_reserve_pct", Float, nullable=False,
            server_default=sa_text("0.20")),
 
+    # Diagnostic-driven overrides. Nullable: the learning cadence only fills
+    # these in when a proposal is applied; the sizer treats NULL / empty as
+    # "use the built-in default".
+    Column("cost_assumption_override", Float, nullable=True),
+    Column("probability_cap",          Float, nullable=True),
+    Column("archetype_skip_list",      Text,  nullable=True),   # CSV
+    Column("ev_bucket_skip_list",      Text,  nullable=True),   # CSV
+
     Column("created_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True),
@@ -417,6 +425,15 @@ def create_all_tables() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
             "ON user_config(user_id)"
         ))
+        # Migration: diagnostic-driven override columns. Idempotent — adds
+        # only when the column is absent, so existing rows keep their state.
+        for col_sql in (
+            "ADD COLUMN IF NOT EXISTS cost_assumption_override DOUBLE PRECISION",
+            "ADD COLUMN IF NOT EXISTS probability_cap          DOUBLE PRECISION",
+            "ADD COLUMN IF NOT EXISTS archetype_skip_list      TEXT",
+            "ADD COLUMN IF NOT EXISTS ev_bucket_skip_list      TEXT",
+        ):
+            conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))
         # Pending suggestions — fast filter on status for the dashboard.
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_pending_suggestions_status "

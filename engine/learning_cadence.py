@@ -73,6 +73,10 @@ class Proposal:
     evidence:       str
     backtest_delta: Optional[float] = None
     backtest_trades: Optional[int]   = None
+    # In-memory only: carries the specific item (archetype, EV bucket, etc.)
+    # and a suggested new tuple/value that `_attach_backtest_delta` can use
+    # to construct the modified UserConfig for the simulation.
+    proposal_metadata: Optional[dict] = None
 
 
 # ── Public entry points ──────────────────────────────────────────────────────
@@ -252,9 +256,12 @@ def _propose_archetype_threshold(diag: dict,
                 f"predictions is worse than the 0.25 uninformed baseline. "
                 f"Proposal: add '{archetype}' to the archetype skip list so "
                 f"the forecaster stops betting markets it demonstrably "
-                f"mis-calibrates. Backtester unavailable — sizer field lands "
-                f"in Commit 4."
+                f"mis-calibrates."
             ),
+            proposal_metadata={
+                "field": "archetype_skip_list",
+                "add":   archetype,
+            },
         ))
     return out
 
@@ -298,9 +305,12 @@ def _propose_calibration_shrinkage(diag: dict,
             f"{worst['mean_actual']:.3f} over n={worst['n']} — the forecaster "
             f"is overconfident by {worst_gap*100:.1f}pp. Proposal: cap "
             f"emitted probabilities at {cap:.2f} so sizing stops amplifying "
-            f"the overshoot. Backtester unavailable — sizer field lands in "
-            f"Commit 4."
+            f"the overshoot."
         ),
+        proposal_metadata={
+            "field": "probability_cap",
+            "value": cap,
+        },
     ))
     return out
 
@@ -332,9 +342,12 @@ def _propose_cost_correction(diag: dict,
             f"Realised implied cost {implied*100:.2f}% exceeds assumed cost "
             f"{assumed*100:.2f}% by {delta*100:.2f}pp across n={n} settled "
             f"positions. EV math currently over-estimates by that amount. "
-            f"Proposal: set cost_assumption_override={proposed}. Backtester "
-            f"unavailable — sizer field lands in Commit 4."
+            f"Proposal: set cost_assumption_override={proposed}."
         ),
+        proposal_metadata={
+            "field": "cost_assumption_override",
+            "value": proposed,
+        },
     ))
     return out
 
@@ -406,9 +419,12 @@ def _propose_ev_bucket_exclude(diag: dict,
             evidence=(
                 f"EV bucket '{bucket}' has ROI {float(roi)*100:+.1f}% over "
                 f"n={n} settled positions — persistently negative. Proposal: "
-                f"add '{bucket}' to ev_bucket_skip_list. Backtester "
-                f"unavailable — sizer field lands in Commit 4."
+                f"add '{bucket}' to ev_bucket_skip_list."
             ),
+            proposal_metadata={
+                "field": "ev_bucket_skip_list",
+                "add":   bucket,
+            },
         ))
     return out
 
@@ -515,19 +531,20 @@ def _gather_stats(mode: str, limit: int) -> dict:
 def _attach_backtest_delta(prop: Proposal, current: UserConfig) -> None:
     """Populate backtest_delta on a proposal using the EV backtester.
 
-    Advisory proposals target UserConfig fields that don't exist yet; the
-    backtester can't simulate them. Leave backtest_delta=None — the evidence
-    string already flags 'Backtester unavailable — sizer field lands in
-    Commit 4'."""
-    if prop.param_name in ADVISORY_PARAMS:
-        return
+    Scalar proposals (min_ev_threshold, max_stake_pct, cost_assumption_override,
+    probability_cap) are applied via dataclass replace. List proposals
+    (archetype_skip_list, ev_bucket_skip_list) read proposal_metadata['add']
+    and append to the existing tuple."""
     try:
+        modified = _build_modified_config(prop, current)
+        if modified is None:
+            return
+
         from backtester.ev_backtester import load_evaluations, simulate_with_config
         evals = load_evaluations(since_days=90)
         if not evals:
             return
 
-        modified = dataclasses.replace(current, **{prop.param_name: prop.proposed_value})
         baseline = simulate_with_config(evals, current)
         candidate = simulate_with_config(evals, modified)
 
@@ -538,6 +555,35 @@ def _attach_backtest_delta(prop: Proposal, current: UserConfig) -> None:
     except Exception as exc:
         print(f"[learning_cadence] backtest delta failed for "
               f"{prop.param_name}: {exc}", file=sys.stderr)
+
+
+def _build_modified_config(prop: Proposal,
+                           current: UserConfig) -> Optional[UserConfig]:
+    """
+    Derive the simulated UserConfig for this proposal. Returns None when the
+    proposal lacks enough information to simulate.
+    """
+    name = prop.param_name
+    meta = prop.proposal_metadata or {}
+
+    # List-append proposals (skip lists): tuple-union the existing list with
+    # the new item from metadata.
+    if name in ("archetype_skip_list", "ev_bucket_skip_list"):
+        item = meta.get("add")
+        if not item:
+            return None
+        existing = tuple(getattr(current, name, ()) or ())
+        if item in existing:
+            return None
+        return dataclasses.replace(current, **{name: existing + (str(item),)})
+
+    # Scalar proposals: prefer proposed_value; fall back to metadata.
+    value = prop.proposed_value
+    if value is None:
+        value = meta.get("value")
+    if value is None:
+        return None
+    return dataclasses.replace(current, **{name: value})
 
 
 def _store_pending_suggestion(prop: Proposal, user_id: str,

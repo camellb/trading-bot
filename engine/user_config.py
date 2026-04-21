@@ -17,8 +17,8 @@ scripts keep working without a DATABASE_URL.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, asdict
-from typing import Tuple, Union
+from dataclasses import dataclass, asdict, field
+from typing import Optional, Tuple, Union
 
 
 DEFAULT_USER_ID = "default"
@@ -38,21 +38,45 @@ class UserConfig:
     streak_cooldown_losses: int   = 3
     dry_powder_reserve_pct: float = 0.20
 
+    # Diagnostic-driven overrides (populated by learning cadence proposals).
+    # None / empty mean "use the sizer default".
+    cost_assumption_override: Optional[float]   = None
+    probability_cap:          Optional[float]   = None
+    archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
+    ev_bucket_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 # (min_inclusive, max_inclusive) — enforced on every write via the dashboard.
+# Diagnostic-driven overrides use None to mean "unset"; bounds only apply
+# when a concrete value is supplied.
 USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
-    "min_ev_threshold":       (0.01, 0.10),
-    "base_stake_pct":         (0.005, 0.05),
-    "max_stake_pct":          (0.01, 0.10),
-    "daily_loss_limit_pct":   (0.05, 0.25),
-    "weekly_loss_limit_pct":  (0.10, 0.40),
-    "drawdown_halt_pct":      (0.20, 0.60),
-    "streak_cooldown_losses": (2, 10),
-    "dry_powder_reserve_pct": (0.10, 0.40),
+    "min_ev_threshold":         (0.01, 0.10),
+    "base_stake_pct":           (0.005, 0.05),
+    "max_stake_pct":            (0.01, 0.10),
+    "daily_loss_limit_pct":     (0.05, 0.25),
+    "weekly_loss_limit_pct":    (0.10, 0.40),
+    "drawdown_halt_pct":        (0.20, 0.60),
+    "streak_cooldown_losses":   (2, 10),
+    "dry_powder_reserve_pct":   (0.10, 0.40),
+    "cost_assumption_override": (0.0, 0.10),
+    "probability_cap":          (0.50, 0.99),
 }
+
+# Fields whose concrete values are collections of archetype or bucket labels,
+# not numerics. `None` / empty means "no override"; bounds do not apply.
+USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = (
+    "archetype_skip_list",
+    "ev_bucket_skip_list",
+)
+
+# Fields whose numeric values may legally be `None` (unset).
+USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
+    "cost_assumption_override",
+    "probability_cap",
+)
 
 
 # Inline explanations rendered alongside each field on the dashboard.
@@ -81,24 +105,50 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "dry_powder_reserve_pct":
         "Fraction of bankroll held in reserve and never deployed, "
         "so a bad day cannot liquidate the book.",
+    "cost_assumption_override":
+        "Override the sizer's default cost assumption (spread + fees + "
+        "slippage). Set when realised cost drifts above the default; leave "
+        "unset to use the built-in 1.5% estimate.",
+    "probability_cap":
+        "Cap on emitted probabilities. When calibration shows overconfidence "
+        "in high-p bins, capping p at the observed ceiling prevents sizing "
+        "from amplifying the overshoot. Leave unset to disable.",
+    "archetype_skip_list":
+        "Archetypes the sizer will refuse to trade. Populated by the "
+        "learning cadence when an archetype's Brier score exceeds the "
+        "uninformed baseline over a reliable sample.",
+    "ev_bucket_skip_list":
+        "EV buckets the sizer will refuse to trade in. Populated when a "
+        "bucket's realised ROI is persistently negative.",
 }
 
 
 # Type caster per field — applied when accepting updates from the dashboard.
 _CASTERS: dict[str, type] = {
-    "min_ev_threshold":       float,
-    "base_stake_pct":         float,
-    "max_stake_pct":          float,
-    "daily_loss_limit_pct":   float,
-    "weekly_loss_limit_pct":  float,
-    "drawdown_halt_pct":      float,
-    "streak_cooldown_losses": int,
-    "dry_powder_reserve_pct": float,
+    "min_ev_threshold":         float,
+    "base_stake_pct":           float,
+    "max_stake_pct":            float,
+    "daily_loss_limit_pct":     float,
+    "weekly_loss_limit_pct":    float,
+    "drawdown_halt_pct":        float,
+    "streak_cooldown_losses":   int,
+    "dry_powder_reserve_pct":   float,
+    "cost_assumption_override": float,
+    "probability_cap":          float,
 }
 
 
-def cast_value(key: str, raw) -> Union[int, float]:
-    """Cast a raw dashboard value to the field's expected numeric type."""
+def cast_value(key: str, raw) -> Union[int, float, tuple, None]:
+    """Cast a raw dashboard value to the field's expected type.
+
+    Nullable numeric fields accept None / "" / "null" as "unset". List fields
+    accept tuple/list/comma-separated string and return a tuple of stripped
+    non-empty strings.
+    """
+    if key in USER_CONFIG_LIST_FIELDS:
+        return _cast_list(raw)
+    if key in USER_CONFIG_NULLABLE_FIELDS and _is_unset(raw):
+        return None
     if key not in _CASTERS:
         raise ValueError(f"unknown user_config field: {key}")
     try:
@@ -107,8 +157,32 @@ def cast_value(key: str, raw) -> Union[int, float]:
         raise ValueError(f"{key} must be {_CASTERS[key].__name__}") from exc
 
 
+def _is_unset(raw) -> bool:
+    return raw is None or (isinstance(raw, str) and raw.strip().lower() in ("", "null", "none"))
+
+
+def _cast_list(raw) -> Tuple[str, ...]:
+    if raw is None:
+        return tuple()
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(x).strip() for x in raw if str(x).strip())
+    if isinstance(raw, str):
+        return tuple(s.strip() for s in raw.split(",") if s.strip())
+    raise ValueError(f"list field must be tuple/list/str, got {type(raw).__name__}")
+
+
 def validate_user_config_value(key: str, value) -> None:
-    """Raise ValueError if key is unknown or value is out of bounds."""
+    """Raise ValueError if key is unknown or value is out of bounds.
+
+    List fields accept any tuple of strings; nullable numeric fields accept
+    None. Everything else must be within its (min, max) bounds.
+    """
+    if key in USER_CONFIG_LIST_FIELDS:
+        if not isinstance(value, tuple):
+            raise ValueError(f"{key} must be a tuple of strings")
+        return
+    if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
+        return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
     lo, hi = USER_CONFIG_BOUNDS[key]
@@ -166,25 +240,49 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "SELECT min_ev_threshold, base_stake_pct, max_stake_pct, "
                 "       daily_loss_limit_pct, weekly_loss_limit_pct, "
                 "       drawdown_halt_pct, streak_cooldown_losses, "
-                "       dry_powder_reserve_pct "
+                "       dry_powder_reserve_pct, "
+                "       cost_assumption_override, probability_cap, "
+                "       archetype_skip_list, ev_bucket_skip_list "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
             if row is None:
                 return UserConfig()
             return UserConfig(
-                min_ev_threshold       = float(row[0]),
-                base_stake_pct         = float(row[1]),
-                max_stake_pct          = float(row[2]),
-                daily_loss_limit_pct   = float(row[3]),
-                weekly_loss_limit_pct  = float(row[4]),
-                drawdown_halt_pct      = float(row[5]),
-                streak_cooldown_losses = int(row[6]),
-                dry_powder_reserve_pct = float(row[7]),
+                min_ev_threshold         = float(row[0]),
+                base_stake_pct           = float(row[1]),
+                max_stake_pct            = float(row[2]),
+                daily_loss_limit_pct     = float(row[3]),
+                weekly_loss_limit_pct    = float(row[4]),
+                drawdown_halt_pct        = float(row[5]),
+                streak_cooldown_losses   = int(row[6]),
+                dry_powder_reserve_pct   = float(row[7]),
+                cost_assumption_override = (float(row[8]) if row[8] is not None else None),
+                probability_cap          = (float(row[9]) if row[9] is not None else None),
+                archetype_skip_list      = _decode_csv(row[10]),
+                ev_bucket_skip_list      = _decode_csv(row[11]),
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",
               file=sys.stderr)
         return UserConfig()
+
+
+def _decode_csv(raw) -> Tuple[str, ...]:
+    if raw is None:
+        return tuple()
+    if isinstance(raw, (list, tuple)):
+        return tuple(str(x).strip() for x in raw if str(x).strip())
+    return tuple(s.strip() for s in str(raw).split(",") if s.strip())
+
+
+def _encode_csv(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        items = [str(x).strip() for x in value if str(x).strip()]
+        return ",".join(items) if items else None
+    s = str(value).strip()
+    return s or None
 
 
 def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
@@ -203,7 +301,11 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
         clean[key] = value
 
     set_parts = ", ".join(f"{k} = :{k}" for k in clean)
-    params = dict(clean)
+    params: dict = {}
+    for k, v in clean.items():
+        # List-typed fields persist as CSV TEXT columns; tuples must be
+        # flattened before hitting SQLAlchemy's text() parameter binding.
+        params[k] = _encode_csv(v) if k in USER_CONFIG_LIST_FIELDS else v
     params["uid"] = user_id
 
     from sqlalchemy import text

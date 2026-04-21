@@ -207,6 +207,134 @@ class MinAbsoluteStakeTests(unittest.TestCase):
             self.assertGreaterEqual(d.stake_usd, 2.0)
 
 
+class ArchetypeSkipListTests(unittest.TestCase):
+    """The sizer must honour `archetype_skip_list` regardless of EV."""
+
+    def test_skips_when_archetype_on_list(self):
+        d = size_position(
+            claude_p=0.85, confidence=0.70,
+            ask_yes=0.30, ask_no=0.72,
+            bankroll=1000.0,
+            user_config=cfg(archetype_skip_list=("politics",)),
+            archetype="politics",
+        )
+        self.assertFalse(d.should_trade)
+        self.assertIsNotNone(d.skip_reason)
+        self.assertIn("skip list", d.skip_reason.lower())
+
+    def test_trades_when_archetype_not_on_list(self):
+        d = size_position(
+            claude_p=0.85, confidence=0.70,
+            ask_yes=0.30, ask_no=0.72,
+            bankroll=1000.0,
+            user_config=cfg(archetype_skip_list=("sports",)),
+            archetype="politics",
+        )
+        self.assertTrue(d.should_trade)
+
+    def test_empty_list_is_no_op(self):
+        d = size_position(
+            claude_p=0.85, confidence=0.70,
+            ask_yes=0.30, ask_no=0.72,
+            bankroll=1000.0, user_config=default_cfg(),
+            archetype="politics",
+        )
+        self.assertTrue(d.should_trade)
+
+
+class ProbabilityCapTests(unittest.TestCase):
+    """`probability_cap` clips `cp` symmetrically on both tails before EV."""
+
+    def test_cap_reduces_ev_but_still_trades(self):
+        uncapped = size_position(
+            claude_p=0.90, confidence=0.70,
+            ask_yes=0.50, ask_no=0.52,
+            bankroll=1000.0, user_config=default_cfg(),
+        )
+        capped = size_position(
+            claude_p=0.90, confidence=0.70,
+            ask_yes=0.50, ask_no=0.52,
+            bankroll=1000.0, user_config=cfg(probability_cap=0.85),
+        )
+        self.assertTrue(uncapped.should_trade)
+        self.assertTrue(capped.should_trade)
+        self.assertLess(capped.ev, uncapped.ev)
+        self.assertAlmostEqual(capped.p_win, 0.85, places=6)
+
+    def test_cap_can_push_into_uncertain_band_and_skip(self):
+        d = size_position(
+            claude_p=0.99, confidence=0.70,
+            ask_yes=0.50, ask_no=0.52,
+            bankroll=1000.0, user_config=cfg(probability_cap=0.54),
+        )
+        self.assertFalse(d.should_trade)
+        self.assertIn("uncertain", (d.skip_reason or "").lower())
+
+    def test_cap_is_symmetric_on_low_tail(self):
+        # claude_p=0.05 with cap=0.80 raises cp to 0.20 — still below
+        # uncertain floor, so NO is still the chosen side.
+        d = size_position(
+            claude_p=0.05, confidence=0.70,
+            ask_yes=0.90, ask_no=0.15,
+            bankroll=1000.0, user_config=cfg(probability_cap=0.80),
+        )
+        self.assertEqual(d.side, "NO")
+        self.assertAlmostEqual(d.p_win, 0.80, places=6)
+
+
+class CostAssumptionOverrideTests(unittest.TestCase):
+    """`cost_assumption_override` replaces the sizer default cost."""
+
+    def test_higher_cost_lowers_ev_by_exact_delta(self):
+        default = size_position(
+            claude_p=0.70, confidence=0.70,
+            ask_yes=0.50, ask_no=0.52,
+            bankroll=1000.0, user_config=default_cfg(),
+        )
+        overridden = size_position(
+            claude_p=0.70, confidence=0.70,
+            ask_yes=0.50, ask_no=0.52,
+            bankroll=1000.0, user_config=cfg(cost_assumption_override=0.05),
+        )
+        # Delta = new_cost (0.05) - default_cost (0.015) = 0.035
+        self.assertAlmostEqual(default.ev - overridden.ev, 0.035, places=6)
+
+    def test_override_can_push_below_min_ev(self):
+        d = size_position(
+            claude_p=0.55, confidence=0.70,
+            ask_yes=0.50, ask_no=0.52,
+            bankroll=1000.0,
+            user_config=cfg(cost_assumption_override=0.08),
+        )
+        self.assertFalse(d.should_trade)
+        self.assertIn("ev", (d.skip_reason or "").lower())
+
+
+class EvBucketSkipListTests(unittest.TestCase):
+    """`ev_bucket_skip_list` refuses bets whose EV lands in a skipped bucket."""
+
+    def test_skips_bucket_on_list(self):
+        # claude_p=0.60, ask_yes=0.56 → ev ≈ 0.60/0.56 - 1 - 0.015 ≈ 0.0564
+        # That's the "5-10%" bucket.
+        d = size_position(
+            claude_p=0.60, confidence=0.70,
+            ask_yes=0.56, ask_no=0.46,
+            bankroll=1000.0,
+            user_config=cfg(ev_bucket_skip_list=("5-10%",)),
+        )
+        self.assertFalse(d.should_trade)
+        self.assertIn("bucket", (d.skip_reason or "").lower())
+
+    def test_trades_bucket_not_on_list(self):
+        d = size_position(
+            claude_p=0.60, confidence=0.70,
+            ask_yes=0.56, ask_no=0.46,
+            bankroll=1000.0,
+            user_config=cfg(ev_bucket_skip_list=("20%+",)),
+        )
+        self.assertTrue(d.should_trade)
+
+
 class NoKellyFieldsTests(unittest.TestCase):
     """SizingDecision must not expose Kelly-era fields."""
 

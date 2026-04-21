@@ -19,6 +19,8 @@ from engine.user_config import (
     UserConfig,
     USER_CONFIG_BOUNDS,
     USER_CONFIG_DESCRIPTIONS,
+    USER_CONFIG_LIST_FIELDS,
+    USER_CONFIG_NULLABLE_FIELDS,
     cast_value,
     validate_user_config_value,
     validated_update_payload,
@@ -40,9 +42,13 @@ class DefaultsMatchDoctrineTests(unittest.TestCase):
         self.assertAlmostEqual(u.dry_powder_reserve_pct, 0.20)
 
     def test_every_field_has_bounds(self):
+        # List fields don't use numeric bounds; nullable fields only enforce
+        # bounds when the value is set. Every field still has a description.
         for fld in UserConfig.__dataclass_fields__:
-            self.assertIn(fld, USER_CONFIG_BOUNDS)
             self.assertIn(fld, USER_CONFIG_DESCRIPTIONS)
+            if fld in USER_CONFIG_LIST_FIELDS:
+                continue
+            self.assertIn(fld, USER_CONFIG_BOUNDS)
 
 
 class BoundsValidationTests(unittest.TestCase):
@@ -69,6 +75,10 @@ class BoundsValidationTests(unittest.TestCase):
         u = UserConfig()
         for k, (lo, hi) in USER_CONFIG_BOUNDS.items():
             v = getattr(u, k)
+            # Nullable diagnostic overrides default to None — not subject to
+            # bounds until a concrete value is supplied.
+            if k in USER_CONFIG_NULLABLE_FIELDS and v is None:
+                continue
             self.assertGreaterEqual(v, lo, f"{k} default {v} below lower bound {lo}")
             self.assertLessEqual   (v, hi, f"{k} default {v} above upper bound {hi}")
 
@@ -108,6 +118,68 @@ class ValidatedUpdatePayloadTests(unittest.TestCase):
     def test_non_dict_raises(self):
         with self.assertRaises(ValueError):
             validated_update_payload("not a dict")
+
+
+class DiagnosticOverrideFieldsTests(unittest.TestCase):
+    """Commit 4 — diagnostic-driven override fields on UserConfig."""
+
+    def test_defaults_are_unset(self):
+        u = UserConfig()
+        self.assertIsNone(u.cost_assumption_override)
+        self.assertIsNone(u.probability_cap)
+        self.assertEqual(u.archetype_skip_list, tuple())
+        self.assertEqual(u.ev_bucket_skip_list, tuple())
+
+    def test_nullable_cast_accepts_none_and_empty(self):
+        self.assertIsNone(cast_value("cost_assumption_override", None))
+        self.assertIsNone(cast_value("cost_assumption_override", ""))
+        self.assertIsNone(cast_value("probability_cap", "null"))
+        self.assertAlmostEqual(cast_value("cost_assumption_override", "0.02"), 0.02)
+        self.assertAlmostEqual(cast_value("probability_cap", 0.85), 0.85)
+
+    def test_list_cast_accepts_csv_and_tuple(self):
+        self.assertEqual(cast_value("archetype_skip_list", "politics,sports"),
+                         ("politics", "sports"))
+        self.assertEqual(cast_value("archetype_skip_list", ["a", "b"]),
+                         ("a", "b"))
+        self.assertEqual(cast_value("archetype_skip_list", None), tuple())
+        self.assertEqual(cast_value("archetype_skip_list", ""), tuple())
+
+    def test_list_cast_strips_and_drops_empties(self):
+        self.assertEqual(cast_value("ev_bucket_skip_list", "0-2%, ,2-5%,"),
+                         ("0-2%", "2-5%"))
+
+    def test_validate_accepts_none_for_nullable(self):
+        # Must not raise.
+        validate_user_config_value("cost_assumption_override", None)
+        validate_user_config_value("probability_cap", None)
+
+    def test_validate_enforces_bounds_when_value_set(self):
+        with self.assertRaises(ValueError):
+            validate_user_config_value("cost_assumption_override", 0.5)   # above 0.10
+        with self.assertRaises(ValueError):
+            validate_user_config_value("probability_cap", 0.30)           # below 0.50
+
+    def test_validate_list_accepts_any_tuple(self):
+        validate_user_config_value("archetype_skip_list", ("politics",))
+        validate_user_config_value("ev_bucket_skip_list", tuple())
+
+    def test_validate_list_rejects_non_tuple(self):
+        with self.assertRaises(ValueError):
+            validate_user_config_value("archetype_skip_list", ["not", "a", "tuple"])
+
+    def test_validated_payload_accepts_new_fields(self):
+        payload = {
+            "cost_assumption_override": "0.025",
+            "probability_cap": "0.85",
+            "archetype_skip_list": "politics,sports",
+            "ev_bucket_skip_list": ["0-2%", "<0%"],
+        }
+        clean = validated_update_payload(payload)
+        self.assertAlmostEqual(clean["cost_assumption_override"], 0.025)
+        self.assertAlmostEqual(clean["probability_cap"], 0.85)
+        self.assertEqual(clean["archetype_skip_list"], ("politics", "sports"))
+        self.assertEqual(clean["ev_bucket_skip_list"], ("0-2%", "<0%"))
 
 
 class SystemSafetyBoundsTests(unittest.TestCase):
