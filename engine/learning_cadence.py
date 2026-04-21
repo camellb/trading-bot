@@ -20,6 +20,7 @@ same rule: never emit a suggestion for a bucket with n < 20.
 from __future__ import annotations
 
 import dataclasses
+import json
 import sys
 from dataclasses import dataclass
 from typing import Optional
@@ -591,13 +592,16 @@ def _store_pending_suggestion(prop: Proposal, user_id: str,
     try:
         from sqlalchemy import text
         from db.engine import get_engine
+        meta_json = json.dumps(prop.proposal_metadata) \
+            if prop.proposal_metadata else None
         with get_engine().begin() as conn:
             conn.execute(text(
                 "INSERT INTO pending_suggestions "
                 "(user_id, param_name, current_value, proposed_value, "
                 " evidence, backtest_delta, backtest_trades, "
-                " settled_count_at_creation) "
-                "VALUES (:uid, :k, :cur, :prop, :ev, :bd, :bt, :sc)"
+                " settled_count_at_creation, metadata) "
+                "VALUES (:uid, :k, :cur, :prop, :ev, :bd, :bt, :sc, "
+                "        CAST(:meta AS JSONB))"
             ), {
                 "uid":  user_id,
                 "k":    prop.param_name,
@@ -607,11 +611,25 @@ def _store_pending_suggestion(prop: Proposal, user_id: str,
                 "bd":   prop.backtest_delta,
                 "bt":   prop.backtest_trades,
                 "sc":   settled_count,
+                "meta": meta_json,
             })
         return True
     except Exception as exc:
         print(f"[learning_cadence] store_pending failed: {exc}", file=sys.stderr)
         return False
+
+
+def _decode_metadata(raw) -> Optional[dict]:
+    """Coerce a JSONB/JSON/TEXT column value into a dict or None."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw) if isinstance(raw, (str, bytes)) else None
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # ── Suggestion lifecycle (called from the dashboard API) ─────────────────────
@@ -629,7 +647,8 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
             rows = conn.execute(text(
                 "SELECT id, created_at, param_name, current_value, "
                 "       proposed_value, evidence, backtest_delta, "
-                "       backtest_trades, status, settled_count_at_creation "
+                "       backtest_trades, status, settled_count_at_creation, "
+                "       metadata "
                 "FROM pending_suggestions "
                 f"WHERE user_id = :uid AND status IN ({placeholders}) "
                 "ORDER BY created_at DESC"
@@ -651,6 +670,7 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
             "backtest_trades": int(r[7]) if r[7] is not None else None,
             "status":         r[8],
             "settled_count":  int(r[9]) if r[9] is not None else None,
+            "metadata":       _decode_metadata(r[10]),
         })
     return out
 

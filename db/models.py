@@ -26,6 +26,7 @@ from sqlalchemy import (
     TIMESTAMP,
     text as sa_text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 
@@ -290,6 +291,13 @@ pending_suggestions = Table(
            server_default=sa_text("'pending'")),
     Column("resolved_at", TIMESTAMP(timezone=True), nullable=True),
     Column("resolved_by", Text, nullable=True),
+    # Proposal operation payload. Scalar overwrites need nothing here (the
+    # `param_name` + `proposed_value` columns are enough). List-append
+    # proposals require {"operation": "list_append", "target_field": <col>,
+    # "items": [<label>, ...]} so the apply path knows what to merge into
+    # the existing tuple. Missing/NULL == {"operation": "scalar_set"} for
+    # backward compatibility with rows written before this column existed.
+    Column("metadata", JSONB, nullable=True),
 )
 
 
@@ -434,6 +442,12 @@ def create_all_tables() -> None:
             "ADD COLUMN IF NOT EXISTS ev_bucket_skip_list      TEXT",
         ):
             conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))
+        # Migration: metadata JSONB column for list-append and future
+        # non-scalar proposal operations. Idempotent.
+        conn.execute(sa_text(
+            "ALTER TABLE pending_suggestions "
+            "ADD COLUMN IF NOT EXISTS metadata JSONB"
+        ))
         # Pending suggestions — fast filter on status for the dashboard.
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_pending_suggestions_status "
