@@ -7,23 +7,26 @@ Architecture at a glance:
             │
             ▼
     PMAnalyst        — skips stale markets, fetches research, asks Claude
-            │           for a calibrated probability, sizes via quarter-Kelly
+            │           for a calibrated probability, runs the risk manager,
+            │           then sizes via positive-EV with flat stakes.
             │
             ▼
     PMExecutor       — opens shadow (or live) positions, settles them
-                        after resolution, feeds the calibration ledger
+                        after resolution, feeds the calibration ledger,
+                        and triggers the learning cadence every 50 trades.
 
 Scheduled jobs (APScheduler):
     PM scan          — every PM_SCAN_INTERVAL_MINUTES
     PM resolve       — every PM_RESOLVE_INTERVAL_HOURS
     Daily summary    — 08:30 MYT
     Weekly summary   — Monday 08:30 MYT
-    Self-improvement — Sunday 08:30 MYT
-    Monthly report   — 1st of month 08:30 MYT
+
+Learning cadence is trade-volume-gated (not calendar-gated) and runs in
+the settle path — see engine.learning_cadence.
 
 Side services:
     bot_api.BotAPI  — localhost HTTP API for the dashboard
-    TelegramNotifier poll thread for /status /scan /apply /skip /confirm-config
+    TelegramNotifier poll thread for /status /scan /resolve /confirm-config
 
 Fatal-at-import-time: .env must provide DATABASE_URL, ANTHROPIC_API_KEY,
 BOT_API_SECRET. TELEGRAM_* is optional.

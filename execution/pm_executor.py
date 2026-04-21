@@ -178,12 +178,12 @@ class PMExecutor:
                     "INSERT INTO pm_positions ("
                     "  prediction_id, market_id, condition_id, slug, question, category, "
                     "  side, shares, entry_price, cost_usd, "
-                    "  claude_probability, edge_bps, confidence, "
+                    "  claude_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug"
                     ") VALUES ("
                     "  :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
-                    "  :cp, :edge_bps, :conf, "
+                    "  :cp, :ev_bps, :conf, "
                     "  'shadow', 'open', :exp, :reason, :event_slug"
                     ") RETURNING id"
                 ), {
@@ -198,9 +198,7 @@ class PMExecutor:
                     "ep":    decision.entry_price,
                     "cost":  decision.stake_usd,
                     "cp":    claude_p,
-                    # edge_bps DB column temporarily stores EV-in-bps;
-                    # Phase 4 renames the column to ev_bps.
-                    "edge_bps": decision.ev * 10_000.0,
+                    "ev_bps": decision.ev * 10_000.0,
                     "conf":  decision.confidence,
                     "exp":   market.end_date_iso,
                     "reason": (reasoning or "")[:4000] or None,
@@ -318,7 +316,7 @@ class PMExecutor:
                 rows = conn.execute(text(
                     "SELECT id, market_id, question, category, side, shares, "
                     "       entry_price, cost_usd, claude_probability, "
-                    "       edge_bps, confidence, expected_resolution_at, "
+                    "       ev_bps, confidence, expected_resolution_at, "
                     "       created_at, prediction_id, reasoning, slug "
                     "FROM pm_positions "
                     "WHERE mode = :m AND status = 'open' "
@@ -335,7 +333,7 @@ class PMExecutor:
                         "entry_price":       float(r[6]),
                         "cost_usd":          float(r[7]),
                         "claude_probability": float(r[8]) if r[8] is not None else None,
-                        "edge_bps":          float(r[9]) if r[9] is not None else None,
+                        "ev_bps":            float(r[9]) if r[9] is not None else None,
                         "confidence":        float(r[10]) if r[10] is not None else None,
                         "expected_resolution_at":
                             r[11].isoformat() if r[11] else None,

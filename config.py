@@ -12,26 +12,11 @@ PM_SHADOW_STARTING_CASH = 1000.0
 PM_LIVE_STARTING_CASH   = 200.0
 
 
-# ── Sizing (Kelly + guardrails) ──────────────────────────────────────────────
-# See execution/pm_sizer.py for how these compose.
-
-# ── Live thresholds (tight — real money) ────────────────────────────────────
-PM_LIVE_MIN_EDGE_BPS       = 500.0    # 5 percentage points
-PM_LIVE_MIN_CONFIDENCE     = 0.55
-
-# ── Shadow thresholds (moderate — avoid noise trades) ───────────────────────
-PM_SHADOW_MIN_EDGE_BPS     = 300.0    # 3 percentage points — skip noise
-PM_SHADOW_MIN_CONFIDENCE   = 0.30     # lowered to allow trades while Gemini research is unavailable
-
-# Kelly scaling — quarter Kelly is the standard defensive choice.
-PM_KELLY_FRACTION = 0.25
-
-# Max single-position size as fraction of current bankroll.
-PM_MAX_POSITION_PCT = 0.25        # 25% — aggressive shadow test
-
-# Absolute min/max per bet.
-PM_MIN_TRADE_USD = 2.0
-PM_MAX_TRADE_USD = 250.0
+# ── Sizing ───────────────────────────────────────────────────────────────────
+# All sizing is positive-EV with flat stakes. See execution/pm_sizer.py for
+# the math and engine/user_config.py for per-user thresholds (min_ev_threshold,
+# base_stake_pct, max_stake_pct). No global Kelly, no edge floors — those are
+# a deliberately abandoned paradigm.
 
 # Max simultaneous open positions across all markets.
 PM_MAX_CONCURRENT_POSITIONS = 100
@@ -129,7 +114,6 @@ NEWS_DEDUP_WINDOW_MIN = 30
 NEWS_MAX_AGE_MIN      = 60
 NEWS_POLL_INTERVAL_MIN = 5
 NEWS_MAX_FAILED_POLLS = 3
-NEWS_DEGRADED_SIZE_MULTIPLIER = 0.5
 
 # ── CryptoPanic (optional crypto news aggregator) ───────────────────────────
 CRYPTOPANIC_BASE_URL     = "https://cryptopanic.com/api/v1/posts/"

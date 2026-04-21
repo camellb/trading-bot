@@ -157,7 +157,7 @@ class BotAPI:
                     return conn.execute(text(
                         "SELECT id, market_id, question, category, side, shares, "
                         "       entry_price, cost_usd, claude_probability, "
-                        "       edge_bps, confidence, settlement_outcome, "
+                        "       ev_bps, confidence, settlement_outcome, "
                         "       settlement_price, realized_pnl_usd, created_at, "
                         "       settled_at, slug "
                         "FROM pm_positions "
@@ -180,7 +180,7 @@ class BotAPI:
                 "entry_price":    float(r[6]),
                 "cost_usd":       float(r[7]),
                 "claude_probability": float(r[8]) if r[8] is not None else None,
-                "edge_bps":       float(r[9]) if r[9] is not None else None,
+                "ev_bps":         float(r[9]) if r[9] is not None else None,
                 "confidence":     float(r[10]) if r[10] is not None else None,
                 "settlement_outcome": r[11],
                 "settlement_price":   float(r[12]) if r[12] is not None else None,
@@ -201,7 +201,7 @@ class BotAPI:
                     return conn.execute(text(
                         "SELECT id, evaluated_at, market_id, question, category, "
                         "       market_price_yes, claude_probability, confidence, "
-                        "       edge_bps, recommendation, reasoning, pm_position_id, "
+                        "       ev_bps, recommendation, reasoning, pm_position_id, "
                         "       slug, research_sources "
                         "FROM market_evaluations "
                         "ORDER BY evaluated_at DESC "
@@ -221,7 +221,7 @@ class BotAPI:
                 "market_price_yes": float(r[5]) if r[5] is not None else None,
                 "claude_probability": float(r[6]) if r[6] is not None else None,
                 "confidence":     float(r[7]) if r[7] is not None else None,
-                "edge_bps":       float(r[8]) if r[8] is not None else None,
+                "ev_bps":         float(r[8]) if r[8] is not None else None,
                 "recommendation": r[9],
                 "reasoning":      r[10],
                 "pm_position_id": r[11],
@@ -431,7 +431,7 @@ class BotAPI:
                     with get_engine().begin() as conn:
                         return conn.execute(text(
                             "SELECT question, category, market_price_yes, "
-                            "       claude_probability, confidence, edge_bps, "
+                            "       claude_probability, confidence, ev_bps, "
                             "       recommendation, reasoning "
                             "FROM market_evaluations "
                             "WHERE market_id = :mid "
@@ -439,13 +439,14 @@ class BotAPI:
                         ), {"mid": str(market_id)}).fetchone()
                 row = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
                 if row:
+                    ev_bps = float(row[5]) if row[5] is not None else 0.0
                     context_block = (
                         f"Market: {row[0]}\n"
                         f"Category: {row[1]}\n"
                         f"Market price YES: {row[2]:.3f}\n"
                         f"Claude p(YES): {row[3]:.3f}\n"
                         f"Confidence: {row[4]:.2f}\n"
-                        f"Edge: {row[5]:.0f} bps\n"
+                        f"EV (after costs): {ev_bps/100.0:+.2f}%\n"
                         f"Last call: {row[6]}\n"
                         f"Reasoning: {(row[7] or '')[:800]}\n"
                     )

@@ -5,14 +5,9 @@ import re
 
 
 ALLOWED_CONFIG_KEYS: dict[str, type] = {
-    "PM_SHADOW_MIN_EDGE_BPS":      float,
-    "PM_SHADOW_MIN_CONFIDENCE":    float,
-    "PM_LIVE_MIN_EDGE_BPS":        float,
-    "PM_LIVE_MIN_CONFIDENCE":      float,
-    "PM_KELLY_FRACTION":           float,
-    "PM_MAX_POSITION_PCT":         float,
-    "PM_MIN_TRADE_USD":            float,
-    "PM_MAX_TRADE_USD":            float,
+    # Global scan and safety limits. Per-user risk configuration
+    # (min_ev_threshold, stake percentages, circuit breakers) lives in
+    # user_config and is edited via /api/user-config.
     "PM_MAX_CONCURRENT_POSITIONS": int,
     "PM_SCAN_LIMIT":               int,
     "PM_MIN_VOLUME_24H_USD":       float,

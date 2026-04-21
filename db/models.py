@@ -91,10 +91,10 @@ pm_positions = Table(
     Column("entry_price",   Float,   nullable=False),
     # USD cost = shares * entry_price.
     Column("cost_usd",      Float,   nullable=False),
-    # Claude's probability for this side at entry (for edge computation).
+    # Claude's probability for this side at entry.
     Column("claude_probability", Float, nullable=True),
-    # Edge at entry in basis points (abs(claude_p - market_p) * 10000).
-    Column("edge_bps",      Float,   nullable=True),
+    # Expected value at entry in basis points (ev × 10 000).
+    Column("ev_bps",        Float,   nullable=True),
     Column("confidence",    Float,   nullable=True),
     # 'shadow' | 'live'
     Column("mode",          String(10), nullable=False),
@@ -138,7 +138,7 @@ market_evaluations = Table(
     Column("market_price_yes", Float, nullable=False),
     Column("claude_probability", Float, nullable=False),
     Column("confidence",       Float, nullable=True),
-    Column("edge_bps",         Float, nullable=True),
+    Column("ev_bps",           Float, nullable=True),
     Column("recommendation",   Text, nullable=True),   # 'BUY_YES' | 'BUY_NO' | 'SKIP'
     Column("reasoning",        Text, nullable=True),
     Column("research_sources", Text, nullable=True),   # JSON array of urls/titles
@@ -372,6 +372,22 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "ALTER TABLE pm_positions ADD COLUMN IF NOT EXISTS event_slug TEXT"
         ))
+        # Migration: rename edge_bps → ev_bps. The EV paradigm replaces
+        # edge-based sizing entirely; the column's semantics changed in
+        # Phase 1 (writes now store ev × 10000). Idempotent — runs once.
+        for tbl in ("pm_positions", "market_evaluations"):
+            conn.execute(sa_text(
+                f"DO $$ BEGIN "
+                f"  IF EXISTS (SELECT 1 FROM information_schema.columns "
+                f"             WHERE table_name = '{tbl}' "
+                f"               AND column_name = 'edge_bps') "
+                f"     AND NOT EXISTS (SELECT 1 FROM information_schema.columns "
+                f"                     WHERE table_name = '{tbl}' "
+                f"                       AND column_name = 'ev_bps') THEN "
+                f"    ALTER TABLE {tbl} RENAME COLUMN edge_bps TO ev_bps; "
+                f"  END IF; "
+                f"END $$;"
+            ))
         # Event-group correlation cap index (must come after ALTER TABLE).
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_pm_positions_event_slug "

@@ -431,12 +431,12 @@ def _log_market_evaluation(
                 "INSERT INTO market_evaluations ("
                 "  market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
-                "  edge_bps, recommendation, reasoning, research_sources, "
+                "  ev_bps, recommendation, reasoning, research_sources, "
                 "  prediction_id"
                 ") VALUES ("
                 "  :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
-                "  :edge_bps, :rec, :reason, :srcs, :pid"
+                "  :ev_bps, :rec, :reason, :srcs, :pid"
                 ") RETURNING id"
             ), {
                 "mid":  market.id,
@@ -447,9 +447,7 @@ def _log_market_evaluation(
                 "mp":   market.yes_price,
                 "cp":   evaluation.probability_yes,
                 "conf": evaluation.confidence,
-                # edge_bps DB column temporarily stores EV-in-bps; Phase 4
-                # renames the column to ev_bps and updates the dashboard copy.
-                "edge_bps": decision.ev * 10_000.0,
+                "ev_bps": decision.ev * 10_000.0,
                 "rec":  recommendation,
                 "reason": evaluation.reasoning,
                 "srcs": json.dumps(research_sources),
