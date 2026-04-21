@@ -299,10 +299,28 @@ async def main() -> None:
             await bot_api._runner.cleanup()
         raise SystemExit(0)
 
+    # Liveness heartbeat consumed by the external watchdog (watchdog.sh
+    # restarts the bot if logs/.heartbeat mtime is older than 360s).
+    async def _heartbeat_writer() -> None:
+        from pathlib import Path
+        path = Path("logs/.heartbeat")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        while not shutdown_event.is_set():
+            try:
+                path.write_text(datetime.now(timezone.utc).isoformat())
+            except Exception as exc:
+                print(f"[heartbeat] write failed: {exc}",
+                      file=sys.stderr, flush=True)
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
+
     await asyncio.gather(
         news_feed.start(),
         bot_api.start(),
         _startup_notification(),
+        _heartbeat_writer(),
         _shutdown_waiter(),
     )
 
