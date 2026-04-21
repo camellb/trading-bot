@@ -1171,8 +1171,13 @@ async def fetch_research(
 
     wiki_task_keywords = bundle.keywords[:max_wiki_kws]
     newsapi_key        = os.environ.get("NEWSAPI_KEY")
+    # Some sites (e.g. covers.com) ship CSP response headers larger than
+    # aiohttp's 8190-byte default, which raises 400 before the body is read.
+    # Bump both parser limits so those responses come back normally.
     async with aiohttp.ClientSession(
-        headers={"User-Agent": "trading-bot/1.0 (research-fetcher)"}
+        headers={"User-Agent": "trading-bot/1.0 (research-fetcher)"},
+        max_line_size=32768,
+        max_field_size=32768,
     ) as session:
         # Start wiki/crypto/sports immediately so they overlap with DDG.
         wiki_tasks = {kw: asyncio.create_task(_fetch_wikipedia(session, kw))
