@@ -34,7 +34,8 @@ import calibration
 import config
 from db.engine import get_engine
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
-from engine.user_config import UserConfig, get_default_user_config
+from engine.risk_manager import evaluate as evaluate_risk
+from engine.user_config import get_user_config
 from execution.pm_executor import PMExecutor
 from execution.pm_sizer import size_position, SizingDecision
 from feeds.polymarket_feed import PolymarketFeed, PolyMarket
@@ -158,17 +159,42 @@ class PMAnalyst:
             )
 
         # 6. Size.
+        user_config = get_user_config()
         bankroll = self.executor.get_bankroll()
-        user_config = get_default_user_config()
+        starting_cash = self.executor.get_starting_cash()
+        verdict = evaluate_risk(
+            user_config=user_config, bankroll=bankroll,
+            starting_cash=starting_cash, mode=self.executor.mode,
+        )
+        if verdict.halted:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_RISK_HALT",
+                detail=verdict.halt_reason or "risk breaker tripped",
+                evaluation=evaluation, prediction_id=prediction_id,
+            )
+
         decision = size_position(
             claude_p    = evaluation.probability_yes,
             confidence  = evaluation.confidence,
             ask_yes     = market.yes_price,
             ask_no      = market.no_price,
-            bankroll    = bankroll,
+            bankroll    = verdict.effective_bankroll,
             user_config = user_config,
             archetype   = evaluation.category,
         )
+
+        # Streak-cooldown halves the stake without changing the EV side choice.
+        if decision.should_trade and verdict.stake_multiplier != 1.0:
+            decision.stake_usd *= verdict.stake_multiplier
+            decision.shares    *= verdict.stake_multiplier
+            if decision.stake_usd < 2.0:
+                decision.skip_reason = (
+                    f"streak cooldown ({verdict.notes}) halved stake below "
+                    f"$2.00 minimum — skipping"
+                )
+                decision.stake_usd = 0.0
+                decision.shares    = 0.0
 
         # Log a market_evaluations row regardless of trade outcome — this is
         # the auditing surface for the dashboard.

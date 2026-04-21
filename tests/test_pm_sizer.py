@@ -20,11 +20,16 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from execution.pm_sizer import size_position
-from engine.user_config import UserConfig, get_default_user_config
+from engine.user_config import UserConfig
+
+
+def default_cfg() -> UserConfig:
+    """Fresh dataclass defaults — no DB hit."""
+    return UserConfig()
 
 
 def cfg(**overrides) -> UserConfig:
-    base = get_default_user_config()
+    base = default_cfg()
     for k, v in overrides.items():
         setattr(base, k, v)
     return base
@@ -37,7 +42,7 @@ class AgreesWithMarketTests(unittest.TestCase):
         d = size_position(
             claude_p=0.85, confidence=0.70,
             ask_yes=0.82, ask_no=0.20,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         # The sizer's first job is to identify the +EV side. This case gives
         # ev_yes ≈ +2.16% and ev_no ≈ −26.5%; YES is the correct side.
@@ -64,7 +69,7 @@ class LongshotNoTests(unittest.TestCase):
         d = size_position(
             claude_p=0.15, confidence=0.70,
             ask_yes=0.84, ask_no=0.18,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         self.assertTrue(d.should_trade)
         self.assertEqual(d.side, "NO")
@@ -79,7 +84,7 @@ class UncertainBandTests(unittest.TestCase):
         d = size_position(
             claude_p=0.48, confidence=0.90,
             ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         self.assertFalse(d.should_trade)
         self.assertIsNotNone(d.skip_reason)
@@ -89,7 +94,7 @@ class UncertainBandTests(unittest.TestCase):
         d = size_position(
             claude_p=0.54, confidence=0.90,
             ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         self.assertFalse(d.should_trade)
 
@@ -98,7 +103,7 @@ class UncertainBandTests(unittest.TestCase):
         d = size_position(
             claude_p=0.45, confidence=0.70,
             ask_yes=0.42, ask_no=0.60,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         self.assertIsNone(d.skip_reason if d.skip_reason and "uncertain" in d.skip_reason.lower() else None)
 
@@ -107,7 +112,7 @@ class FlatSizingTests(unittest.TestCase):
     """Claude 0.85 with market ask YES 0.30 — huge EV, but stake stays flat."""
 
     def test_extreme_ev_does_not_amplify_stake(self):
-        user_config = get_default_user_config()
+        user_config = default_cfg()
         bankroll = 1000.0
         d = size_position(
             claude_p=0.85, confidence=0.85,
@@ -126,12 +131,12 @@ class FlatSizingTests(unittest.TestCase):
         low = size_position(
             claude_p=0.85, confidence=0.40,
             ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         high = size_position(
             claude_p=0.85, confidence=0.85,
             ask_yes=0.30, ask_no=0.72,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         self.assertTrue(low.should_trade)
         self.assertTrue(high.should_trade)
@@ -145,7 +150,7 @@ class EvComputationTests(unittest.TestCase):
         d = size_position(
             claude_p=0.70, confidence=0.70,
             ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         # YES side: 0.70 / 0.50 - 1 - 0.015 = 1.4 - 1.015 = 0.385
         self.assertEqual(d.side, "YES")
@@ -160,7 +165,7 @@ class ConfidenceStakeTiersTests(unittest.TestCase):
         d = size_position(
             claude_p=0.80, confidence=confidence,
             ask_yes=0.40, ask_no=0.62,
-            bankroll=10000.0, user_config=get_default_user_config(),
+            bankroll=10000.0, user_config=default_cfg(),
         )
         return d.stake_usd
 
@@ -182,7 +187,7 @@ class BelowThresholdTests(unittest.TestCase):
         d = size_position(
             claude_p=0.55, confidence=0.60,
             ask_yes=0.54, ask_no=0.47,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         # ev_yes = 0.55/0.54 - 1 - 0.015 ≈ 0.0035 — well under 3%
         self.assertFalse(d.should_trade)
@@ -196,7 +201,7 @@ class MinAbsoluteStakeTests(unittest.TestCase):
         d = size_position(
             claude_p=0.85, confidence=0.40,
             ask_yes=0.30, ask_no=0.72,
-            bankroll=100.0, user_config=get_default_user_config(),
+            bankroll=100.0, user_config=default_cfg(),
         )
         if d.should_trade:
             self.assertGreaterEqual(d.stake_usd, 2.0)
@@ -209,7 +214,7 @@ class NoKellyFieldsTests(unittest.TestCase):
         d = size_position(
             claude_p=0.70, confidence=0.70,
             ask_yes=0.50, ask_no=0.52,
-            bankroll=1000.0, user_config=get_default_user_config(),
+            bankroll=1000.0, user_config=default_cfg(),
         )
         self.assertFalse(hasattr(d, "kelly_full"))
         self.assertFalse(hasattr(d, "kelly_frac"))

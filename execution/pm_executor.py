@@ -56,6 +56,12 @@ class PMExecutor:
             raise ValueError(f"PM_MODE must be 'shadow' or 'live', got: {self.mode}")
 
     # ── Bankroll ─────────────────────────────────────────────────────────────
+    def get_starting_cash(self) -> float:
+        """Configured starting cash for the active mode."""
+        if self.mode == "live":
+            return float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
+        return float(getattr(config, "PM_SHADOW_STARTING_CASH", 500.0))
+
     def get_bankroll(self) -> float:
         """
         Current available bankroll in USD for the active mode.

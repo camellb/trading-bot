@@ -44,6 +44,13 @@ import calibration
 import config
 from config_utils import ALLOWED_CONFIG_KEYS, persist_config_value
 from db.engine import get_engine
+from engine.user_config import (
+    DEFAULT_USER_ID,
+    USER_CONFIG_BOUNDS,
+    USER_CONFIG_DESCRIPTIONS,
+    get_user_config,
+    update_user_config,
+)
 from process_health import health as proc_health
 
 
@@ -276,6 +283,51 @@ class BotAPI:
                                    "restart_pending": restart_pending,
                                    "allowed_keys": list(ALLOWED_CONFIG_KEYS),
                                    "pending": self._pending_config})
+
+    async def _handle_get_user_config(self, request: web.Request) -> web.Response:
+        """Return the user's risk config with bounds + descriptions."""
+        user_id = request.query.get("user_id") or DEFAULT_USER_ID
+        loop = asyncio.get_running_loop()
+        cfg = await loop.run_in_executor(self._pool, get_user_config, user_id)
+        return web.json_response({
+            "user_id":      user_id,
+            "config":       cfg.to_dict(),
+            "bounds":       {k: {"min": lo, "max": hi}
+                             for k, (lo, hi) in USER_CONFIG_BOUNDS.items()},
+            "descriptions": USER_CONFIG_DESCRIPTIONS,
+        })
+
+    async def _handle_update_user_config(self, request: web.Request) -> web.Response:
+        """Validate and apply user_config changes. Takes effect immediately."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "body must be an object"}, status=400)
+
+        user_id = str(data.pop("user_id", DEFAULT_USER_ID))
+        # Allow either flat {key: value} or {"changes": {key: value}} shape.
+        changes = data.get("changes") if "changes" in data else data
+        if not isinstance(changes, dict) or not changes:
+            return web.json_response({"error": "no changes supplied"}, status=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            cfg = await loop.run_in_executor(
+                self._pool,
+                lambda: update_user_config(user_id, **changes),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        return web.json_response({
+            "status":  "applied",
+            "user_id": user_id,
+            "config":  cfg.to_dict(),
+        })
 
     # ── Action handlers ──────────────────────────────────────────────────────
     async def _handle_scan_now(self, _request: web.Request) -> web.Response:
@@ -590,6 +642,8 @@ class BotAPI:
         app.router.add_get ("/api/calibration", self._handle_calibration)
         app.router.add_get ("/api/brier-trend", self._handle_brier_trend)
         app.router.add_get ("/api/config",      self._handle_config)
+        app.router.add_get ("/api/user-config", self._handle_get_user_config)
+        app.router.add_put ("/api/user-config", self._handle_update_user_config)
         app.router.add_get ("/api/markouts",    self._handle_markouts)
         app.router.add_post("/api/scan-now",    self._handle_scan_now)
         app.router.add_post("/api/resolve-now", self._handle_resolve_now)

@@ -58,6 +58,7 @@ from execution.pm_executor     import PMExecutor
 from engine.pm_analyst         import PMAnalyst
 from engine.memory             import MemoryManager
 from engine.self_improvement   import SelfImprovementAnalyser
+from engine.user_config        import ensure_default_user_config
 from bot_api                   import BotAPI
 from polymarket_runner         import scan_and_analyze, resolve_positions
 from engine.markout_tracker    import check_markouts
@@ -88,6 +89,9 @@ async def main() -> None:
 
     create_all_tables()
     print("Database tables verified.", flush=True)
+
+    ensure_default_user_config()
+    print("Default user_config row ensured.", flush=True)
 
     # ── Core singletons ──────────────────────────────────────────────────────
     executor  = PMExecutor()

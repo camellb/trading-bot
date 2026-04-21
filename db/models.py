@@ -260,6 +260,44 @@ sentiment_scores = Table(
 )
 
 
+# ── Per-user risk configuration ──────────────────────────────────────────────
+# Each user configures their own risk tolerance within system-defined bounds.
+# The sizer and risk manager read from this table at decision time. The
+# dashboard edits rows directly via /api/user-config; changes apply to the
+# next evaluation. Defaults match the Delfi doctrine starting values.
+user_config = Table(
+    "user_config",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Text, nullable=False, unique=True),
+
+    # Sizer-side.
+    Column("min_ev_threshold",       Float, nullable=False,
+           server_default=sa_text("0.03")),
+    Column("base_stake_pct",         Float, nullable=False,
+           server_default=sa_text("0.02")),
+    Column("max_stake_pct",          Float, nullable=False,
+           server_default=sa_text("0.05")),
+
+    # Circuit breakers.
+    Column("daily_loss_limit_pct",   Float, nullable=False,
+           server_default=sa_text("0.10")),
+    Column("weekly_loss_limit_pct",  Float, nullable=False,
+           server_default=sa_text("0.20")),
+    Column("drawdown_halt_pct",      Float, nullable=False,
+           server_default=sa_text("0.40")),
+    Column("streak_cooldown_losses", Integer, nullable=False,
+           server_default=sa_text("3")),
+    Column("dry_powder_reserve_pct", Float, nullable=False,
+           server_default=sa_text("0.20")),
+
+    Column("created_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+    Column("updated_at", TIMESTAMP(timezone=True),
+           server_default=sa_text("NOW()"), nullable=False),
+)
+
+
 def create_all_tables() -> None:
     """Create all tables if they do not already exist. Safe to call on every startup."""
     from db.engine import get_engine
@@ -324,4 +362,9 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_markouts_checked "
             "ON markouts(checked_at DESC)"
+        ))
+        # User config — unique user_id for multi-user support.
+        conn.execute(sa_text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
+            "ON user_config(user_id)"
         ))
