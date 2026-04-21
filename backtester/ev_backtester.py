@@ -127,7 +127,132 @@ def simulate_with_config(
         "roi":               roi_pct,
         "trades":            trades,
         "cost_assumption":   COST_ASSUMPTION,
+        "ev_buckets":        ev_bucket_distribution(trades),
+        "by_archetype":      archetype_distribution(trades),
     }
+
+
+# ── Distribution analytics (Phase 5) ─────────────────────────────────────────
+# EV buckets come straight from the doctrine's report template.
+EV_BUCKETS: list[tuple[str, float, float]] = [
+    ("3-5%",  0.03, 0.05),
+    ("5-10%", 0.05, 0.10),
+    ("10-20%", 0.10, 0.20),
+    ("20%+",  0.20, float("inf")),
+]
+
+
+def ev_bucket_distribution(trades: list[SimulatedTrade]) -> list[dict]:
+    """Group simulated trades by entry EV and roll up n / wins / P&L."""
+    out: list[dict] = []
+    for label, lo, hi in EV_BUCKETS:
+        bucket = [t for t in trades if lo <= t.ev < hi]
+        resolved = [t for t in bucket if t.resolved]
+        wins = [t for t in resolved if t.pnl_usd is not None and t.pnl_usd > 0]
+        pnl = sum(t.pnl_usd for t in resolved if t.pnl_usd is not None)
+        cost = sum(t.stake_usd for t in bucket)
+        out.append({
+            "bucket":   label,
+            "ev_lo":    lo,
+            "ev_hi":    hi if hi != float("inf") else None,
+            "n":        len(bucket),
+            "resolved": len(resolved),
+            "wins":     len(wins),
+            "win_rate": (len(wins) / len(resolved)) if resolved else None,
+            "pnl":      pnl,
+            "cost":     cost,
+            "roi":      (pnl / cost) if cost else None,
+        })
+    return out
+
+
+def archetype_distribution(trades: list[SimulatedTrade]) -> list[dict]:
+    """Group simulated trades by category (archetype)."""
+    buckets: dict[str, dict] = {}
+    for t in trades:
+        cat = t.category or "other"
+        b = buckets.setdefault(cat, {"category": cat, "n": 0, "resolved": 0,
+                                     "wins": 0, "pnl": 0.0, "cost": 0.0})
+        b["n"]    += 1
+        b["cost"] += t.stake_usd
+        if t.resolved:
+            b["resolved"] += 1
+            if t.pnl_usd is not None:
+                b["pnl"] += t.pnl_usd
+                if t.pnl_usd > 0:
+                    b["wins"] += 1
+    out = []
+    for b in buckets.values():
+        b["win_rate"] = (b["wins"] / b["resolved"]) if b["resolved"] else None
+        b["roi"] = (b["pnl"] / b["cost"]) if b["cost"] else None
+        out.append(b)
+    out.sort(key=lambda x: -x["n"])
+    return out
+
+
+def format_phase5_report(result: dict, old_trade_count: int = 35) -> str:
+    """
+    Pretty-printed report matching the Phase 5 spec: trade count vs the
+    old 35, win rate, P&L, ROI, EV bucket breakdown, archetype breakdown.
+    """
+    lines = []
+    lines.append("=" * 70)
+    lines.append("  Phase 5 — EV backtester validation (90 days, default UserConfig)")
+    lines.append("=" * 70)
+
+    trades_taken = result.get("trades_taken", 0)
+    trades_resolved = result.get("trades_resolved", 0)
+    wins = result.get("wins", 0)
+    win_rate = result.get("win_rate")
+    pnl = result.get("total_pnl", 0.0)
+    roi = result.get("roi")
+    starting = result.get("starting_cash", 0.0)
+
+    lines.append(f"  Trades taken (new sizer):   {trades_taken}")
+    lines.append(f"  Trades taken (old sizer):   {old_trade_count}")
+    lines.append(f"  Trades resolved:            {trades_resolved}")
+    lines.append(f"  Trades open:                "
+                 f"{result.get('trades_open', 0)}")
+    lines.append(f"  Wins:                       {wins}")
+    if win_rate is not None:
+        lines.append(f"  Win rate:                   {win_rate*100:.1f}%")
+    lines.append(f"  Total P&L:                  ${pnl:+.2f}")
+    if roi is not None:
+        lines.append(f"  ROI (vs ${starting:.0f} starting): {roi*100:+.1f}%")
+
+    lines.append("")
+    lines.append("  EV bucket distribution")
+    lines.append("  " + "-" * 66)
+    lines.append(f"  {'Bucket':<8} {'N':>5} {'Res':>5} {'Wins':>5} "
+                 f"{'WinRt':>7} {'P&L':>10} {'ROI':>8}")
+    for b in result.get("ev_buckets", []):
+        wr = f"{b['win_rate']*100:.0f}%" if b["win_rate"] is not None else "—"
+        br = f"{b['roi']*100:+.1f}%" if b["roi"] is not None else "—"
+        lines.append(
+            f"  {b['bucket']:<8} {b['n']:>5} {b['resolved']:>5} "
+            f"{b['wins']:>5} {wr:>7} ${b['pnl']:>+8.2f} {br:>8}"
+        )
+
+    lines.append("")
+    lines.append("  Archetype distribution")
+    lines.append("  " + "-" * 66)
+    lines.append(f"  {'Category':<20} {'N':>5} {'Res':>5} {'Wins':>5} "
+                 f"{'WinRt':>7} {'P&L':>10} {'ROI':>8}")
+    for b in result.get("by_archetype", []):
+        wr = f"{b['win_rate']*100:.0f}%" if b["win_rate"] is not None else "—"
+        br = f"{b['roi']*100:+.1f}%" if b["roi"] is not None else "—"
+        lines.append(
+            f"  {b['category'][:20]:<20} {b['n']:>5} {b['resolved']:>5} "
+            f"{b['wins']:>5} {wr:>7} ${b['pnl']:>+8.2f} {br:>8}"
+        )
+
+    lines.append("=" * 70)
+    lines.append("  Decision rule:")
+    lines.append("    - Meaningfully positive ROI → resume shadow trading.")
+    lines.append("    - Near-zero or negative ROI → forecaster itself needs work;")
+    lines.append("      no sizing paradigm can fix a bad forecast.")
+    lines.append("=" * 70)
+    return "\n".join(lines)
 
 
 def load_evaluations(since_days: Optional[int] = None) -> list[Evaluation]:
@@ -168,3 +293,42 @@ def load_evaluations(since_days: Optional[int] = None) -> list[Evaluation]:
             resolved_outcome   = int(r[5]) if r[5] is not None else None,
         ))
     return evals
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+def _main() -> None:
+    import argparse
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+
+    from engine.user_config import get_user_config, DEFAULT_USER_ID
+
+    parser = argparse.ArgumentParser(
+        description="Phase 5 — run the EV backtester over recent evaluations.")
+    parser.add_argument("--days", type=int, default=90,
+                        help="How many days of history to replay (default: 90)")
+    parser.add_argument("--starting-cash", type=float, default=1000.0,
+                        help="Starting bankroll in USD (default: 1000)")
+    parser.add_argument("--user-id", type=str, default=DEFAULT_USER_ID,
+                        help="Which user_config row to use (default: default)")
+    parser.add_argument("--old-trade-count", type=int, default=35,
+                        help="Old sizer's trade count for the comparison line")
+    args = parser.parse_args()
+
+    print(f"Loading evaluations from last {args.days} days…", flush=True)
+    evals = load_evaluations(since_days=args.days)
+    print(f"Loaded {len(evals)} evaluations.\n", flush=True)
+
+    if not evals:
+        print("No evaluations found. Run the scanner first, or expand --days.")
+        sys.exit(1)
+
+    user_config = get_user_config(args.user_id)
+    result = simulate_with_config(
+        evals, user_config=user_config, starting_cash=args.starting_cash,
+    )
+    print(format_phase5_report(result, old_trade_count=args.old_trade_count))
+
+
+if __name__ == "__main__":
+    _main()
