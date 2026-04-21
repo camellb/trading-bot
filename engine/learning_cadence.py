@@ -38,12 +38,38 @@ LEARNING_CYCLE_TRADE_INTERVAL = 50
 # Minimum sample size per bucket before a proposer may emit a suggestion.
 MIN_BUCKET_N = 20
 
+# Stricter per-diagnostic gates (in trade-count) for proposers where the
+# downside of acting on a noisy bucket is higher.
+STRICT_BUCKET_N = 30          # archetype- and EV-bucket-level decisions.
+COST_CORRECTION_MIN_N = 50    # cost assumption correction.
+SELECTION_LOOSEN_MIN_N = 50   # selection-gate loosening.
+
+# UserConfig fields that do NOT exist yet — proposals on these are advisory
+# (surfaced to the user, backtest_delta=None) until Commit 4 adds the fields
+# and teaches the sizer/backtester to honour them.
+ADVISORY_PARAMS = {
+    "cost_assumption_override",
+    "probability_cap",
+    "archetype_skip_list",
+    "ev_bucket_skip_list",
+}
+
+# 0.25 is the Brier score of uninformed forecasts on binary outcomes; an
+# archetype scoring worse than that is demonstrably mis-forecast.
+ARCHETYPE_BRIER_THRESHOLD = 0.25
+
+# Predicted-vs-actual gap in a high-confidence bin that signals overconfidence.
+CALIBRATION_GAP_THRESHOLD = 0.10
+
+# Realised-vs-assumed cost gap meaningful enough to act on.
+COST_DELTA_THRESHOLD = 0.005
+
 
 @dataclass
 class Proposal:
     param_name:     str
-    current_value:  float
-    proposed_value: float
+    current_value:  Optional[float]
+    proposed_value: Optional[float]
     evidence:       str
     backtest_delta: Optional[float] = None
     backtest_trades: Optional[int]   = None
@@ -94,10 +120,18 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
         return {"status": "error", "error": str(exc)}
 
 
-def propose_suggestions(stats: dict, current: UserConfig) -> list[Proposal]:
+def propose_suggestions(stats: dict, current: UserConfig,
+                        diag: Optional[dict] = None) -> list[Proposal]:
     """
-    Deterministic heuristic proposers. No single rule emits a suggestion
-    unless its underlying bucket has n ≥ MIN_BUCKET_N.
+    Deterministic heuristic proposers.
+
+    `stats`  — recent-window aggregate produced by `_gather_stats`.
+    `diag`   — optional dict of diagnostic slices (see `_collect_diagnostics`).
+               Tests may pass synthetic slices; in production it is fetched
+               lazily if omitted.
+
+    No single rule emits a suggestion unless its underlying bucket meets its
+    own sample-size gate.
     """
     out: list[Proposal] = []
 
@@ -158,6 +192,224 @@ def propose_suggestions(stats: dict, current: UserConfig) -> list[Proposal]:
                 ),
             ))
 
+    # ── Diagnostic-driven proposers ────────────────────────────────────────
+    # Lazy-load on first access so unit tests can stub a synthetic diag.
+    if diag is None:
+        diag = _collect_diagnostics()
+
+    out.extend(_propose_archetype_threshold(diag, current))
+    out.extend(_propose_calibration_shrinkage(diag, current))
+    out.extend(_propose_cost_correction(diag, current))
+    out.extend(_propose_selection_loosening(diag, current))
+    out.extend(_propose_ev_bucket_exclude(diag, current))
+
+    return out
+
+
+def _collect_diagnostics() -> dict:
+    """Pull the diagnostic slices needed by the new proposers. Isolated
+    behind a helper so tests can pass a synthetic dict directly."""
+    try:
+        from engine import diagnostics as D
+        return {
+            "brier_by_archetype": D.brier_by_archetype("all"),
+            "calibration_curve":  D.calibration_curve("all"),
+            "cost_validation":    D.cost_validation(),
+            "selection_quality":  D.selection_quality(),
+            "roi_by_ev_bucket":   D.roi_by_ev_bucket(),
+        }
+    except Exception as exc:
+        print(f"[learning_cadence] diag collection failed: {exc}",
+              file=sys.stderr)
+        return {}
+
+
+# ── Diagnostic proposers ─────────────────────────────────────────────────────
+def _propose_archetype_threshold(diag: dict,
+                                 current: UserConfig) -> list[Proposal]:
+    """
+    Flag archetypes whose Brier score exceeds the uninformed baseline with
+    a reliable sample. Proposal is advisory — skip that archetype until
+    the forecaster improves — pending the Commit 4 `archetype_skip_list`
+    sizer field.
+    """
+    out: list[Proposal] = []
+    rows = diag.get("brier_by_archetype") or []
+    for r in rows:
+        n = int(r.get("n", 0) or 0)
+        brier = r.get("brier")
+        archetype = r.get("archetype")
+        if n < STRICT_BUCKET_N or brier is None or not archetype:
+            continue
+        if brier <= ARCHETYPE_BRIER_THRESHOLD:
+            continue
+        out.append(Proposal(
+            param_name="archetype_skip_list",
+            current_value=None,
+            proposed_value=None,
+            evidence=(
+                f"Archetype '{archetype}' Brier {brier:.3f} over {n} resolved "
+                f"predictions is worse than the 0.25 uninformed baseline. "
+                f"Proposal: add '{archetype}' to the archetype skip list so "
+                f"the forecaster stops betting markets it demonstrably "
+                f"mis-calibrates. Backtester unavailable — sizer field lands "
+                f"in Commit 4."
+            ),
+        ))
+    return out
+
+
+def _propose_calibration_shrinkage(diag: dict,
+                                   current: UserConfig) -> list[Proposal]:
+    """
+    Detect systematic overconfidence at the top of the reliability diagram:
+    when the mean predicted probability in a high-p bin (>= 0.7) exceeds the
+    mean actual resolution rate by more than CALIBRATION_GAP_THRESHOLD.
+    Proposal: cap predictions above the observed ceiling. Advisory —
+    `probability_cap` sizer field lands in Commit 4.
+    """
+    out: list[Proposal] = []
+    cc = diag.get("calibration_curve") or {}
+    bins = cc.get("bins") or []
+    # Find the worst offender in the high-p half.
+    worst = None
+    worst_gap = 0.0
+    for b in bins:
+        lo = float(b.get("lo", 0.0) or 0.0)
+        n  = int(b.get("n", 0) or 0)
+        mp = b.get("mean_pred")
+        ma = b.get("mean_actual")
+        if lo < 0.7 or n < STRICT_BUCKET_N or mp is None or ma is None:
+            continue
+        gap = float(mp) - float(ma)
+        if gap > worst_gap:
+            worst_gap = gap
+            worst = b
+    if worst is None or worst_gap < CALIBRATION_GAP_THRESHOLD:
+        return out
+    cap = round(max(0.5, min(0.95, float(worst["mean_actual"]) + 0.02)), 3)
+    out.append(Proposal(
+        param_name="probability_cap",
+        current_value=None,
+        proposed_value=cap,
+        evidence=(
+            f"Reliability bin [{worst['lo']:.1f}, {worst['hi']:.1f}]: mean "
+            f"predicted {worst['mean_pred']:.3f} vs mean actual "
+            f"{worst['mean_actual']:.3f} over n={worst['n']} — the forecaster "
+            f"is overconfident by {worst_gap*100:.1f}pp. Proposal: cap "
+            f"emitted probabilities at {cap:.2f} so sizing stops amplifying "
+            f"the overshoot. Backtester unavailable — sizer field lands in "
+            f"Commit 4."
+        ),
+    ))
+    return out
+
+
+def _propose_cost_correction(diag: dict,
+                             current: UserConfig) -> list[Proposal]:
+    """
+    If the realised implied cost exceeds the sizer's assumed cost by more
+    than COST_DELTA_THRESHOLD over a meaningful sample, propose raising the
+    assumed cost so EV math reflects reality. Advisory —
+    `cost_assumption_override` sizer field lands in Commit 4.
+    """
+    out: list[Proposal] = []
+    cv = diag.get("cost_validation") or {}
+    n = int(cv.get("n", 0) or 0)
+    implied = cv.get("implied_cost")
+    assumed = cv.get("assumed_cost")
+    if n < COST_CORRECTION_MIN_N or implied is None or assumed is None:
+        return out
+    delta = float(implied) - float(assumed)
+    if delta < COST_DELTA_THRESHOLD:
+        return out
+    proposed = round(float(implied), 4)
+    out.append(Proposal(
+        param_name="cost_assumption_override",
+        current_value=float(assumed),
+        proposed_value=proposed,
+        evidence=(
+            f"Realised implied cost {implied*100:.2f}% exceeds assumed cost "
+            f"{assumed*100:.2f}% by {delta*100:.2f}pp across n={n} settled "
+            f"positions. EV math currently over-estimates by that amount. "
+            f"Proposal: set cost_assumption_override={proposed}. Backtester "
+            f"unavailable — sizer field lands in Commit 4."
+        ),
+    ))
+    return out
+
+
+def _propose_selection_loosening(diag: dict,
+                                 current: UserConfig) -> list[Proposal]:
+    """
+    If the $10-flat-stake counterfactual ROI on *skipped* predictions is
+    higher than the realised ROI on *traded* positions, the selection gate
+    is rejecting too much. Propose lowering `min_ev_threshold`. Actionable —
+    target field already exists on UserConfig.
+    """
+    out: list[Proposal] = []
+    sq = diag.get("selection_quality") or {}
+    traded = sq.get("traded") or {}
+    skipped = sq.get("skipped_counterfactual") or {}
+
+    t_n = int(traded.get("n", 0) or 0)
+    s_n = int(skipped.get("n", 0) or 0)
+    t_roi = traded.get("roi")
+    s_roi = skipped.get("roi")
+
+    if (t_n < SELECTION_LOOSEN_MIN_N or s_n < SELECTION_LOOSEN_MIN_N
+            or t_roi is None or s_roi is None):
+        return out
+    if float(s_roi) <= float(t_roi):
+        return out
+
+    lo, hi = USER_CONFIG_BOUNDS["min_ev_threshold"]
+    proposed = max(round(current.min_ev_threshold * 0.8, 4), lo)
+    if proposed >= current.min_ev_threshold - 0.005:
+        return out
+    out.append(Proposal(
+        param_name="min_ev_threshold",
+        current_value=current.min_ev_threshold,
+        proposed_value=proposed,
+        evidence=(
+            f"Skipped counterfactual ROI {float(s_roi)*100:+.1f}% (n={s_n}) "
+            f"beats traded ROI {float(t_roi)*100:+.1f}% (n={t_n}). The "
+            f"selection gate is discarding winners. Proposal: lower "
+            f"min_ev_threshold from {current.min_ev_threshold*100:.1f}% to "
+            f"{proposed*100:.1f}% so more +EV opportunities pass through."
+        ),
+    ))
+    return out
+
+
+def _propose_ev_bucket_exclude(diag: dict,
+                               current: UserConfig) -> list[Proposal]:
+    """
+    For each EV bucket with persistent negative ROI over a reliable sample,
+    propose adding it to the skip list. Advisory — `ev_bucket_skip_list`
+    sizer field lands in Commit 4.
+    """
+    out: list[Proposal] = []
+    rows = diag.get("roi_by_ev_bucket") or []
+    for r in rows:
+        n = int(r.get("n", 0) or 0)
+        roi = r.get("roi")
+        bucket = r.get("bucket")
+        if n < MIN_BUCKET_N or roi is None or not bucket:
+            continue
+        if float(roi) >= 0.0:
+            continue
+        out.append(Proposal(
+            param_name="ev_bucket_skip_list",
+            current_value=None,
+            proposed_value=None,
+            evidence=(
+                f"EV bucket '{bucket}' has ROI {float(roi)*100:+.1f}% over "
+                f"n={n} settled positions — persistently negative. Proposal: "
+                f"add '{bucket}' to ev_bucket_skip_list. Backtester "
+                f"unavailable — sizer field lands in Commit 4."
+            ),
+        ))
     return out
 
 
@@ -261,7 +513,14 @@ def _gather_stats(mode: str, limit: int) -> dict:
 
 
 def _attach_backtest_delta(prop: Proposal, current: UserConfig) -> None:
-    """Populate backtest_delta on a proposal using the EV backtester."""
+    """Populate backtest_delta on a proposal using the EV backtester.
+
+    Advisory proposals target UserConfig fields that don't exist yet; the
+    backtester can't simulate them. Leave backtest_delta=None — the evidence
+    string already flags 'Backtester unavailable — sizer field lands in
+    Commit 4'."""
+    if prop.param_name in ADVISORY_PARAMS:
+        return
     try:
         from backtester.ev_backtester import load_evaluations, simulate_with_config
         evals = load_evaluations(since_days=90)
