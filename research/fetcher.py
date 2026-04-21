@@ -895,6 +895,56 @@ def _extract_text_from_html(html: str, max_chars: int = 3000) -> str:
     return t[:max_chars]
 
 
+# Polymarket pages leak the crowd's price into the research bundle — both as
+# explicit percentage ladders and as narrative "trader consensus" phrases. The
+# evaluator prompt explicitly tells Claude not to anchor on the market price,
+# so we strip price-like tokens from polymarket.com scrapes before they enter
+# the bundle. Other sources (BBC, Reuters, Wikipedia) may legitimately contain
+# percentages (approval ratings, poll numbers) and are left untouched.
+_POLYMARKET_SCRUB_PATTERNS: list[re.Pattern] = [
+    re.compile(r"\b\d{1,3}%"),
+    # Volume displays: "$200,535 Vol.", "$200,535 Volume", and the reverse
+    # layouts trafilatura sometimes produces ("Volume\n$200,535").
+    re.compile(r"\$[\d,]+\s*Vol(?:ume|\.)?", re.IGNORECASE),
+    re.compile(r"\bVol(?:ume|\.)?\s*\n?\s*\$[\d,]+", re.IGNORECASE),
+    re.compile(r"\btrader consensus (?:favors|for|against|at|on|is)\b",
+               re.IGNORECASE),
+    re.compile(r"\bmarket consensus (?:favors|for|against|at|on|is)\b",
+               re.IGNORECASE),
+    re.compile(r"\bbettors (?:favor|price|think|expect)\b", re.IGNORECASE),
+    re.compile(r"\btraders (?:favor|price|think|expect)\b", re.IGNORECASE),
+    re.compile(r"\bchance on Polymarket\b", re.IGNORECASE),
+    re.compile(r"\bPolymarket (?:price|implied probability|odds)\b",
+               re.IGNORECASE),
+]
+
+_REDACTED = "[redacted]"
+
+
+def _scrub_polymarket_text(text: str) -> str:
+    """Remove price/consensus leaks from a polymarket.com scrape.
+
+    Applies the price/volume/consensus regexes, then drops any paragraph
+    whose tokens are >50% redacted (unreadable garbage that would otherwise
+    waste prompt tokens and add noise).
+    """
+    scrubbed = text
+    for pat in _POLYMARKET_SCRUB_PATTERNS:
+        scrubbed = pat.sub(_REDACTED, scrubbed)
+
+    kept: list[str] = []
+    for para in scrubbed.split("\n"):
+        if not para.strip():
+            kept.append(para)
+            continue
+        tokens = para.split()
+        redacted = sum(1 for t in tokens if _REDACTED in t)
+        if tokens and redacted / len(tokens) > 0.5:
+            continue
+        kept.append(para)
+    return "\n".join(kept)
+
+
 async def _fetch_page_text(
     session: aiohttp.ClientSession,
     url: str,
@@ -923,6 +973,10 @@ async def _fetch_page_text(
         return None
 
     domain = url.split("/")[2] if url.count("/") >= 2 else url
+    if "polymarket.com" in domain.lower():
+        text = _scrub_polymarket_text(text)
+        if len(text) < 100:
+            return None
     return f"[{domain}]\n{text}"
 
 
