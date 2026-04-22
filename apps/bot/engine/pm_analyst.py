@@ -437,20 +437,22 @@ def _log_market_evaluation(
     market_archetype: Optional[str] = None,
 ) -> Optional[int]:
     try:
+        from engine.user_config import DEFAULT_USER_ID
         with get_engine().begin() as conn:
             row = conn.execute(text(
                 "INSERT INTO market_evaluations ("
-                "  market_id, condition_id, slug, question, category, "
+                "  user_id, market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
                 "  ev_bps, recommendation, reasoning, research_sources, "
                 "  prediction_id, market_archetype, event_slug"
                 ") VALUES ("
-                "  :mid, :cid, :slug, :q, :cat, "
+                "  :user_id, :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
                 "  :ev_bps, :rec, :reason, :srcs, "
                 "  :pid, :arch, :event_slug"
                 ") RETURNING id"
             ), {
+                "user_id": DEFAULT_USER_ID,
                 "mid":  market.id,
                 "cid":  market.condition_id,
                 "slug": market.slug,

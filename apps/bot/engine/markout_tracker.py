@@ -123,13 +123,15 @@ async def check_markouts() -> None:
                     # shouldn't punish the absence of one.
                     direction_correct = True
 
+                from engine.user_config import DEFAULT_USER_ID
                 conn.execute(text(
                     "INSERT INTO markouts "
-                    "(evaluation_id, market_id, hours_after, "
+                    "(user_id, evaluation_id, market_id, hours_after, "
                     " price_yes_at_check, price_yes_at_eval, "
                     " claude_probability, direction_correct) "
-                    "VALUES (:eid, :mid, :h, :pc, :pe, :cp, :dc)"
+                    "VALUES (:user_id, :eid, :mid, :h, :pc, :pe, :cp, :dc)"
                 ), {
+                    "user_id": DEFAULT_USER_ID,
                     "eid": row["eval_id"],
                     "mid": mid,
                     "h":   row["hours_after"],

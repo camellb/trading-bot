@@ -21,7 +21,7 @@ from dataclasses import dataclass, asdict, field
 from typing import Optional, Tuple, Union
 
 
-DEFAULT_USER_ID = "default"
+DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @dataclass

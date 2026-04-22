@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from db.engine import get_engine
 from db.models import event_log, feed_health_log
+from engine.user_config import DEFAULT_USER_ID
 
 
 def log_feed_health(feed_name: str, state: str, detail: str | None) -> None:
@@ -46,6 +47,7 @@ def log_event(
         with engine.begin() as conn:
             conn.execute(
                 event_log.insert().values(
+                    user_id=DEFAULT_USER_ID,
                     timestamp=datetime.now(timezone.utc),
                     event_type=event_type,
                     severity=severity,

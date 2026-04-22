@@ -457,13 +457,14 @@ class NewsFeed:
             return
         try:
             from db.engine import get_engine
+            from engine.user_config import DEFAULT_USER_ID
             from sqlalchemy import text as sa_text
             with get_engine().begin() as conn:
                 for h in headlines:
                     conn.execute(sa_text(
-                        "INSERT INTO news_event_log (headline, source) "
-                        "VALUES (:h, 'news_feed')"
-                    ), {"h": h[:500]})
+                        "INSERT INTO news_event_log (user_id, headline, source) "
+                        "VALUES (:user_id, :h, 'news_feed')"
+                    ), {"user_id": DEFAULT_USER_ID, "h": h[:500]})
         except Exception as exc:
             print(f"[news_feed] persist headlines failed: {exc}", file=sys.stderr)
 

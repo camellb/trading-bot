@@ -68,16 +68,18 @@ def log_prediction(
         # Clamp defensively — a sloppy source shouldn't corrupt the dataset.
         p = max(0.0, min(1.0, p))
         meta_json = json.dumps(metadata) if metadata is not None else None
+        from engine.user_config import DEFAULT_USER_ID
         with get_engine().begin() as conn:
             row = conn.execute(text(
                 "INSERT INTO predictions "
-                "(source, subject_key, category, probability, confidence, "
+                "(user_id, source, subject_key, category, probability, confidence, "
                 " horizon_hours, reasoning, metadata, trade_id) "
                 "VALUES "
-                "(:source, :subject_key, :category, :probability, :confidence, "
+                "(:user_id, :source, :subject_key, :category, :probability, :confidence, "
                 " :horizon_hours, :reasoning, :metadata, :trade_id) "
                 "RETURNING id"
             ), {
+                "user_id":        DEFAULT_USER_ID,
                 "source":         source,
                 "subject_key":    subject_key,
                 "category":       category,

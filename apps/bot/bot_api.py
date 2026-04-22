@@ -739,12 +739,14 @@ class BotAPI:
 
 def _audit_config_change(key: str, old, new, source: str) -> None:
     try:
+        from engine.user_config import DEFAULT_USER_ID
         with get_engine().begin() as conn:
             conn.execute(text(
                 "INSERT INTO config_change_history "
-                "(param_name, old_value, new_value, reason, suggested_by, outcome) "
-                "VALUES (:k, :o, :n, :r, :s, 'applied')"
+                "(user_id, param_name, old_value, new_value, reason, suggested_by, outcome) "
+                "VALUES (:user_id, :k, :o, :n, :r, :s, 'applied')"
             ), {
+                "user_id": DEFAULT_USER_ID,
                 "k": key, "o": str(old), "n": str(new),
                 "r": "dashboard /api/update-config", "s": source,
             })

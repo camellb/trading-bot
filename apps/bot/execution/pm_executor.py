@@ -177,22 +177,24 @@ class PMExecutor:
                      prediction_id, reasoning, category,
                      market_archetype=None) -> Optional[int]:
         try:
+            from engine.user_config import DEFAULT_USER_ID
             with get_engine().begin() as conn:
                 row = conn.execute(text(
                     "INSERT INTO pm_positions ("
-                    "  prediction_id, market_id, condition_id, slug, question, category, "
+                    "  user_id, prediction_id, market_id, condition_id, slug, question, category, "
                     "  side, shares, entry_price, cost_usd, "
                     "  claude_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug, "
                     "  market_archetype"
                     ") VALUES ("
-                    "  :pid, :mid, :cid, :slug, :q, :cat, "
+                    "  :user_id, :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
                     "  'simulation', 'open', :exp, :reason, :event_slug, "
                     "  :arch"
                     ") RETURNING id"
                 ), {
+                    "user_id": DEFAULT_USER_ID,
                     "pid":   prediction_id,
                     "mid":   market.id,
                     "cid":   market.condition_id,
