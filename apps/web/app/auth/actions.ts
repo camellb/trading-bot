@@ -7,6 +7,17 @@ import { createClient } from "@/lib/supabase/server";
 
 export type AuthState = { error?: string; ok?: boolean };
 
+async function computeOrigin(): Promise<string> {
+  const h = await headers();
+  const origin = h.get("origin");
+  if (origin && origin.startsWith("http")) return origin;
+  const forwardedHost = h.get("x-forwarded-host");
+  const host = forwardedHost ?? h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  if (host) return `${proto}://${host}`;
+  return "";
+}
+
 export async function signIn(_: AuthState, formData: FormData): Promise<AuthState> {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
@@ -29,7 +40,7 @@ export async function signUp(_: AuthState, formData: FormData): Promise<AuthStat
   if (!email || !password) return { error: "Email and password are required." };
   if (password.length < 8) return { error: "Password must be at least 8 characters." };
 
-  const origin = (await headers()).get("origin") ?? "";
+  const origin = await computeOrigin();
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signUp({
     email,
@@ -52,7 +63,7 @@ export async function requestPasswordReset(
   const email = String(formData.get("email") ?? "").trim();
   if (!email) return { error: "Email is required." };
 
-  const origin = (await headers()).get("origin") ?? "";
+  const origin = await computeOrigin();
   const supabase = await createClient();
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
     redirectTo: `${origin}/auth/callback?next=/dashboard/settings/account`,
@@ -69,16 +80,18 @@ export async function signOut() {
 
 export async function signInWithGoogle(formData: FormData) {
   const next = String(formData.get("redirect") ?? "/dashboard");
-  const origin = (await headers()).get("origin") ?? "";
+  const origin = await computeOrigin();
+  const redirectTo = `${origin}/auth/callback?next=${encodeURIComponent(next)}`;
+  console.log("[auth/signInWithGoogle] redirectTo", { origin, redirectTo });
+
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "google",
-    options: {
-      redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}`,
-    },
+    options: { redirectTo },
   });
   if (error || !data?.url) {
-    const errUrl = new URL("/auth", origin);
+    console.error("[auth/signInWithGoogle] failed", { error: error?.message });
+    const errUrl = new URL("/auth", origin || "https://trading-bot-web-six.vercel.app");
     errUrl.hash = "login";
     errUrl.searchParams.set("error", error?.message ?? "Google sign-in failed");
     redirect(errUrl.toString());
