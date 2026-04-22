@@ -97,7 +97,11 @@ async def main() -> None:
     print("Default user_config row ensured.", flush=True)
 
     # ── Core singletons ──────────────────────────────────────────────────────
-    executor  = PMExecutor()
+    # TRANSITIONAL (SaaS multi-tenancy in-progress): the scheduler still owns
+    # a single executor bound to DEFAULT_USER_ID. Per-user scan fan-out is
+    # the next step — the bot_api constructs per-request PMExecutors so
+    # dashboards already see per-user data, but the scheduler does not yet.
+    executor  = PMExecutor(DEFAULT_USER_ID)
 
     # ── Overlay feeds (advisory only — do not gate trading) ──────────────────
     news_feed      = NewsFeed(monitor)

@@ -70,7 +70,11 @@ class PMAnalyst:
         news_feed: Optional[object]              = None,
         user_id:   str                           = DEFAULT_USER_ID,
     ):
-        self.executor  = executor  or PMExecutor()
+        # TRANSITIONAL (SaaS multi-tenancy in-progress): scans and resolutions
+        # are still driven by the single-user DEFAULT_USER_ID executor. The
+        # full per-user fan-out is the next step — until then the bot
+        # continues to operate on bartosz's account only.
+        self.executor  = executor  or PMExecutor(user_id or DEFAULT_USER_ID)
         self.evaluator = evaluator or PolymarketEvaluator()
         self.notifier  = notifier
         self.news_feed = news_feed

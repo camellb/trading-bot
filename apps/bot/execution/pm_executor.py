@@ -1,102 +1,132 @@
 """
-Polymarket executor — simulation mode today, live mode tomorrow.
+Polymarket executor — per-user (SaaS multi-tenancy).
+
+Every executor instance is bound to a specific user_id and reads that
+user's mode (simulation|live) and starting_cash from user_config. A user
+with no mode or no starting_cash is `not ready` — the executor exposes
+zero state and refuses all writes for that user. Brand-new accounts see
+nothing until they complete onboarding.
 
 Simulation mode:
     Simulates fills at the observed market mid-price. Writes a pm_positions
-    row with mode='simulation'. No external calls, no wallet, no risk.
+    row with mode='simulation' and user_id=<user>. No external calls.
 
 Live mode (stubbed until CLOB credentials are wired):
-    Will submit a limit order via py-clob-client, wait for fill, then write
-    a pm_positions row with mode='live', clob_order_id, and tx_hash. Until
-    we wire credentials the live path raises explicitly.
+    Will submit a limit order via py-clob-client using that user's
+    Polymarket creds from user_config, then write a pm_positions row
+    with mode='live', clob_order_id, tx_hash, and user_id=<user>. Until
+    the CLOB client is wired the live path raises explicitly.
 
-All position bookkeeping and P&L flow through the same database, so the
-dashboard treats simulation and live positions uniformly — only the `mode`
-column differs.
-
-Bankroll model:
-    bankroll = STARTING_CASH + Σ realized_pnl_usd(settled) - Σ cost_usd(open)
-    Refreshed from DB before every sizing decision so concurrent fills don't
-    over-stake.
+Bankroll model (per-user):
+    bankroll = user_config.starting_cash
+             + Σ realized_pnl_usd (WHERE user_id AND status IN settled/invalid)
+             - Σ cost_usd         (WHERE user_id AND status = 'open')
+    Refreshed from DB before every sizing decision so concurrent fills
+    don't over-stake.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import sys
-from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import text
 
 import calibration
-import config
 from db.engine import get_engine
 from execution.pm_sizer import SizingDecision
 from feeds.polymarket_feed import PolyMarket
+from engine.user_config import UserConfig, get_user_config
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
 class PMExecutor:
     """
-    Handles the open/close lifecycle for Polymarket positions.
-
-    The analyst calls `open_position` after sizing. The resolver (cron job)
-    calls `settle_position` once the underlying market resolves.
+    Handles the open/close lifecycle for Polymarket positions, scoped to a
+    single user. Construct one instance per user per scan/request.
     """
 
-    def __init__(self, mode: Optional[str] = None):
-        # Respect env first, then config — keeps "simulation" as the default
-        # until live credentials are explicitly wired.
-        self.mode = (mode
-                     or os.environ.get("PM_MODE")
-                     or getattr(config, "PM_MODE", "simulation")).lower()
-        if self.mode not in ("simulation", "live"):
-            raise ValueError(f"PM_MODE must be 'simulation' or 'live', got: {self.mode}")
+    def __init__(self, user_id: str, *, user_config: Optional[UserConfig] = None):
+        if not user_id or not isinstance(user_id, str):
+            raise ValueError(f"PMExecutor requires a user_id, got: {user_id!r}")
+        self.user_id = user_id
+        # Snapshot the user's config at construction time. Callers that need
+        # fresh values after a dashboard edit should rebuild the executor.
+        self._user_config: UserConfig = user_config or get_user_config(user_id)
+
+    # ── Readiness ────────────────────────────────────────────────────────────
+    @property
+    def ready(self) -> bool:
+        """True iff the bot may act for this user right now."""
+        return self._user_config.ready_to_trade
+
+    @property
+    def mode(self) -> Optional[str]:
+        """The user's configured mode, or None if not yet set."""
+        return self._user_config.mode
 
     # ── Bankroll ─────────────────────────────────────────────────────────────
     def get_starting_cash(self) -> float:
-        """Configured starting cash for the active mode."""
-        if self.mode == "live":
-            return float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
-        return float(getattr(config, "PM_SIMULATION_STARTING_CASH", 500.0))
+        """
+        This user's starting bankroll in USD. Returns 0.0 if the user hasn't
+        finished onboarding — callers treat that as "no bankroll, don't trade".
+        """
+        if self._user_config.starting_cash is None:
+            return 0.0
+        return float(self._user_config.starting_cash)
 
     def get_bankroll(self) -> float:
         """
-        Current available bankroll in USD for the active mode.
+        Current available bankroll in USD for this user in their current mode:
 
             bankroll = starting_cash
-                     + Σ realized_pnl_usd (settled positions)
-                     - Σ cost_usd         (open positions)
+                     + Σ realized_pnl_usd   (user, settled/invalid)
+                     - Σ cost_usd           (user, open)
         """
-        starting = float(getattr(config, "PM_SIMULATION_STARTING_CASH", 500.0))
-        if self.mode == "live":
-            starting = float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
+        starting = self.get_starting_cash()
+        if not self.ready:
+            return 0.0
         try:
             with get_engine().begin() as conn:
                 realized = conn.execute(text(
                     "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
                     "FROM pm_positions "
-                    "WHERE mode = :m AND status IN ('settled', 'invalid')"
-                ), {"m": self.mode}).scalar() or 0.0
+                    "WHERE user_id = :uid AND mode = :m "
+                    "  AND status IN ('settled', 'invalid')"
+                ), {"uid": self.user_id, "m": self.mode}).scalar() or 0.0
                 open_cost = conn.execute(text(
                     "SELECT COALESCE(SUM(cost_usd), 0) "
                     "FROM pm_positions "
-                    "WHERE mode = :m AND status = 'open'"
-                ), {"m": self.mode}).scalar() or 0.0
+                    "WHERE user_id = :uid AND mode = :m AND status = 'open'"
+                ), {"uid": self.user_id, "m": self.mode}).scalar() or 0.0
             return float(starting) + float(realized) - float(open_cost)
         except Exception as exc:
-            print(f"[pm_executor] get_bankroll failed: {exc}", file=sys.stderr)
+            print(f"[pm_executor] get_bankroll({self.user_id}) failed: {exc}",
+                  file=sys.stderr)
             return float(starting)
 
     def get_portfolio_stats(self) -> dict:
         """
-        Dashboard-friendly summary for the active mode.
+        Dashboard-friendly summary for this user in their current mode.
+
+        Not-ready users (no onboarding) see all zeros — never data that
+        leaked from another tenant.
         """
-        starting = float(getattr(config, "PM_SIMULATION_STARTING_CASH", 500.0))
-        if self.mode == "live":
-            starting = float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
+        if not self.ready:
+            return {
+                "mode":            self._user_config.mode,     # may be None
+                "starting_cash":   0.0,
+                "bankroll":        0.0,
+                "equity":          0.0,
+                "open_positions":  0,
+                "open_cost":       0.0,
+                "settled_total":   0,
+                "settled_wins":    0,
+                "win_rate":        None,
+                "realized_pnl":    0.0,
+                "ready":           False,
+            }
+        starting = self.get_starting_cash()
         try:
             with get_engine().begin() as conn:
                 row = conn.execute(text(
@@ -106,15 +136,16 @@ class PMExecutor:
                     "  COALESCE(SUM(cost_usd) FILTER (WHERE status = 'open'), 0) AS open_cost, "
                     "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid') AND realized_pnl_usd > 0) AS wins "
-                    "FROM pm_positions WHERE mode = :m"
-                ), {"m": self.mode}).fetchone()
+                    "FROM pm_positions WHERE user_id = :uid AND mode = :m"
+                ), {"uid": self.user_id, "m": self.mode}).fetchone()
                 open_n    = int(row[0] or 0)
                 settled_n = int(row[1] or 0)
                 open_cost = float(row[2] or 0)
                 realized  = float(row[3] or 0)
                 wins      = int(row[4] or 0)
         except Exception as exc:
-            print(f"[pm_executor] get_portfolio_stats failed: {exc}", file=sys.stderr)
+            print(f"[pm_executor] get_portfolio_stats({self.user_id}) failed: {exc}",
+                  file=sys.stderr)
             open_n = settled_n = wins = 0
             open_cost = realized = 0.0
         bankroll = float(starting) + realized - open_cost
@@ -129,6 +160,7 @@ class PMExecutor:
             "settled_wins":    wins,
             "win_rate":        (wins / settled_n) if settled_n else None,
             "realized_pnl":    realized,
+            "ready":           True,
         }
 
     # ── Open a position ──────────────────────────────────────────────────────
@@ -176,8 +208,11 @@ class PMExecutor:
     def _open_simulation(self, market, decision, claude_p,
                      prediction_id, reasoning, category,
                      market_archetype=None) -> Optional[int]:
+        if not self.ready:
+            print(f"[pm_executor] _open_simulation refused: user {self.user_id} not ready",
+                  file=sys.stderr)
+            return None
         try:
-            from engine.user_config import DEFAULT_USER_ID
             with get_engine().begin() as conn:
                 row = conn.execute(text(
                     "INSERT INTO pm_positions ("
@@ -190,11 +225,12 @@ class PMExecutor:
                     "  :user_id, :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
-                    "  'simulation', 'open', :exp, :reason, :event_slug, "
+                    "  :mode, 'open', :exp, :reason, :event_slug, "
                     "  :arch"
                     ") RETURNING id"
                 ), {
-                    "user_id": DEFAULT_USER_ID,
+                    "user_id": self.user_id,
+                    "mode":  self.mode,
                     "pid":   prediction_id,
                     "mid":   market.id,
                     "cid":   market.condition_id,
@@ -253,11 +289,12 @@ class PMExecutor:
             with get_engine().begin() as conn:
                 row = conn.execute(text(
                     "SELECT side, shares, cost_usd, prediction_id "
-                    "FROM pm_positions WHERE id = :pid AND status = 'open'"
-                ), {"pid": position_id}).fetchone()
+                    "FROM pm_positions "
+                    "WHERE id = :pid AND user_id = :uid AND status = 'open'"
+                ), {"pid": position_id, "uid": self.user_id}).fetchone()
                 if row is None:
-                    print(f"[pm_executor] settle: position {position_id} not open",
-                          file=sys.stderr)
+                    print(f"[pm_executor] settle: position {position_id} not open "
+                          f"for user {self.user_id}", file=sys.stderr)
                     return False
                 side      = str(row[0])
                 shares    = float(row[1])
@@ -310,7 +347,7 @@ class PMExecutor:
             # 50-settled-trade gate is crossed for this user.
             try:
                 from engine.learning_cadence import maybe_run_learning_cycle
-                maybe_run_learning_cycle(mode=self.mode)
+                maybe_run_learning_cycle(user_id=self.user_id, mode=self.mode)
             except Exception as exc:
                 print(f"[pm_executor] learning_cadence hook failed: {exc}",
                       file=sys.stderr)
@@ -321,6 +358,8 @@ class PMExecutor:
 
     # ── Open-position lookups ────────────────────────────────────────────────
     def get_open_positions(self) -> list[dict]:
+        if not self.ready:
+            return []
         try:
             with get_engine().begin() as conn:
                 rows = conn.execute(text(
@@ -329,9 +368,9 @@ class PMExecutor:
                     "       ev_bps, confidence, expected_resolution_at, "
                     "       created_at, prediction_id, reasoning, slug "
                     "FROM pm_positions "
-                    "WHERE mode = :m AND status = 'open' "
+                    "WHERE user_id = :uid AND mode = :m AND status = 'open' "
                     "ORDER BY created_at DESC"
-                ), {"m": self.mode}).fetchall()
+                ), {"uid": self.user_id, "m": self.mode}).fetchall()
                 return [
                     {
                         "id":                r[0],
@@ -359,37 +398,45 @@ class PMExecutor:
             return []
 
     def has_open_position_on_market(self, market_id: str) -> bool:
+        if not self.ready:
+            return False
         try:
             with get_engine().begin() as conn:
                 row = conn.execute(text(
                     "SELECT 1 FROM pm_positions "
-                    "WHERE mode = :m AND status = 'open' AND market_id = :mid "
+                    "WHERE user_id = :uid AND mode = :m "
+                    "  AND status = 'open' AND market_id = :mid "
                     "LIMIT 1"
-                ), {"m": self.mode, "mid": str(market_id)}).fetchone()
+                ), {"uid": self.user_id, "m": self.mode, "mid": str(market_id)}).fetchone()
                 return row is not None
         except Exception as exc:
             print(f"[pm_executor] has_open_position failed: {exc}", file=sys.stderr)
             return True  # fail closed — assume position exists to prevent duplicates
 
     def open_position_count(self) -> int:
+        if not self.ready:
+            return 0
         try:
             with get_engine().begin() as conn:
                 return int(conn.execute(text(
                     "SELECT COUNT(*) FROM pm_positions "
-                    "WHERE mode = :m AND status = 'open'"
-                ), {"m": self.mode}).scalar() or 0)
+                    "WHERE user_id = :uid AND mode = :m AND status = 'open'"
+                ), {"uid": self.user_id, "m": self.mode}).scalar() or 0)
         except Exception as exc:
             print(f"[pm_executor] open_position_count failed: {exc}", file=sys.stderr)
             return 999  # fail closed — prevent opening new positions on DB error
 
     def count_positions_for_event(self, event_slug: str) -> int:
-        """Count open positions belonging to the same event group."""
+        """Count this user's open positions belonging to the same event group."""
+        if not self.ready:
+            return 0
         try:
             with get_engine().begin() as conn:
                 return int(conn.execute(text(
                     "SELECT COUNT(*) FROM pm_positions "
-                    "WHERE mode = :m AND status = 'open' AND event_slug = :slug"
-                ), {"m": self.mode, "slug": event_slug}).scalar() or 0)
+                    "WHERE user_id = :uid AND mode = :m "
+                    "  AND status = 'open' AND event_slug = :slug"
+                ), {"uid": self.user_id, "m": self.mode, "slug": event_slug}).scalar() or 0)
         except Exception as exc:
             print(f"[pm_executor] count_positions_for_event failed: {exc}",
                   file=sys.stderr)

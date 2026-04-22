@@ -56,8 +56,44 @@ class UserConfig:
         default_factory=lambda: ("tennis_qualifier", "tennis_lower_tier")
     )
 
+    # Per-user execution state (SaaS multi-tenancy).
+    # All four default to None for brand-new users who haven't onboarded.
+    # The bot refuses to trade for a user whose mode or starting_cash is
+    # None; live mode additionally requires wallet + api key/secret.
+    mode:                  Optional[str]   = None    # 'simulation' | 'live'
+    starting_cash:         Optional[float] = None    # USD, per-user bankroll seed
+    polymarket_api_key:    Optional[str]   = None
+    polymarket_api_secret: Optional[str]   = None
+    polymarket_passphrase: Optional[str]   = None
+    wallet_address:        Optional[str]   = None
+
     def to_dict(self) -> dict:
         return asdict(self)
+
+    @property
+    def is_onboarded(self) -> bool:
+        """True iff the user has picked mode + starting bankroll."""
+        return self.mode is not None and self.starting_cash is not None
+
+    @property
+    def can_trade_live(self) -> bool:
+        """True iff mode='live' AND all required Polymarket creds set."""
+        if self.mode != "live":
+            return False
+        return bool(
+            self.polymarket_api_key
+            and self.polymarket_api_secret
+            and self.wallet_address
+        )
+
+    @property
+    def ready_to_trade(self) -> bool:
+        """Bot may act for this user."""
+        if not self.is_onboarded:
+            return False
+        if self.mode == "simulation":
+            return True
+        return self.can_trade_live
 
 
 # (min_inclusive, max_inclusive) — enforced on every write via the dashboard.
@@ -75,6 +111,7 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     "streak_cooldown_losses":        (2, 10),
     "dry_powder_reserve_pct":        (0.10, 0.40),
     "cost_assumption_override":      (0.0, 0.10),
+    "starting_cash":                 (10.0, 100_000.0),
 }
 
 # Fields whose concrete values are collections of archetype labels,
@@ -151,7 +188,22 @@ _CASTERS: dict[str, type] = {
     "streak_cooldown_losses":        int,
     "dry_powder_reserve_pct":        float,
     "cost_assumption_override":      float,
+    "starting_cash":                 float,
 }
+
+# Fields that cannot be edited via the generic /api/user-config PUT path.
+# Mode is changed via a dedicated endpoint (dashboard guardrails); creds
+# go through /api/credentials; display_name via /api/profile. Keeping them
+# out of this list prevents someone from posting `{mode: "live"}` to the
+# risk-config endpoint and bypassing the credential gate.
+_NON_EDITABLE_VIA_USER_CONFIG: frozenset[str] = frozenset({
+    "mode",
+    "polymarket_api_key",
+    "polymarket_api_secret",
+    "polymarket_passphrase",
+    "wallet_address",
+    "display_name",
+})
 
 
 def cast_value(key: str, raw) -> Union[int, float, tuple, None]:
@@ -247,6 +299,11 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
     Load the user's config from the DB. On any error (missing table,
     missing row, no DATABASE_URL) returns dataclass defaults so the
     caller never has to handle failure.
+
+    For a brand-new user with no row, returns a UserConfig where the
+    per-user execution fields (mode, starting_cash, polymarket_*,
+    wallet_address) are all None — callers must treat such a config as
+    "not ready to trade" (see UserConfig.ready_to_trade).
     """
     try:
         from sqlalchemy import text
@@ -259,7 +316,10 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       dry_powder_reserve_pct, "
                 "       cost_assumption_override, archetype_skip_list, "
                 "       min_p_win, "
-                "       confidence_full_stake, confidence_override_threshold "
+                "       confidence_full_stake, confidence_override_threshold, "
+                "       mode, starting_cash, "
+                "       polymarket_api_key, polymarket_api_secret, "
+                "       polymarket_passphrase, wallet_address "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
             if row is None:
@@ -277,6 +337,12 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 min_p_win                     = float(row[9]),
                 confidence_full_stake         = float(row[10]),
                 confidence_override_threshold = float(row[11]),
+                mode                          = (str(row[12]) if row[12] is not None else None),
+                starting_cash                 = (float(row[13]) if row[13] is not None else None),
+                polymarket_api_key            = (str(row[14]) if row[14] is not None else None),
+                polymarket_api_secret         = (str(row[15]) if row[15] is not None else None),
+                polymarket_passphrase         = (str(row[16]) if row[16] is not None else None),
+                wallet_address                = (str(row[17]) if row[17] is not None else None),
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",
@@ -417,6 +483,169 @@ def list_users_with_telegram() -> list[str]:
         print(f"[user_config] list_users_with_telegram failed: {exc}",
               file=sys.stderr)
         return []
+
+
+# ── Polymarket creds ────────────────────────────────────────────────────────
+# Per-user Polymarket API key/secret/passphrase + Polygon wallet address.
+# Live-mode execution requires all three of (api_key, api_secret, wallet)
+# to be non-empty; passphrase is optional (only some keys carry one).
+def get_user_polymarket_creds(user_id: str) -> dict:
+    """
+    Return {'api_key', 'api_secret', 'passphrase', 'wallet_address'} —
+    any missing value is None. Dashboard and bot both call this; the bot
+    refuses live trades if any required field is empty.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT polymarket_api_key, polymarket_api_secret, "
+                "       polymarket_passphrase, wallet_address "
+                "FROM user_config WHERE user_id = :uid"
+            ), {"uid": user_id}).fetchone()
+        if row is None:
+            return {"api_key": None, "api_secret": None,
+                    "passphrase": None, "wallet_address": None}
+        return {
+            "api_key":        (str(row[0]) if row[0] else None),
+            "api_secret":     (str(row[1]) if row[1] else None),
+            "passphrase":     (str(row[2]) if row[2] else None),
+            "wallet_address": (str(row[3]) if row[3] else None),
+        }
+    except Exception as exc:
+        print(f"[user_config] get_user_polymarket_creds({user_id}) failed: {exc}",
+              file=sys.stderr)
+        return {"api_key": None, "api_secret": None,
+                "passphrase": None, "wallet_address": None}
+
+
+def set_user_polymarket_creds(user_id: str,
+                              api_key:        Optional[str] = None,
+                              api_secret:     Optional[str] = None,
+                              passphrase:     Optional[str] = None,
+                              wallet_address: Optional[str] = None) -> None:
+    """
+    Write Polymarket credentials for a user. Empty string → NULL (cleared).
+    All four args are independently settable; passing None for an arg
+    leaves that column untouched (unlike empty string which clears it).
+    """
+    updates: list[str] = []
+    params: dict = {"uid": user_id}
+    # `None` means "don't touch this column"; `""` means "clear it".
+    for col, arg in (
+        ("polymarket_api_key",    api_key),
+        ("polymarket_api_secret", api_secret),
+        ("polymarket_passphrase", passphrase),
+        ("wallet_address",        wallet_address),
+    ):
+        if arg is None:
+            continue
+        trimmed = arg.strip() or None
+        updates.append(f"{col} = :{col}")
+        params[col] = trimmed
+    if not updates:
+        return
+
+    from sqlalchemy import text
+    from db.engine import get_engine
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO user_config (user_id) VALUES (:uid) "
+            "ON CONFLICT (user_id) DO NOTHING"
+        ), {"uid": user_id})
+        conn.execute(text(
+            f"UPDATE user_config SET {', '.join(updates)}, updated_at = NOW() "
+            f"WHERE user_id = :uid"
+        ), params)
+
+
+# ── Onboarding ──────────────────────────────────────────────────────────────
+# Called by the web server's completeOnboarding action AND by any bot path
+# that needs to seed a brand-new row. Writes display_name + mode +
+# starting_cash + onboarded_at atomically.
+def complete_user_onboarding(user_id: str,
+                              display_name:  str,
+                              mode:          str,
+                              starting_cash: float) -> None:
+    """
+    Finalize onboarding. Validates mode ∈ {simulation, live} and
+    starting_cash > 0. Raises ValueError on invalid input.
+    """
+    if mode not in ("simulation", "live"):
+        raise ValueError(f"mode must be 'simulation' or 'live', got: {mode!r}")
+    if not display_name or len(display_name.strip()) < 2:
+        raise ValueError("display_name must be at least 2 characters")
+    sc = float(starting_cash)
+    lo, hi = USER_CONFIG_BOUNDS["starting_cash"]
+    if sc < lo or sc > hi:
+        raise ValueError(f"starting_cash={sc} outside bounds [{lo}, {hi}]")
+
+    from sqlalchemy import text
+    from db.engine import get_engine
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO user_config (user_id) VALUES (:uid) "
+            "ON CONFLICT (user_id) DO NOTHING"
+        ), {"uid": user_id})
+        conn.execute(text(
+            "UPDATE user_config "
+            "SET display_name  = :name, "
+            "    mode          = :mode, "
+            "    starting_cash = :cash, "
+            "    onboarded_at  = COALESCE(onboarded_at, NOW()), "
+            "    updated_at    = NOW() "
+            "WHERE user_id = :uid"
+        ), {
+            "uid":  user_id,
+            "name": display_name.strip(),
+            "mode": mode,
+            "cash": sc,
+        })
+
+
+# ── Multi-tenant lookups ────────────────────────────────────────────────────
+def list_onboarded_user_ids() -> list[str]:
+    """
+    Every user who has completed onboarding (onboarded_at IS NOT NULL AND
+    mode IS NOT NULL AND starting_cash IS NOT NULL). Used by the scanner
+    to fan out per-user sizing + execution.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT user_id FROM user_config "
+                "WHERE onboarded_at IS NOT NULL "
+                "  AND mode IS NOT NULL "
+                "  AND starting_cash IS NOT NULL"
+            )).fetchall()
+        return [str(r[0]) for r in rows]
+    except Exception as exc:
+        print(f"[user_config] list_onboarded_user_ids failed: {exc}",
+              file=sys.stderr)
+        return []
+
+
+def get_user_join_time(user_id: str):
+    """
+    Return the auth.users.created_at for a user, as a timezone-aware
+    datetime. None on missing row or DB failure. Used to filter shared
+    rows (market_evaluations) so users only see data from after they joined.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT created_at FROM auth.users WHERE id = :uid"
+            ), {"uid": user_id}).fetchone()
+        return row[0] if row else None
+    except Exception as exc:
+        print(f"[user_config] get_user_join_time({user_id}) failed: {exc}",
+              file=sys.stderr)
+        return None
 
 
 # ── Legacy alias ────────────────────────────────────────────────────────────

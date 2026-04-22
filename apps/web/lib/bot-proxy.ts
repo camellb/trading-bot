@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+import { createClient } from "@/lib/supabase/server";
+
 const DEFAULT_URL = "http://127.0.0.1:8765";
 
 type Method = "GET" | "POST" | "PUT" | "DELETE";
@@ -7,6 +9,19 @@ type Method = "GET" | "POST" | "PUT" | "DELETE";
 export type BotFetchResult<T> =
   | { ok: true; status: number; data: T }
   | { ok: false; status: number; error: string };
+
+// Resolve the caller's Supabase user ID once per proxy call. The bot API
+// reads this from X-User-Id and scopes all user-scoped queries by it —
+// summary/positions/evaluations will 401 if the header is missing.
+async function _currentUserId(): Promise<string | null> {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function _rawFetch<T>(
   method: Method,
@@ -26,11 +41,13 @@ async function _rawFetch<T>(
 
   const hasBody = method === "POST" || method === "PUT";
   const url = `${process.env.BOT_API_URL ?? DEFAULT_URL}${path}${search}`;
+  const userId = await _currentUserId();
   try {
     const init: RequestInit = {
       method,
       headers: {
         "X-Bot-Secret": secret,
+        ...(userId ? { "X-User-Id": userId } : {}),
         ...(hasBody ? { "Content-Type": "application/json" } : {}),
       },
       cache: "no-store",

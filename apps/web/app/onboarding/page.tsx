@@ -283,6 +283,8 @@ export default function OnboardingPage() {
             ) : (
               <form action={completeOnboarding} style={{ display: "inline" }}>
                 <input type="hidden" name="display_name" value={name.trim()} />
+                <input type="hidden" name="mode" value={mode} />
+                <input type="hidden" name="starting_cash" value={String(capital)} />
                 <button type="submit" className="ob-next" disabled={!canContinueFromName}>
                   {mode === "live" ? "Connect wallet →" : "Enter dashboard →"}
                 </button>

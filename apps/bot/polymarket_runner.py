@@ -91,7 +91,11 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None, exe
         rows = await feed.fetch_many(market_ids)
 
     if executor is None:
-        executor = PMExecutor()
+        # TRANSITIONAL: a fallback DEFAULT_USER_ID executor is still used for
+        # the resolve path until the per-user fan-out lands. Once positions
+        # are grouped by user_id, this will construct one executor per user.
+        from engine.user_config import DEFAULT_USER_ID
+        executor = PMExecutor(DEFAULT_USER_ID)
 
     # Phase A — pm_positions.
     for p in open_rows:

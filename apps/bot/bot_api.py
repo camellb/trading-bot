@@ -121,12 +121,40 @@ class BotAPI:
             return web.json_response({"error": "unauthorized"}, status=401)
         return await handler(request)
 
+    # ── Per-user executor (SaaS multi-tenancy) ───────────────────────────────
+    def _user_id_from(self, request: web.Request) -> Optional[str]:
+        """
+        Pull the caller's user_id out of the X-User-Id header. Returns None
+        when the header is missing or blank — handlers decide whether that
+        is a 401 (user-scoped endpoint) or a legacy fallback.
+        """
+        uid = (request.headers.get("X-User-Id") or "").strip()
+        return uid or None
+
+    def _user_executor(self, request: web.Request):
+        """
+        Construct a per-user PMExecutor from the request's X-User-Id.
+        Returns None if the header is missing — the caller is expected to
+        respond with 401 in that case.
+        """
+        from execution.pm_executor import PMExecutor
+        uid = self._user_id_from(request)
+        if not uid:
+            return None
+        try:
+            return PMExecutor(uid)
+        except Exception as exc:
+            print(f"[bot_api] PMExecutor({uid}) failed: {exc}", file=sys.stderr)
+            return None
+
     # ── Read handlers ────────────────────────────────────────────────────────
     async def _handle_health(self, _request: web.Request) -> web.Response:
         from feeds.feed_health_monitor import monitor as feed_monitor
         degraded = feed_monitor.get_degraded_feeds()
         ph = proc_health.snapshot()
         return web.json_response({
+            # /health is process-scoped — report the scheduler's mode. Per-user
+            # mode is surfaced via /api/summary, not /api/health.
             "status":          "degraded" if degraded else "ok",
             "mode":            getattr(self._executor, "mode", "simulation"),
             "started_at":      ph["started_at"],
@@ -136,8 +164,12 @@ class BotAPI:
             "degraded_feeds":  degraded,
         })
 
-    async def _handle_summary(self, _request: web.Request) -> web.Response:
-        stats = self._executor.get_portfolio_stats() if self._executor else {}
+    async def _handle_summary(self, request: web.Request) -> web.Response:
+        executor = self._user_executor(request)
+        if executor is None:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        stats = executor.get_portfolio_stats()
         brier_report = await asyncio.get_running_loop().run_in_executor(
             self._pool, lambda: calibration.get_report(source="polymarket")
         )
@@ -158,9 +190,18 @@ class BotAPI:
             "test_end":   getattr(config, "PM_TEST_END", None),
         })
 
-    async def _handle_positions(self, _request: web.Request) -> web.Response:
-        open_rows = self._executor.get_open_positions() if self._executor else []
-        mode      = getattr(self._executor, "mode", "simulation")
+    async def _handle_positions(self, request: web.Request) -> web.Response:
+        executor = self._user_executor(request)
+        if executor is None:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        if not executor.ready:
+            # Not-yet-onboarded users see an empty portfolio, never another
+            # user's positions leaked through.
+            return web.json_response({"open": [], "settled": []})
+        open_rows = executor.get_open_positions()
+        mode      = executor.mode
+        uid       = executor.user_id
         try:
             def _q():
                 with get_engine().begin() as conn:
@@ -171,10 +212,11 @@ class BotAPI:
                         "       settlement_price, realized_pnl_usd, created_at, "
                         "       settled_at, slug "
                         "FROM pm_positions "
-                        "WHERE mode = :m AND status IN ('settled', 'invalid') "
+                        "WHERE user_id = :uid AND mode = :m "
+                        "  AND status IN ('settled', 'invalid') "
                         "ORDER BY settled_at DESC NULLS LAST "
                         "LIMIT 50"
-                    ), {"m": mode}).fetchall()
+                    ), {"uid": uid, "m": mode}).fetchall()
             settled_rows = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
         except Exception as exc:
             print(f"[bot_api] positions query failed: {exc}", file=sys.stderr)
@@ -205,6 +247,15 @@ class BotAPI:
 
     async def _handle_evaluations(self, request: web.Request) -> web.Response:
         limit = int(request.query.get("limit", "50"))
+        user_id = self._user_id_from(request)
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        # Evaluations are shared work (one Claude call per market) but users
+        # must only see rows produced after they joined — see SaaS doctrine.
+        from engine.user_config import get_user_join_time
+        loop = asyncio.get_running_loop()
+        join_time = await loop.run_in_executor(self._pool, get_user_join_time, user_id)
         try:
             def _q():
                 with get_engine().begin() as conn:
@@ -214,10 +265,11 @@ class BotAPI:
                         "       ev_bps, recommendation, reasoning, pm_position_id, "
                         "       slug, research_sources "
                         "FROM market_evaluations "
+                        "WHERE (:since IS NULL OR evaluated_at >= :since) "
                         "ORDER BY evaluated_at DESC "
                         "LIMIT :lim"
-                    ), {"lim": limit}).fetchall()
-            rows = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
+                    ), {"lim": limit, "since": join_time}).fetchall()
+            rows = await loop.run_in_executor(self._pool, _q)
         except Exception as exc:
             print(f"[bot_api] evaluations query failed: {exc}", file=sys.stderr)
             rows = []
@@ -300,9 +352,20 @@ class BotAPI:
         )
         return web.json_response(report)
 
-    async def _handle_config(self, _request: web.Request) -> web.Response:
+    async def _handle_config(self, request: web.Request) -> web.Response:
         snapshot = {k: getattr(config, k, None) for k in ALLOWED_CONFIG_KEYS}
-        active_mode = self._executor.mode if self._executor else "simulation"
+        # Per-user mode comes from user_config when X-User-Id is present;
+        # the legacy scheduler mode is the fallback for internal tooling.
+        user_id = self._user_id_from(request)
+        active_mode: Optional[str] = None
+        if user_id:
+            try:
+                user_cfg = get_user_config(user_id)
+                active_mode = user_cfg.mode
+            except Exception:
+                active_mode = None
+        if not active_mode:
+            active_mode = getattr(self._executor, "mode", "simulation")
         configured_mode = self._disk_mode or getattr(config, "PM_MODE", "simulation")
         snapshot["PM_MODE"] = active_mode
         restart_pending = active_mode != configured_mode
