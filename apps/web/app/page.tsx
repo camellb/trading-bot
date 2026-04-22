@@ -199,7 +199,7 @@ function Solution() {
   const cards = [
     { icon: "brain", title: "Thinks", desc: "Reads the news. Checks historical base rates. Weighs structured data. Produces its own probability estimate for every market." },
     { icon: "shield", title: "Calculates", desc: "Flat 1-3% position sizing, scaled by confidence in the call. Drawdown circuit breakers, daily loss caps, and event correlation guards. Never over-exposed. Never emotional." },
-    { icon: "cycle", title: "Learns", desc: "Tracks its own accuracy via Brier score. Every week, it proposes calibrations. Delfi gets smarter the longer it runs." },
+    { icon: "cycle", title: "Learns", desc: "Tracks its own accuracy by category and Brier score. Every 50 resolved trades it proposes calibrations for you to approve. Delfi gets sharper the longer it runs." },
     { icon: "eye", title: "Explains", desc: "Every trade comes with its full reasoning: the probability estimate, the research sources, the gates it cleared, and the risk logic. You see what Delfi saw. You see why it traded." },
   ];
   return (
@@ -227,7 +227,7 @@ function Solution() {
 function Pillars() {
   const items = [
     { n: "01", title: "Probability Engine", desc: "Delfi reads every active market and produces its own probability estimate, grounded in news, historical base rates, and structured data." },
-    { n: "02", title: "Position Sizer", desc: "Every trade is sized flat at 1-3% of bankroll, scaled by Delfi's confidence in the call. Weaker categories get tighter thresholds. Long-horizon positions get a lockup penalty." },
+    { n: "02", title: "Position Sizer", desc: "Every trade is sized flat at 1-3% of bankroll, scaled by Delfi's confidence in the call. Three independent gates — direction agreement, minimum win probability, minimum expected return — must all clear before a dollar moves." },
     { n: "03", title: "Risk Manager", desc: "Before any trade executes, Delfi checks the portfolio: daily loss caps, drawdown circuit breakers, event correlation guards. If the book is already stressed, Delfi passes." },
   ];
   const nodes = ["Scan", "Estimate", "Size", "Verify", "Execute"];
