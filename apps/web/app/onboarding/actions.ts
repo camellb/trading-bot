@@ -4,15 +4,22 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 
-export async function completeOnboarding() {
+export async function completeOnboarding(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/auth#login");
 
+  const displayName = String(formData.get("display_name") ?? "").trim();
+  if (!displayName) redirect("/onboarding");
+
   const { error } = await supabase
     .from("user_config")
     .upsert(
-      { user_id: user.id, onboarded_at: new Date().toISOString() },
+      {
+        user_id: user.id,
+        display_name: displayName,
+        onboarded_at: new Date().toISOString(),
+      },
       { onConflict: "user_id" },
     );
 

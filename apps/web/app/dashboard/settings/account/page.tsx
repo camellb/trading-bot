@@ -1,24 +1,74 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useCredentials, type Credentials } from "../../../../lib/credentials";
 
+type Profile = { email: string; displayName: string };
+
 export default function AccountPage() {
-  const [name, setName] = useState("Alex Morgan");
-  const [email, setEmail] = useState("alex@morgan.co");
-  const [tz, setTz] = useState("America/New_York");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
+  const [nameSaving, setNameSaving] = useState(false);
+  const [nameSavedAt, setNameSavedAt] = useState<number | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+
   const { creds, update, missing, canGoLive } = useCredentials();
   const [draft, setDraft] = useState<Credentials>(creds);
   const [reveal, setReveal] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [credsSaved, setCredsSaved] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/api/profile", { cache: "no-store" });
+        if (!r.ok) return;
+        const j = (await r.json()) as Profile;
+        if (cancelled) return;
+        setProfile(j);
+        setNameDraft(j.displayName ?? "");
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const setField = (k: keyof Credentials, v: string) => {
     setDraft((d) => ({ ...d, [k]: v }));
-    setSaved(false);
+    setCredsSaved(false);
   };
   const saveCreds = () => {
     update(draft);
-    setSaved(true);
+    setCredsSaved(true);
+  };
+
+  const saveName = async () => {
+    setNameError(null);
+    setNameSaving(true);
+    try {
+      const trimmed = nameDraft.trim();
+      if (trimmed.length < 2) {
+        setNameError("Name must be at least 2 characters.");
+        return;
+      }
+      const r = await fetch("/api/profile", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: trimmed }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        setNameError(body?.error ?? "Couldn't save — try again.");
+        return;
+      }
+      setProfile((p) => (p ? { ...p, displayName: trimmed } : p));
+      setNameSavedAt(Date.now());
+    } finally {
+      setNameSaving(false);
+    }
   };
 
   return (
@@ -32,31 +82,47 @@ export default function AccountPage() {
         <div className="form-row">
           <div className="form-field">
             <label>Display name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} />
+            <input
+              value={nameDraft}
+              onChange={(e) => {
+                setNameDraft(e.target.value);
+                setNameSavedAt(null);
+                setNameError(null);
+              }}
+              placeholder={profile ? "" : "Loading…"}
+              disabled={!profile}
+            />
             <div className="form-hint">Shown in the sidebar and on weekly review emails.</div>
           </div>
 
           <div className="form-field">
             <label>Email address</label>
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            <div className="form-hint">We'll send a confirmation link before any change takes effect.</div>
+            <input
+              type="email"
+              value={profile?.email ?? ""}
+              readOnly
+              disabled
+              placeholder={profile ? "" : "Loading…"}
+            />
+            <div className="form-hint">
+              Your sign-in email. To change it, contact support.
+            </div>
           </div>
 
-          <div className="form-field">
-            <label>Timezone</label>
-            <select value={tz} onChange={(e) => setTz(e.target.value)}>
-              <option value="America/New_York">America / New York (EST)</option>
-              <option value="America/Los_Angeles">America / Los Angeles (PST)</option>
-              <option value="Europe/London">Europe / London (GMT)</option>
-              <option value="Europe/Berlin">Europe / Berlin (CET)</option>
-              <option value="Asia/Singapore">Asia / Singapore (SGT)</option>
-              <option value="Asia/Tokyo">Asia / Tokyo (JST)</option>
-            </select>
-            <div className="form-hint">Used for digest send times and the activity log.</div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <button className="btn-sm gold">Save profile</button>
+          <div style={{ marginTop: 12, display: "flex", gap: 12, alignItems: "center" }}>
+            <button
+              className="btn-sm gold"
+              onClick={saveName}
+              disabled={!profile || nameSaving || nameDraft.trim() === (profile?.displayName ?? "")}
+            >
+              {nameSaving ? "Saving…" : "Save profile"}
+            </button>
+            {nameSavedAt && !nameError && (
+              <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>Saved.</span>
+            )}
+            {nameError && (
+              <span style={{ color: "var(--red)", fontSize: 13 }}>{nameError}</span>
+            )}
           </div>
         </div>
       </div>
@@ -146,7 +212,7 @@ export default function AccountPage() {
             <button className="btn-sm" onClick={() => setReveal((r) => !r)}>
               {reveal ? "Hide values" : "Reveal values"}
             </button>
-            {saved && (
+            {credsSaved && (
               <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
                 Saved locally.
               </span>

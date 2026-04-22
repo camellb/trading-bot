@@ -6,31 +6,41 @@ import "../styles/content.css";
 
 import { completeOnboarding } from "./actions";
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 type Mode = "simulation" | "live";
 type RiskProfile = "cautious" | "balanced" | "aggressive";
 
 export default function OnboardingPage() {
   const [step, setStep] = useState<Step>(1);
+  const [name, setName] = useState<string>("");
   const [mode, setMode] = useState<Mode>("simulation");
   const [capital, setCapital] = useState<number>(1000);
   const [riskProfile, setRiskProfile] = useState<RiskProfile>("balanced");
   const [notify, setNotify] = useState<boolean>(true);
 
   const skipCapital = mode === "live";
-  const totalSteps = skipCapital ? 3 : 4;
+  // Step 1 = name, 2 = mode, 3 = capital (skipped in live), 4 = risk, 5 = notify
+  const totalSteps = skipCapital ? 4 : 5;
   const visibleIndex =
-    step === 1 ? 1 : skipCapital ? step - 1 : step;
+    step === 1
+      ? 1
+      : step === 2
+      ? 2
+      : skipCapital && step > 3
+      ? step - 1
+      : step;
   const pad = (n: number) => String(n).padStart(2, "0");
+
+  const canContinueFromName = name.trim().length >= 2;
 
   const next = () =>
     setStep((s) => {
-      if (s === 1 && skipCapital) return 3;
-      return s < 4 ? ((s + 1) as Step) : s;
+      if (s === 2 && skipCapital) return 4;
+      return s < 5 ? ((s + 1) as Step) : s;
     });
   const back = () =>
     setStep((s) => {
-      if (s === 3 && skipCapital) return 1;
+      if (s === 4 && skipCapital) return 2;
       return s > 1 ? ((s - 1) as Step) : s;
     });
 
@@ -45,6 +55,31 @@ export default function OnboardingPage() {
 
       <main className="ob-main">
         {step === 1 && (
+          <section>
+            <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
+            <h1 className="ob-title">What should Delfi call you?</h1>
+            <p className="ob-sub">
+              This is how we'll greet you on the dashboard and in weekly review emails. You can change
+              it later from Settings.
+            </p>
+
+            <div className="ob-form">
+              <label className="ob-field">
+                <span className="ob-field-label">Your name</span>
+                <input
+                  type="text"
+                  className="ob-input"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="First and last name"
+                  autoFocus
+                />
+              </label>
+            </div>
+          </section>
+        )}
+
+        {step === 2 && (
           <section>
             <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">How would you like to start?</h1>
@@ -84,7 +119,7 @@ export default function OnboardingPage() {
           </section>
         )}
 
-        {step === 2 && (
+        {step === 3 && (
           <section>
             <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Paper bankroll</h1>
@@ -122,7 +157,7 @@ export default function OnboardingPage() {
           </section>
         )}
 
-        {step === 3 && (
+        {step === 4 && (
           <section>
             <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Risk profile</h1>
@@ -178,7 +213,7 @@ export default function OnboardingPage() {
           </section>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <section>
             <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Notifications</h1>
@@ -236,13 +271,19 @@ export default function OnboardingPage() {
             )}
           </div>
           <div className="ob-actions-right">
-            {step < 4 ? (
-              <button className="ob-next" onClick={next}>
+            {step < 5 ? (
+              <button
+                className="ob-next"
+                onClick={next}
+                disabled={step === 1 && !canContinueFromName}
+                style={step === 1 && !canContinueFromName ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+              >
                 Continue →
               </button>
             ) : (
               <form action={completeOnboarding} style={{ display: "inline" }}>
-                <button type="submit" className="ob-next">
+                <input type="hidden" name="display_name" value={name.trim()} />
+                <button type="submit" className="ob-next" disabled={!canContinueFromName}>
                   {mode === "live" ? "Connect wallet →" : "Enter dashboard →"}
                 </button>
               </form>
