@@ -2,19 +2,26 @@ import { NextResponse } from "next/server";
 
 const DEFAULT_URL = "http://127.0.0.1:8765";
 
-async function _call(
-  method: "GET" | "POST" | "PUT" | "DELETE",
+type Method = "GET" | "POST" | "PUT" | "DELETE";
+
+export type BotFetchResult<T> =
+  | { ok: true; status: number; data: T }
+  | { ok: false; status: number; error: string };
+
+async function _rawFetch<T>(
+  method: Method,
   path: string,
   search: string,
   body: unknown,
   timeoutMs: number,
-): Promise<NextResponse> {
+): Promise<BotFetchResult<T>> {
   const secret = process.env.BOT_API_SECRET;
   if (!secret) {
-    return NextResponse.json(
-      { error: "BOT_API_SECRET not configured in dashboard/.env.local" },
-      { status: 500 },
-    );
+    return {
+      ok: false,
+      status: 500,
+      error: "BOT_API_SECRET not configured",
+    };
   }
 
   const hasBody = method === "POST" || method === "PUT";
@@ -32,16 +39,52 @@ async function _call(
     if (hasBody) {
       init.body = JSON.stringify(body ?? {});
     }
-    const res  = await fetch(url, init);
-    const data = await res.json().catch(() => ({ error: "invalid JSON from bot" }));
-    return NextResponse.json(data, { status: res.status });
+    const res = await fetch(url, init);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      const msg =
+        (data && typeof data === "object" && "error" in data
+          ? String((data as { error: unknown }).error)
+          : null) ?? `Bot returned ${res.status}`;
+      return { ok: false, status: res.status, error: msg };
+    }
+    return { ok: true, status: res.status, data: data as T };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json(
-      { error: `Bot unreachable: ${msg}` },
-      { status: 502 },
-    );
+    return { ok: false, status: 502, error: `Bot unreachable: ${msg}` };
   }
+}
+
+/** Server-component / server-action data read. Use when you want the
+ *  parsed body, not a NextResponse. */
+export function botGet<T>(
+  path: string,
+  search = "",
+  timeoutMs = 15_000,
+): Promise<BotFetchResult<T>> {
+  return _rawFetch<T>("GET", path, search, undefined, timeoutMs);
+}
+
+export function botPost<T>(
+  path: string,
+  body: unknown,
+  timeoutMs = 30_000,
+): Promise<BotFetchResult<T>> {
+  return _rawFetch<T>("POST", path, "", body, timeoutMs);
+}
+
+async function _call(
+  method: Method,
+  path: string,
+  search: string,
+  body: unknown,
+  timeoutMs: number,
+): Promise<NextResponse> {
+  const result = await _rawFetch<unknown>(method, path, search, body, timeoutMs);
+  if (result.ok) {
+    return NextResponse.json(result.data ?? {}, { status: result.status });
+  }
+  return NextResponse.json({ error: result.error }, { status: result.status });
 }
 
 export function proxyGet(

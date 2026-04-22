@@ -1,83 +1,99 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-type Position = {
-  q: string;
-  side: "YES" | "NO";
-  entry: number;
-  mark: number;
-  size: number;
-  pnl: number;
-  forecastPct: number;
-  closes: string;
+// ---- Shapes coming off the bot API (see apps/bot/bot_api.py) -----------
+
+type Summary = {
+  mode: "simulation" | "live" | string | null;
+  bankroll: number | null;
+  equity: number | null;
+  starting_cash: number | null;
+  open_positions: number | null;
+  open_cost: number | null;
+  settled_total: number | null;
+  settled_wins: number | null;
+  win_rate: number | null;
+  realized_pnl: number | null;
+  brier: number | null;
+  resolved_predictions: number | null;
+  total_predictions: number | null;
+  test_end: string | null;
 };
 
-type Activity = {
+type OpenPosition = {
+  id: number;
+  market_id: string;
+  question: string;
+  category: string | null;
+  side: "YES" | "NO";
+  shares: number;
+  entry_price: number;
+  cost_usd: number;
+  claude_probability: number | null;
+  ev_bps: number | null;
+  confidence: number | null;
+  expected_resolution_at: string | null;
+  created_at: string | null;
+  slug: string | null;
+};
+
+type SettledPosition = {
+  id: number;
+  question: string;
+  side: "YES" | "NO";
+  cost_usd: number;
+  claude_probability: number | null;
+  settlement_outcome: string | null;
+  realized_pnl_usd: number | null;
+  settled_at: string | null;
+};
+
+type PositionsPayload = { open: OpenPosition[]; settled: SettledPosition[] };
+
+type Evaluation = {
+  id: number;
+  evaluated_at: string | null;
+  question: string;
+  category: string | null;
+  market_price_yes: number | null;
+  claude_probability: number | null;
+  confidence: number | null;
+  ev_bps: number | null;
+  recommendation: string | null;
+  slug: string | null;
+};
+
+type EvaluationsPayload = { evaluations: Evaluation[] };
+
+// ---- Fetch helper ------------------------------------------------------
+
+async function getJSON<T>(path: string): Promise<T | null> {
+  try {
+    const r = await fetch(path, { cache: "no-store" });
+    if (!r.ok) return null;
+    return (await r.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+// ---- UI shape adapters --------------------------------------------------
+
+type Tone = "gold" | "muted" | "teal" | "profit";
+type ActivityItem = {
   t: string;
   kind: "execute" | "pass" | "update" | "resolve" | "scan";
   text: string;
   meta: string;
-  tone: "gold" | "muted" | "teal" | "profit";
+  tone: Tone;
 };
 
-type Resolution = { q: string; in: string; you: string; conviction: number };
-
+type ResolutionItem = { q: string; in: string; you: string; conviction: number };
 type RiskItem = { used: number; cap: number; label: string };
 
-const DEMO = {
-  portfolio: {
-    value: 14827.42,
-    deltaDay: 312.8,
-    deltaDayPct: 2.15,
-    deltaWeek: 1204.15,
-    deltaWeekPct: 8.83,
-    startValue: 10000,
-  },
-  equity: [
-    10000, 10120, 10098, 10220, 10310, 10280, 10440, 10510, 10490, 10600, 10780,
-    10840, 10920, 11020, 10990, 11150, 11240, 11190, 11330, 11480, 11560, 11620,
-    11790, 11850, 11940, 12080, 12220, 12310, 12470, 12590, 12680, 12820, 12960,
-    13080, 13210, 13340, 13480, 13600, 13750, 13860, 13990, 14120, 14240, 14380,
-    14510, 14620, 14740, 14820, 14827, 14827.42,
-  ],
-  positions: [
-    { q: "Fed cuts rates by 25bp in December?", side: "YES", entry: 44, mark: 52, size: 420, pnl: 71.4, forecastPct: 78, closes: "18d" },
-    { q: "BTC closes above $120k by Dec 31?", side: "NO", entry: 38, mark: 33, size: 260, pnl: 34.2, forecastPct: 74, closes: "42d" },
-    { q: "GPT-5 released in Q1 2026?", side: "YES", entry: 61, mark: 68, size: 180, pnl: 20.8, forecastPct: 72, closes: "71d" },
-    { q: "US GDP Q4 > 2.5% advance est?", side: "NO", entry: 55, mark: 48, size: 140, pnl: 9.8, forecastPct: 68, closes: "9d" },
-    { q: "Taylor Swift tour extension announced?", side: "YES", entry: 29, mark: 27, size: 80, pnl: -1.6, forecastPct: 66, closes: "5d" },
-  ] as Position[],
-  activity: [
-    { t: "14:02:17", kind: "execute", text: "Opened YES position · Fed rate cut Dec", meta: "$420 · p_win 0.78 · conf 0.81", tone: "gold" },
-    { t: "13:48:42", kind: "pass", text: "Passed on BTC > $115k · p_win below floor", meta: "p_win 0.58 · min 0.65", tone: "muted" },
-    { t: "13:31:09", kind: "update", text: "Updated forecast · GPT-5 Q1 → 0.72", meta: "was 0.68", tone: "teal" },
-    { t: "13:05:50", kind: "resolve", text: "Resolved WIN · CPI above 3.2%", meta: "+$142.80", tone: "profit" },
-    { t: "12:41:22", kind: "scan", text: "Scanned 384 active markets", meta: "12 shortlisted", tone: "muted" },
-    { t: "11:58:03", kind: "execute", text: "Opened NO position · BTC $120k", meta: "$260 · p_win 0.74 · conf 0.72", tone: "gold" },
-    { t: "11:22:17", kind: "pass", text: "Passed on Election odds shift · correlated", meta: "event risk", tone: "muted" },
-  ] as Activity[],
-  resolutions: [
-    { q: "GDP Q4 advance estimate", in: "9d", you: "NO 48%", conviction: 0.72 },
-    { q: "Fed rate cut December", in: "18d", you: "YES 52%", conviction: 0.81 },
-    { q: "CPI December print", in: "22d", you: "—", conviction: 0.0 },
-  ] as Resolution[],
-  risk: {
-    dailyLoss: { used: 142, cap: 500, label: "Daily loss cap" } as RiskItem,
-    drawdown: { used: 3.2, cap: 15, label: "Drawdown" } as RiskItem,
-    exposure: { used: 1080, cap: 3000, label: "Gross exposure" } as RiskItem,
-  },
-  summary: {
-    headline: "A steady week. 6 wins, 2 losses, 1 hold.",
-    body:
-      "Delfi is running slightly hot on tech-release markets and has tightened size there. Rate-path trades carried the week. Calibration on geopolitical tags drifted; next week's tune proposes lowering their size by 12%.",
-    metric: { brier: 0.083, win: 68, trades: 14 },
-  },
-  scanning: { markets: 384, shortlist: 12, topForecast: 78, focus: "Macro · Rates" },
-};
-
-const ACT_ICON: Record<Activity["kind"], string> = {
+const ACT_ICON: Record<ActivityItem["kind"], string> = {
   execute: "◆",
   pass: "–",
   update: "~",
@@ -85,98 +101,299 @@ const ACT_ICON: Record<Activity["kind"], string> = {
   scan: "·",
 };
 
+function fmtTime(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function daysFromNow(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso).getTime();
+  if (Number.isNaN(d)) return "—";
+  const ms = d - Date.now();
+  if (ms <= 0) return "now";
+  const days = Math.round(ms / 86_400_000);
+  if (days === 0) {
+    const hours = Math.max(1, Math.round(ms / 3_600_000));
+    return `${hours}h`;
+  }
+  return `${days}d`;
+}
+
+function evaluationsToActivity(evals: Evaluation[], settled: SettledPosition[]): ActivityItem[] {
+  const fromEvals: ActivityItem[] = evals.slice(0, 8).map((e) => {
+    const rec = (e.recommendation ?? "").toUpperCase();
+    const traded = rec === "YES" || rec === "NO" || rec === "BUY";
+    const kind: ActivityItem["kind"] = traded ? "execute" : "pass";
+    const pWin = e.claude_probability != null ? e.claude_probability.toFixed(2) : "—";
+    const conf = e.confidence != null ? e.confidence.toFixed(2) : "—";
+    const pre = traded ? `Opened ${rec} · ` : "Passed · ";
+    return {
+      t: fmtTime(e.evaluated_at),
+      kind,
+      text: `${pre}${e.question}`,
+      meta: `p_win ${pWin} · conf ${conf}${e.category ? ` · ${e.category}` : ""}`,
+      tone: traded ? "gold" : "muted",
+    };
+  });
+
+  const fromSettled: ActivityItem[] = settled.slice(0, 4).map((s) => {
+    const pnl = s.realized_pnl_usd ?? 0;
+    const win = pnl >= 0;
+    return {
+      t: fmtTime(s.settled_at),
+      kind: "resolve",
+      text: `Resolved ${win ? "WIN" : "LOSS"} · ${s.question}`,
+      meta: `${win ? "+" : ""}$${pnl.toFixed(2)}`,
+      tone: win ? "profit" : "muted",
+    };
+  });
+
+  return [...fromEvals, ...fromSettled]
+    .sort((a, b) => (a.t < b.t ? 1 : -1))
+    .slice(0, 10);
+}
+
+function openToResolutions(open: OpenPosition[]): ResolutionItem[] {
+  return open
+    .filter((p) => p.expected_resolution_at)
+    .sort((a, b) => {
+      const ta = new Date(a.expected_resolution_at!).getTime();
+      const tb = new Date(b.expected_resolution_at!).getTime();
+      return ta - tb;
+    })
+    .slice(0, 4)
+    .map((p) => {
+      const pct =
+        p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+      return {
+        q: p.question,
+        in: daysFromNow(p.expected_resolution_at),
+        you: pct != null ? `${p.side} ${pct}%` : p.side,
+        conviction: p.confidence ?? 0,
+      };
+    });
+}
+
+function buildRisk(summary: Summary, open: OpenPosition[]): {
+  dailyLoss: RiskItem;
+  drawdown: RiskItem;
+  exposure: RiskItem;
+} {
+  const bankroll = summary.bankroll ?? summary.starting_cash ?? 0;
+  const starting = summary.starting_cash ?? bankroll ?? 0;
+  const exposure = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
+
+  const ddPct = starting > 0 ? Math.max(0, ((starting - bankroll) / starting) * 100) : 0;
+  const dailyLoss = Math.max(0, -(summary.realized_pnl ?? 0));
+  const dailyCap = starting * 0.1;
+
+  return {
+    dailyLoss: { used: Math.round(dailyLoss), cap: Math.round(dailyCap), label: "Daily loss cap" },
+    drawdown:  { used: +ddPct.toFixed(1), cap: 40, label: "Drawdown" },
+    exposure:  { used: Math.round(exposure), cap: Math.round(starting || 1), label: "Gross exposure" },
+  };
+}
+
+// ---- The page ----------------------------------------------------------
+
 export default function DashboardPage() {
+  const [summary, setSummary]       = useState<Summary | null>(null);
+  const [positions, setPositions]   = useState<PositionsPayload | null>(null);
+  const [evaluations, setEvals]     = useState<EvaluationsPayload | null>(null);
+  const [loaded, setLoaded]         = useState(false);
+  const [error, setError]           = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const [s, p, e] = await Promise.all([
+        getJSON<Summary>("/api/summary"),
+        getJSON<PositionsPayload>("/api/positions"),
+        getJSON<EvaluationsPayload>("/api/evaluations?limit=20"),
+      ]);
+      if (cancelled) return;
+      setSummary(s);
+      setPositions(p);
+      setEvals(e);
+      setLoaded(true);
+      if (!s && !p && !e) setError("Bot API unreachable");
+      else setError(null);
+    };
+    load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  const open     = positions?.open ?? [];
+  const settled  = positions?.settled ?? [];
+  const evals    = evaluations?.evaluations ?? [];
+  const activity = useMemo(() => evaluationsToActivity(evals, settled), [evals, settled]);
+  const resolving = useMemo(() => openToResolutions(open), [open]);
+  const risk      = useMemo(() => buildRisk(summary ?? ({} as Summary), open), [summary, open]);
+
+  const mode     = summary?.mode ?? "simulation";
+  const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
+  const starting = summary?.starting_cash ?? 0;
+  const pnl      = summary?.realized_pnl ?? 0;
+  const pnlPct   = starting > 0 ? (pnl / starting) * 100 : 0;
+
   return (
     <div className="dash">
-      <DashHero />
-      <DashStatus />
+      <DashHero
+        mode={mode}
+        bankroll={bankroll}
+        starting={starting}
+        realizedPnl={pnl}
+        realizedPct={pnlPct}
+      />
+      <DashStatus
+        openCount={summary?.open_positions ?? open.length}
+        settled={summary?.settled_total ?? 0}
+        brier={summary?.brier ?? null}
+        error={error}
+        loaded={loaded}
+      />
 
       <div className="dash-grid">
         <section className="dash-card card-positions">
           <CardHead
             title="Open positions"
-            meta={`${DEMO.positions.length} active`}
+            meta={`${open.length} active`}
             href="/dashboard/positions"
           />
-          <PositionsTable positions={DEMO.positions} />
+          {open.length === 0 ? (
+            <Empty label={loaded ? "No open positions yet." : "Loading..."} />
+          ) : (
+            <PositionsTable positions={open.slice(0, 5)} />
+          )}
         </section>
 
         <section className="dash-card card-activity">
           <CardHead title="Today" meta="Live feed" href="/dashboard/activity" live />
-          <ActivityFeed items={DEMO.activity} />
+          {activity.length === 0 ? (
+            <Empty label={loaded ? "No activity yet — Delfi is scanning." : "Loading..."} />
+          ) : (
+            <ActivityFeed items={activity} />
+          )}
         </section>
 
         <section className="dash-card card-risk">
           <CardHead title="Risk today" meta="Delfi's guardrails" href="/dashboard/risk" />
-          <RiskGauges risk={DEMO.risk} />
+          <RiskGauges risk={risk} />
         </section>
 
         <section className="dash-card card-upcoming">
           <CardHead title="Resolving soon" meta="Next 30 days" />
-          <UpcomingList items={DEMO.resolutions} />
+          {resolving.length === 0 ? (
+            <Empty label={loaded ? "No positions resolving soon." : "Loading..."} />
+          ) : (
+            <UpcomingList items={resolving} />
+          )}
         </section>
 
         <section className="dash-card card-summary">
-          <CardHead title="This week" meta="AI weekly summary" href="/dashboard/performance" />
-          <SummaryCard s={DEMO.summary} />
+          <CardHead title="This week" meta="Performance snapshot" href="/dashboard/performance" />
+          <SummaryCard
+            brier={summary?.brier ?? null}
+            winRate={summary?.win_rate ?? null}
+            settled={summary?.settled_total ?? 0}
+          />
         </section>
       </div>
     </div>
   );
 }
 
-function DashHero() {
-  const p = DEMO.portfolio;
+function DashHero({
+  mode,
+  bankroll,
+  starting,
+  realizedPnl,
+  realizedPct,
+}: {
+  mode: string;
+  bankroll: number;
+  starting: number;
+  realizedPnl: number;
+  realizedPct: number;
+}) {
+  const isSim   = mode === "simulation";
+  const pnlSign = realizedPnl >= 0 ? "+" : "";
   return (
     <section className="dash-hero">
       <div className="hero-balance">
         <div className="hero-balance-head">
-          <div className="hero-balance-label">Simulation balance</div>
-          <div className="hero-balance-mode sim">Paper</div>
+          <div className="hero-balance-label">
+            {isSim ? "Simulation balance" : "Live balance"}
+          </div>
+          <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
+            {isSim ? "Paper" : "Live"}
+          </div>
         </div>
         <div className="hero-balance-value t-num">
           <span className="hero-balance-cur">$</span>
-          {p.value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </div>
         <div className="hero-deltas">
           <div className="hero-delta">
-            <div className="hero-delta-label">Today</div>
-            <div className="hero-delta-val profit t-num">
-              +${p.deltaDay.toFixed(2)} <span className="hero-delta-pct">+{p.deltaDayPct}%</span>
-            </div>
-          </div>
-          <div className="hero-delta-div"></div>
-          <div className="hero-delta">
-            <div className="hero-delta-label">Since start</div>
-            <div className="hero-delta-val profit t-num">
-              +${p.deltaWeek.toFixed(2)} <span className="hero-delta-pct">+{p.deltaWeekPct}%</span>
+            <div className="hero-delta-label">Realized P&amp;L</div>
+            <div className={`hero-delta-val t-num ${realizedPnl >= 0 ? "profit" : ""}`}>
+              {pnlSign}${Math.abs(realizedPnl).toFixed(2)}{" "}
+              <span className="hero-delta-pct">
+                {pnlSign}{realizedPct.toFixed(2)}%
+              </span>
             </div>
           </div>
           <div className="hero-delta-div"></div>
           <div className="hero-delta">
             <div className="hero-delta-label">Started at</div>
-            <div className="hero-delta-val t-num">${p.startValue.toLocaleString()}</div>
+            <div className="hero-delta-val t-num">
+              ${starting.toLocaleString("en-US", { minimumFractionDigits: 0 })}
+            </div>
           </div>
         </div>
       </div>
 
       <div className="hero-chart">
         <div className="hero-chart-head">
-          <div className="hero-chart-label">Equity · 50 days</div>
+          <div className="hero-chart-label">Equity history</div>
           <div className="hero-chart-tabs">
-            <button className="chart-tab">7D</button>
-            <button className="chart-tab">30D</button>
-            <button className="chart-tab on">All</button>
+            <span className="chart-tab on">Coming soon</span>
           </div>
         </div>
-        <EquityChart data={DEMO.equity} />
+        <div className="hero-chart-placeholder">
+          Equity time series wiring pending — daily snapshots will appear here
+          as the bot records performance_snapshots.
+        </div>
       </div>
     </section>
   );
 }
 
-function DashStatus() {
-  const s = DEMO.scanning;
+function DashStatus({
+  openCount,
+  settled,
+  brier,
+  error,
+  loaded,
+}: {
+  openCount: number;
+  settled: number;
+  brier: number | null;
+  error: string | null;
+  loaded: boolean;
+}) {
+  const sub = error
+    ? error
+    : !loaded
+    ? "Connecting to bot..."
+    : `${openCount} open · ${settled} settled${brier != null ? ` · Brier ${brier.toFixed(3)}` : ""}`;
   return (
     <section className="dash-status">
       <div className="status-left">
@@ -185,15 +402,13 @@ function DashStatus() {
           <span className="status-ping-core"></span>
         </div>
         <div className="status-body">
-          <div className="status-title">Delfi is scanning</div>
-          <div className="status-sub">
-            {s.markets} active markets · {s.shortlist} shortlisted · top p_win {(s.topForecast / 100).toFixed(2)} · focus{" "}
-            {s.focus}
+          <div className="status-title">
+            {error ? "Delfi is offline" : "Delfi is trading"}
           </div>
+          <div className="status-sub">{sub}</div>
         </div>
       </div>
       <div className="status-actions">
-        <button className="btn-ghost sm">Pause agent</button>
         <Link className="btn-ghost sm" href="/dashboard/risk">
           Adjust risk →
         </Link>
@@ -233,38 +448,38 @@ function CardHead({
   );
 }
 
-function PositionsTable({ positions }: { positions: Position[] }) {
+function PositionsTable({ positions }: { positions: OpenPosition[] }) {
   return (
     <div className="pos-table">
       <div className="pos-row head">
         <div>Market</div>
         <div>Side</div>
-        <div>Entry / Mark</div>
+        <div>Entry</div>
         <div>Size</div>
-        <div>P&amp;L</div>
+        <div>p_win</div>
         <div>Closes</div>
       </div>
-      {positions.map((p, i) => (
-        <div className="pos-row" key={i}>
-          <div className="pos-q">{p.q}</div>
-          <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-          <div className="pos-num t-num">
-            <span className="pos-entry">{p.entry}¢</span>
-            <span className="pos-arrow">→</span>
-            <span className="pos-mark">{p.mark}¢</span>
+      {positions.map((p) => {
+        const entryCents = Math.round(p.entry_price * 100);
+        const pWin = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+        return (
+          <div className="pos-row" key={p.id}>
+            <div className="pos-q">{p.question}</div>
+            <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
+            <div className="pos-num t-num">
+              <span className="pos-entry">{entryCents}¢</span>
+            </div>
+            <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
+            <div className="pos-num t-num">{pWin != null ? `${pWin}%` : "—"}</div>
+            <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>
           </div>
-          <div className="pos-num t-num">${p.size}</div>
-          <div className={`pos-pnl t-num ${p.pnl >= 0 ? "up" : "down"}`}>
-            {p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)}
-          </div>
-          <div className="pos-closes t-num">{p.closes}</div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function ActivityFeed({ items }: { items: Activity[] }) {
+function ActivityFeed({ items }: { items: ActivityItem[] }) {
   return (
     <ul className="act-list">
       {items.map((a, i) => (
@@ -281,29 +496,34 @@ function ActivityFeed({ items }: { items: Activity[] }) {
   );
 }
 
-function RiskGauges({ risk }: { risk: typeof DEMO.risk }) {
-  const items = [
-    { key: "dailyLoss", unit: "$", ...risk.dailyLoss },
-    { key: "drawdown", unit: "%", ...risk.drawdown },
-    { key: "exposure", unit: "$", ...risk.exposure },
+function RiskGauges({
+  risk,
+}: {
+  risk: { dailyLoss: RiskItem; drawdown: RiskItem; exposure: RiskItem };
+}) {
+  const items: { key: string; unit: "$" | "%"; item: RiskItem }[] = [
+    { key: "dailyLoss", unit: "$", item: risk.dailyLoss },
+    { key: "drawdown",  unit: "%", item: risk.drawdown  },
+    { key: "exposure",  unit: "$", item: risk.exposure  },
   ];
   return (
     <div className="risk-list">
-      {items.map((r) => {
-        const pct = Math.min(100, (r.used / r.cap) * 100);
+      {items.map(({ key, unit, item }) => {
+        const cap = item.cap || 1;
+        const pct = Math.min(100, (item.used / cap) * 100);
         const tone = pct > 75 ? "hot" : pct > 50 ? "warm" : "ok";
         return (
-          <div className="risk-row" key={r.key}>
+          <div className="risk-row" key={key}>
             <div className="risk-top">
-              <span className="risk-label">{r.label}</span>
+              <span className="risk-label">{item.label}</span>
               <span className={`risk-val t-num tone-${tone}`}>
-                {r.unit === "$" ? "$" : ""}
-                {r.used.toLocaleString()}
-                {r.unit === "%" ? "%" : ""}
+                {unit === "$" ? "$" : ""}
+                {item.used.toLocaleString()}
+                {unit === "%" ? "%" : ""}
                 <span className="risk-of">
-                  &nbsp;/ {r.unit === "$" ? "$" : ""}
-                  {r.cap.toLocaleString()}
-                  {r.unit === "%" ? "%" : ""}
+                  &nbsp;/ {unit === "$" ? "$" : ""}
+                  {item.cap.toLocaleString()}
+                  {unit === "%" ? "%" : ""}
                 </span>
               </span>
             </div>
@@ -317,7 +537,7 @@ function RiskGauges({ risk }: { risk: typeof DEMO.risk }) {
   );
 }
 
-function UpcomingList({ items }: { items: Resolution[] }) {
+function UpcomingList({ items }: { items: ResolutionItem[] }) {
   return (
     <ul className="up-list">
       {items.map((r, i) => (
@@ -341,22 +561,40 @@ function UpcomingList({ items }: { items: Resolution[] }) {
   );
 }
 
-function SummaryCard({ s }: { s: typeof DEMO.summary }) {
+function SummaryCard({
+  brier,
+  winRate,
+  settled,
+}: {
+  brier: number | null;
+  winRate: number | null;
+  settled: number;
+}) {
+  const headline =
+    settled === 0
+      ? "No settled trades yet."
+      : `${settled} trades settled${winRate != null ? ` · ${Math.round(winRate * 100)}% win rate` : ""}.`;
+  const body =
+    settled === 0
+      ? "Delfi is scanning markets and will begin opening positions when forecasts meet the minimum confidence gate. Your performance snapshot will fill in here as trades settle."
+      : "Live performance measured across all settled markets. See the Performance page for category breakdowns, calibration, and Brier trend.";
   return (
     <div className="sum">
-      <div className="sum-head">{s.headline}</div>
-      <p className="sum-body">{s.body}</p>
+      <div className="sum-head">{headline}</div>
+      <p className="sum-body">{body}</p>
       <div className="sum-stats">
         <div className="sum-stat">
-          <div className="sum-stat-num t-num">{s.metric.brier}</div>
-          <div className="sum-stat-label">30-day Brier</div>
+          <div className="sum-stat-num t-num">{brier != null ? brier.toFixed(3) : "—"}</div>
+          <div className="sum-stat-label">Brier score</div>
         </div>
         <div className="sum-stat">
-          <div className="sum-stat-num t-num">{s.metric.win}%</div>
+          <div className="sum-stat-num t-num">
+            {winRate != null ? `${Math.round(winRate * 100)}%` : "—"}
+          </div>
           <div className="sum-stat-label">Win rate</div>
         </div>
         <div className="sum-stat">
-          <div className="sum-stat-num t-num">{s.metric.trades}</div>
+          <div className="sum-stat-num t-num">{settled}</div>
           <div className="sum-stat-label">Trades</div>
         </div>
       </div>
@@ -364,52 +602,6 @@ function SummaryCard({ s }: { s: typeof DEMO.summary }) {
   );
 }
 
-function EquityChart({ data }: { data: number[] }) {
-  const w = 640,
-    h = 180,
-    pad = 4;
-  const min = Math.min(...data),
-    max = Math.max(...data);
-  const range = max - min || 1;
-  const step = (w - pad * 2) / (data.length - 1);
-  const points = data.map((v, i) => {
-    const x = pad + i * step;
-    const y = pad + (h - pad * 2) * (1 - (v - min) / range);
-    return [x, y] as const;
-  });
-  const line = points
-    .map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1))
-    .join(" ");
-  const area =
-    line +
-    ` L ${points[points.length - 1][0].toFixed(1)} ${h - pad} L ${points[0][0].toFixed(1)} ${
-      h - pad
-    } Z`;
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="eq-svg" preserveAspectRatio="none">
-      <defs>
-        <linearGradient id="eq-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--gold)" stopOpacity="0.35" />
-          <stop offset="100%" stopColor="var(--gold)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill="url(#eq-fill)" />
-      <path
-        d={line}
-        fill="none"
-        stroke="var(--gold)"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-      <circle cx={points[points.length - 1][0]} cy={points[points.length - 1][1]} r="4" fill="var(--gold)" />
-      <circle
-        cx={points[points.length - 1][0]}
-        cy={points[points.length - 1][1]}
-        r="8"
-        fill="var(--gold)"
-        opacity="0.2"
-      />
-    </svg>
-  );
+function Empty({ label }: { label: string }) {
+  return <div className="dash-empty-inline">{label}</div>;
 }
