@@ -14,7 +14,7 @@ startCommand = "python main.py"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
 healthcheckPath = "/api/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 300
 
 # Single long-running worker — the bot is a stateful scheduler, not a
 # horizontally scalable service. Do not scale replicas > 1.
