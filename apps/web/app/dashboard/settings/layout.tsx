@@ -6,9 +6,7 @@ import "../../styles/content.css";
 
 const TABS = [
   { id: "account", label: "Account", href: "/dashboard/settings/account" },
-  { id: "billing", label: "Billing", href: "/dashboard/settings/billing" },
   { id: "notifications", label: "Notifications", href: "/dashboard/settings/notifications" },
-  { id: "security", label: "Security", href: "/dashboard/settings/security" },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {

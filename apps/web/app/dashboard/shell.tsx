@@ -43,9 +43,7 @@ const NAV: NavItem[] = [
     match: /^\/dashboard\/settings/,
     sub: [
       { id: "account", label: "Account", href: "/dashboard/settings/account" },
-      { id: "billing", label: "Billing", href: "/dashboard/settings/billing" },
       { id: "notifications", label: "Notifications", href: "/dashboard/settings/notifications" },
-      { id: "security", label: "Security", href: "/dashboard/settings/security" },
     ],
   },
   { id: "support", label: "Support", icon: "life", href: "/dashboard/support", match: /^\/dashboard\/support/ },
