@@ -1,9 +1,18 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useActionState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
+import {
+  signIn,
+  signUp,
+  requestPasswordReset,
+  signInWithGoogle,
+  type AuthState,
+} from "./actions";
 import "../styles/auth.css";
+
+const INITIAL: AuthState = {};
 
 type Mode = "login" | "signup" | "forgot" | "sent";
 const MODES: Mode[] = ["login", "signup", "forgot", "sent"];
@@ -31,7 +40,7 @@ export default function AuthPage() {
     }
   };
 
-  const tweaks = { showGoogle: true, showWallet: true, showReferral: true, oracleBackdrop: true };
+  const tweaks = { showGoogle: true, showReferral: true, oracleBackdrop: true };
 
   return (
     <div className="auth-page" data-screen-label="Auth">
@@ -125,10 +134,13 @@ function AuthContext({ mode }: { mode: Mode }) {
   );
 }
 
-type Tweaks = { showGoogle: boolean; showWallet: boolean; showReferral: boolean; oracleBackdrop: boolean };
+type Tweaks = { showGoogle: boolean; showReferral: boolean; oracleBackdrop: boolean };
 
 function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) => void; tweaks: Tweaks }) {
-  const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectTo = searchParams.get("redirect") ?? "/dashboard";
+  const urlError = searchParams.get("error");
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [referral, setReferral] = useState("");
@@ -141,17 +153,20 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
   const isSent = mode === "sent";
   const canSubmit = !!email && !!password && (!isSignup || (tosOk && riskOk));
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!canSubmit) return;
-    router.push(isSignup ? "/onboarding" : "/dashboard");
-  };
+  const [signInState, signInAction, signInPending] = useActionState(signIn, INITIAL);
+  const [signUpState, signUpAction, signUpPending] = useActionState(signUp, INITIAL);
+  const [resetState, resetAction, resetPending] = useActionState(requestPasswordReset, INITIAL);
 
-  const submitForgot = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email) return;
-    setMode("sent");
-  };
+  useEffect(() => {
+    if (resetState.ok) setMode("sent");
+  }, [resetState.ok, setMode]);
+
+  const pending = signInPending || signUpPending;
+  const submitError =
+    urlError ??
+    (isSignup ? signUpState.error : signInState.error) ??
+    null;
+  const forgotError = resetState.error ?? null;
 
   if (isForgot || isSent) {
     return (
@@ -194,7 +209,7 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
               </button>
 
               <p className="auth-switch">
-                Didn&apos;t get it? <a href="#" onClick={(e) => { e.preventDefault(); setMode("forgot"); }}>Try again</a> or <a href="#" onClick={(e) => { e.preventDefault(); setMode("sent"); }}>resend</a>.
+                Didn&apos;t get it? <a href="#" onClick={(e) => { e.preventDefault(); setMode("forgot"); }}>Try again</a>.
               </p>
 
               <ul className="auth-help-list">
@@ -204,10 +219,11 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
               </ul>
             </div>
           ) : (
-            <form onSubmit={submitForgot} className="auth-form" noValidate>
+            <form action={resetAction} className="auth-form" noValidate>
               <Field label="Email" htmlFor="auth-forgot-email">
                 <input
                   id="auth-forgot-email"
+                  name="email"
                   type="email"
                   autoComplete="email"
                   placeholder="you@domain.com"
@@ -218,8 +234,10 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
                 />
               </Field>
 
-              <button type="submit" className="auth-submit" disabled={!email}>
-                Send reset link
+              {forgotError && <div className="auth-error" role="alert">{forgotError}</div>}
+
+              <button type="submit" className="auth-submit" disabled={!email || resetPending}>
+                {resetPending ? "Sending…" : "Send reset link"}
               </button>
 
               <p className="auth-switch">
@@ -262,27 +280,18 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
           </p>
         </div>
 
-        {(tweaks.showGoogle || tweaks.showWallet) && (
+        {tweaks.showGoogle && (
           <>
             <div className="auth-oauth">
-              {tweaks.showGoogle && (
-                <button type="button" className="auth-oauth-btn">
+              <form action={signInWithGoogle} style={{ width: "100%" }}>
+                <input type="hidden" name="redirect" value={redirectTo} />
+                <button type="submit" className="auth-oauth-btn">
                   <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                     <path fill="#EA4335" d="M12 10.2v3.9h5.5c-.24 1.4-1.7 4.1-5.5 4.1-3.3 0-6-2.7-6-6.2S8.7 5.8 12 5.8c1.9 0 3.1.8 3.9 1.5l2.7-2.6C16.9 3.2 14.7 2.3 12 2.3c-5.5 0-10 4.5-10 10s4.5 10 10 10c5.8 0 9.6-4.1 9.6-9.8 0-.7-.1-1.2-.2-1.7H12z" />
                   </svg>
                   <span>Continue with Google</span>
                 </button>
-              )}
-              {tweaks.showWallet && (
-                <button type="button" className="auth-oauth-btn">
-                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6">
-                    <rect x="3" y="6" width="18" height="13" rx="2" />
-                    <path d="M16 13h2" />
-                    <path d="M3 9h14a2 2 0 0 1 2 2v0" />
-                  </svg>
-                  <span>Connect wallet</span>
-                </button>
-              )}
+              </form>
             </div>
             <div className="auth-divider">
               <span>or continue with email</span>
@@ -290,10 +299,16 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
           </>
         )}
 
-        <form onSubmit={submit} className="auth-form" noValidate>
+        <form
+          action={isSignup ? signUpAction : signInAction}
+          className="auth-form"
+          noValidate
+        >
+          <input type="hidden" name="redirect" value={redirectTo} />
           <Field label="Email" htmlFor="auth-email">
             <input
               id="auth-email"
+              name="email"
               type="email"
               autoComplete="email"
               placeholder="you@domain.com"
@@ -313,6 +328,7 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
             <div className="auth-pw">
               <input
                 id="auth-password"
+                name="password"
                 type={showPw ? "text" : "password"}
                 autoComplete={isSignup ? "new-password" : "current-password"}
                 placeholder={isSignup ? "At least 8 characters" : "••••••••"}
@@ -334,6 +350,7 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
             <Field label="Referral or promo code" htmlFor="auth-ref" optional>
               <input
                 id="auth-ref"
+                name="referral"
                 type="text"
                 placeholder="Optional"
                 value={referral}
@@ -348,21 +365,28 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
                 <input type="checkbox" checked={tosOk} onChange={(e) => setTosOk(e.target.checked)} required />
                 <span className="auth-check-box" aria-hidden="true"></span>
                 <span className="auth-check-text">
-                  I agree to Delfi&apos;s <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
+                  I agree to Delfi&apos;s <Link href="/legal/terms">Terms of Service</Link> and <Link href="/legal/privacy">Privacy Policy</Link>.
                 </span>
               </label>
               <label className="auth-check">
                 <input type="checkbox" checked={riskOk} onChange={(e) => setRiskOk(e.target.checked)} required />
                 <span className="auth-check-box" aria-hidden="true"></span>
                 <span className="auth-check-text">
-                  I understand that prediction market trading involves real financial risk, and I&apos;ve reviewed the <a href="#">Risk Disclosure</a>.
+                  I understand that prediction market trading involves real financial risk, and I&apos;ve reviewed the <Link href="/legal/risk">Risk Disclosure</Link>.
                 </span>
               </label>
             </div>
           )}
 
-          <button type="submit" className="auth-submit" disabled={!canSubmit}>
-            {isSignup ? "Create account" : "Sign in"}
+          {submitError && <div className="auth-error" role="alert">{submitError}</div>}
+          {isSignup && signUpState.ok && !submitError && (
+            <div className="auth-notice" role="status">
+              Check your email for a confirmation link before signing in.
+            </div>
+          )}
+
+          <button type="submit" className="auth-submit" disabled={!canSubmit || pending}>
+            {pending ? (isSignup ? "Creating account…" : "Signing in…") : isSignup ? "Create account" : "Sign in"}
           </button>
 
           <p className="auth-switch">

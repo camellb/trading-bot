@@ -8,6 +8,8 @@
     "start": "next start"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.10.2",
+    "@supabase/supabase-js": "^2.104.0",
     "@vercel/speed-insights": "^2.0.0",
     "date-fns": "^4.1.0",
     "lightweight-charts": "^5.1.0",

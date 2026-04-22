@@ -341,6 +341,84 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
     return get_user_config(user_id)
 
 
+# ── Telegram creds ──────────────────────────────────────────────────────────
+# Opt-in, per-user Telegram delivery. Both columns nullable — either unset
+# means the notifier silently no-ops for that user. Stored on user_config
+# rather than a sidecar table so the dashboard can write with the same
+# RLS policies already in place.
+def get_user_telegram_creds(user_id: str) -> Optional[Tuple[str, str]]:
+    """
+    Return (token, chat_id) if the user has both configured, else None.
+    DB errors also return None so the notifier can no-op cleanly.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT telegram_bot_token, telegram_chat_id "
+                "FROM user_config WHERE user_id = :uid"
+            ), {"uid": user_id}).fetchone()
+        if row is None:
+            return None
+        token = (row[0] or "").strip()
+        chat_id = (row[1] or "").strip()
+        if not token or not chat_id:
+            return None
+        return token, chat_id
+    except Exception as exc:
+        print(f"[user_config] get_user_telegram_creds({user_id}) failed: {exc}",
+              file=sys.stderr)
+        return None
+
+
+def set_user_telegram_creds(user_id: str,
+                             bot_token: Optional[str],
+                             chat_id:   Optional[str]) -> None:
+    """
+    Write telegram credentials for a user. Pass None (or empty) for either
+    value to clear it — the getter requires both to be non-empty.
+    Auto-creates the user_config row if it doesn't exist.
+    """
+    tok = (bot_token or "").strip() or None
+    cid = (chat_id   or "").strip() or None
+    from sqlalchemy import text
+    from db.engine import get_engine
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO user_config (user_id) VALUES (:uid) "
+            "ON CONFLICT (user_id) DO NOTHING"
+        ), {"uid": user_id})
+        conn.execute(text(
+            "UPDATE user_config "
+            "SET telegram_bot_token = :tok, "
+            "    telegram_chat_id   = :cid, "
+            "    updated_at         = NOW() "
+            "WHERE user_id = :uid"
+        ), {"tok": tok, "cid": cid, "uid": user_id})
+
+
+def list_users_with_telegram() -> list[str]:
+    """
+    Return every user_id that has both bot_token and chat_id configured.
+    Used for cron broadcasts (daily/weekly summary, startup notifications).
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT user_id FROM user_config "
+                "WHERE COALESCE(telegram_bot_token, '') <> '' "
+                "  AND COALESCE(telegram_chat_id,   '') <> ''"
+            )).fetchall()
+        return [str(r[0]) for r in rows]
+    except Exception as exc:
+        print(f"[user_config] list_users_with_telegram failed: {exc}",
+              file=sys.stderr)
+        return []
+
+
 # ── Legacy alias ────────────────────────────────────────────────────────────
 def get_default_user_config() -> UserConfig:
     """

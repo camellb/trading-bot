@@ -340,6 +340,12 @@ user_config = Table(
     Column("cost_assumption_override", Float, nullable=True),
     Column("archetype_skip_list",      Text,  nullable=True),   # CSV
 
+    # Per-user Telegram bot credentials. Opt-in: NULL on either column means
+    # the notifier silently no-ops for that user. Every tenant brings their
+    # own bot (via @BotFather) and chat_id.
+    Column("telegram_bot_token", Text, nullable=True),
+    Column("telegram_chat_id",   Text, nullable=True),
+
     Column("created_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True),
@@ -452,6 +458,8 @@ def create_all_tables() -> None:
             "ADD COLUMN IF NOT EXISTS min_p_win                      DOUBLE PRECISION NOT NULL DEFAULT 0.50",
             "ADD COLUMN IF NOT EXISTS confidence_full_stake          DOUBLE PRECISION NOT NULL DEFAULT 0.70",
             "ADD COLUMN IF NOT EXISTS confidence_override_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.75",
+            "ADD COLUMN IF NOT EXISTS telegram_bot_token              TEXT",
+            "ADD COLUMN IF NOT EXISTS telegram_chat_id                TEXT",
             "DROP COLUMN IF EXISTS confidence_skip_floor",
             "DROP COLUMN IF EXISTS min_ev_threshold",
             "DROP COLUMN IF EXISTS probability_cap",

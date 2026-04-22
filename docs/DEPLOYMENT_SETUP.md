@@ -151,10 +151,12 @@ shown as `...` — paste the real values from your password manager or from
 | `BOT_API_SECRET` | the value from prereq #2 | generated |
 | `PM_MODE` | `simulation` | start in simulation |
 | `LOG_LEVEL` | `INFO` | |
-| `TELEGRAM_BOT_TOKEN` | optional | |
-| `TELEGRAM_CHAT_ID` | optional | |
 | `CRYPTOPANIC_API_KEY` | optional | |
 | `NEWSAPI_KEY` | optional | |
+
+Telegram alerts are configured per-user from the dashboard (stored in
+`user_config.telegram_bot_token` and `user_config.telegram_chat_id`). No
+Railway env vars are required for Telegram.
 
 Polymarket live trading keys (`POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`,
 `PROXY_ADDRESS`, `PRIVATE_KEY`) are only needed when you flip `PM_MODE=live`.

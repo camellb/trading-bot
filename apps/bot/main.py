@@ -29,7 +29,8 @@ Side services:
     TelegramNotifier poll thread for /status /scan /resolve /confirm-config
 
 Fatal-at-import-time: .env must provide DATABASE_URL, ANTHROPIC_API_KEY,
-BOT_API_SECRET. TELEGRAM_* is optional.
+BOT_API_SECRET. Telegram credentials are per-user (user_config table),
+configured from the dashboard — no process-global env vars required.
 """
 
 # load_dotenv() must run before any module that reads os.getenv() at import.
@@ -60,7 +61,7 @@ from feeds.telegram_notifier   import notifier
 from feeds                     import telegram_messages as tm
 from execution.pm_executor     import PMExecutor
 from engine.pm_analyst         import PMAnalyst
-from engine.user_config        import ensure_default_user_config
+from engine.user_config        import DEFAULT_USER_ID, ensure_default_user_config
 from bot_api                   import BotAPI
 from polymarket_runner         import scan_and_analyze, resolve_positions
 from engine.markout_tracker    import check_markouts
@@ -104,7 +105,7 @@ async def main() -> None:
     await macro_calendar.start()
 
     analyst   = PMAnalyst(executor=executor, notifier=notifier,
-                          news_feed=news_feed)
+                          news_feed=news_feed, user_id=DEFAULT_USER_ID)
 
     # ── Wire notifier references used by /status and scheduled summaries ─────
     notifier._loop            = asyncio.get_running_loop()
@@ -113,9 +114,10 @@ async def main() -> None:
     notifier._executor        = executor
     notifier._analyst         = analyst
 
-    # Telegram polling thread for commands (/status /scan /resolve /help etc.).
+    # Telegram polling threads for commands (/status /pause /resume /help etc.).
+    # One thread per user with configured credentials; no creds → no poller.
     # Config-change suggestions and tuning proposals now live on the dashboard.
-    notifier.start_polling()
+    notifier.start_polling_for_all()
 
     # ── HTTP API (dashboard) ────────────────────────────────────────────────
     bot_api = BotAPI(analyst=analyst, executor=executor, notifier=notifier)
@@ -242,7 +244,7 @@ async def main() -> None:
             if gap > max_gap and job_name not in _watchdog_alerted:
                 _watchdog_alerted.add(job_name)
                 mins = int(gap.total_seconds() / 60)
-                await notifier.notify_error(
+                await notifier.broadcast_error(
                     "watchdog",
                     f"Job '{job_name}' has not completed in {mins}min "
                     f"(threshold: {int(max_gap.total_seconds()/60)}min)"
@@ -280,7 +282,7 @@ async def main() -> None:
     def _handle_signal(sig, _frame):
         sig_name = signal.Signals(sig).name
         print(f"[main] Received {sig_name} — shutting down gracefully", flush=True)
-        notifier.send_sync(tm.restart_planned())
+        notifier.broadcast_restart_sync(tm.restart_planned())
         shutdown_event.set()
 
     loop = asyncio.get_running_loop()
@@ -290,7 +292,7 @@ async def main() -> None:
     # ── Tasks ───────────────────────────────────────────────────────────────
     async def _startup_notification() -> None:
         await asyncio.sleep(20)
-        await notifier.notify_startup()
+        await notifier.broadcast_startup()
 
     async def _shutdown_waiter() -> None:
         await shutdown_event.wait()
@@ -337,7 +339,7 @@ if __name__ == "__main__":
         tb = traceback.format_exc()
         print(f"[main] FATAL CRASH:\n{tb}", file=sys.stderr, flush=True)
         try:
-            notifier.send_sync(tm.restart_crash())
+            notifier.broadcast_restart_sync(tm.restart_crash())
         except Exception:
             pass
         sys.exit(1)

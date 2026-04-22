@@ -114,11 +114,12 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None, exe
         outcome = "YES" if yes_won else "NO"
         if executor.settle_position(p["id"], outcome):
             result["positions_settled"] += 1
-            if notifier and hasattr(notifier, "notify_settlement"):
+            if notifier and hasattr(notifier, "notify_settlement") and p.get("user_id"):
                 side = p.get("side", "?")
                 pnl = (1.0 if outcome == side else 0.0) * p["shares"] - p["cost_usd"]
                 try:
                     await notifier.notify_settlement(
+                        user_id=p["user_id"],
                         position_id=p["id"],
                         question=p.get("question", ""),
                         side=side, outcome=outcome, pnl=pnl,
@@ -180,7 +181,8 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
             if short_horizon_only:
                 where += " AND expected_resolution_at < NOW() + INTERVAL '24 hours'"
             rows = conn.execute(text(
-                f"SELECT id, market_id, side, shares, cost_usd, prediction_id, question "
+                f"SELECT id, market_id, side, shares, cost_usd, prediction_id, "
+                f"       question, user_id "
                 f"FROM pm_positions WHERE {where}"
             )).fetchall()
         return [
@@ -192,6 +194,7 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
                 "cost_usd":      float(r[4]),
                 "prediction_id": int(r[5]) if r[5] is not None else None,
                 "question":      str(r[6] or ""),
+                "user_id":       str(r[7]) if r[7] is not None else None,
             }
             for r in rows
         ]

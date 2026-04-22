@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCredentials } from "../../lib/credentials";
+import { signOut } from "../auth/actions";
 
 export type IconKey =
   | "grid"
@@ -129,9 +130,15 @@ export const ICON: Record<IconKey, React.ReactNode> = {
 
 export type Mode = "simulation" | "live";
 
-const DEMO_USER = { name: "Alex Morgan", initials: "AM", email: "alex@morgan.co" };
+export type DashboardUser = { name: string; email: string; initials: string };
 
-export function DashboardShell({ children }: { children: React.ReactNode }) {
+export function DashboardShell({
+  children,
+  user,
+}: {
+  children: React.ReactNode;
+  user: DashboardUser;
+}) {
   const [mode, setMode] = useState<Mode>("simulation");
   const pathname = usePathname() || "/dashboard";
   const { missing, canGoLive, hydrated } = useCredentials();
@@ -153,7 +160,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="app-shell density-roomy" data-screen-label="Dashboard">
-      <Sidebar activeId={activeId} user={DEMO_USER} mode={mode} pathname={pathname} />
+      <Sidebar activeId={activeId} user={user} mode={mode} pathname={pathname} />
       <main className="app-main">
         <ModeBanner mode={mode} onSwitch={trySwitch} canGoLive={canGoLive} missing={missing} />
         {showCredsBanner && <CredentialsBanner missing={missing} />}
@@ -190,7 +197,7 @@ function Sidebar({
   pathname,
 }: {
   activeId: string;
-  user: typeof DEMO_USER;
+  user: DashboardUser;
   mode: Mode;
   pathname: string;
 }) {
@@ -249,6 +256,9 @@ function Sidebar({
             <span className="side-user-mail">{user.email}</span>
           </span>
         </Link>
+        <form action={signOut} className="side-signout-form">
+          <button type="submit" className="side-signout">Sign out</button>
+        </form>
       </div>
     </aside>
   );

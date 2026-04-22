@@ -37,7 +37,7 @@ from engine.archetype_classifier import classify_archetype
 from engine.notifier_state import is_trading_paused
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
 from engine.risk_manager import evaluate as evaluate_risk
-from engine.user_config import get_user_config
+from engine.user_config import DEFAULT_USER_ID, get_user_config
 from execution.pm_executor import PMExecutor
 from execution.pm_sizer import size_position, SizingDecision
 from feeds import telegram_messages as tm
@@ -68,11 +68,15 @@ class PMAnalyst:
         evaluator: Optional[PolymarketEvaluator] = None,
         notifier:  Optional[object]              = None,
         news_feed: Optional[object]              = None,
+        user_id:   str                           = DEFAULT_USER_ID,
     ):
         self.executor  = executor  or PMExecutor()
         self.evaluator = evaluator or PolymarketEvaluator()
         self.notifier  = notifier
         self.news_feed = news_feed
+        # The user on whose behalf this scanner is running. Used to route
+        # Telegram notifications about opened positions to the right user.
+        self.user_id = user_id
 
     # ── Single market ────────────────────────────────────────────────────────
     async def analyze_market(
@@ -401,7 +405,7 @@ class PMAnalyst:
             mode="live" if self.executor.mode == "live" else "simulation",
         )
         try:
-            await self.notifier.send(msg)
+            await self.notifier.send(self.user_id, msg)
         except Exception as exc:
             print(f"[pm_analyst] telegram send failed: {exc}", file=sys.stderr)
 

@@ -50,6 +50,8 @@ from engine.user_config import (
     USER_CONFIG_BOUNDS,
     USER_CONFIG_DESCRIPTIONS,
     get_user_config,
+    get_user_telegram_creds,
+    set_user_telegram_creds,
     update_user_config,
 )
 from engine.learning_cadence import (
@@ -401,6 +403,59 @@ class BotAPI:
             "config":  cfg.to_dict(),
         })
 
+    async def _handle_get_telegram_config(self, request: web.Request) -> web.Response:
+        """Return whether the user has Telegram creds configured. Never echoes
+        the token or chat_id back — the dashboard only needs the boolean."""
+        user_id = request.query.get("user_id") or DEFAULT_USER_ID
+        loop = asyncio.get_running_loop()
+        creds = await loop.run_in_executor(
+            self._pool, get_user_telegram_creds, user_id,
+        )
+        return web.json_response({
+            "user_id":   user_id,
+            "configured": creds is not None,
+        })
+
+    async def _handle_put_telegram_config(self, request: web.Request) -> web.Response:
+        """Persist per-user Telegram bot_token + chat_id. Empty strings clear."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "body must be an object"}, status=400)
+
+        user_id   = str(data.get("user_id") or DEFAULT_USER_ID)
+        bot_token = data.get("bot_token")
+        chat_id   = data.get("chat_id")
+        if bot_token is not None and not isinstance(bot_token, str):
+            return web.json_response({"error": "bot_token must be string or null"}, status=400)
+        if chat_id is not None and not isinstance(chat_id, str):
+            return web.json_response({"error": "chat_id must be string or null"}, status=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._pool,
+                lambda: set_user_telegram_creds(user_id, bot_token, chat_id),
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        if self._notifier is not None and hasattr(self._notifier, "invalidate_creds"):
+            try:
+                self._notifier.invalidate_creds(user_id)
+            except Exception as exc:
+                print(f"[bot_api] notifier invalidate_creds failed: {exc}",
+                      file=sys.stderr)
+
+        creds = get_user_telegram_creds(user_id)
+        return web.json_response({
+            "status":     "applied",
+            "user_id":    user_id,
+            "configured": creds is not None,
+        })
+
     # ── Action handlers ──────────────────────────────────────────────────────
     async def _handle_scan_now(self, _request: web.Request) -> web.Response:
         if self._analyst is None:
@@ -713,6 +768,8 @@ class BotAPI:
         app.router.add_get ("/api/config",      self._handle_config)
         app.router.add_get ("/api/user-config", self._handle_get_user_config)
         app.router.add_put ("/api/user-config", self._handle_update_user_config)
+        app.router.add_get ("/api/config/telegram", self._handle_get_telegram_config)
+        app.router.add_put ("/api/config/telegram", self._handle_put_telegram_config)
         app.router.add_get ("/api/suggestions", self._handle_list_suggestions)
         app.router.add_post("/api/suggestions/{suggestion_id}/apply",
                             self._handle_apply_suggestion)

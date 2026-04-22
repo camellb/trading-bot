@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Prefs = {
   dailyDigest: boolean;
@@ -47,6 +47,8 @@ export default function NotificationsPage() {
         <Toggle label="Product updates" desc="Occasional emails about new features and strategies. Not marketing." on={p.productUpdates} onChange={() => t("productUpdates")} />
       </div>
 
+      <TelegramSection />
+
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Push notifications</h2>
@@ -86,6 +88,118 @@ export default function NotificationsPage() {
         <button className="btn-sm gold">Save preferences</button>
       </div>
     </>
+  );
+}
+
+function TelegramSection() {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [botToken, setBotToken] = useState("");
+  const [chatId, setChatId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/config/telegram", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setConfigured(Boolean(d?.configured)))
+      .catch(() => setConfigured(false));
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/config/telegram", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bot_token: botToken.trim() || null,
+          chat_id:   chatId.trim()   || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+      setConfigured(Boolean(data?.configured));
+      setBotToken("");
+      setChatId("");
+      setStatus(data?.configured ? "Saved — Telegram alerts enabled." : "Cleared — Telegram alerts disabled.");
+    } catch (err) {
+      setStatus(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clearCreds() {
+    setSaving(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/config/telegram", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bot_token: null, chat_id: null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+      setConfigured(false);
+      setStatus("Cleared — Telegram alerts disabled.");
+    } catch (err) {
+      setStatus(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Telegram</h2>
+        <span className="panel-meta">
+          {configured === null ? "Checking…" : configured ? "Connected" : "Not connected"}
+        </span>
+      </div>
+      <p className="panel-body">
+        Paste your own bot token and chat ID to receive trade, risk, and
+        summary alerts. Create a bot with <code>@BotFather</code>, then message
+        it once and grab your chat ID from{" "}
+        <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>.
+        Leave blank to disable.
+      </p>
+      <form onSubmit={save} className="form-row" style={{ gap: 12 }}>
+        <div className="form-field">
+          <label>Bot token</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={configured ? "•••••••• (saved — leave blank to keep)" : "123456:ABC-DEF…"}
+            value={botToken}
+            onChange={(e) => setBotToken(e.target.value)}
+          />
+        </div>
+        <div className="form-field">
+          <label>Chat ID</label>
+          <input
+            type="text"
+            autoComplete="off"
+            placeholder={configured ? "•••••••• (saved — leave blank to keep)" : "e.g. 123456789"}
+            value={chatId}
+            onChange={(e) => setChatId(e.target.value)}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 8 }}>
+          <button type="submit" className="btn-sm gold" disabled={saving || (!botToken.trim() && !chatId.trim())}>
+            {saving ? "Saving…" : "Save credentials"}
+          </button>
+          {configured && (
+            <button type="button" className="btn-sm" onClick={clearCreds} disabled={saving}>
+              Disconnect
+            </button>
+          )}
+          {status && <span className="panel-meta">{status}</span>}
+        </div>
+      </form>
+    </div>
   );
 }
 
