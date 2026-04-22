@@ -105,8 +105,15 @@ class BotAPI:
             self._claude = None
 
     # ── Auth ─────────────────────────────────────────────────────────────────
+    # Paths exempt from X-Bot-Secret — platform healthchecks (Railway, k8s)
+    # cannot send a custom header, and the /api/health body carries no
+    # sensitive data.
+    _AUTH_EXEMPT_PATHS = frozenset({"/api/health"})
+
     @web.middleware
     async def _auth_middleware(self, request: web.Request, handler):
+        if request.path in self._AUTH_EXEMPT_PATHS:
+            return await handler(request)
         provided = request.headers.get("X-Bot-Secret", "")
         if not self._secret or provided != self._secret:
             return web.json_response({"error": "unauthorized"}, status=401)
