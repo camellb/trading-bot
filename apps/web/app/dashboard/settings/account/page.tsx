@@ -4,11 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   usePolymarketCredentials,
-  useTelegramCredentials,
   EMPTY_POLYMARKET,
-  EMPTY_TELEGRAM,
   type PolymarketCreds,
-  type TelegramCreds,
 } from "../../../../lib/credentials";
 
 type Profile = { email: string; displayName: string };
@@ -29,11 +26,6 @@ export default function AccountPage() {
   });
   const [polyReveal, setPolyReveal] = useState(false);
   const [polySavedAt, setPolySavedAt] = useState<number | null>(null);
-
-  const telegram = useTelegramCredentials();
-  const [tgDraft, setTgDraft] = useState<TelegramCreds>({ ...EMPTY_TELEGRAM });
-  const [tgReveal, setTgReveal] = useState(false);
-  const [tgSavedAt, setTgSavedAt] = useState<number | null>(null);
 
   // Once server state hydrates, pre-fill non-sensitive fields only.
   useEffect(() => {
@@ -100,14 +92,6 @@ export default function AccountPage() {
         passphrase: "",
       }));
       setPolySavedAt(Date.now());
-    }
-  };
-
-  const saveTelegram = async () => {
-    const ok = await telegram.save(tgDraft);
-    if (ok) {
-      setTgDraft({ botToken: "", chatId: "" });
-      setTgSavedAt(Date.now());
     }
   };
 
@@ -295,74 +279,6 @@ export default function AccountPage() {
             )}
             {poly.error && (
               <span style={{ color: "var(--red)", fontSize: 13 }}>{poly.error}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Telegram alerts</h2>
-          <span className="panel-meta">
-            {telegram.configured ? "Configured" : "Optional — not set"}
-          </span>
-        </div>
-
-        <p className="panel-body" style={{ marginTop: 0, marginBottom: 18 }}>
-          Push trade alerts, settlements, and daily/weekly summaries to your own Telegram bot.
-          Optional. Create a bot via @BotFather, grab its token, and paste the chat ID of the
-          channel you want Delfi to post into.
-        </p>
-
-        <div className="form-row">
-          <div className="form-field">
-            <label>
-              Telegram bot token
-              {telegram.configured && (
-                <span style={{ marginLeft: 8, color: "var(--vellum-60)", fontSize: 12 }}>
-                  (saved)
-                </span>
-              )}
-            </label>
-            <input
-              type={tgReveal ? "text" : "password"}
-              value={tgDraft.botToken}
-              onChange={(e) => {
-                setTgDraft((d) => ({ ...d, botToken: e.target.value }));
-                setTgSavedAt(null);
-              }}
-              placeholder={telegram.configured ? "••••••••" : "123456:ABC-…"}
-            />
-          </div>
-
-          <div className="form-field">
-            <label>Telegram chat ID</label>
-            <input
-              value={tgDraft.chatId}
-              onChange={(e) => {
-                setTgDraft((d) => ({ ...d, chatId: e.target.value }));
-                setTgSavedAt(null);
-              }}
-              placeholder={telegram.configured ? "••••••••" : "e.g. -1001234567890"}
-            />
-          </div>
-
-          <div style={{ marginTop: 12, display: "flex", gap: 12, alignItems: "center" }}>
-            <button
-              className="btn-sm gold"
-              onClick={saveTelegram}
-              disabled={telegram.saving}
-            >
-              {telegram.saving ? "Saving…" : "Save Telegram"}
-            </button>
-            <button className="btn-sm" onClick={() => setTgReveal((r) => !r)}>
-              {tgReveal ? "Hide values" : "Reveal values"}
-            </button>
-            {tgSavedAt && !telegram.error && (
-              <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>Saved.</span>
-            )}
-            {telegram.error && (
-              <span style={{ color: "var(--red)", fontSize: 13 }}>{telegram.error}</span>
             )}
           </div>
         </div>

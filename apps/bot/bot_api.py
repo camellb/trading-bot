@@ -540,6 +540,33 @@ class BotAPI:
             "configured": creds is not None,
         })
 
+    async def _handle_telegram_test(self, request: web.Request) -> web.Response:
+        """Send a one-off test message so the user can verify Telegram hookup."""
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        if self._notifier is None:
+            return web.json_response({"error": "notifier not initialised"},
+                                      status=503)
+        creds = get_user_telegram_creds(user_id)
+        if creds is None:
+            return web.json_response(
+                {"error": "Save your Telegram bot token and chat ID first."},
+                status=400,
+            )
+        try:
+            await self._notifier.send(
+                user_id,
+                "<b>Delfi test message</b>\nYou're connected. "
+                "You'll receive positions, resolutions, and summaries here.",
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"error": f"send failed: {exc}"}, status=502,
+            )
+        return web.json_response({"status": "sent", "user_id": user_id})
+
     async def _handle_get_polymarket_config(self, request: web.Request) -> web.Response:
         """Return which Polymarket credential fields the user has filled.
         Never echoes api_key/api_secret/passphrase back — the dashboard only
@@ -1037,6 +1064,7 @@ class BotAPI:
         app.router.add_put ("/api/user-config", self._handle_update_user_config)
         app.router.add_get ("/api/config/telegram", self._handle_get_telegram_config)
         app.router.add_put ("/api/config/telegram", self._handle_put_telegram_config)
+        app.router.add_post("/api/config/telegram/test", self._handle_telegram_test)
         app.router.add_get ("/api/config/polymarket", self._handle_get_polymarket_config)
         app.router.add_put ("/api/config/polymarket", self._handle_put_polymarket_config)
         app.router.add_get ("/api/suggestions", self._handle_list_suggestions)

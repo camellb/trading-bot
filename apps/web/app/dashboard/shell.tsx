@@ -36,15 +36,15 @@ const NAV: NavItem[] = [
   { id: "performance", label: "Performance", icon: "trend", href: "/dashboard/performance", match: /^\/dashboard\/performance/ },
   { id: "activity", label: "Activity log", icon: "list", href: "/dashboard/activity", match: /^\/dashboard\/activity/ },
   { id: "intelligence", label: "Intelligence", icon: "bolt", href: "/dashboard/intelligence", match: /^\/dashboard\/intelligence/ },
-  { id: "risk", label: "Risk controls", icon: "shield", href: "/dashboard/risk", match: /^\/dashboard\/risk/ },
   {
     id: "settings",
     label: "Settings",
     icon: "gear",
     href: "/dashboard/settings/account",
-    match: /^\/dashboard\/settings/,
+    match: /^\/dashboard\/settings|^\/dashboard\/risk/,
     sub: [
       { id: "account", label: "Account", href: "/dashboard/settings/account" },
+      { id: "risk", label: "Risk controls", href: "/dashboard/settings/risk" },
       { id: "notifications", label: "Notifications", href: "/dashboard/settings/notifications" },
     ],
   },
