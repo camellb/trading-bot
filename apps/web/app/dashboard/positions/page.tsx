@@ -1,50 +1,115 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "../../styles/content.css";
 
 type Filter = "all" | "open" | "scanning" | "recent";
 
-type Position = {
-  q: string;
+type OpenPosition = {
+  id: number;
+  question: string;
   side: "YES" | "NO";
-  entry: number;
-  mark: number;
-  size: number;
-  pnl: number;
-  pnlPct: number;
-  pWin: number;
-  closes: string;
-  conviction: number;
+  shares: number;
+  entry_price: number;
+  cost_usd: number;
+  claude_probability: number | null;
+  confidence: number | null;
+  expected_resolution_at: string | null;
+  created_at: string | null;
+  category: string | null;
 };
 
-type ScanItem = {
-  q: string;
-  price: number;
-  forecast: number;
+type SettledPosition = {
+  id: number;
+  question: string;
   side: "YES" | "NO";
-  pWin: number;
-  liquidity: string;
-  closes: string;
-  reason: string;
+  cost_usd: number;
+  claude_probability: number | null;
+  settlement_outcome: string | null;
+  realized_pnl_usd: number | null;
+  settled_at: string | null;
+  category: string | null;
 };
 
-const OPEN: Position[] = [
-  { q: "Fed cuts rates by 25bp in December?", side: "YES", entry: 44, mark: 52, size: 420, pnl: 71.4, pnlPct: 17.0, pWin: 0.78, closes: "18d", conviction: 0.81 },
-  { q: "BTC closes above $120k by Dec 31?", side: "NO", entry: 38, mark: 33, size: 260, pnl: 34.2, pnlPct: 13.1, pWin: 0.74, closes: "42d", conviction: 0.72 },
-  { q: "GPT-5 released in Q1 2026?", side: "YES", entry: 61, mark: 68, size: 180, pnl: 20.8, pnlPct: 11.5, pWin: 0.72, closes: "71d", conviction: 0.70 },
-  { q: "US GDP Q4 > 2.5% advance est?", side: "NO", entry: 55, mark: 48, size: 140, pnl: 9.8, pnlPct: 7.0, pWin: 0.68, closes: "9d", conviction: 0.64 },
-  { q: "Taylor Swift tour extension announced?", side: "YES", entry: 29, mark: 27, size: 80, pnl: -1.6, pnlPct: -2.0, pWin: 0.66, closes: "5d", conviction: 0.52 },
-];
+type PositionsPayload = { open: OpenPosition[]; settled: SettledPosition[] };
 
-const SCAN: ScanItem[] = [
-  { q: "SP500 closes green on Friday?", price: 58, forecast: 66, side: "YES", pWin: 0.66, liquidity: "$180k", closes: "2d", reason: "Breadth improving, VIX compressed, no macro catalyst. Forecast clears direction and p_win gates; watching expected return." },
-  { q: "ETH flips BTC market cap in Q2?", price: 9, forecast: 4, side: "NO", pWin: 0.96, liquidity: "$40k", closes: "68d", reason: "Both Delfi and market sit well below 0.50 on YES, so NO p_win is very high. Longshot-NO candidate." },
-  { q: "Congress passes stablecoin bill by July?", price: 42, forecast: 68, side: "YES", pWin: 0.68, liquidity: "$95k", closes: "88d", reason: "Bipartisan markup progressed. Slight tailwind from committee vote last week. Clears p_win floor." },
-];
+type Evaluation = {
+  id: number;
+  evaluated_at: string | null;
+  question: string;
+  category: string | null;
+  market_price_yes: number | null;
+  claude_probability: number | null;
+  confidence: number | null;
+  ev_bps: number | null;
+  recommendation: string | null;
+  reasoning: string | null;
+  slug: string | null;
+};
+
+type EvalsPayload = { evaluations: Evaluation[] };
+
+async function getJSON<T>(path: string): Promise<T | null> {
+  try {
+    const r = await fetch(path, { cache: "no-store" });
+    if (!r.ok) return null;
+    return (await r.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function daysFromNow(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso).getTime();
+  if (Number.isNaN(d)) return "—";
+  const ms = d - Date.now();
+  if (ms <= 0) return "now";
+  const days = Math.round(ms / 86_400_000);
+  if (days === 0) {
+    const hours = Math.max(1, Math.round(ms / 3_600_000));
+    return `${hours}h`;
+  }
+  return `${days}d`;
+}
+
+function formatDate(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 export default function PositionsPage() {
   const [filter, setFilter] = useState<Filter>("all");
+  const [positions, setPositions] = useState<PositionsPayload | null>(null);
+  const [evaluations, setEvals] = useState<EvalsPayload | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const [p, e] = await Promise.all([
+        getJSON<PositionsPayload>("/api/positions"),
+        getJSON<EvalsPayload>("/api/evaluations?limit=25"),
+      ]);
+      if (cancelled) return;
+      setPositions(p);
+      setEvals(e);
+      setLoaded(true);
+    };
+    load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  const open    = positions?.open ?? [];
+  const settled = positions?.settled ?? [];
+  const evals   = evaluations?.evaluations ?? [];
+  const deployed = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
 
   return (
     <div className="page-wrap">
@@ -53,9 +118,6 @@ export default function PositionsPage() {
           <div>
             <h1 className="page-h1">Positions</h1>
             <p className="page-sub">Every position Delfi is managing right now, plus the markets it's watching.</p>
-          </div>
-          <div className="page-head-right">
-            <button className="btn-sm">Export CSV</button>
           </div>
         </div>
       </div>
@@ -66,13 +128,13 @@ export default function PositionsPage() {
             All
           </button>
           <button className={`chip ${filter === "open" ? "on" : ""}`} onClick={() => setFilter("open")}>
-            Open ({OPEN.length})
+            Open ({open.length})
           </button>
           <button className={`chip ${filter === "scanning" ? "on" : ""}`} onClick={() => setFilter("scanning")}>
-            Scanning ({SCAN.length})
+            Scanning ({evals.length})
           </button>
           <button className={`chip ${filter === "recent" ? "on" : ""}`} onClick={() => setFilter("recent")}>
-            Recently resolved
+            Recently resolved ({settled.length})
           </button>
         </div>
       </div>
@@ -81,85 +143,185 @@ export default function PositionsPage() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Open positions</h2>
-            <span className="panel-meta">{OPEN.length} active · $1,080 deployed</span>
+            <span className="panel-meta">
+              {open.length} active · ${deployed.toFixed(0)} deployed
+            </span>
           </div>
 
-          <table className="table-simple">
-            <thead>
-              <tr>
-                <th>Market</th>
-                <th>Side</th>
-                <th>Entry</th>
-                <th>Mark</th>
-                <th>Size</th>
-                <th>P&amp;L</th>
-                <th>p_win</th>
-                <th>Closes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {OPEN.map((p, i) => (
-                <tr key={i}>
-                  <td>{p.q}</td>
-                  <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
-                  <td className="mono">{p.entry}¢</td>
-                  <td className="mono">{p.mark}¢</td>
-                  <td className="mono">${p.size}</td>
-                  <td className={`mono ${p.pnl >= 0 ? "cell-up" : "cell-down"}`}>
-                    {p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)} <span style={{ opacity: 0.6 }}>({p.pnl >= 0 ? "+" : ""}{p.pnlPct.toFixed(1)}%)</span>
-                  </td>
-                  <td className="mono">{p.pWin.toFixed(2)}</td>
-                  <td className="mono">{p.closes}</td>
+          {open.length === 0 ? (
+            <div className="empty-state">
+              {loaded
+                ? "No open positions yet. Delfi is evaluating markets — positions will appear once a trade clears all gates."
+                : "Loading..."}
+            </div>
+          ) : (
+            <table className="table-simple">
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Category</th>
+                  <th>Side</th>
+                  <th>Entry</th>
+                  <th>Size</th>
+                  <th>p_win</th>
+                  <th>Confidence</th>
+                  <th>Closes</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {open.map((p) => {
+                  const entryCents = Math.round(p.entry_price * 100);
+                  const pWin = p.claude_probability;
+                  const conf = p.confidence;
+                  return (
+                    <tr key={p.id}>
+                      <td>{p.question}</td>
+                      <td>{p.category ?? "—"}</td>
+                      <td>
+                        <span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>
+                          {p.side}
+                        </span>
+                      </td>
+                      <td className="mono">{entryCents}¢</td>
+                      <td className="mono">${p.cost_usd.toFixed(0)}</td>
+                      <td className="mono">{pWin != null ? pWin.toFixed(2) : "—"}</td>
+                      <td className="mono">{conf != null ? conf.toFixed(2) : "—"}</td>
+                      <td className="mono">{daysFromNow(p.expected_resolution_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 
       {(filter === "all" || filter === "scanning") && (
         <div className="panel">
           <div className="panel-head">
-            <h2 className="panel-title">Delfi is scanning</h2>
-            <span className="panel-meta">{SCAN.length} shortlisted · 384 evaluated today</span>
+            <h2 className="panel-title">Recent evaluations</h2>
+            <span className="panel-meta">
+              {evals.length} markets analyzed — most recent first
+            </span>
           </div>
 
-          {SCAN.map((s, i) => (
-            <div className="split-row" key={i}>
-              <div className="split-body">
-                <div className="split-title">{s.q}</div>
-                <div className="split-desc">{s.reason}</div>
-              </div>
-              <div className="split-right">
-                <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
-                  <div>
-                    <div className="kv-label">Market</div>
-                    <div className="mono" style={{ fontSize: 13 }}>{s.price}¢</div>
-                  </div>
-                  <div>
-                    <div className="kv-label">Delfi</div>
-                    <div className="mono" style={{ fontSize: 13, color: "var(--gold)" }}>{s.forecast}¢</div>
-                  </div>
-                  <div>
-                    <div className="kv-label">Side · p_win</div>
-                    <div className={`mono ${s.pWin >= 0.65 ? "cell-up" : "cell-down"}`} style={{ fontSize: 13 }}>
-                      {s.side} · {s.pWin.toFixed(2)}
+          {evals.length === 0 ? (
+            <div className="empty-state">
+              {loaded
+                ? "No recent evaluations. The bot scans Polymarket periodically — check back shortly."
+                : "Loading..."}
+            </div>
+          ) : (
+            evals.map((s) => {
+              const rec = (s.recommendation ?? "").toUpperCase();
+              const traded = rec === "YES" || rec === "NO" || rec === "BUY";
+              const marketPct =
+                s.market_price_yes != null ? Math.round(s.market_price_yes * 100) : null;
+              const delfiPct =
+                s.claude_probability != null ? Math.round(s.claude_probability * 100) : null;
+              const pWin =
+                s.claude_probability != null
+                  ? rec === "NO"
+                    ? 1 - s.claude_probability
+                    : s.claude_probability
+                  : null;
+              return (
+                <div className="split-row" key={s.id}>
+                  <div className="split-body">
+                    <div className="split-title">{s.question}</div>
+                    <div className="split-desc">
+                      {s.reasoning ?? "No reasoning recorded."}
                     </div>
                   </div>
-                  <div>
-                    <div className="kv-label">Closes</div>
-                    <div className="mono" style={{ fontSize: 13 }}>{s.closes}</div>
+                  <div className="split-right">
+                    <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+                      <div>
+                        <div className="kv-label">Market</div>
+                        <div className="mono" style={{ fontSize: 13 }}>
+                          {marketPct != null ? `${marketPct}¢` : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Delfi</div>
+                        <div className="mono" style={{ fontSize: 13, color: "var(--gold)" }}>
+                          {delfiPct != null ? `${delfiPct}¢` : "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Decision</div>
+                        <div
+                          className={`mono ${traded ? "cell-up" : ""}`}
+                          style={{ fontSize: 13 }}
+                        >
+                          {rec || "—"}
+                          {pWin != null ? ` · ${pWin.toFixed(2)}` : ""}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Evaluated</div>
+                        <div className="mono" style={{ fontSize: 13 }}>
+                          {formatDate(s.evaluated_at)}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
-          ))}
+              );
+            })
+          )}
         </div>
       )}
 
-      {filter === "recent" && (
-        <div className="empty-state">
-          Recently resolved positions will appear here once markets settle.
+      {(filter === "all" || filter === "recent") && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">Recently resolved</h2>
+            <span className="panel-meta">{settled.length} settled</span>
+          </div>
+
+          {settled.length === 0 ? (
+            <div className="empty-state">
+              Recently resolved positions will appear here once markets settle.
+            </div>
+          ) : (
+            <table className="table-simple">
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Outcome</th>
+                  <th>Size</th>
+                  <th>P&amp;L</th>
+                  <th>p_win</th>
+                  <th>Settled</th>
+                </tr>
+              </thead>
+              <tbody>
+                {settled.map((s) => {
+                  const pnl = s.realized_pnl_usd ?? 0;
+                  return (
+                    <tr key={s.id}>
+                      <td>{s.question}</td>
+                      <td>
+                        <span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>
+                          {s.side}
+                        </span>
+                      </td>
+                      <td className="mono">{s.settlement_outcome ?? "—"}</td>
+                      <td className="mono">${s.cost_usd.toFixed(0)}</td>
+                      <td className={`mono ${pnl >= 0 ? "cell-up" : "cell-down"}`}>
+                        {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
+                      </td>
+                      <td className="mono">
+                        {s.claude_probability != null ? s.claude_probability.toFixed(2) : "—"}
+                      </td>
+                      <td className="mono">{formatDate(s.settled_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
     </div>
