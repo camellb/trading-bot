@@ -82,11 +82,11 @@ class BotAPI:
     def __init__(
         self,
         analyst,
-        executor,
         notifier=None,
     ):
+        # Multi-tenant API: every user-scoped route constructs a per-request
+        # PMExecutor from the X-User-Id header. No process-global executor.
         self._analyst  = analyst
-        self._executor = executor
         self._notifier = notifier
         self._secret   = os.environ.get("BOT_API_SECRET") or ""
         self._runner: Optional[web.AppRunner] = None
@@ -153,10 +153,10 @@ class BotAPI:
         degraded = feed_monitor.get_degraded_feeds()
         ph = proc_health.snapshot()
         return web.json_response({
-            # /health is process-scoped — report the scheduler's mode. Per-user
-            # mode is surfaced via /api/summary, not /api/health.
+            # /health is process-scoped — report the configured disk mode.
+            # Per-user mode is surfaced via /api/summary, not /api/health.
             "status":          "degraded" if degraded else "ok",
-            "mode":            getattr(self._executor, "mode", "simulation"),
+            "mode":            self._disk_mode or getattr(config, "PM_MODE", "simulation"),
             "started_at":      ph["started_at"],
             "uptime_s":        round(ph["uptime_s"]),
             "error_count":     ph["error_count"],
@@ -364,9 +364,9 @@ class BotAPI:
                 active_mode = user_cfg.mode
             except Exception:
                 active_mode = None
-        if not active_mode:
-            active_mode = getattr(self._executor, "mode", "simulation")
         configured_mode = self._disk_mode or getattr(config, "PM_MODE", "simulation")
+        if not active_mode:
+            active_mode = configured_mode
         snapshot["PM_MODE"] = active_mode
         restart_pending = active_mode != configured_mode
         return web.json_response({"config": snapshot,
@@ -542,10 +542,7 @@ class BotAPI:
         from polymarket_runner import resolve_positions
         async def _runner():
             try:
-                await resolve_positions(
-                    notifier=self._notifier,
-                    executor=self._executor,
-                )
+                await resolve_positions(notifier=self._notifier)
             except Exception as exc:
                 print(f"[bot_api] manual resolve failed: {exc}", file=sys.stderr)
         asyncio.create_task(_runner())
@@ -684,7 +681,7 @@ class BotAPI:
         return web.json_response({"markouts": markouts, "accuracy": accuracy})
 
     async def _handle_reset_test(self, _request: web.Request) -> web.Response:
-        current_mode = getattr(self._executor, "mode", "simulation") if self._executor else "simulation"
+        current_mode = self._disk_mode or getattr(config, "PM_MODE", "simulation")
         if current_mode == "live":
             return web.json_response(
                 {"error": "reset-test is disabled in live mode"}, status=403)

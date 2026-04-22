@@ -110,7 +110,6 @@ class TelegramNotifier:
         self._loop:            Optional[asyncio.AbstractEventLoop] = None
         self._bot_start_time:  Optional[datetime] = None
         self._monitor                              = None   # FeedHealthMonitor
-        self._executor                             = None   # PMExecutor
         self._analyst                              = None   # PMAnalyst
         self._bot_api                              = None   # BotAPI
 
@@ -219,11 +218,11 @@ class TelegramNotifier:
         won = (outcome == side)
         roi = (pnl / cost * 100) if cost > 0 else 0.0
         bankroll = 0.0
-        if self._executor:
-            try:
-                bankroll = float(self._executor.get_bankroll())
-            except Exception:
-                pass
+        try:
+            from execution.pm_executor import PMExecutor
+            bankroll = float(PMExecutor(user_id).get_bankroll())
+        except Exception:
+            pass
 
         if won:
             if mark_first_win_if_unsent():
@@ -260,7 +259,8 @@ class TelegramNotifier:
         if self._get_creds(user_id) is None:
             return
         try:
-            stats = self._executor.get_portfolio_stats() if self._executor else {}
+            from execution.pm_executor import PMExecutor
+            stats = PMExecutor(user_id).get_portfolio_stats()
             simulated = stats.get("mode", "simulation") != "live"
             balance = float(stats.get("bankroll", 0.0))
             open_n = int(stats.get("open_positions", 0))
@@ -282,8 +282,6 @@ class TelegramNotifier:
 
     # ── Daily / weekly summaries ────────────────────────────────────────────
     async def send_daily_summary(self) -> None:
-        if self._executor is None:
-            return
         for uid in list_users_with_telegram():
             await self._send_daily_summary_for(uid)
 
@@ -291,7 +289,8 @@ class TelegramNotifier:
         if self._get_creds(user_id) is None:
             return
         try:
-            stats = self._executor.get_portfolio_stats()
+            from execution.pm_executor import PMExecutor
+            stats = PMExecutor(user_id).get_portfolio_stats()
             mode  = stats.get("mode", "simulation")
 
             def _daily_db():
@@ -340,8 +339,6 @@ class TelegramNotifier:
                   file=sys.stderr)
 
     async def send_weekly_summary(self) -> None:
-        if self._executor is None:
-            return
         for uid in list_users_with_telegram():
             await self._send_weekly_summary_for(uid)
 
@@ -349,7 +346,8 @@ class TelegramNotifier:
         if self._get_creds(user_id) is None:
             return
         try:
-            stats = self._executor.get_portfolio_stats()
+            from execution.pm_executor import PMExecutor
+            stats = PMExecutor(user_id).get_portfolio_stats()
             mode  = stats.get("mode", "simulation")
 
             def _weekly_db():
@@ -534,15 +532,10 @@ class TelegramNotifier:
             await self.send(user_id, tm.nothing_pending())
 
     async def _send_status(self, user_id: str) -> None:
-        if self._executor is None:
-            print("[telegram][admin] /status received but executor not wired",
-                  file=sys.stderr)
-            await self.send(user_id, tm.generic_error(
-                context="Status", detail="not ready yet",
-            ))
-            return
         try:
-            stats = self._executor.get_portfolio_stats()
+            from execution.pm_executor import PMExecutor
+            executor = PMExecutor(user_id)
+            stats = executor.get_portfolio_stats()
             uptime = "n/a"
             if self._bot_start_time:
                 secs = int((datetime.now(timezone.utc) - self._bot_start_time).total_seconds())
@@ -550,7 +543,7 @@ class TelegramNotifier:
                 mins, _ = divmod(rem, 60)
                 uptime = f"{hrs}h {mins}m"
 
-            open_rows = self._executor.get_open_positions()
+            open_rows = executor.get_open_positions()
             pos_lines = []
             for p in open_rows[:10]:
                 pos_lines.append(

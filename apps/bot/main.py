@@ -59,9 +59,8 @@ from feeds.news_feed           import NewsFeed
 from feeds.macro_calendar      import MacroCalendar
 from feeds.telegram_notifier   import notifier
 from feeds                     import telegram_messages as tm
-from execution.pm_executor     import PMExecutor
 from engine.pm_analyst         import PMAnalyst
-from engine.user_config        import DEFAULT_USER_ID, ensure_default_user_config
+from engine.user_config        import ensure_default_user_config
 from bot_api                   import BotAPI
 from polymarket_runner         import scan_and_analyze, resolve_positions
 from engine.markout_tracker    import check_markouts
@@ -96,35 +95,28 @@ async def main() -> None:
     ensure_default_user_config()
     print("Default user_config row ensured.", flush=True)
 
-    # ── Core singletons ──────────────────────────────────────────────────────
-    # TRANSITIONAL (SaaS multi-tenancy in-progress): the scheduler still owns
-    # a single executor bound to DEFAULT_USER_ID. Per-user scan fan-out is
-    # the next step — the bot_api constructs per-request PMExecutors so
-    # dashboards already see per-user data, but the scheduler does not yet.
-    executor  = PMExecutor(DEFAULT_USER_ID)
-
     # ── Overlay feeds (advisory only — do not gate trading) ──────────────────
     news_feed      = NewsFeed(monitor)
     macro_calendar = MacroCalendar(monitor)
     await macro_calendar.start()
 
-    analyst   = PMAnalyst(executor=executor, notifier=notifier,
-                          news_feed=news_feed, user_id=DEFAULT_USER_ID)
+    # Multi-tenant from day one: the analyst holds no per-user state. Each
+    # market is evaluated once (shared Claude cost) and fanned out to every
+    # onboarded user via PMExecutor(user_id) in scan_and_analyze.
+    analyst = PMAnalyst(notifier=notifier, news_feed=news_feed)
 
     # ── Wire notifier references used by /status and scheduled summaries ─────
     notifier._loop            = asyncio.get_running_loop()
     notifier._bot_start_time  = bot_start_time
     notifier._monitor         = monitor
-    notifier._executor        = executor
     notifier._analyst         = analyst
 
     # Telegram polling threads for commands (/status /pause /resume /help etc.).
     # One thread per user with configured credentials; no creds → no poller.
-    # Config-change suggestions and tuning proposals now live on the dashboard.
     notifier.start_polling_for_all()
 
     # ── HTTP API (dashboard) ────────────────────────────────────────────────
-    bot_api = BotAPI(analyst=analyst, executor=executor, notifier=notifier)
+    bot_api = BotAPI(analyst=analyst, notifier=notifier)
     notifier._bot_api = bot_api
 
     # ── Scheduler ───────────────────────────────────────────────────────────
@@ -160,7 +152,7 @@ async def main() -> None:
 
     async def _run_resolve():
         try:
-            await resolve_positions(notifier=notifier, executor=executor)
+            await resolve_positions(notifier=notifier)
             proc_health.record_job_ok("pm_resolve")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve")
@@ -180,7 +172,7 @@ async def main() -> None:
 
     async def _run_resolve_fast():
         try:
-            await resolve_positions(short_horizon_only=True, notifier=notifier, executor=executor)
+            await resolve_positions(short_horizon_only=True, notifier=notifier)
             proc_health.record_job_ok("pm_resolve_fast")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve_fast")

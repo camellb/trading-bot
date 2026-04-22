@@ -61,12 +61,13 @@ async def scan_and_analyze(
 
 
 # ── Resolve positions + legacy predictions ──────────────────────────────────
-async def resolve_positions(short_horizon_only: bool = False, notifier=None, executor: PMExecutor | None = None) -> dict:
+async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> dict:
     """
     Two-phase settlement:
 
-        Phase A — settle every open pm_positions row against the resolved
-                  Polymarket market state.
+        Phase A — for each onboarded user, settle every open pm_positions row
+                  against the resolved Polymarket market state using a
+                  PMExecutor bound to that user.
         Phase B — resolve legacy `predictions` rows from the simulation-only
                   era that lack a pm_positions partner.
 
@@ -90,14 +91,22 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None, exe
     async with PolymarketFeed() as feed:
         rows = await feed.fetch_many(market_ids)
 
-    if executor is None:
-        # TRANSITIONAL: a fallback DEFAULT_USER_ID executor is still used for
-        # the resolve path until the per-user fan-out lands. Once positions
-        # are grouped by user_id, this will construct one executor per user.
-        from engine.user_config import DEFAULT_USER_ID
-        executor = PMExecutor(DEFAULT_USER_ID)
+    # Per-user executor cache — one PMExecutor per distinct user_id.
+    executors: dict[str, PMExecutor] = {}
 
-    # Phase A — pm_positions.
+    def _executor_for(user_id: str) -> PMExecutor | None:
+        if user_id in executors:
+            return executors[user_id]
+        try:
+            ex = PMExecutor(user_id)
+        except Exception as exc:
+            print(f"[resolve] PMExecutor init failed for user={user_id}: {exc}",
+                  file=sys.stderr)
+            return None
+        executors[user_id] = ex
+        return ex
+
+    # Phase A — pm_positions (fan out by row.user_id).
     for p in open_rows:
         result["positions_checked"] += 1
         raw = rows.get(p["market_id"])
@@ -106,6 +115,18 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None, exe
         prices = _parse_price_list(raw.get("outcomePrices"))
         if len(prices) != 2:
             continue
+
+        user_id = p.get("user_id")
+        if not user_id:
+            print(f"[resolve] skipping position #{p['id']} — no user_id",
+                  file=sys.stderr)
+            result["errors"] += 1
+            continue
+        executor = _executor_for(user_id)
+        if executor is None:
+            result["errors"] += 1
+            continue
+
         yes_won = prices[0] >= 0.99
         no_won  = prices[1] >= 0.99
         if not (yes_won or no_won):
@@ -118,12 +139,12 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None, exe
         outcome = "YES" if yes_won else "NO"
         if executor.settle_position(p["id"], outcome):
             result["positions_settled"] += 1
-            if notifier and hasattr(notifier, "notify_settlement") and p.get("user_id"):
+            if notifier and hasattr(notifier, "notify_settlement"):
                 side = p.get("side", "?")
                 pnl = (1.0 if outcome == side else 0.0) * p["shares"] - p["cost_usd"]
                 try:
                     await notifier.notify_settlement(
-                        user_id=p["user_id"],
+                        user_id=user_id,
                         position_id=p["id"],
                         question=p.get("question", ""),
                         side=side, outcome=outcome, pnl=pnl,

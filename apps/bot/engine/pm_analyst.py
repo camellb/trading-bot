@@ -37,7 +37,10 @@ from engine.archetype_classifier import classify_archetype
 from engine.notifier_state import is_trading_paused
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
 from engine.risk_manager import evaluate as evaluate_risk
-from engine.user_config import DEFAULT_USER_ID, get_user_config
+from engine.user_config import (
+    get_user_config,
+    list_onboarded_user_ids,
+)
 from execution.pm_executor import PMExecutor
 from execution.pm_sizer import size_position, SizingDecision
 from feeds import telegram_messages as tm
@@ -64,87 +67,47 @@ class AnalysisOutcome:
 class PMAnalyst:
     def __init__(
         self,
-        executor:  Optional[PMExecutor]          = None,
         evaluator: Optional[PolymarketEvaluator] = None,
         notifier:  Optional[object]              = None,
         news_feed: Optional[object]              = None,
-        user_id:   str                           = DEFAULT_USER_ID,
     ):
-        # TRANSITIONAL (SaaS multi-tenancy in-progress): scans and resolutions
-        # are still driven by the single-user DEFAULT_USER_ID executor. The
-        # full per-user fan-out is the next step — until then the bot
-        # continues to operate on bartosz's account only.
-        self.executor  = executor  or PMExecutor(user_id or DEFAULT_USER_ID)
         self.evaluator = evaluator or PolymarketEvaluator()
         self.notifier  = notifier
         self.news_feed = news_feed
-        # The user on whose behalf this scanner is running. Used to route
-        # Telegram notifications about opened positions to the right user.
-        self.user_id = user_id
 
-    # ── Single market ────────────────────────────────────────────────────────
-    async def analyze_market(
+    # ── Shared evaluation phase ──────────────────────────────────────────────
+    async def _shared_evaluate(
         self,
-        market:      PolyMarket,
-        skip_existing_days: int = 3,
-    ) -> AnalysisOutcome:
-        q = market.question[:80]
-        # 0. User has paused trading? Skip all entries; open positions
-        #    continue to resolve normally (see resolver).
-        if is_trading_paused():
-            return AnalysisOutcome(
-                market_id=market.id, question=q,
-                status="SKIP_PAUSED",
-                detail="trading paused via /pause",
-            )
-
-        # 1. Already holding this market?
-        if self.executor.has_open_position_on_market(market.id):
-            return AnalysisOutcome(
-                market_id=market.id, question=q,
-                status="SKIP_EXISTING_POSITION",
-                detail="already holding this market",
-            )
-
-        # 2. Recently evaluated?
-        if _recently_predicted(market.id, skip_existing_days):
-            return AnalysisOutcome(
-                market_id=market.id, question=q,
-                status="SKIP_RECENT_EVAL",
-                detail=f"evaluated within {skip_existing_days}d",
-            )
-
-        # 3. Research.
+        market: PolyMarket,
+    ) -> Optional[tuple[MarketEvaluation, ResearchBundle, int]]:
+        """
+        Do the cost-intensive work that's identical for every user: research,
+        Claude evaluation, and logging the `predictions` row that anchors
+        calibration. Returns (evaluation, research, prediction_id) on success
+        or None on any failure / skip.
+        """
         try:
             research = await fetch_research(
-                market.question,
-                market.category_hint,
+                market.question, market.category_hint,
                 days_to_resolution=market.days_to_end,
             )
         except Exception as exc:
             print(f"[pm_analyst] research failed for {market.id}: {exc}",
                   file=sys.stderr)
             research = ResearchBundle(question=market.question)
-
         research_block = research.to_prompt_block()
 
-        # 4. Evaluate.
         try:
             evaluation = await self.evaluator.evaluate(market, research_block)
         except Exception as exc:
             print(f"[pm_analyst] evaluate failed for {market.id}: {exc}",
                   file=sys.stderr)
-            return AnalysisOutcome(
-                market_id=market.id, question=q,
-                status="ERROR", detail=f"evaluate: {exc}",
-            )
+            return None
         if evaluation is None:
-            return AnalysisOutcome(
-                market_id=market.id, question=q,
-                status="ERROR", detail="evaluator returned None",
-            )
+            print(f"[pm_analyst] evaluator returned None for {market.id}",
+                  file=sys.stderr)
+            return None
 
-        # 5. Log prediction for calibration.
         pred_meta = {
             "market_id":               market.id,
             "condition_id":            market.condition_id,
@@ -173,20 +136,43 @@ class PMAnalyst:
         if prediction_id is None or prediction_id <= 0:
             print(f"[pm_analyst] prediction log failed for {market.id} — "
                   f"skipping trade (no calibration link)", file=sys.stderr)
-            prediction_id = None
+            return None
+
+        return evaluation, research, int(prediction_id)
+
+    # ── Per-user trading phase ───────────────────────────────────────────────
+    async def _maybe_trade_for_user(
+        self,
+        market:        PolyMarket,
+        evaluation:    MarketEvaluation,
+        research:      ResearchBundle,
+        prediction_id: int,
+        user_id:       str,
+    ) -> AnalysisOutcome:
+        q = market.question[:80]
+        executor = PMExecutor(user_id)
+        if not executor.ready:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
-                status="ERROR", detail="prediction log failed — no calibration link",
-                evaluation=evaluation,
+                status="SKIP_USER_NOT_READY",
+                detail=f"user {user_id} not onboarded — no mode or starting_cash",
+                evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        # 6. Size.
-        user_config = get_user_config()
-        bankroll = self.executor.get_bankroll()
-        starting_cash = self.executor.get_starting_cash()
+        if executor.has_open_position_on_market(market.id):
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_EXISTING_POSITION",
+                detail=f"user {user_id} already holding this market",
+                evaluation=evaluation, prediction_id=prediction_id,
+            )
+
+        user_config = get_user_config(user_id)
+        bankroll = executor.get_bankroll()
+        starting_cash = executor.get_starting_cash()
         verdict = evaluate_risk(
             user_config=user_config, bankroll=bankroll,
-            starting_cash=starting_cash, mode=self.executor.mode,
+            starting_cash=starting_cash, mode=executor.mode,
         )
         if verdict.halted:
             return AnalysisOutcome(
@@ -201,7 +187,6 @@ class PMAnalyst:
             category=evaluation.category,
             event_slug=getattr(market, "event_slug", None),
         )
-
         decision = size_position(
             claude_p    = evaluation.probability_yes,
             confidence  = evaluation.confidence,
@@ -211,8 +196,6 @@ class PMAnalyst:
             user_config = user_config,
             archetype   = archetype,
         )
-
-        # Streak-cooldown halves the stake without changing the EV side choice.
         if decision.should_trade and verdict.stake_multiplier != 1.0:
             decision.stake_usd *= verdict.stake_multiplier
             decision.shares    *= verdict.stake_multiplier
@@ -224,22 +207,17 @@ class PMAnalyst:
                 decision.stake_usd = 0.0
                 decision.shares    = 0.0
 
-        # Log a market_evaluations row regardless of trade outcome — this is
-        # the auditing surface for the dashboard.
+        # Log per-user evaluation row (one row per onboarded user per market).
         recommendation = (
             f"BUY_{decision.side}" if decision.should_trade else "SKIP"
         )
         eval_row_id = _log_market_evaluation(
-            market=market,
-            evaluation=evaluation,
-            decision=decision,
-            research_sources=research.sources,
-            prediction_id=prediction_id,
-            recommendation=recommendation,
-            market_archetype=archetype,
+            market=market, evaluation=evaluation, decision=decision,
+            research_sources=research.sources, prediction_id=prediction_id,
+            recommendation=recommendation, market_archetype=archetype,
+            user_id=user_id,
         )
 
-        # 7. Trade gating.
         if not decision.should_trade:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
@@ -250,19 +228,18 @@ class PMAnalyst:
             )
 
         max_concurrent = int(getattr(config, "PM_MAX_CONCURRENT_POSITIONS", 10))
-        if self.executor.open_position_count() >= max_concurrent:
+        if executor.open_position_count() >= max_concurrent:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_MAX_CONCURRENT",
-                detail=f"{max_concurrent} positions already open",
+                detail=f"{max_concurrent} positions already open for user {user_id}",
                 evaluation=evaluation, decision=decision,
                 prediction_id=prediction_id,
             )
 
-        # 7b. Event-group correlation cap.
         max_per_event = int(getattr(config, "PM_MAX_PER_EVENT", 3))
         if market.event_slug:
-            event_count = self.executor.count_positions_for_event(market.event_slug)
+            event_count = executor.count_positions_for_event(market.event_slug)
             if event_count >= max_per_event:
                 return AnalysisOutcome(
                     market_id=market.id, question=q,
@@ -272,8 +249,7 @@ class PMAnalyst:
                     prediction_id=prediction_id,
                 )
 
-        # 8. Open position.
-        pos_id = self.executor.open_position(
+        pos_id = executor.open_position(
             market=market, decision=decision,
             claude_probability=evaluation.probability_yes,
             prediction_id=prediction_id,
@@ -288,21 +264,19 @@ class PMAnalyst:
                 evaluation=evaluation, decision=decision,
                 prediction_id=prediction_id,
             )
-
-        # Link the evaluation row to the position for dashboard joins.
         _link_evaluation_to_position(eval_row_id, pos_id)
 
-        # 9. Side effects: Telegram.
         if self.notifier is not None:
             try:
-                await self._notify_open(market, evaluation, decision, pos_id)
+                await self._notify_open(market, evaluation, decision,
+                                         pos_id, executor, user_id)
             except Exception as exc:
                 print(f"[pm_analyst] notify failed: {exc}", file=sys.stderr)
 
         return AnalysisOutcome(
             market_id=market.id, question=q,
             status="OPENED",
-            detail=f"pm_position={pos_id} side={decision.side} "
+            detail=f"pm_position={pos_id} user={user_id} side={decision.side} "
                    f"stake=${decision.stake_usd:.2f} "
                    f"forecast_p={decision.p_win:.2f} conf={decision.confidence:.2f}",
             evaluation=evaluation, decision=decision,
@@ -316,8 +290,14 @@ class PMAnalyst:
         min_volume_24h: float = 5_000.0,
     ) -> dict:
         """
-        Fetch candidate markets and run the analyst pipeline on each.
-        Returns a summary dict suitable for scheduler logging and /status.
+        SaaS fan-out:
+            1. Fetch candidate markets ONCE.
+            2. For each market: research + Claude evaluation + prediction log
+               happen ONCE (shared work).
+            3. For each onboarded user: size + risk + open position using
+               their own user_config, executor, and bankroll.
+
+        Returns a summary keyed by counters across all users.
         """
         skip_days = int(getattr(config, "PM_SKIP_EXISTING_DAYS", 3))
         min_days  = int(getattr(config, "PM_MIN_DAYS_TO_END", 0))
@@ -330,8 +310,23 @@ class PMAnalyst:
             "no_trade":    0,
             "skipped":     0,
             "errors":      0,
+            "users":       0,
             "outcomes":    [],
         }
+
+        if is_trading_paused():
+            print("[pm_analyst] trading paused — skipping scan", flush=True)
+            summary["outcomes"].append({
+                "market_id": "*", "question": "*",
+                "status": "SKIP_PAUSED", "detail": "trading paused via /pause",
+            })
+            return summary
+
+        user_ids = list_onboarded_user_ids()
+        summary["users"] = len(user_ids)
+        if not user_ids:
+            print("[pm_analyst] no onboarded users — skipping scan", flush=True)
+            return summary
 
         async with PolymarketFeed() as feed:
             try:
@@ -350,32 +345,57 @@ class PMAnalyst:
                 return summary
 
             for mk in markets:
-                try:
-                    outcome = await self.analyze_market(mk, skip_existing_days=skip_days)
-                except Exception as exc:
-                    print(f"[pm_analyst] unexpected failure {mk.id}: {exc}",
-                          file=sys.stderr)
-                    summary["errors"] += 1
+                if _recently_predicted(mk.id, skip_days):
+                    summary["outcomes"].append({
+                        "market_id": mk.id, "question": mk.question[:80],
+                        "status": "SKIP_RECENT_EVAL",
+                        "detail": f"evaluated within {skip_days}d",
+                    })
+                    summary["skipped"] += 1
                     continue
 
-                summary["analyzed"] += 1
-                summary["outcomes"].append({
-                    "market_id": outcome.market_id,
-                    "question":  outcome.question,
-                    "status":    outcome.status,
-                    "detail":    outcome.detail,
-                })
-                if outcome.status == "OPENED":
-                    summary["opened"] += 1
-                elif outcome.status == "LOGGED_NO_TRADE":
-                    summary["no_trade"] += 1
-                elif outcome.status.startswith("SKIP"):
-                    summary["skipped"] += 1
-                elif outcome.status == "ERROR":
+                # Shared work: one Claude call per market, period.
+                shared = await self._shared_evaluate(mk)
+                if shared is None:
                     summary["errors"] += 1
+                    continue
+                evaluation, research, prediction_id = shared
+                summary["analyzed"] += 1
+
+                # Per-user work: fan out.
+                for user_id in user_ids:
+                    try:
+                        outcome = await self._maybe_trade_for_user(
+                            market=mk, evaluation=evaluation,
+                            research=research, prediction_id=prediction_id,
+                            user_id=user_id,
+                        )
+                    except Exception as exc:
+                        print(f"[pm_analyst] user {user_id} failure on "
+                              f"{mk.id}: {exc}", file=sys.stderr)
+                        summary["errors"] += 1
+                        continue
+
+                    summary["outcomes"].append({
+                        "market_id": outcome.market_id,
+                        "question":  outcome.question,
+                        "status":    outcome.status,
+                        "detail":    outcome.detail,
+                        "user_id":   user_id,
+                    })
+                    if outcome.status == "OPENED":
+                        summary["opened"] += 1
+                    elif outcome.status == "LOGGED_NO_TRADE":
+                        summary["no_trade"] += 1
+                    elif outcome.status.startswith("SKIP"):
+                        summary["skipped"] += 1
+                    elif outcome.status == "ERROR":
+                        summary["errors"] += 1
 
         print(f"[pm_analyst] scan complete: "
+              f"users={summary['users']} "
               f"fetched={summary['fetched']} "
+              f"analyzed={summary['analyzed']} "
               f"opened={summary['opened']} "
               f"no_trade={summary['no_trade']} "
               f"skipped={summary['skipped']} "
@@ -386,12 +406,14 @@ class PMAnalyst:
     async def _notify_open(self, market: PolyMarket,
                             evaluation: MarketEvaluation,
                             decision: SizingDecision,
-                            position_id: int) -> None:
+                            position_id: int,
+                            executor: PMExecutor,
+                            user_id: str) -> None:
         if self.notifier is None or not hasattr(self.notifier, "send"):
             return
         bankroll_after = 0.0
         try:
-            bankroll_after = float(self.executor.get_bankroll())
+            bankroll_after = float(executor.get_bankroll())
         except Exception:
             pass
         # `forecast_pct` is Delfi's probability for the side we're buying.
@@ -406,10 +428,10 @@ class PMAnalyst:
             confidence=evaluation.confidence,
             bankroll_after=bankroll_after,
             resolve_date=market.end_date_iso.strftime("%Y-%m-%d"),
-            mode="live" if self.executor.mode == "live" else "simulation",
+            mode="live" if executor.mode == "live" else "simulation",
         )
         try:
-            await self.notifier.send(self.user_id, msg)
+            await self.notifier.send(user_id, msg)
         except Exception as exc:
             print(f"[pm_analyst] telegram send failed: {exc}", file=sys.stderr)
 
@@ -443,9 +465,12 @@ def _log_market_evaluation(
     prediction_id:    Optional[int],
     recommendation:   str,
     market_archetype: Optional[str] = None,
+    user_id:          Optional[str] = None,
 ) -> Optional[int]:
-    try:
+    if user_id is None:
         from engine.user_config import DEFAULT_USER_ID
+        user_id = DEFAULT_USER_ID
+    try:
         with get_engine().begin() as conn:
             row = conn.execute(text(
                 "INSERT INTO market_evaluations ("
@@ -460,7 +485,7 @@ def _log_market_evaluation(
                 "  :pid, :arch, :event_slug"
                 ") RETURNING id"
             ), {
-                "user_id": DEFAULT_USER_ID,
+                "user_id": user_id,
                 "mid":  market.id,
                 "cid":  market.condition_id,
                 "slug": market.slug,
