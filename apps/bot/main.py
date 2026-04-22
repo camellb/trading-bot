@@ -17,7 +17,7 @@ Architecture at a glance:
 
 Scheduled jobs (APScheduler):
     PM scan          — every PM_SCAN_INTERVAL_MINUTES
-    PM resolve       — every PM_RESOLVE_INTERVAL_HOURS
+    PM resolve       — every PM_RESOLVE_INTERVAL_MINUTES (fast path: PM_RESOLVE_FAST_INTERVAL_SECONDS)
     Daily summary    — 08:30 MYT
     Weekly summary   — Monday 08:30 MYT
 
@@ -147,8 +147,9 @@ async def main() -> None:
         coalesce=True,
     )
 
-    # PM resolver.
-    resolve_interval_h = int(getattr(config, "PM_RESOLVE_INTERVAL_HOURS", 6))
+    # PM resolver — checks for settled markets and finalises P&L.
+    # Resolution checks are free Polymarket REST reads, so we poll aggressively.
+    resolve_interval_min = int(getattr(config, "PM_RESOLVE_INTERVAL_MINUTES", 15))
 
     async def _run_resolve():
         try:
@@ -160,15 +161,15 @@ async def main() -> None:
 
     scheduler.add_job(
         _run_resolve,
-        IntervalTrigger(hours=resolve_interval_h),
+        IntervalTrigger(minutes=resolve_interval_min),
         id="pm_resolve",
         next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
         max_instances=1,
         coalesce=True,
     )
 
-    # Fast resolver for short-horizon markets (every 10 min).
-    fast_resolve_min = int(getattr(config, "PM_RESOLVE_FAST_INTERVAL_MINUTES", 10))
+    # Near-live resolver for short-horizon markets (< 24h to end).
+    fast_resolve_sec = int(getattr(config, "PM_RESOLVE_FAST_INTERVAL_SECONDS", 60))
 
     async def _run_resolve_fast():
         try:
@@ -180,9 +181,9 @@ async def main() -> None:
 
     scheduler.add_job(
         _run_resolve_fast,
-        IntervalTrigger(minutes=fast_resolve_min),
+        IntervalTrigger(seconds=fast_resolve_sec),
         id="pm_resolve_fast",
-        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=3),
+        next_run_time=datetime.now(timezone.utc) + timedelta(seconds=30),
         max_instances=1,
         coalesce=True,
     )

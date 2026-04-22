@@ -45,9 +45,13 @@ PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving mar
 PM_SCAN_INTERVAL_MINUTES = 30
 
 # Position resolver: checks for settled markets and updates P&L.
-PM_RESOLVE_INTERVAL_HOURS = 1
-# Fast resolver for short-horizon markets (< 1 day to end).
-PM_RESOLVE_FAST_INTERVAL_MINUTES = 10
+# Resolution checks are a free Polymarket REST read per open position, so we
+# can poll much more aggressively than the evaluation scan. Users expect
+# positions to settle within ~a minute of the market resolving on Polymarket.
+PM_RESOLVE_INTERVAL_MINUTES = 15
+# Near-live resolver for short-horizon markets (< 24h to end). This is the
+# common case for how Delfi trades, so the fast path carries the experience.
+PM_RESOLVE_FAST_INTERVAL_SECONDS = 60
 
 
 # ── Self-improvement ─────────────────────────────────────────────────────────
