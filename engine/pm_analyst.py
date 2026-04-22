@@ -33,6 +33,7 @@ from sqlalchemy import text
 import calibration
 import config
 from db.engine import get_engine
+from engine.archetype_classifier import classify_archetype
 from engine.notifier_state import is_trading_paused
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
 from engine.risk_manager import evaluate as evaluate_risk
@@ -187,6 +188,12 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
+        archetype = classify_archetype(
+            market.question,
+            category=evaluation.category,
+            event_slug=getattr(market, "event_slug", None),
+        )
+
         decision = size_position(
             claude_p    = evaluation.probability_yes,
             confidence  = evaluation.confidence,
@@ -194,7 +201,7 @@ class PMAnalyst:
             ask_no      = market.no_price,
             bankroll    = verdict.effective_bankroll,
             user_config = user_config,
-            archetype   = evaluation.category,
+            archetype   = archetype,
         )
 
         # Streak-cooldown halves the stake without changing the EV side choice.
@@ -221,6 +228,7 @@ class PMAnalyst:
             research_sources=research.sources,
             prediction_id=prediction_id,
             recommendation=recommendation,
+            market_archetype=archetype,
         )
 
         # 7. Trade gating.
@@ -263,6 +271,7 @@ class PMAnalyst:
             prediction_id=prediction_id,
             reasoning=evaluation.reasoning,
             category=evaluation.category,
+            market_archetype=archetype,
         )
         if pos_id is None:
             return AnalysisOutcome(
@@ -425,6 +434,7 @@ def _log_market_evaluation(
     research_sources: list[str],
     prediction_id:    Optional[int],
     recommendation:   str,
+    market_archetype: Optional[str] = None,
 ) -> Optional[int]:
     try:
         with get_engine().begin() as conn:
@@ -433,11 +443,12 @@ def _log_market_evaluation(
                 "  market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
                 "  ev_bps, recommendation, reasoning, research_sources, "
-                "  prediction_id"
+                "  prediction_id, market_archetype, event_slug"
                 ") VALUES ("
                 "  :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
-                "  :ev_bps, :rec, :reason, :srcs, :pid"
+                "  :ev_bps, :rec, :reason, :srcs, "
+                "  :pid, :arch, :event_slug"
                 ") RETURNING id"
             ), {
                 "mid":  market.id,
@@ -453,6 +464,8 @@ def _log_market_evaluation(
                 "reason": evaluation.reasoning,
                 "srcs": json.dumps(research_sources),
                 "pid":  prediction_id,
+                "arch": market_archetype,
+                "event_slug": getattr(market, "event_slug", None),
             }).fetchone()
             return int(row[0]) if row else None
     except Exception as exc:

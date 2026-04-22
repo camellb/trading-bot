@@ -140,6 +140,7 @@ class PMExecutor:
         prediction_id: Optional[int] = None,
         reasoning:     Optional[str] = None,
         category:      Optional[str] = None,
+        market_archetype: Optional[str] = None,
     ) -> Optional[int]:
         """
         Record a new position. In shadow mode this is an immediate fill at
@@ -155,10 +156,12 @@ class PMExecutor:
 
         if self.mode == "live":
             pos_id = self._open_live(market, decision, claude_probability,
-                                      prediction_id, reasoning, category)
+                                      prediction_id, reasoning, category,
+                                      market_archetype)
         else:
             pos_id = self._open_shadow(market, decision, claude_probability,
-                                        prediction_id, reasoning, category)
+                                        prediction_id, reasoning, category,
+                                        market_archetype)
 
         if pos_id and pos_id > 0:
             print(
@@ -171,7 +174,8 @@ class PMExecutor:
         return pos_id
 
     def _open_shadow(self, market, decision, claude_p,
-                     prediction_id, reasoning, category) -> Optional[int]:
+                     prediction_id, reasoning, category,
+                     market_archetype=None) -> Optional[int]:
         try:
             with get_engine().begin() as conn:
                 row = conn.execute(text(
@@ -179,12 +183,14 @@ class PMExecutor:
                     "  prediction_id, market_id, condition_id, slug, question, category, "
                     "  side, shares, entry_price, cost_usd, "
                     "  claude_probability, ev_bps, confidence, "
-                    "  mode, status, expected_resolution_at, reasoning, event_slug"
+                    "  mode, status, expected_resolution_at, reasoning, event_slug, "
+                    "  market_archetype"
                     ") VALUES ("
                     "  :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
-                    "  'shadow', 'open', :exp, :reason, :event_slug"
+                    "  'shadow', 'open', :exp, :reason, :event_slug, "
+                    "  :arch"
                     ") RETURNING id"
                 ), {
                     "pid":   prediction_id,
@@ -203,6 +209,7 @@ class PMExecutor:
                     "exp":   market.end_date_iso,
                     "reason": (reasoning or "")[:4000] or None,
                     "event_slug": getattr(market, "event_slug", None),
+                    "arch":  market_archetype,
                 }).fetchone()
                 return int(row[0]) if row else None
         except Exception as exc:
@@ -210,7 +217,8 @@ class PMExecutor:
             return None
 
     def _open_live(self, market, decision, claude_p,
-                   prediction_id, reasoning, category) -> Optional[int]:
+                   prediction_id, reasoning, category,
+                   market_archetype=None) -> Optional[int]:
         """
         Placeholder until Polymarket CLOB credentials are wired.
         """
