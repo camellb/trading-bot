@@ -13,6 +13,8 @@ you're sure you no longer want the history:
         backtest_runs, backtest_trades, backtest_signals CASCADE;
 """
 
+import sys
+
 from sqlalchemy import (
     MetaData,
     Table,
@@ -494,3 +496,40 @@ def create_all_tables() -> None:
             "CREATE INDEX IF NOT EXISTS idx_pending_suggestions_user "
             "ON pending_suggestions(user_id, status)"
         ))
+        # Migration 013: grant table privileges to Supabase's `authenticated`
+        # role. SQLAlchemy-created tables are owned by postgres and inherit
+        # no privileges for PostgREST's authenticated role, so web-app
+        # requests hit `42501 permission denied for table` before RLS even
+        # evaluates. RLS (migration 006) still enforces owner scoping.
+        # Wrapped in try/except: if the role doesn't exist (e.g. non-Supabase
+        # Postgres), skip instead of failing startup.
+        try:
+            conn.execute(sa_text("GRANT USAGE ON SCHEMA public TO authenticated, anon"))
+            for tbl in (
+                "pm_positions",
+                "predictions",
+                "market_evaluations",
+                "markouts",
+                "performance_snapshots",
+                "config_change_history",
+                "event_log",
+                "news_event_log",
+                "user_config",
+                "pending_suggestions",
+            ):
+                conn.execute(sa_text(
+                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tbl} TO authenticated"
+                ))
+            conn.execute(sa_text(
+                "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO authenticated"
+            ))
+            conn.execute(sa_text(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated"
+            ))
+            conn.execute(sa_text(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                "GRANT USAGE, SELECT ON SEQUENCES TO authenticated"
+            ))
+        except Exception as exc:
+            print(f"[db] skipping authenticated grants (non-Supabase?): {exc}", file=sys.stderr)
