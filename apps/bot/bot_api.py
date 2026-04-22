@@ -46,7 +46,6 @@ from engine import diagnostics
 from config_utils import ALLOWED_CONFIG_KEYS, persist_config_value
 from db.engine import get_engine
 from engine.user_config import (
-    DEFAULT_USER_ID,
     USER_CONFIG_BOUNDS,
     USER_CONFIG_DESCRIPTIONS,
     get_user_config,
@@ -380,7 +379,10 @@ class BotAPI:
 
     async def _handle_get_user_config(self, request: web.Request) -> web.Response:
         """Return the user's risk config with bounds + descriptions."""
-        user_id = request.query.get("user_id") or DEFAULT_USER_ID
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         loop = asyncio.get_running_loop()
         cfg = await loop.run_in_executor(self._pool, get_user_config, user_id)
         return web.json_response({
@@ -392,7 +394,10 @@ class BotAPI:
         })
 
     async def _handle_list_suggestions(self, request: web.Request) -> web.Response:
-        user_id = request.query.get("user_id") or DEFAULT_USER_ID
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         include_snoozed = request.query.get("include_snoozed", "1") != "0"
         loop = asyncio.get_running_loop()
         rows = await loop.run_in_executor(
@@ -416,13 +421,16 @@ class BotAPI:
         except ValueError:
             return web.json_response({"error": "invalid suggestion id"}, status=400)
 
-        user_id = DEFAULT_USER_ID
         try:
             body = await request.json()
         except Exception:
             body = {}
-        if isinstance(body, dict) and body.get("user_id"):
+        user_id = self._user_id_from(request)
+        if not user_id and isinstance(body, dict) and body.get("user_id"):
             user_id = str(body["user_id"])
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
 
         loop = asyncio.get_running_loop()
         try:
@@ -445,7 +453,11 @@ class BotAPI:
         if not isinstance(data, dict):
             return web.json_response({"error": "body must be an object"}, status=400)
 
-        user_id = str(data.pop("user_id", DEFAULT_USER_ID))
+        user_id = self._user_id_from(request) or str(data.pop("user_id", "") or "")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        data.pop("user_id", None)
         # Allow either flat {key: value} or {"changes": {key: value}} shape.
         changes = data.get("changes") if "changes" in data else data
         if not isinstance(changes, dict) or not changes:
