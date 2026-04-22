@@ -21,7 +21,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const { data: cfg } = await supabase
     .from("user_config")
-    .select("display_name, is_admin")
+    .select("display_name, is_admin, bot_enabled, tour_completed_at")
     .eq("user_id", user.id)
     .maybeSingle();
 
@@ -34,6 +34,17 @@ export default async function DashboardLayout({ children }: { children: React.Re
     initials: initialsFor(email, name),
   };
   const isAdmin = Boolean(cfg?.is_admin);
+  const botEnabled = Boolean(cfg?.bot_enabled);
+  const tourCompleted = Boolean(cfg?.tour_completed_at);
 
-  return <DashboardShell user={shellUser} isAdmin={isAdmin}>{children}</DashboardShell>;
+  return (
+    <DashboardShell
+      user={shellUser}
+      isAdmin={isAdmin}
+      botEnabled={botEnabled}
+      tourCompleted={tourCompleted}
+    >
+      {children}
+    </DashboardShell>
+  );
 }

@@ -159,6 +159,15 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
+        _uc_early = get_user_config(user_id)
+        if not _uc_early.bot_enabled:
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_BOT_DISABLED",
+                detail=f"user {user_id} has not enabled the bot yet",
+                evaluation=evaluation, prediction_id=prediction_id,
+            )
+
         if executor.has_open_position_on_market(market.id):
             return AnalysisOutcome(
                 market_id=market.id, question=q,

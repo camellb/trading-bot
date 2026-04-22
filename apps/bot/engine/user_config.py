@@ -67,6 +67,11 @@ class UserConfig:
     polymarket_passphrase: Optional[str]   = None
     wallet_address:        Optional[str]   = None
 
+    # Per-user bot on/off switch. Defaults to False so newly onboarded users
+    # land on the dashboard with no automated trades. User clicks "Start bot"
+    # to flip this to True.
+    bot_enabled:           bool            = False
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -319,7 +324,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       confidence_full_stake, confidence_override_threshold, "
                 "       mode, starting_cash, "
                 "       polymarket_api_key, polymarket_api_secret, "
-                "       polymarket_passphrase, wallet_address "
+                "       polymarket_passphrase, wallet_address, "
+                "       bot_enabled "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
             if row is None:
@@ -343,6 +349,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 polymarket_api_secret         = (str(row[15]) if row[15] is not None else None),
                 polymarket_passphrase         = (str(row[16]) if row[16] is not None else None),
                 wallet_address                = (str(row[17]) if row[17] is not None else None),
+                bot_enabled                   = bool(row[18]) if row[18] is not None else False,
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",

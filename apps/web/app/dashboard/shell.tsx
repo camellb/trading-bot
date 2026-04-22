@@ -1,10 +1,12 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { usePolymarketCredentials } from "../../lib/credentials";
 import { signOut } from "../auth/actions";
+import { setBotEnabled } from "./actions";
+import { Tour } from "./Tour";
 
 export type IconKey =
   | "grid"
@@ -34,6 +36,7 @@ const NAV: NavItem[] = [
   { id: "positions", label: "Positions", icon: "layers", href: "/dashboard/positions", match: /^\/dashboard\/positions/ },
   { id: "performance", label: "Performance", icon: "trend", href: "/dashboard/performance", match: /^\/dashboard\/performance/ },
   { id: "activity", label: "Activity log", icon: "list", href: "/dashboard/activity", match: /^\/dashboard\/activity/ },
+  { id: "intelligence", label: "Intelligence", icon: "bolt", href: "/dashboard/intelligence", match: /^\/dashboard\/intelligence/ },
   { id: "risk", label: "Risk controls", icon: "shield", href: "/dashboard/risk", match: /^\/dashboard\/risk/ },
   {
     id: "settings",
@@ -134,10 +137,14 @@ export function DashboardShell({
   children,
   user,
   isAdmin = false,
+  botEnabled = false,
+  tourCompleted = false,
 }: {
   children: React.ReactNode;
   user: DashboardUser;
   isAdmin?: boolean;
+  botEnabled?: boolean;
+  tourCompleted?: boolean;
 }) {
   const [mode, setMode] = useState<Mode>("simulation");
   const pathname = usePathname() || "/dashboard";
@@ -162,8 +169,61 @@ export function DashboardShell({
       <Sidebar activeId={activeId} user={user} pathname={pathname} isAdmin={isAdmin} />
       <main className="app-main">
         <ModeBanner mode={mode} onSwitch={trySwitch} canGoLive={canGoLive} missing={missing} />
+        <BotControlBanner botEnabled={botEnabled} />
         {children}
       </main>
+      {!tourCompleted && <Tour />}
+    </div>
+  );
+}
+
+function BotControlBanner({ botEnabled }: { botEnabled: boolean }) {
+  const [pending, startTransition] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  const toggle = (next: boolean) => {
+    setErr(null);
+    startTransition(async () => {
+      const res = await setBotEnabled(next);
+      if (!res.ok) setErr(res.error);
+    });
+  };
+
+  return (
+    <div className={`bot-control ${botEnabled ? "on" : "off"}`}>
+      <div className="bot-control-left">
+        <span className={`bot-control-dot ${botEnabled ? "on" : "off"}`}></span>
+        <div className="bot-control-body">
+          <div className="bot-control-title">
+            {botEnabled ? "Delfi is running" : "Delfi is paused"}
+          </div>
+          <div className="bot-control-sub">
+            {botEnabled
+              ? "Scanning markets, forecasting outcomes, and opening positions within your risk limits."
+              : "You're in control. Start Delfi when you're ready and it'll begin scanning markets."}
+          </div>
+          {err && <div className="bot-control-err">Couldn't update: {err}</div>}
+        </div>
+      </div>
+      <div className="bot-control-right">
+        {botEnabled ? (
+          <button
+            className="bot-control-btn stop"
+            onClick={() => toggle(false)}
+            disabled={pending}
+          >
+            {pending ? "Pausing..." : "Pause bot"}
+          </button>
+        ) : (
+          <button
+            className="bot-control-btn start"
+            onClick={() => toggle(true)}
+            disabled={pending}
+          >
+            {pending ? "Starting..." : "Start Delfi"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -721,3 +721,111 @@
   .kv-grid { grid-template-columns: 1fr; gap: 4px 0; }
   .kv-label { padding-top: 12px; }
 }
+
+/* ─── Intelligence page ───────────────────────────────────── */
+.intel-empty {
+  margin-top: 20px;
+  padding: 42px 36px;
+  border: 1px solid var(--vellum-10);
+  border-radius: 3px;
+  background: rgba(255,255,255,0.02);
+}
+.intel-empty-pill {
+  display: inline-block;
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--gold);
+  border: 1px solid var(--gold-line);
+  background: var(--gold-dim);
+  padding: 6px 10px; border-radius: 2px;
+  margin-bottom: 16px;
+}
+.intel-empty-head {
+  font-family: var(--font-display, var(--font-body));
+  font-size: 24px; line-height: 1.3;
+  color: var(--vellum);
+  margin: 0 0 10px;
+}
+.intel-empty-body {
+  color: var(--vellum-60); font-size: 15px; line-height: 1.6; margin: 0;
+  max-width: 640px;
+}
+.intel-section { margin-top: 28px; }
+.intel-section-title {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--vellum-60);
+  margin: 0 0 14px;
+}
+.intel-list { display: grid; gap: 14px; }
+.intel-card {
+  border: 1px solid var(--vellum-10);
+  background: rgba(255,255,255,0.02);
+  border-radius: 3px;
+  padding: 22px 24px;
+}
+.intel-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.intel-card-date {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--vellum-60);
+  letter-spacing: 0.08em;
+}
+.intel-card-status {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.2em; text-transform: uppercase;
+  padding: 4px 8px; border-radius: 2px;
+  border: 1px solid;
+}
+.intel-card-status.pending { color: var(--gold); border-color: var(--gold-line); background: var(--gold-dim); }
+.intel-card-status.snoozed { color: var(--vellum-60); border-color: var(--vellum-20); background: transparent; }
+.intel-card-param {
+  font-family: var(--font-mono); font-size: 13px;
+  color: var(--vellum);
+  margin-bottom: 8px;
+}
+.intel-card-move {
+  display: flex; align-items: baseline; gap: 10px;
+  font-family: var(--font-mono); font-size: 18px;
+  color: var(--vellum);
+  margin-bottom: 12px;
+}
+.intel-card-from { color: var(--vellum-60); }
+.intel-card-arrow { color: var(--vellum-40); font-size: 14px; }
+.intel-card-to { color: var(--gold); }
+.intel-card-evidence {
+  color: var(--vellum-70); font-size: 14px; line-height: 1.55;
+  margin: 0 0 14px;
+}
+.intel-card-stats {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+  padding: 12px 0;
+  border-top: 1px solid var(--vellum-10);
+  border-bottom: 1px solid var(--vellum-10);
+}
+.intel-card-stat dt {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--vellum-40);
+  margin-bottom: 4px;
+}
+.intel-card-stat dd {
+  font-family: var(--font-mono); font-size: 15px;
+  color: var(--vellum); margin: 0;
+}
+.intel-card-stat dd.profit { color: #6acfa8; }
+.intel-card-foot {
+  color: var(--vellum-60); font-size: 12px;
+}
+.intel-card-foot code {
+  font-family: var(--font-mono); font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.05);
+  color: var(--vellum);
+}
