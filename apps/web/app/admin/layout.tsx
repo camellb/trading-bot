@@ -1,44 +1,21 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import "../styles/content.css";
+import { createClient } from "@/lib/supabase/server";
 
-const ADMIN_NAV = [
-  { id: "overview", label: "Overview", href: "/admin", match: /^\/admin\/?$/ },
-  { id: "users", label: "Users", href: "/admin/users", match: /^\/admin\/users/ },
-  { id: "trades", label: "Trades", href: "/admin/trades", match: /^\/admin\/trades/ },
-  { id: "flags", label: "Feature flags", href: "/admin/flags", match: /^\/admin\/flags/ },
-  { id: "health", label: "System health", href: "/admin/health", match: /^\/admin\/health/ },
-];
+import AdminNav from "./nav";
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname() || "/admin";
-  return (
-    <div className="content-page">
-      <header className="content-nav">
-        <Link href="/admin" className="wordmark">
-          <img src="/brand/mark.svg" alt="" />
-          <span>DELFI · ADMIN</span>
-        </Link>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <span className="pill pill-open">Operator</span>
-          <Link href="/dashboard" className="back-link" style={{ marginLeft: 12 }}>← Exit admin</Link>
-        </div>
-      </header>
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/auth#login");
 
-      <div className="tab-bar" style={{ padding: "0 32px", margin: 0 }}>
-        {ADMIN_NAV.map((n) => {
-          const active = n.match.test(pathname);
-          return (
-            <Link key={n.id} href={n.href} className={`tab ${active ? "on" : ""}`}>
-              {n.label}
-            </Link>
-          );
-        })}
-      </div>
+  const { data: cfg } = await supabase
+    .from("user_config")
+    .select("is_admin")
+    .eq("user_id", user.id)
+    .maybeSingle();
 
-      {children}
-    </div>
-  );
+  if (!cfg?.is_admin) redirect("/dashboard");
+
+  return <AdminNav>{children}</AdminNav>;
 }

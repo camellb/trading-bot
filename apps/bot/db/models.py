@@ -460,6 +460,7 @@ def create_all_tables() -> None:
             "ADD COLUMN IF NOT EXISTS confidence_override_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.75",
             "ADD COLUMN IF NOT EXISTS telegram_bot_token              TEXT",
             "ADD COLUMN IF NOT EXISTS telegram_chat_id                TEXT",
+            "ADD COLUMN IF NOT EXISTS is_admin                        BOOLEAN NOT NULL DEFAULT FALSE",
             "DROP COLUMN IF EXISTS confidence_skip_floor",
             "DROP COLUMN IF EXISTS min_ev_threshold",
             "DROP COLUMN IF EXISTS probability_cap",

@@ -628,6 +628,25 @@ def list_onboarded_user_ids() -> list[str]:
         return []
 
 
+def is_admin(user_id: str) -> bool:
+    """Return True iff the user has user_config.is_admin = TRUE. Defaults to
+    False on any DB error so a failed lookup cannot accidentally elevate."""
+    if not user_id:
+        return False
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT is_admin FROM user_config WHERE user_id = :uid"
+            ), {"uid": user_id}).fetchone()
+        return bool(row[0]) if row else False
+    except Exception as exc:
+        print(f"[user_config] is_admin({user_id}) failed: {exc}",
+              file=sys.stderr)
+        return False
+
+
 def get_user_join_time(user_id: str):
     """
     Return the auth.users.created_at for a user, as a timezone-aware

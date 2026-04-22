@@ -51,6 +51,7 @@ from engine.user_config import (
     get_user_config,
     get_user_polymarket_creds,
     get_user_telegram_creds,
+    is_admin as _user_is_admin,
     set_user_polymarket_creds,
     set_user_telegram_creds,
     update_user_config,
@@ -625,6 +626,106 @@ class BotAPI:
             "ready_for_live": required_ok,
         })
 
+    # ── Admin handlers ───────────────────────────────────────────────────────
+    async def _require_admin(self, request: web.Request) -> Optional[str]:
+        """Return caller user_id if they're flagged admin, else None.
+        Handlers should 401 / 403 on a None return."""
+        uid = self._user_id_from(request)
+        if not uid:
+            return None
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(self._pool, _user_is_admin, uid)
+        return uid if ok else None
+
+    async def _handle_admin_whoami(self, request: web.Request) -> web.Response:
+        """Lightweight 'am I admin?' probe for the dashboard gate."""
+        uid = self._user_id_from(request)
+        if not uid:
+            return web.json_response({"is_admin": False}, status=200)
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(self._pool, _user_is_admin, uid)
+        return web.json_response({"user_id": uid, "is_admin": bool(ok)})
+
+    async def _handle_admin_users(self, request: web.Request) -> web.Response:
+        """List every user with basic onboarding + activity stats. Admin only."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+        loop = asyncio.get_running_loop()
+        try:
+            def _q():
+                with get_engine().begin() as conn:
+                    return conn.execute(text(
+                        "SELECT uc.user_id, uc.display_name, uc.mode, "
+                        "       uc.starting_cash, uc.onboarded_at, uc.is_admin, "
+                        "       au.email, au.created_at, "
+                        "       (SELECT COUNT(*) FROM pm_positions p "
+                        "          WHERE p.user_id = uc.user_id) AS total_positions, "
+                        "       (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
+                        "          FROM pm_positions p "
+                        "          WHERE p.user_id = uc.user_id "
+                        "            AND p.status = 'settled') AS realized_pnl "
+                        "FROM user_config uc "
+                        "LEFT JOIN auth.users au ON au.id::text = uc.user_id "
+                        "ORDER BY au.created_at DESC NULLS LAST "
+                        "LIMIT 500"
+                    )).fetchall()
+            rows = await loop.run_in_executor(self._pool, _q)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        users = [
+            {
+                "user_id":         str(r[0]),
+                "display_name":    r[1],
+                "mode":            r[2],
+                "starting_cash":   float(r[3]) if r[3] is not None else None,
+                "onboarded_at":    r[4].isoformat() if r[4] else None,
+                "is_admin":        bool(r[5]),
+                "email":           r[6],
+                "created_at":      r[7].isoformat() if r[7] else None,
+                "total_positions": int(r[8] or 0),
+                "realized_pnl":    float(r[9] or 0.0),
+            }
+            for r in rows
+        ]
+        return web.json_response({"users": users})
+
+    async def _handle_admin_overview(self, request: web.Request) -> web.Response:
+        """Aggregate cross-user stats for the admin home page."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+        loop = asyncio.get_running_loop()
+        try:
+            def _q():
+                with get_engine().begin() as conn:
+                    totals = conn.execute(text(
+                        "SELECT "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE onboarded_at IS NOT NULL) AS onboarded, "
+                        "  (SELECT COUNT(*) FROM user_config) AS total, "
+                        "  (SELECT COUNT(*) FROM pm_positions "
+                        "     WHERE status = 'open') AS open_positions, "
+                        "  (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
+                        "     FROM pm_positions WHERE status = 'settled') "
+                        "    AS realized_pnl, "
+                        "  (SELECT COUNT(*) FROM market_evaluations) "
+                        "    AS total_evaluations"
+                    )).fetchone()
+                    return totals
+            row = await loop.run_in_executor(self._pool, _q)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        return web.json_response({
+            "onboarded_users":  int(row[0] or 0),
+            "total_users":      int(row[1] or 0),
+            "open_positions":   int(row[2] or 0),
+            "total_realized":   float(row[3] or 0.0),
+            "total_evaluations": int(row[4] or 0),
+        })
+
     # ── Action handlers ──────────────────────────────────────────────────────
     async def _handle_scan_now(self, _request: web.Request) -> web.Response:
         if self._analyst is None:
@@ -953,6 +1054,9 @@ class BotAPI:
         app.router.add_post("/api/reset-test",    self._handle_reset_test)
         app.router.add_post("/api/switch-mode",   self._handle_switch_mode)
         app.router.add_post("/api/update-config", self._handle_update_config)
+        app.router.add_get ("/api/admin/whoami",   self._handle_admin_whoami)
+        app.router.add_get ("/api/admin/users",    self._handle_admin_users)
+        app.router.add_get ("/api/admin/overview", self._handle_admin_overview)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, BOT_API_HOST, BOT_API_PORT)
