@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delfi.dev/contracts/market_evaluation.schema.json",
+  "title": "MarketEvaluation",
+  "description": "Output of the Claude-backed evaluator for a single Polymarket market. Mirrors apps/bot/db/models.py :: market_evaluations. Produced by apps/bot/engine/polymarket_evaluator.py; consumed by the dashboard.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "evaluated_at", "market_id", "question",
+    "market_price_yes", "claude_probability"
+  ],
+  "properties": {
+    "id":                  { "type": "integer" },
+    "evaluated_at":        { "type": "string", "format": "date-time" },
+    "market_id":           { "type": "string" },
+    "condition_id":        { "type": ["string", "null"] },
+    "slug":                { "type": ["string", "null"] },
+    "question":            { "type": "string" },
+    "category":            { "type": ["string", "null"] },
+    "market_price_yes":    { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "claude_probability":  { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "confidence":          { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "ev_bps":              { "type": ["number", "null"] },
+    "recommendation":      { "type": ["string", "null"], "enum": ["BUY_YES", "BUY_NO", "SKIP", null] },
+    "reasoning":           { "type": ["string", "null"] },
+    "research_sources":    { "type": ["string", "null"], "description": "JSON array of research source urls/titles, stored as text" },
+    "prediction_id":       { "type": ["integer", "null"] },
+    "pm_position_id":      { "type": ["integer", "null"] }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delfi.dev/contracts/trade.schema.json",
+  "title": "Trade",
+  "description": "A settled trade report: the join of an evaluation with its realised markout/settlement. Mirrors the shape returned by apps/bot/bot_api.py trade-report endpoints from market_evaluations + markouts + pm_positions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "evaluation_id", "market_id", "question",
+    "claude_probability", "market_price_yes",
+    "recommendation"
+  ],
+  "properties": {
+    "evaluation_id":         { "type": "integer" },
+    "position_id":           { "type": ["integer", "null"] },
+    "market_id":             { "type": "string" },
+    "slug":                  { "type": ["string", "null"] },
+    "question":              { "type": "string" },
+    "category":              { "type": ["string", "null"] },
+    "archetype":             { "type": ["string", "null"] },
+    "evaluated_at":          { "type": "string", "format": "date-time" },
+    "settled_at":            { "type": ["string", "null"], "format": "date-time" },
+    "claude_probability":    { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "market_price_yes":      { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "confidence":            { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "recommendation":        { "type": "string", "enum": ["BUY_YES", "BUY_NO", "SKIP"] },
+    "side":                  { "type": ["string", "null"], "enum": ["YES", "NO", null] },
+    "shares":                { "type": ["number", "null"] },
+    "entry_price":           { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "cost_usd":              { "type": ["number", "null"] },
+    "settlement_outcome":    { "type": ["string", "null"], "enum": ["YES", "NO", "INVALID", null] },
+    "settlement_price":      { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "realized_pnl_usd":      { "type": ["number", "null"] },
+    "markout_1h_direction":  { "type": ["boolean", "null"] },
+    "markout_6h_direction":  { "type": ["boolean", "null"] },
+    "markout_24h_direction": { "type": ["boolean", "null"] }
+  }
+}

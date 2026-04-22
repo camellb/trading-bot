@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delfi.dev/contracts/position.schema.json",
+  "title": "Position",
+  "description": "A realised bet on a Polymarket market. Mirrors apps/bot/db/models.py :: pm_positions. Produced by apps/bot/execution/pm_executor.py; consumed by the dashboard over the HTTP boundary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id", "created_at", "market_id", "question",
+    "side", "shares", "entry_price", "cost_usd",
+    "mode", "status"
+  ],
+  "properties": {
+    "id":                    { "type": "integer" },
+    "created_at":            { "type": "string", "format": "date-time" },
+    "prediction_id":         { "type": ["integer", "null"] },
+    "market_id":             { "type": "string" },
+    "condition_id":          { "type": ["string", "null"] },
+    "slug":                  { "type": ["string", "null"] },
+    "question":              { "type": "string" },
+    "category":              { "type": ["string", "null"] },
+    "side":                  { "type": "string", "enum": ["YES", "NO"] },
+    "shares":                { "type": "number" },
+    "entry_price":           { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "cost_usd":              { "type": "number" },
+    "claude_probability":    { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "ev_bps":                { "type": ["number", "null"] },
+    "confidence":            { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "mode":                  { "type": "string", "enum": ["shadow", "live"] },
+    "status":                { "type": "string", "enum": ["open", "settled", "invalid", "closed_early"] },
+    "expected_resolution_at":{ "type": ["string", "null"], "format": "date-time" },
+    "settled_at":            { "type": ["string", "null"], "format": "date-time" },
+    "settlement_outcome":    { "type": ["string", "null"], "enum": ["YES", "NO", "INVALID", null] },
+    "settlement_price":      { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
+    "realized_pnl_usd":      { "type": ["number", "null"] },
+    "event_slug":            { "type": ["string", "null"] },
+    "clob_order_id":         { "type": ["string", "null"] },
+    "tx_hash":               { "type": ["string", "null"] },
+    "reasoning":             { "type": ["string", "null"] }
+  }
+}

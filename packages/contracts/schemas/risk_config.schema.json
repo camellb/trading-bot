@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://delfi.dev/contracts/risk_config.schema.json",
+  "title": "RiskConfig",
+  "description": "Per-user risk configuration. Mirrors apps/bot/engine/user_config.py :: UserConfig and the user_config table. Source of truth for the bot <-> web boundary; persisted as a single user_config row per user.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "min_p_win",
+    "confidence_full_stake",
+    "confidence_override_threshold",
+    "base_stake_pct",
+    "max_stake_pct",
+    "daily_loss_limit_pct",
+    "weekly_loss_limit_pct",
+    "drawdown_halt_pct",
+    "streak_cooldown_losses",
+    "dry_powder_reserve_pct",
+    "archetype_skip_list"
+  ],
+  "properties": {
+    "min_p_win":                      { "type": "number",  "minimum": 0.50,  "maximum": 0.90 },
+    "confidence_full_stake":          { "type": "number",  "minimum": 0.50,  "maximum": 0.90 },
+    "confidence_override_threshold":  { "type": "number",  "minimum": 0.60,  "maximum": 0.95 },
+    "base_stake_pct":                 { "type": "number",  "minimum": 0.005, "maximum": 0.05 },
+    "max_stake_pct":                  { "type": "number",  "minimum": 0.01,  "maximum": 0.10 },
+    "daily_loss_limit_pct":           { "type": "number",  "minimum": 0.05,  "maximum": 0.25 },
+    "weekly_loss_limit_pct":          { "type": "number",  "minimum": 0.10,  "maximum": 0.40 },
+    "drawdown_halt_pct":              { "type": "number",  "minimum": 0.20,  "maximum": 0.60 },
+    "streak_cooldown_losses":         { "type": "integer", "minimum": 2,     "maximum": 10 },
+    "dry_powder_reserve_pct":         { "type": "number",  "minimum": 0.10,  "maximum": 0.40 },
+    "cost_assumption_override":       { "type": ["number", "null"], "minimum": 0.0, "maximum": 0.10 },
+    "archetype_skip_list":            { "type": "array",   "items": { "type": "string" } }
+  }
+}
