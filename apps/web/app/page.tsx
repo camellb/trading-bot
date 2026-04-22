@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import "./styles/homepage.css";
 
+import { createClient } from "@/lib/supabase/client";
+
 // ─── CountUp ─────────────────────────────────────────────
 function CountUp({ target, duration = 2200, className = "" }: { target: number; duration?: number; className?: string }) {
   const [val, setVal] = useState(0);
@@ -45,10 +47,19 @@ function CountUp({ target, duration = 2200, className = "" }: { target: number; 
 // ─── Top nav ─────────────────────────────────────────────
 function TopNav() {
   const [scrolled, setScrolled] = useState(false);
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
   useEffect(() => {
     const on = () => setScrolled(window.scrollY > 20);
     window.addEventListener("scroll", on);
     return () => window.removeEventListener("scroll", on);
+  }, []);
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => setSignedIn(!!data.user));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSignedIn(!!session?.user);
+    });
+    return () => sub.subscription.unsubscribe();
   }, []);
   return (
     <nav className={`top-nav ${scrolled ? "scrolled" : ""}`}>
@@ -66,8 +77,14 @@ function TopNav() {
           </ul>
         </div>
         <div className="nav-right">
-          <Link className="nav-login" href="/auth#login">Log In</Link>
-          <Link className="btn-primary" href="/auth#signup">Get Started Free</Link>
+          {signedIn ? (
+            <Link className="btn-primary" href="/dashboard">Dashboard</Link>
+          ) : (
+            <>
+              <Link className="nav-login" href="/auth#login">Log In</Link>
+              <Link className="btn-primary" href="/auth#signup">Get Started Free</Link>
+            </>
+          )}
         </div>
       </div>
     </nav>

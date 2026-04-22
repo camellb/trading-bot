@@ -7,11 +7,11 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const url = request.nextUrl;
   const code = url.searchParams.get("code");
-  const next = url.searchParams.get("next") ?? "/dashboard";
-  const redirectUrl = new URL(next, url.origin);
+  const next = url.searchParams.get("next");
+
+  const supabase = await createClient();
 
   if (code) {
-    const supabase = await createClient();
     const { error } = await supabase.auth.exchangeCodeForSession(code);
     if (error) {
       const errUrl = new URL("/auth", url.origin);
@@ -21,5 +21,19 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  return NextResponse.redirect(redirectUrl);
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    const authUrl = new URL("/auth", url.origin);
+    authUrl.hash = "login";
+    return NextResponse.redirect(authUrl);
+  }
+
+  const { data: cfg } = await supabase
+    .from("user_config")
+    .select("onboarded_at")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  const target = cfg?.onboarded_at ? (next ?? "/dashboard") : "/onboarding";
+  return NextResponse.redirect(new URL(target, url.origin));
 }

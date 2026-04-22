@@ -2,15 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import "../styles/content.css";
+
+import { completeOnboarding } from "./actions";
 
 type Step = 1 | 2 | 3 | 4;
 type Mode = "simulation" | "live";
 type RiskProfile = "cautious" | "balanced" | "aggressive";
 
 export default function OnboardingPage() {
-  const router = useRouter();
   const [step, setStep] = useState<Step>(1);
   const [mode, setMode] = useState<Mode>("simulation");
   const [capital, setCapital] = useState<number>(1000);
@@ -33,7 +33,6 @@ export default function OnboardingPage() {
       if (s === 3 && skipCapital) return 1;
       return s > 1 ? ((s - 1) as Step) : s;
     });
-  const finish = () => router.push("/dashboard");
 
   return (
     <div className="ob-page">
@@ -249,9 +248,11 @@ export default function OnboardingPage() {
                 Continue →
               </button>
             ) : (
-              <button className="ob-next" onClick={finish}>
-                {mode === "live" ? "Connect wallet →" : "Enter dashboard →"}
-              </button>
+              <form action={completeOnboarding} style={{ display: "inline" }}>
+                <button type="submit" className="ob-next">
+                  {mode === "live" ? "Connect wallet →" : "Enter dashboard →"}
+                </button>
+              </form>
             )}
           </div>
         </div>
