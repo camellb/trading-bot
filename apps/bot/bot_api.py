@@ -50,7 +50,9 @@ from engine.user_config import (
     USER_CONFIG_BOUNDS,
     USER_CONFIG_DESCRIPTIONS,
     get_user_config,
+    get_user_polymarket_creds,
     get_user_telegram_creds,
+    set_user_polymarket_creds,
     set_user_telegram_creds,
     update_user_config,
 )
@@ -469,7 +471,10 @@ class BotAPI:
     async def _handle_get_telegram_config(self, request: web.Request) -> web.Response:
         """Return whether the user has Telegram creds configured. Never echoes
         the token or chat_id back — the dashboard only needs the boolean."""
-        user_id = request.query.get("user_id") or DEFAULT_USER_ID
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         loop = asyncio.get_running_loop()
         creds = await loop.run_in_executor(
             self._pool, get_user_telegram_creds, user_id,
@@ -488,7 +493,10 @@ class BotAPI:
         if not isinstance(data, dict):
             return web.json_response({"error": "body must be an object"}, status=400)
 
-        user_id   = str(data.get("user_id") or DEFAULT_USER_ID)
+        user_id   = self._user_id_from(request) or str(data.get("user_id") or "")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         bot_token = data.get("bot_token")
         chat_id   = data.get("chat_id")
         if bot_token is not None and not isinstance(bot_token, str):
@@ -517,6 +525,92 @@ class BotAPI:
             "status":     "applied",
             "user_id":    user_id,
             "configured": creds is not None,
+        })
+
+    async def _handle_get_polymarket_config(self, request: web.Request) -> web.Response:
+        """Return which Polymarket credential fields the user has filled.
+        Never echoes api_key/api_secret/passphrase back — the dashboard only
+        needs the boolean flags + wallet_address (non-sensitive)."""
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        loop = asyncio.get_running_loop()
+        creds = await loop.run_in_executor(
+            self._pool, get_user_polymarket_creds, user_id,
+        )
+        required_ok = bool(creds.get("api_key")
+                           and creds.get("api_secret")
+                           and creds.get("wallet_address"))
+        return web.json_response({
+            "user_id":           user_id,
+            "api_key_set":       bool(creds.get("api_key")),
+            "api_secret_set":    bool(creds.get("api_secret")),
+            "passphrase_set":    bool(creds.get("passphrase")),
+            "wallet_address":    creds.get("wallet_address"),
+            "ready_for_live":    required_ok,
+        })
+
+    async def _handle_put_polymarket_config(self, request: web.Request) -> web.Response:
+        """Persist per-user Polymarket credentials. Empty string → NULL;
+        missing key → untouched. api_key/api_secret/wallet_address are
+        required for live mode; passphrase is optional."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "body must be an object"}, status=400)
+
+        user_id = self._user_id_from(request) or str(data.get("user_id") or "")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+
+        def _str_or_none(key: str):
+            v = data.get(key, None)
+            if v is None:
+                return None
+            if not isinstance(v, str):
+                return ValueError(f"{key} must be string or null")
+            return v
+
+        api_key        = _str_or_none("api_key")
+        api_secret     = _str_or_none("api_secret")
+        passphrase     = _str_or_none("passphrase")
+        wallet_address = _str_or_none("wallet_address")
+        for v, name in ((api_key, "api_key"), (api_secret, "api_secret"),
+                         (passphrase, "passphrase"), (wallet_address, "wallet_address")):
+            if isinstance(v, ValueError):
+                return web.json_response({"error": str(v)}, status=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                self._pool,
+                lambda: set_user_polymarket_creds(
+                    user_id,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    passphrase=passphrase,
+                    wallet_address=wallet_address,
+                ),
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        creds = get_user_polymarket_creds(user_id)
+        required_ok = bool(creds.get("api_key")
+                           and creds.get("api_secret")
+                           and creds.get("wallet_address"))
+        return web.json_response({
+            "status":         "applied",
+            "user_id":        user_id,
+            "api_key_set":    bool(creds.get("api_key")),
+            "api_secret_set": bool(creds.get("api_secret")),
+            "passphrase_set": bool(creds.get("passphrase")),
+            "wallet_address": creds.get("wallet_address"),
+            "ready_for_live": required_ok,
         })
 
     # ── Action handlers ──────────────────────────────────────────────────────
@@ -830,6 +924,8 @@ class BotAPI:
         app.router.add_put ("/api/user-config", self._handle_update_user_config)
         app.router.add_get ("/api/config/telegram", self._handle_get_telegram_config)
         app.router.add_put ("/api/config/telegram", self._handle_put_telegram_config)
+        app.router.add_get ("/api/config/polymarket", self._handle_get_polymarket_config)
+        app.router.add_put ("/api/config/polymarket", self._handle_put_polymarket_config)
         app.router.add_get ("/api/suggestions", self._handle_list_suggestions)
         app.router.add_post("/api/suggestions/{suggestion_id}/apply",
                             self._handle_apply_suggestion)

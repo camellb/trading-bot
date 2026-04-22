@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useCredentials } from "../../lib/credentials";
+import { usePolymarketCredentials } from "../../lib/credentials";
 import { signOut } from "../auth/actions";
 
 export type IconKey =
@@ -139,7 +139,7 @@ export function DashboardShell({
 }) {
   const [mode, setMode] = useState<Mode>("simulation");
   const pathname = usePathname() || "/dashboard";
-  const { missing, canGoLive, hydrated } = useCredentials();
+  const { missing, canGoLive, hydrated } = usePolymarketCredentials();
 
   useEffect(() => {
     document.body.classList.add("app");
