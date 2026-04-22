@@ -26,9 +26,13 @@ DEFAULT_USER_ID = "default"
 
 @dataclass
 class UserConfig:
-    # Sizer thresholds — three gates + confidence softener.
+    # Sizer thresholds — two gates + confidence softener.
+    # Gate 1: direction / side selection (never skips).
+    # Gate 2: minimum p_win on the chosen side.
+    # The prior Gate 3 (minimum expected return) was removed as a doctrine
+    # violation: it skipped heavy favourites where the math still favoured
+    # taking the bet. Side selection + p_win floor is the full skip logic.
     min_p_win:                      float = 0.50
-    min_expected_return:            float = 0.05
     confidence_full_stake:          float = 0.70
     confidence_override_threshold:  float = 0.75
 
@@ -56,7 +60,6 @@ class UserConfig:
 # when a concrete value is supplied.
 USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     "min_p_win":                     (0.50, 0.90),
-    "min_expected_return":           (0.01, 0.20),
     "confidence_full_stake":         (0.50, 0.90),
     "confidence_override_threshold": (0.60, 0.95),
     "base_stake_pct":                (0.005, 0.05),
@@ -88,10 +91,6 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Side is the side Claude's forecast favors; p_win is Claude's "
         "probability for that side. Higher values filter out low-conviction "
         "bets even when direction agrees with the market.",
-    "min_expected_return":
-        "Minimum payoff after costs required to take a bet. Computed as "
-        "(1 / ask_price) − 1 − cost_assumption. Prevents trades where the "
-        "ask is so close to $1 that there is nothing left to win.",
     "confidence_full_stake":
         "Confidence at which the sizer applies the full configured stake. "
         "At confidence 0 the multiplier is 1%; it scales linearly to 100% "
@@ -137,7 +136,6 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
 # Type caster per field — applied when accepting updates from the dashboard.
 _CASTERS: dict[str, type] = {
     "min_p_win":                     float,
-    "min_expected_return":           float,
     "confidence_full_stake":         float,
     "confidence_override_threshold": float,
     "base_stake_pct":                float,
@@ -255,7 +253,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       drawdown_halt_pct, streak_cooldown_losses, "
                 "       dry_powder_reserve_pct, "
                 "       cost_assumption_override, archetype_skip_list, "
-                "       min_p_win, min_expected_return, "
+                "       min_p_win, "
                 "       confidence_full_stake, confidence_override_threshold "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
@@ -272,9 +270,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 cost_assumption_override      = (float(row[7]) if row[7] is not None else None),
                 archetype_skip_list           = _decode_csv(row[8]),
                 min_p_win                     = float(row[9]),
-                min_expected_return           = float(row[10]),
-                confidence_full_stake         = float(row[11]),
-                confidence_override_threshold = float(row[12]),
+                confidence_full_stake         = float(row[10]),
+                confidence_override_threshold = float(row[11]),
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",

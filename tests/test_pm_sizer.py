@@ -8,7 +8,6 @@ Gate 1 — side selection (never skips):
       mean = (claude_p + ask_yes) / 2, side = YES if mean >= 0.50 else NO.
 
 Gate 2 — minimum p_win (default 0.50).
-Gate 3 — minimum expected return (default 0.05), using (1/ask) - 1 - cost.
 
 Confidence softener (size only — never skip):
     multiplier = min(1.0, 0.01 + (confidence / confidence_full_stake) * 0.99)
@@ -57,7 +56,6 @@ class HighConfidenceOverrideTests(unittest.TestCase):
         # Claude 0.70 YES, market 0.10 YES, confidence 0.80 → YES override.
         d = call(claude_p=0.70, confidence=0.80, ask_yes=0.10, ask_no=0.90)
         self.assertEqual(d.side, "YES")
-        # With ask_yes=0.10, entry is 0.10, exp_ret = 1/0.10 - 1 - 0.015 ≈ 8.89
         self.assertTrue(d.should_trade)
 
     def test_override_follows_claude_no_against_market(self):
@@ -111,7 +109,6 @@ class MeanRuleTests(unittest.TestCase):
         # Gate 2 (min_p_win defaults to 0.50, test uses >=).
         d = call(claude_p=0.50, confidence=0.40, ask_yes=0.55, ask_no=0.45)
         self.assertEqual(d.side, "YES")
-        # Gate 3 check: 1/0.55 - 1 - 0.015 ≈ 0.803; passes default 0.05.
         self.assertTrue(d.should_trade)
 
     def test_mean_boundary_goes_yes(self):
@@ -162,45 +159,18 @@ class Gate2MinPwinTests(unittest.TestCase):
         self.assertIn("p_win", d.skip_reason)
 
 
-# ── Gate 3: minimum expected return ──────────────────────────────────────────
-class Gate3ExpectedReturnTests(unittest.TestCase):
-    def test_expensive_favourite_trap_blocked(self):
-        # Claude 0.95, market 0.97, confidence 0.80 (override). Side YES at
-        # ask 0.97 → exp_ret = 1/0.97 - 1 - 0.015 ≈ 0.016. Below 0.05 → skip.
-        d = call(claude_p=0.95, confidence=0.80, ask_yes=0.97, ask_no=0.03)
-        self.assertEqual(d.side, "YES")
-        self.assertFalse(d.should_trade)
-        self.assertIn("expected return", d.skip_reason)
-
-    def test_cost_override_changes_expected_return(self):
-        # ask_yes 0.90 → base exp_ret = 1/0.90 - 1 ≈ 0.111. With default
-        # cost 0.015 it passes; with cost override 0.10 it falls to ~0.011,
-        # below the 0.05 floor → Gate 3 skips.
-        d_default = call(claude_p=0.95, confidence=0.80,
-                         ask_yes=0.90, ask_no=0.10)
-        self.assertTrue(d_default.should_trade)
-
-        d_override = call(claude_p=0.95, confidence=0.80,
-                          ask_yes=0.90, ask_no=0.10,
-                          user_config=cfg(cost_assumption_override=0.10))
-        self.assertIn("expected return", d_override.skip_reason or "")
-
-    def test_user_can_raise_min_expected_return(self):
-        # exp_ret on 0.60 = 1/0.60 - 1 - 0.015 ≈ 0.652. Still comfortable
-        # at 0.60 threshold.
-        d = call(claude_p=0.80, confidence=0.80, ask_yes=0.60, ask_no=0.40,
-                 user_config=cfg(min_expected_return=0.60))
-        self.assertTrue(d.should_trade)
-        # But raising to 0.70 trips the gate.
-        d2 = call(claude_p=0.80, confidence=0.80, ask_yes=0.60, ask_no=0.40,
-                  user_config=cfg(min_expected_return=0.70))
-        self.assertIn("expected return", d2.skip_reason or "")
+# ── Gate 3 removed ───────────────────────────────────────────────────────────
+# A prior version of this sizer rejected trades whose expected return
+# (1/ask - 1 - cost) fell below `min_expected_return`. It was scrapped
+# because it muted heavy favourites where the math still favoured the
+# bet — e.g. Claude 0.95 on a market pricing YES at 0.94. Side selection
+# + the p_win floor is the full skip logic.
 
 
 # ── Confidence softener ──────────────────────────────────────────────────────
 class ConfidenceSoftenerTests(unittest.TestCase):
     def _stake_at(self, confidence: float) -> float:
-        # Use claude_p/ask that easily passes Gates 2 and 3.
+        # Use claude_p/ask that easily passes Gate 2.
         # Force override so confidence is the only softener input.
         d = call(
             claude_p=0.85, confidence=confidence,
@@ -242,8 +212,7 @@ class ConfidenceSoftenerTests(unittest.TestCase):
 
     def test_softener_never_skips(self):
         # Confidence 0.0 still trades (at $2 absolute floor), as long as
-        # Gates 2 and 3 are satisfied. Historical "confidence_skip_floor"
-        # is gone.
+        # Gate 2 is satisfied. Historical "confidence_skip_floor" is gone.
         d = call(claude_p=0.85, confidence=0.0,
                  ask_yes=0.50, ask_no=0.50,
                  user_config=cfg(confidence_override_threshold=0.01),
@@ -327,7 +296,7 @@ class Row20ScenarioTests(unittest.TestCase):
 
     def test_would_fire_under_confidence_override(self):
         # Same market but with confidence 0.80 — override follows Claude,
-        # side NO, p_win 0.75 passes Gate 2, ask_no=0.145 passes Gate 3.
+        # side NO, p_win 0.75 passes Gate 2.
         d = call(claude_p=0.25, confidence=0.80,
                  ask_yes=0.855, ask_no=0.145)
         self.assertEqual(d.side, "NO")

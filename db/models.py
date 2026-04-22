@@ -437,13 +437,15 @@ def create_all_tables() -> None:
             "ADD COLUMN IF NOT EXISTS cost_assumption_override DOUBLE PRECISION",
             "ADD COLUMN IF NOT EXISTS archetype_skip_list      TEXT",
             "ADD COLUMN IF NOT EXISTS min_p_win                      DOUBLE PRECISION NOT NULL DEFAULT 0.50",
-            "ADD COLUMN IF NOT EXISTS min_expected_return            DOUBLE PRECISION NOT NULL DEFAULT 0.05",
             "ADD COLUMN IF NOT EXISTS confidence_full_stake          DOUBLE PRECISION NOT NULL DEFAULT 0.70",
             "ADD COLUMN IF NOT EXISTS confidence_override_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.75",
             "DROP COLUMN IF EXISTS confidence_skip_floor",
             "DROP COLUMN IF EXISTS min_ev_threshold",
             "DROP COLUMN IF EXISTS probability_cap",
             "DROP COLUMN IF EXISTS ev_bucket_skip_list",
+            # Doctrine: Gate 3 (minimum expected return) removed. It skipped
+            # heavy-favourite bets where the math still favoured trading.
+            "DROP COLUMN IF EXISTS min_expected_return",
             "ALTER COLUMN min_p_win SET DEFAULT 0.50",
         ):
             conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))

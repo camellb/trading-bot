@@ -230,7 +230,6 @@ class SkipListIntegrationTests(unittest.TestCase):
         @dataclass
         class _UC:
             min_p_win: float = 0.50
-            min_expected_return: float = 0.05
             confidence_full_stake: float = 0.70
             confidence_override_threshold: float = 0.75
             base_stake_pct: float = 0.02

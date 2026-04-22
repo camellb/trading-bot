@@ -1,5 +1,5 @@
 """
-Polymarket position sizer — three gates plus a confidence softener.
+Polymarket position sizer — two gates plus a confidence softener.
 
 Gate 1 — side selection (never skips)
     Two modes based on confidence.
@@ -18,10 +18,6 @@ Gate 2 — minimum p_win
     (default 0.50). Implicitly rejects trades where the mean rule picked
     a side Claude doesn't believe in.
 
-Gate 3 — minimum expected return
-    (1 / ask) - 1 - cost_assumption must be >= min_expected_return
-    (default 0.05). Prevents the "Claude 95% / price 97¢" trap.
-
 Confidence softener (size only — never skips)
     multiplier = min(1.0, 0.01 + (confidence / confidence_full_stake) * 0.99)
     At confidence 0 the stake is 1% of base; at confidence_full_stake (default
@@ -29,6 +25,13 @@ Confidence softener (size only — never skips)
 
 Final stake = bankroll * base_stake_pct * multiplier, capped at
 bankroll * max_stake_pct, with an absolute $2 minimum.
+
+Why there is no Gate 3. A prior version of this sizer gated on minimum
+expected return — (1/ask) - 1 - cost >= min_expected_return. It was removed
+because it skipped heavy favourites where the math still favoured taking
+the bet: if Claude's calibrated p_win is 0.95 and the market prices YES at
+0.94, the EV is positive and we should trade it. Gate 3 muted exactly
+those trades. Side selection + p_win floor is the full skip logic.
 """
 
 from __future__ import annotations
@@ -41,8 +44,8 @@ from typing import Optional
 _MIN_ABSOLUTE_STAKE_USD = 2.0
 
 # Cost assumption: spread + fees + slippage, as a fraction of the payoff.
-# Enters Gate 3 (min expected return). User can override via user_config
-# field `cost_assumption_override` when realised cost drifts above this.
+# Currently unused — retained for future P&L modelling and for call sites
+# that pass a `cost_assumption_override` for forward-looking analyses.
 COST_ASSUMPTION = 0.015
 
 
@@ -77,7 +80,7 @@ def size_position(
     archetype:   Optional[str] = None,
 ) -> SizingDecision:
     """
-    Apply side selection + Gate 2 + Gate 3 + confidence softener and return
+    Apply side selection + Gate 2 + confidence softener and return
     a SizingDecision. `skip_reason` is None iff the bet is taken.
     """
     cp  = _clamp01(claude_p)
@@ -87,14 +90,8 @@ def size_position(
 
     # Thresholds come from user_config so the dashboard can edit them.
     min_p_win                       = float(getattr(user_config, "min_p_win", 0.50))
-    min_expected_return             = float(getattr(user_config, "min_expected_return", 0.05))
     confidence_full_stake           = float(getattr(user_config, "confidence_full_stake", 0.70))
     confidence_override_threshold   = float(getattr(user_config, "confidence_override_threshold", 0.75))
-
-    cost = COST_ASSUMPTION
-    override = getattr(user_config, "cost_assumption_override", None)
-    if override is not None:
-        cost = float(override)
 
     # ── Safety gate: archetype skip list ────────────────────────────────────
     archetype_skip = tuple(getattr(user_config, "archetype_skip_list", ()) or ())
@@ -124,18 +121,10 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
-    # ── Gate 3: minimum expected return ─────────────────────────────────────
+    # Entry-price sanity — can't compute shares without a positive ask.
     if entry <= 0:
         return _skip(
             cp, cf, f"non-positive entry price ({entry})",
-            side=side, entry=entry, p_win=p_win,
-        )
-    expected_return = (1.0 / entry) - 1.0 - cost
-    if expected_return < min_expected_return:
-        return _skip(
-            cp, cf,
-            f"expected return {expected_return:.3f} below "
-            f"min_expected_return {min_expected_return:.3f}",
             side=side, entry=entry, p_win=p_win,
         )
 

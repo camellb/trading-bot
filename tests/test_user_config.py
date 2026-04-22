@@ -32,9 +32,8 @@ class DefaultsMatchDoctrineTests(unittest.TestCase):
 
     def test_defaults(self):
         u = UserConfig()
-        # Three-gate sizer thresholds + confidence softener.
+        # Two-gate sizer thresholds + confidence softener.
         self.assertAlmostEqual(u.min_p_win,                     0.50)
-        self.assertAlmostEqual(u.min_expected_return,           0.05)
         self.assertAlmostEqual(u.confidence_full_stake,         0.70)
         self.assertAlmostEqual(u.confidence_override_threshold, 0.75)
         # Stake sizing.
@@ -60,14 +59,16 @@ class DefaultsMatchDoctrineTests(unittest.TestCase):
 class BoundsValidationTests(unittest.TestCase):
     def test_in_range_accepted(self):
         # At the lower bound, at the upper bound, and in the middle.
-        validate_user_config_value("min_expected_return", 0.01)
-        validate_user_config_value("min_expected_return", 0.20)
-        validate_user_config_value("min_expected_return", 0.05)
+        lo, hi = USER_CONFIG_BOUNDS["min_p_win"]
+        validate_user_config_value("min_p_win", lo)
+        validate_user_config_value("min_p_win", hi)
+        validate_user_config_value("min_p_win", (lo + hi) / 2)
 
     def test_below_min_rejected(self):
+        lo, _ = USER_CONFIG_BOUNDS["min_p_win"]
         with self.assertRaises(ValueError) as ctx:
-            validate_user_config_value("min_expected_return", 0.009)
-        self.assertIn("min_expected_return", str(ctx.exception))
+            validate_user_config_value("min_p_win", lo - 0.001)
+        self.assertIn("min_p_win", str(ctx.exception))
 
     def test_above_max_rejected(self):
         with self.assertRaises(ValueError):
@@ -91,8 +92,8 @@ class BoundsValidationTests(unittest.TestCase):
 
 class CastValueTests(unittest.TestCase):
     def test_float_field_accepts_str_and_int(self):
-        self.assertEqual(cast_value("min_expected_return", "0.05"), 0.05)
-        self.assertEqual(cast_value("base_stake_pct",      "0.02"), 0.02)
+        self.assertEqual(cast_value("min_p_win",       "0.50"), 0.50)
+        self.assertEqual(cast_value("base_stake_pct",  "0.02"), 0.02)
 
     def test_int_field_requires_int_like(self):
         self.assertEqual(cast_value("streak_cooldown_losses", 4),   4)
@@ -107,13 +108,13 @@ class CastValueTests(unittest.TestCase):
 
 class ValidatedUpdatePayloadTests(unittest.TestCase):
     def test_valid_multi_field_update(self):
-        payload = {"min_expected_return": "0.04", "base_stake_pct": 0.015}
+        payload = {"min_p_win": "0.55", "base_stake_pct": 0.015}
         clean = validated_update_payload(payload)
-        self.assertEqual(clean["min_expected_return"], 0.04)
-        self.assertEqual(clean["base_stake_pct"],      0.015)
+        self.assertEqual(clean["min_p_win"],      0.55)
+        self.assertEqual(clean["base_stake_pct"], 0.015)
 
     def test_mixed_valid_and_invalid_raises(self):
-        payload = {"min_expected_return": 0.04, "max_stake_pct": 0.50}
+        payload = {"min_p_win": 0.55, "max_stake_pct": 0.50}
         with self.assertRaises(ValueError):
             validated_update_payload(payload)
 
@@ -129,9 +130,9 @@ class ValidatedUpdatePayloadTests(unittest.TestCase):
 class DiagnosticOverrideFieldsTests(unittest.TestCase):
     """Diagnostic-driven override fields on UserConfig.
 
-    After the doctrine change to three-gate sizing, only two override
-    surfaces remain: `cost_assumption_override` (nullable float) and
-    `archetype_skip_list` (tuple of strings).
+    Under two-gate sizing only two override surfaces remain:
+    `cost_assumption_override` (nullable float, retained for future P&L
+    modelling) and `archetype_skip_list` (tuple of strings).
     """
 
     def test_defaults_are_unset(self):
@@ -193,10 +194,6 @@ class SystemSafetyBoundsTests(unittest.TestCase):
     def test_base_stake_never_exceeds_5pct(self):
         _, hi = USER_CONFIG_BOUNDS["base_stake_pct"]
         self.assertLessEqual(hi, 0.05)
-
-    def test_min_expected_return_always_positive(self):
-        lo, _ = USER_CONFIG_BOUNDS["min_expected_return"]
-        self.assertGreater(lo, 0.0)
 
     def test_min_p_win_cannot_go_below_50pct(self):
         # A sub-50% p_win floor would let the sizer fire on picks the

@@ -13,14 +13,13 @@ PM_LIVE_STARTING_CASH   = 200.0
 
 
 # ── Sizing ───────────────────────────────────────────────────────────────────
-# All sizing runs the three-gate sizer: direction agreement (Gate 1), min
-# p_win (Gate 2), min expected return (Gate 3), then a confidence softener
+# All sizing runs the two-gate sizer: side selection (Gate 1, never skips)
+# and min p_win on the chosen side (Gate 2), then a confidence softener
 # that never skips — only shrinks the stake when confidence is low.
 # See execution/pm_sizer.py for the implementation and
 # engine/user_config.py for the per-user thresholds (min_p_win,
-# min_expected_return, base_stake_pct, max_stake_pct). No Kelly, no
-# EV-as-primary-gate, no market-anchored filters — those are a
-# deliberately abandoned paradigm.
+# base_stake_pct, max_stake_pct). No Kelly, no EV-as-primary-gate, no
+# market-anchored filters — those are a deliberately abandoned paradigm.
 
 # Max simultaneous open positions across all markets.
 PM_MAX_CONCURRENT_POSITIONS = 100
