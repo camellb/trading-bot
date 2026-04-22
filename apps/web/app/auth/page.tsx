@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useActionState } from "react";
+import React, { useState, useEffect, useActionState, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -54,7 +54,9 @@ export default function AuthPage() {
 
       <div className="auth-shell">
         <AuthContext mode={mode} />
-        <AuthForm mode={mode} setMode={setModeAndHash} tweaks={tweaks} />
+        <Suspense fallback={null}>
+          <AuthForm mode={mode} setMode={setModeAndHash} tweaks={tweaks} />
+        </Suspense>
       </div>
     </div>
   );
