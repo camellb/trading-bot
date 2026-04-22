@@ -40,3 +40,9 @@ Thumbs.db
 # Bot runtime state (written on every tick)
 data/macro_calendar.json
 data/notifier_state.json
+
+# Dashboard runtime logs (Phase A absorbed the dashboard into this repo)
+dashboard/logs/
+
+# Local-only backups produced during the restructure (safe to delete)
+_archive/

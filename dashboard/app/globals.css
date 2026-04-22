@@ -1,0 +1,443 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════
+   DELFI DESIGN SYSTEM
+   Obsidian + Oracle Gold + Neon Teal + Vellum.
+   Newsreader (display) + Geist (body) + JetBrains Mono (numeric).
+   Radii 0/2/4 only. Sharp edges. Restraint is the brand.
+   ═══════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* ── Obsidian surfaces (~85% of screen) ───────────────────────── */
+  --color-surface-0: #06060a;
+  --color-surface-1: #0a0a0f;
+  --color-surface-2: #12121a;
+  --color-surface-3: #1a1a24;
+
+  --color-obsidian: #0a0a0f;
+  --color-obsidian-raise: #12121a;
+  --color-obsidian-sink: #06060a;
+
+  /* ── Hairline borders on Vellum ───────────────────────────────── */
+  --color-border: rgba(232, 228, 216, 0.10);
+  --color-border-bright: rgba(232, 228, 216, 0.30);
+
+  /* ── Oracle Gold — primary accent, reserved ~3% ───────────────── */
+  --color-gold: #d4af37;
+  --color-gold-dim: rgba(212, 175, 55, 0.12);
+  --color-gold-line: rgba(212, 175, 55, 0.35);
+
+  /* ── Neon Teal — working state ~10% ───────────────────────────── */
+  --color-accent: #00ffff;
+  --color-accent-dim: rgba(0, 255, 255, 0.08);
+  --color-accent-bright: #66ffff;
+  --color-teal: #00ffff;
+  --color-teal-dim: rgba(0, 255, 255, 0.08);
+  --color-teal-line: rgba(0, 255, 255, 0.30);
+  --color-teal-glow: rgba(0, 255, 255, 0.45);
+
+  /* ── Vellum — warm off-white body text ────────────────────────── */
+  --color-vellum: #e8e4d8;
+  --color-vellum-60: rgba(232, 228, 216, 0.60);
+  --color-vellum-40: rgba(232, 228, 216, 0.40);
+  --color-vellum-20: rgba(232, 228, 216, 0.20);
+  --color-vellum-10: rgba(232, 228, 216, 0.10);
+  --color-vellum-05: rgba(232, 228, 216, 0.05);
+
+  /* ── Ember — losses / warnings (<1%) ──────────────────────────── */
+  --color-ember: #ff4d3d;
+  --color-ember-dim: rgba(255, 77, 61, 0.10);
+  --color-danger: #ff4d3d;
+  --color-danger-dim: rgba(255, 77, 61, 0.10);
+
+  /* Neon Green — P&L positive (carried for existing widgets) */
+  --color-profit: #4bffa1;
+  --color-profit-dim: rgba(75, 255, 161, 0.10);
+
+  /* Warn (carried for existing widgets) */
+  --color-warn: #f59e0b;
+  --color-warn-dim: rgba(245, 158, 11, 0.08);
+
+  /* ── Text roles ───────────────────────────────────────────────── */
+  --color-muted: rgba(232, 228, 216, 0.40);
+  --color-subtle: rgba(232, 228, 216, 0.60);
+
+  /* ── Typography families ──────────────────────────────────────── */
+  --font-headline: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-body: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* DS-ergonomic aliases so `var(--obsidian)` / `var(--teal)` / `var(--vellum)` work verbatim from mockups */
+  --obsidian: #0a0a0f;
+  --obsidian-raise: #12121a;
+  --obsidian-sink: #06060a;
+  --gold: #d4af37;
+  --gold-dim: rgba(212, 175, 55, 0.12);
+  --gold-line: rgba(212, 175, 55, 0.35);
+  --teal: #00ffff;
+  --teal-dim: rgba(0, 255, 255, 0.08);
+  --teal-line: rgba(0, 255, 255, 0.30);
+  --teal-glow: rgba(0, 255, 255, 0.45);
+  --vellum: #e8e4d8;
+  --vellum-60: rgba(232, 228, 216, 0.60);
+  --vellum-40: rgba(232, 228, 216, 0.40);
+  --vellum-20: rgba(232, 228, 216, 0.20);
+  --vellum-10: rgba(232, 228, 216, 0.10);
+  --vellum-05: rgba(232, 228, 216, 0.05);
+  --ember: #ff4d3d;
+  --ember-dim: rgba(255, 77, 61, 0.10);
+
+  /* Profit / positive P&L — Neon Green */
+  --profit: #4bffa1;
+  --profit-dim: rgba(75, 255, 161, 0.10);
+  --profit-line: rgba(75, 255, 161, 0.35);
+  --profit-glow: rgba(75, 255, 161, 0.45);
+
+  /* Semantic */
+  --fg: var(--vellum);
+  --fg-muted: var(--vellum-60);
+  --fg-subtle: var(--vellum-40);
+  --bg: var(--obsidian);
+  --bg-elev: var(--obsidian-raise);
+  --bg-sink: var(--obsidian-sink);
+  --border: var(--vellum-10);
+  --border-hover: rgba(232, 228, 216, 0.30);
+  --accent: var(--gold);
+  --live: var(--teal);
+  --danger: var(--ember);
+
+  /* Type scale (1.25 modular) */
+  --fs-display-xl: 64px;   --lh-display-xl: 72px;
+  --fs-display-l:  48px;   --lh-display-l:  56px;
+  --fs-display-m:  36px;   --lh-display-m:  44px;
+  --fs-heading-l:  28px;   --lh-heading-l:  36px;
+  --fs-heading-m:  22px;   --lh-heading-m:  30px;
+  --fs-heading-s:  18px;   --lh-heading-s:  26px;
+  --fs-body-l:     17px;   --lh-body-l:     26px;
+  --fs-body-m:     15px;   --lh-body-m:     24px;
+  --fs-body-s:     13px;   --lh-body-s:     20px;
+  --fs-caption:    11px;   --lh-caption:    16px;
+
+  /* Spacing scale */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+  --sp-24: 96px;
+  --sp-32: 128px;
+
+  /* Radii */
+  --radius-0: 0;
+  --radius-1: 2px;
+  --radius-2: 4px;
+  --radius-full: 999px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-quick: 200ms;
+  --dur-base: 400ms;
+  --dur-reveal: 600ms;
+
+  /* Layout */
+  --max-width: 1200px;
+  --gutter: 24px;
+
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-sans: 'Geist', system-ui, -apple-system, sans-serif;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  min-height: 100dvh;
+  background: var(--color-obsidian);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body::before, body::after {
+  content: none !important;
+  background-image: none !important;
+  display: none !important;
+}
+
+@layer base {
+  body { color: var(--color-vellum); }
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #222; border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: #333; }
+
+/* In @layer base so Tailwind utility classes (text-black, etc.) can override */
+@layer base {
+  a { color: inherit; text-decoration: none; }
+}
+
+/* Force black text on cyan-background elements (un-layered to beat Tailwind layers) */
+.text-black { color: #000000; }
+
+/* ── Delfi utility classes ───────────────────────────────────────── */
+
+.font-headline {
+  font-family: var(--font-headline);
+  letter-spacing: -0.02em;
+}
+
+.font-body {
+  font-family: var(--font-body);
+}
+
+.cyan-glow {
+  box-shadow: 0 0 20px 0 rgba(0, 255, 255, 0.15);
+}
+
+.gold-glow {
+  box-shadow: 0 0 20px 0 rgba(212, 175, 55, 0.20);
+}
+.gold-glow:hover {
+  box-shadow: 0 0 28px 0 rgba(212, 175, 55, 0.35);
+}
+
+.teal-glow {
+  box-shadow: 0 0 16px 0 rgba(0, 255, 255, 0.25);
+}
+
+.font-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-feature-settings: "tnum", "zero"; }
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.cyan-glow-strong {
+  box-shadow: 0 0 30px 0 rgba(0, 255, 255, 0.25),
+              0 0 60px 0 rgba(0, 255, 255, 0.1);
+}
+
+.ghost-border {
+  border: 1px solid rgba(34, 34, 34, 0.4);
+}
+
+.hover-illuminate {
+  transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+.hover-illuminate:hover {
+  background-color: #0a0a0a;
+  border-color: rgba(0, 255, 255, 0.2);
+}
+
+.text-glow {
+  text-shadow: 0 0 15px rgba(0, 255, 255, 0.6);
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #00ffff, #00cccc);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ── SaaS behavioral animations ────────────────────────────────────── */
+
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.15); }
+}
+
+@keyframes feed-entry-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes progress-fill {
+  from { width: 0%; }
+}
+
+@keyframes gauge-fill {
+  from { stroke-dashoffset: 283; }
+}
+
+@keyframes streak-fire {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.2); }
+}
+
+@keyframes celebration-burst {
+  0%   { opacity: 1; transform: scale(0.5); }
+  50%  { opacity: 1; transform: scale(1.2); }
+  100% { opacity: 0; transform: scale(1.5); }
+}
+
+@keyframes scan-phase-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+
+@keyframes typing-cursor {
+  0%, 100% { border-color: transparent; }
+  50%      { border-color: #00ffff; }
+}
+
+@keyframes pulse-ring {
+  0%   { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+@keyframes marquee-vertical {
+  0%   { transform: translateY(0%); }
+  100% { transform: translateY(-50%); }
+}
+
+@keyframes terminal-scroll {
+  0%   { transform: translateY(100%); }
+  100% { transform: translateY(-100%); }
+}
+
+@keyframes terminal-loop {
+  0%   { transform: translateY(0); }
+  100% { transform: translateY(-50%); }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+@keyframes float-up {
+  0%   { opacity: 0; transform: translateY(30px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(0,255,255,0.1); }
+  50%      { box-shadow: 0 0 40px rgba(0,255,255,0.25); }
+}
+
+.animate-shimmer        { animation: shimmer 2s ease-in-out infinite; }
+.animate-breathe        { animation: breathe 3s ease-in-out infinite; }
+.animate-feed-in        { animation: feed-entry-in 0.4s ease-out both; }
+.animate-gauge-fill     { animation: gauge-fill 1.5s ease-out both; }
+.animate-streak-fire    { animation: streak-fire 1s ease-in-out infinite; }
+.animate-celebration    { animation: celebration-burst 1.5s ease-out both; }
+.animate-scan-pulse     { animation: scan-phase-pulse 1.5s ease-in-out infinite; }
+.animate-marquee-v      { animation: marquee-vertical 25s linear infinite; }
+.animate-terminal       { animation: terminal-scroll 12s linear infinite; }
+.animate-blink          { animation: blink 1s step-end infinite; }
+.animate-float-up       { animation: float-up 0.6s ease-out both; }
+.animate-glow-pulse     { animation: glow-pulse 3s ease-in-out infinite; }
+
+/* ── DS type scale helpers ──────────────────────────────────────── */
+.t-display-xl {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--fs-display-xl);
+  line-height: var(--lh-display-xl);
+  letter-spacing: -0.02em;
+}
+.t-display-l {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--fs-display-l);
+  line-height: var(--lh-display-l);
+  letter-spacing: -0.02em;
+}
+.t-display-m {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--fs-display-m);
+  line-height: var(--lh-display-m);
+  letter-spacing: -0.015em;
+}
+.t-heading-l {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: var(--fs-heading-l);
+  line-height: var(--lh-heading-l);
+  letter-spacing: -0.01em;
+}
+.t-heading-m {
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: var(--fs-heading-m);
+  line-height: var(--lh-heading-m);
+  letter-spacing: -0.005em;
+}
+.t-heading-s {
+  font-family: var(--font-body);
+  font-weight: 500;
+  font-size: var(--fs-heading-s);
+  line-height: var(--lh-heading-s);
+}
+.t-body-l { font-size: var(--fs-body-l); line-height: var(--lh-body-l); }
+.t-body-m { font-size: var(--fs-body-m); line-height: var(--lh-body-m); }
+.t-body-s { font-size: var(--fs-body-s); line-height: var(--lh-body-s); }
+.t-caption {
+  font-family: var(--font-body);
+  font-size: var(--fs-caption);
+  line-height: var(--lh-caption);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--vellum-60);
+}
+
+.t-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum", "zero";
+}
+
+/* ── Live dot — the single canonical "it is working" indicator ──── */
+@keyframes breath-ds {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.18); }
+}
+@keyframes breath {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.18); }
+}
+.live-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--teal);
+  box-shadow: 0 0 0 0 var(--teal-glow);
+  animation: breath-ds 2s var(--ease) infinite;
+}
+
+/* ── Reveal (fade + slight translate) ───────────────────────────── */
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.reveal { animation: reveal var(--dur-reveal) var(--ease) both; }
+
+/* ── Hairline divider ───────────────────────────────────────────── */
+.divider {
+  border: 0;
+  height: 1px;
+  background: var(--vellum-10);
+  margin: var(--sp-8) 0;
+}
+.divider.gold { background: var(--gold-line); }
