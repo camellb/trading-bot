@@ -28,11 +28,27 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(authUrl);
   }
 
-  const { data: cfg } = await supabase
+  const { data: cfg, error: cfgError } = await supabase
     .from("user_config")
     .select("onboarded_at")
     .eq("user_id", user.id)
     .maybeSingle();
+
+  if (cfgError) {
+    console.error("[auth/callback] user_config select failed", {
+      userId: user.id,
+      code: cfgError.code,
+      message: cfgError.message,
+      details: cfgError.details,
+      hint: cfgError.hint,
+    });
+  } else {
+    console.log("[auth/callback] user_config lookup", {
+      userId: user.id,
+      hasRow: !!cfg,
+      onboardedAt: cfg?.onboarded_at ?? null,
+    });
+  }
 
   const target = cfg?.onboarded_at ? (next ?? "/dashboard") : "/onboarding";
   return NextResponse.redirect(new URL(target, url.origin));

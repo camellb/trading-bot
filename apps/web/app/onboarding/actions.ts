@@ -9,12 +9,22 @@ export async function completeOnboarding() {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/auth#login");
 
-  await supabase
+  const { error } = await supabase
     .from("user_config")
     .upsert(
       { user_id: user.id, onboarded_at: new Date().toISOString() },
       { onConflict: "user_id" },
     );
+
+  if (error) {
+    console.error("[onboarding] upsert user_config failed", {
+      userId: user.id,
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    });
+  }
 
   redirect("/dashboard");
 }
