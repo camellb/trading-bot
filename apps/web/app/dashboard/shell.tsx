@@ -151,7 +151,6 @@ export function DashboardShell({
   }, []);
 
   const activeId = NAV.find((n) => n.match?.test(pathname))?.id ?? "dashboard";
-  const showCredsBanner = hydrated && !canGoLive && mode === "simulation";
 
   const trySwitch = (next: Mode) => {
     if (next === "live" && !canGoLive) return;
@@ -160,32 +159,11 @@ export function DashboardShell({
 
   return (
     <div className="app-shell density-roomy" data-screen-label="Dashboard">
-      <Sidebar activeId={activeId} user={user} mode={mode} pathname={pathname} isAdmin={isAdmin} />
+      <Sidebar activeId={activeId} user={user} pathname={pathname} isAdmin={isAdmin} />
       <main className="app-main">
         <ModeBanner mode={mode} onSwitch={trySwitch} canGoLive={canGoLive} missing={missing} />
-        {showCredsBanner && <CredentialsBanner missing={missing} />}
         {children}
       </main>
-    </div>
-  );
-}
-
-function CredentialsBanner({ missing }: { missing: string[] }) {
-  return (
-    <div className="creds-banner" role="status">
-      <div className="creds-banner-body">
-        <span className="creds-banner-dot" aria-hidden="true"></span>
-        <div>
-          <div className="creds-banner-title">Live trading is locked</div>
-          <div className="creds-banner-text">
-            Add the missing credentials before switching modes — {missing.join(", ")}. Until then,
-            Delfi will keep running in Simulation with paper capital.
-          </div>
-        </div>
-      </div>
-      <Link href="/dashboard/settings/account" className="creds-banner-cta">
-        Add credentials →
-      </Link>
     </div>
   );
 }
@@ -193,13 +171,11 @@ function CredentialsBanner({ missing }: { missing: string[] }) {
 function Sidebar({
   activeId,
   user,
-  mode,
   pathname,
   isAdmin,
 }: {
   activeId: string;
   user: DashboardUser;
-  mode: Mode;
   pathname: string;
   isAdmin: boolean;
 }) {
@@ -249,13 +225,6 @@ function Sidebar({
       )}
 
       <div className="side-foot">
-        <div className={`side-agent ${mode}`}>
-          <span className="side-agent-dot"></span>
-          <div className="side-agent-body">
-            <div className="side-agent-label">Delfi is</div>
-            <div className="side-agent-state">{mode === "live" ? "trading live" : "in simulation"}</div>
-          </div>
-        </div>
         <Link className="side-user" href="/dashboard/settings/account">
           <span className="side-avatar" aria-hidden="true">
             {user.initials}
