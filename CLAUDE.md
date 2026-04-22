@@ -2,141 +2,104 @@
 
 ## What Delfi is
 
-Delfi is an autonomous prediction market trader. It watches Polymarket, forecasts which side of every tradeable market will resolve true, and backs that forecast with a flat, confidence-scaled stake. It manages those positions dynamically and learns from every resolution. Over time, the bankroll grows.
+Delfi is an autonomous prediction market trader. It watches Polymarket, forecasts which side of every tradeable market will resolve true, and backs that forecast with a small, confidence-scaled stake. It manages positions dynamically and learns from every resolution.
 
-The product is both the trader and the experience of watching it trade. Users connect their Polymarket account. Delfi goes to work. They watch its reasoning on a live dashboard, see its positions in real time, and witness the calibrated intelligence of a system that treats every market as a solvable problem.
+The product is both the trader and the experience of watching it trade. Users connect their Polymarket account. Delfi goes to work. They see its reasoning on a live dashboard, watch positions move in real time, and witness the calibrated intelligence of a system that treats every market as a solvable problem.
 
 ## The goal
 
-Make money. Specifically: maximize ROI on bankroll across all trades.
+**Make money.** Maximize ROI on bankroll across all trades. That is the only metric that matters. Win rate, calibration, Brier score — diagnostics, not targets. If a proposed change improves expected ROI with evidence, ship it. If it doesn't, don't.
 
-This is the only metric that matters. Win rate, calibration, Brier score — these are diagnostics. They help us understand whether we're making money and why. They are not themselves the point.
+The forecaster is the product. Every dollar of ROI depends on the model being right more often than wrong on its own picks. Engineering effort goes into making the forecaster better — richer research, stronger prompts, ensemble construction, calibration analysis, learning from resolved markets. The sizer stays narrow and dumb on purpose.
 
-If a proposed change improves expected ROI, ship it. If it doesn't, don't.
+## The product experience
+
+Delfi is a character as much as a system. The dashboard feels alive because it is doing real work in real time. Reasoning is visible because transparency is both ethical and retention-positive. Losses are narrated honestly because hiding them destroys trust.
+
+- ROI is the most prominent metric on every surface. P&L shown in dollars.
+- The Delfi persona — oracle, prophecy, ethereal visuals — is marketing. Belongs in hero copy and brand assets.
+- Product surfaces use clinical precision: *"Estimated probability 0.62. Resolved NO. P&L -$4.12."*
+
+## Tech stack & where things live
+
+Monorepo, two deployables:
+
+- **`apps/bot`** — Python 3.11, the trading engine. Long-running process on **Railway**. Key deps: `anthropic`, `google-genai`, `aiohttp` (HTTP API), `sqlalchemy` + `psycopg2-binary` (Postgres), `APScheduler`, `ccxt`. Layout:
+  - `engine/` — forecasting, ensemble, calibration, self-improvement
+  - `execution/` — sizing + risk manager
+  - `feeds/` — data sources (Polymarket, news, macro calendar, Telegram notifier)
+  - `research/` — web fetchers for market research
+  - `db/` — SQLAlchemy models
+  - Entrypoints: `main.py` (scheduler), `polymarket_runner.py` (scan worker), `bot_api.py` (aiohttp HTTP server)
+- **`apps/web`** — Next.js 16 + React 19 + TypeScript + Tailwind v4. Deployed on **Vercel**. Supabase SSR for auth. The dashboard talks to the bot over HTTP via `lib/bot-proxy.ts` with an `X-Bot-Secret` header — the bot is never exposed to the browser directly.
+
+**Database** — Supabase Postgres. Schema owned by `apps/bot/db/models.py`. Migrations in `ops/supabase/migrations/`. The `trading_bot.db` file at repo root is legacy/unused — ignore it. Every user-facing row is keyed by `user_id`; the bot is multi-tenant.
+
+**Auth** — Supabase Auth. Google OAuth + email/password. Callback at `/auth/callback`. Session refresh in `apps/web/proxy.ts`.
+
+**Next.js 16 is not the Next.js in your training data.** See `apps/web/AGENTS.md`. Notable: `proxy.ts` not `middleware.ts`, `await cookies()` / `await headers()`, `useSearchParams()` must be inside `<Suspense>`.
+
+## How code reaches production
+
+`git push origin main` triggers Vercel (web) and Railway (bot) auto-deploys. **There is no local verification step — the user tests on Vercel, not localhost.** Commit and push every change immediately; don't hold local-only work. If a web change doesn't appear in prod, the cause is usually that the code never left the laptop.
+
+## Multi-tenancy invariants
+
+- Every user-facing row has a `user_id` column — positions, trades, configs, evaluations.
+- Per-user credentials (Polymarket keys, Telegram bot token + chat ID) live in `user_config`, not process env.
+- No process-global API keys for anything user-scoped. Env vars are for shared infrastructure only (DB URL, anthropic key, bot secret).
+- User-editable config (risk params, volume floors, skip lists) applies immediately from the dashboard. Only AI self-improvement suggestions require explicit approval.
+
+## Banned terminology
+
+These are not style preferences — violations will be rejected.
+
+- **"edge" / "edge-hunting"** → use "forecast", "prediction", or "calibration".
+- **"shadow"** → use "simulation" everywhere (code constants, DB values, env var values, UI, docs).
 
 ## The core principle — simple on purpose
 
 **Forecast the outcome. Back the forecast.**
 
-For every market Delfi evaluates, the ensemble produces a single probability that YES will resolve true. The rule is:
+Delfi bets the side its ensemble thinks will win. Price does not enter the side-selection decision. There is no "bet the cheaper side relative to our probability" filter — that structure selects for cases where the forecaster is wrong and loses money.
 
-- If that probability is above 0.55 → buy YES.
-- If it is below 0.45 → buy NO.
-- Otherwise skip — the call is a coin flip and there is nothing to bet on.
+Operational gates (direction agreement, minimum chosen-side probability, minimum expected return after cost, confidence softener) live in code and in `memory/doctrine_back_the_forecast.md`. The numbers in that memory file are authoritative; never invent or reset them from this document.
 
-That is the entire side-selection logic. There is no expected-value calculation, no "is this side cheap relative to my probability" test, no comparison of the bot's number against the market price. The side Delfi bets is the side Delfi thinks will win, full stop. Price does not enter the decision.
-
-This is a deliberate reversal from the prior version. The prior version filtered for trades where the bot's probability disagreed with the market — it only bet when it thought one side was "mispriced." That rule structurally selected cases where the bot was wrong, and it lost money on roughly nine out of ten resolved trades. The fix is to stop filtering for disagreement and just back the model's pick.
-
-## Sizing
-
-Flat, small stakes, scaled by model confidence.
-
-- Confidence ≥ 0.80 → 3% of bankroll.
-- Confidence 0.50–0.80 → 2% of bankroll.
-- Confidence < 0.50 → 1% of bankroll.
-- Hard ceiling: 5% of bankroll per trade, regardless.
-- Streak cooldown halves the stake after consecutive losses.
-
-Sizing scales by model confidence only. Not by disagreement size, not by price, not by anything else. Simple sizing keeps variance per trade low so the portfolio learns fast about whether the model is any good.
-
-## Skip conditions
-
-Delfi skips a market when any of these hold. These are safety gates, not strategy filters.
-
-- **Forecast is a coin flip.** Probability between 0.45 and 0.55.
-- **Paused or risk-halted.** User has paused trading, or a risk brake is tripped.
-- **Already positioned.** We already hold a position on this market.
-- **Recently evaluated.** We already scored this market in the last few days (cost control).
-- **Low volume.** Below the user's configured 24-hour volume floor — thin markets are noisy and illiquid.
-- **Duplicate in event.** Too many positions already open on correlated outcomes within the same event.
-
-There is no skip for "market disagrees with us." Disagreement with the market is not a signal either way under this doctrine.
-
-## The forecaster is the product
-
-Because side selection is entirely driven by the model's forecast, every dollar of ROI depends on the forecaster being right more often than it is wrong on its own picks. That means the engineering work worth doing is work that makes the forecaster better: richer research, stronger prompts, ensemble construction, calibration analysis by category, learning from resolved markets. The sizer stays narrow and dumb on purpose.
-
-If the forecaster is miscalibrated in a specific category, the fix is to improve the forecasting in that category, or to stop trading that category, not to bolt mechanical filters onto the sizer to try to compensate.
-
-## What we do with losing categories
-
-When resolution data shows the model has been consistently wrong in a specific category, that category goes on the skip list. Short-horizon sports (tennis, qualifiers, low-tier matches) are efficient against a language model and have cost us money — they are on the default skip list until category-level evidence says otherwise.
-
-The learning cadence is trade-volume-based. Every 50 settled trades, Delfi analyzes its record by category and proposes skip-list changes, prompt improvements, or research adjustments. The user reviews and applies them.
-
-## Other strategies
-
-The base strategy — back the forecast — is one source of ROI. Others may be added:
-
-- **Arbitrage.** When mutually exclusive outcomes on related markets sum to less than 1.00 after costs, lock in the spread. Structural inefficiency, no forecasting required.
-- **Longshot-NO systematic.** Well-documented favorite-longshot bias across betting markets. Selling NO on extreme longshots is a candidate strategy, gated behind its own evidence.
-- **Others as discovered.**
-
-Each strategy is measured on its own ROI. Profitable strategies get more allocation. Unprofitable ones are cut.
+Sizing is flat and scaled by model confidence only. Not by disagreement size, not by price, not by anything else. Simple sizing keeps variance per trade low so the portfolio learns fast.
 
 ## Risk management
 
-Circuit breakers protect the bankroll from catastrophic loss. They run identically in simulation and live, so simulation actually simulates live.
+Circuit breakers protect the bankroll from catastrophic loss. They run identically in simulation and live — simulation actually simulates live. Parameters (daily/weekly loss limits, drawdown halt, streak cooldown, dry powder reserve, max stake) are per-user editable in the dashboard within system bounds. Bounds exist so users cannot configure obviously catastrophic settings. Within the bounds the user is in control.
 
-All risk parameters are per-user editable in the dashboard within system bounds. Defaults:
-
-- Daily loss limit: 10% of bankroll (bounded 5-25%)
-- Weekly loss limit: 20% of bankroll (bounded 10-40%)
-- Drawdown halt: 40% from peak triggers manual review (bounded 20-60%)
-- Streak cooldown: 3 consecutive losses halves position sizes for 5 trades (bounded 2-10)
-- Dry powder reserve: 20% of bankroll never deployed (bounded 10-40%)
-- Maximum stake per trade: 5% of bankroll (bounded 1-10%)
-- Baseline stake: 2% of bankroll (bounded 0.5-5%)
-
-Bounds exist so users cannot configure obviously catastrophic settings. Within the bounds the user is in control.
+Current defaults and bounds are defined in `apps/bot/execution/risk_manager.py` — that file is authoritative.
 
 ## Learning and iteration
 
-Delfi learns continuously and suggests config changes autonomously, but it does not apply them autonomously. Every config change is a deliberate user decision, presented with evidence, acknowledged explicitly.
+Delfi learns continuously and proposes config changes autonomously, but does not apply them autonomously. Every config change is a deliberate user decision with evidence.
 
-Learning is trade-volume-based, not calendar-based. Every 50 settled trades Delfi runs a full analysis pass: ROI and calibration by category, which categories beat the market and which didn't, proposed skip-list or prompt changes with backtest evidence. The user decides. Nothing changes runtime behavior without approval.
-
-## The product experience
-
-Delfi is a character as much as a system. Its dashboard feels alive because it is doing real work in real time, not because of decorative animations. Its reasoning is visible because transparency is both ethical and retention-positive. Its losses are narrated honestly because hiding them destroys trust.
-
-ROI is the most prominent metric on every surface. P&L is shown in dollars. Win rate is secondary. Brier is a diagnostic visible to users who care but not the scoreboard.
-
-The Delfi persona — the oracle, the prophecy metaphor, the ethereal visual language — is marketing. It belongs in hero copy and brand assets. Product surfaces use clinical precision: "Estimated probability 0.62. Resolved NO. P&L -$4.12."
-
-## What we optimize for
-
-1. ROI across the portfolio of strategies.
-2. ROI per strategy and per category (to decide allocation).
-3. Calibration quality per category (as a diagnostic of forecaster health).
-4. Sample size per category (to distinguish signal from variance).
-
-Not: win rate alone, Brier alone, trade count, or framework elegance.
+Learning cadence is trade-volume-based, not calendar-based. Every 50 settled trades Delfi runs a full analysis pass: ROI and calibration by category, proposed skip-list or prompt changes with backtest evidence. User reviews and applies via `/apply` or `/skip` in Telegram.
 
 ## How we decide
 
 For every proposed change:
 
 1. Does this improve expected ROI?
-2. Is there evidence — from backtest, from historical data, from live performance — supporting the improvement?
-3. What is the smallest version of this change that tests the hypothesis?
+2. Is there evidence — backtest, historical data, live performance — supporting the improvement?
+3. What is the smallest version that tests the hypothesis?
 
-If the answers are yes, yes, and clear, ship the small version. Measure it. If it works, expand. If it doesn't, revert.
+If the answers are yes, yes, and clear — ship the small version. Measure. Expand if it works, revert if it doesn't.
 
 ## Settled lessons that must not be re-litigated
 
-- Betting the "cheaper" side relative to the model's probability — filtering for disagreement with the market — is a losing strategy regardless of what that rule is called. Delfi backs the model's pick directly.
-- Kelly sizing amplifies estimator errors. With a noisy forecaster it produces win-small-lose-big patterns. Flat, confidence-scaled sizing until calibration is proven per category.
-- Autonomous config changes on small samples drift in harmful directions. All config changes require user approval, even when Delfi proposes them.
-- Simulation mode with disabled risk brakes does not simulate live. Simulation and live run identical risk parameters.
-- Brier score is not profit. A well-calibrated bot can still lose money. Brier is a diagnostic, not a performance target.
-- Short-horizon sports have cost us money and stay on the default skip list until category evidence says otherwise.
-
-These are settled. Future sessions do not reopen them.
+- Filtering for disagreement with the market is a losing strategy. Delfi backs the model's pick directly.
+- Kelly sizing amplifies estimator errors on noisy forecasters — produces win-small-lose-big. Flat, confidence-scaled sizing until calibration is proven per category.
+- Autonomous config changes on small samples drift harmfully. All config changes require user approval.
+- Simulation with disabled risk brakes does not simulate live. Identical risk parameters across both modes.
+- Brier score is not profit. A well-calibrated bot can still lose money. Brier is diagnostic, not target.
+- Short-horizon sports (tennis, qualifiers, low-tier matches) have cost us money — default skip list until category evidence says otherwise.
 
 ## Closing
 
-Delfi exists to make money for its users. It does that by forecasting outcomes as accurately as possible and backing those forecasts with small, confidence-scaled stakes. Everything else is either a safety gate, a risk brake, or an optimization of the forecaster itself.
+Delfi exists to make money for its users. It does that by forecasting outcomes as accurately as possible and backing those forecasts with small, confidence-scaled stakes. Everything else is a safety gate, a risk brake, or an optimization of the forecaster itself.
 
 Forecast the outcome. Back the forecast. Measure the result. Improve.
