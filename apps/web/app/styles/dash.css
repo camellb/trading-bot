@@ -400,6 +400,14 @@ body.app {
 .tour-btn.ghost { border-color: transparent; color: var(--vellum-60); padding-left: 6px; padding-right: 6px; }
 .tour-btn.ghost:hover:not(:disabled) { color: var(--vellum); border-color: transparent; }
 .tour-btn:disabled { opacity: 0.55; cursor: wait; }
+.tour-err {
+  color: #c56d6d; font-size: 13px; line-height: 1.5;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(197,109,109,0.35);
+  border-radius: 2px;
+  background: rgba(197,109,109,0.08);
+}
 
 /* ─── Credentials banner ──────────────────────────────────── */
 .creds-banner {

@@ -1,113 +1,110 @@
 "use client";
 
 import React, { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
 import { completeTour } from "./actions";
 
 type Step = {
   title: string;
   render: () => React.ReactNode;
-  primaryLabel?: string;
-  onPrimary?: (ctx: { router: ReturnType<typeof useRouter> }) => void | Promise<void>;
 };
 
 export function Tour() {
-  const router = useRouter();
   const [step, setStep] = useState(0);
   const [pending, startTransition] = useTransition();
   const [dismissed, setDismissed] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   const steps: Step[] = [
     {
       title: "Welcome to Delfi",
       render: () => (
-        <p className="tour-body">
-          Prediction markets turn the world's unanswered questions into tradable contracts.
-          Delfi reads them like puzzles — forecasting every outcome, sizing a calm stake,
-          and learning from every resolution. You're about to watch an oracle at work.
-        </p>
-      ),
-    },
-    {
-      title: "Simulation or Live — your call",
-      render: () => (
         <>
           <p className="tour-body">
-            Delfi always runs one of two ways. Start where you're comfortable; switch when you're ready.
+            Delfi is an autonomous AI agent for Polymarket. It reads every active
+            market, sizes the positions worth taking, and executes on your behalf
+            around the clock.
           </p>
-          <div className="tour-vs">
-            <div className="tour-vs-col sim">
-              <div className="tour-vs-head">Simulation</div>
-              <div className="tour-vs-body">
-                Paper capital. Same signals, same decisions, no real money at risk.
-                Perfect for watching Delfi think before you commit a dollar.
-              </div>
-            </div>
-            <div className="tour-vs-col live">
-              <div className="tour-vs-head">Live</div>
-              <div className="tour-vs-body">
-                Real capital from your connected Polymarket wallet.
-                Every position opens for real.
-              </div>
-            </div>
-          </div>
+          <p className="tour-body">
+            You're about to set it up in under three minutes.
+          </p>
         </>
       ),
     },
     {
-      title: "Risk controls keep you safe",
+      title: "You start in Simulation",
       render: () => (
-        <p className="tour-body">
-          Delfi runs with circuit breakers that cap daily losses, halt on drawdown,
-          cool down after a losing streak, and reserve dry powder. You can tune
-          every parameter inside the system's safe bounds.
-        </p>
-      ),
-      primaryLabel: "Go to Risk Controls →",
-      onPrimary: ({ router }) => {
-        router.push("/dashboard/risk");
-      },
-    },
-    {
-      title: "Tune the limits, respect the sample size",
-      render: () => (
-        <p className="tour-body">
-          These settings shape Delfi's behavior the moment you save them. But remember:
-          Delfi is an algorithmic forecaster. Meaningful conclusions need 50–100 closed
-          trades before you adjust strategy based on results. Patience is part of the edge.
-        </p>
+        <>
+          <p className="tour-body">
+            Delfi runs two ways: Simulation and Live. Either way you are playing
+            on the real market with the same signals.
+          </p>
+          <p className="tour-body">
+            Watch Delfi trade for a day or a week. Go Live when the numbers
+            convince you.
+          </p>
+        </>
       ),
     },
     {
-      title: "Delfi reviews itself",
+      title: "Set your risk limits",
       render: () => (
-        <p className="tour-body">
-          Every 50 closed trades Delfi runs a full analysis pass on its own performance.
-          Category ROI, calibration, skip-list candidates — all proposed as deliberate
-          changes with evidence. You'll find every review under{" "}
-          <strong>Intelligence</strong>, stamped with the date and its supporting data.
-        </p>
+        <>
+          <p className="tour-body">
+            Delfi has circuit breakers that cap daily and weekly losses, halt
+            trading on drawdown, cool off after a losing streak, and reserve dry
+            powder — and more. You can tune every parameter now, or adjust as you
+            go.
+          </p>
+          <p className="tour-body">
+            These settings shape Delfi's behavior the moment you save them, but
+            remember that meaningful conclusions need 50 to 100 closed trades
+            before you adjust strategy based on results.
+          </p>
+        </>
       ),
     },
     {
-      title: "Telegram keeps you in the loop",
+      title: "Delfi is always learning",
       render: () => (
-        <p className="tour-body">
-          Connect a Telegram bot and you'll receive every trade, every resolution, and
-          every strategy review right where you are. Setup lives in{" "}
-          <strong>Settings → Notifications</strong> whenever you're ready.
-        </p>
+        <>
+          <p className="tour-body">
+            Speaking of which, every 50 closed trades, Delfi runs a full analysis
+            pass on its own performance and proposes adjustments.
+          </p>
+          <p className="tour-body">
+            You'll find every review under <strong>Intelligence</strong>,
+            stamped with the date and its supporting data.
+          </p>
+        </>
       ),
     },
     {
-      title: "When you go Live: connect Polymarket",
+      title: "Get alerts on Telegram",
       render: () => (
-        <p className="tour-body">
-          Live mode needs your Polymarket proxy wallet address and an API key.
-          We only ever send orders on your behalf — we never custody funds, and we
-          can never read anything outside of what you trade through Delfi. Your wallet
-          remains yours, end to end.
-        </p>
+        <>
+          <p className="tour-body">
+            Delfi sends every new position, every resolution, and daily &
+            weekly summaries straight to your Telegram.
+          </p>
+          <p className="tour-body">
+            You can connect it under <strong>Settings → Account</strong>.
+          </p>
+        </>
+      ),
+    },
+    {
+      title: "Ready to go Live? Connect Polymarket",
+      render: () => (
+        <>
+          <p className="tour-body">
+            Live trading needs your Polymarket proxy wallet address and an API
+            key. Delfi can send orders on your behalf. It cannot custody funds,
+            withdraw, or read anything outside the markets you trade.
+          </p>
+          <p className="tour-body">
+            Your wallet stays yours.
+          </p>
+        </>
       ),
     },
   ];
@@ -116,34 +113,33 @@ export function Tour() {
 
   const current = steps[step];
   const isLast = step === steps.length - 1;
+  const isFirst = step === 0;
 
   const advance = () => setStep((s) => Math.min(s + 1, steps.length - 1));
   const back = () => setStep((s) => Math.max(s - 1, 0));
 
   const finish = () => {
-    setDismissed(true);
+    setErr(null);
     startTransition(async () => {
-      await completeTour();
+      const res = await completeTour();
+      if (res.ok) {
+        setDismissed(true);
+      } else {
+        setErr(res.error || "Could not save. Try again.");
+      }
     });
   };
 
   const onPrimary = () => {
     if (isLast) return finish();
-    if (current.onPrimary) {
-      void current.onPrimary({ router });
-      advance();
-      return;
-    }
     advance();
   };
 
-  const skip = () => finish();
-
   const primaryLabel = isLast
     ? pending
-      ? "Finishing..."
+      ? "Saving..."
       : "Start exploring →"
-    : current.primaryLabel ?? "Next →";
+    : "Next →";
 
   return (
     <div className="tour-overlay" role="dialog" aria-modal="true" aria-label="Delfi product tour">
@@ -153,6 +149,7 @@ export function Tour() {
         </div>
         <h2 className="tour-title">{current.title}</h2>
         {current.render()}
+        {err && <div className="tour-err">{err}</div>}
         <div className="tour-foot">
           <div className="tour-dots" aria-hidden="true">
             {steps.map((_, i) => (
@@ -160,13 +157,13 @@ export function Tour() {
             ))}
           </div>
           <div className="tour-actions">
-            {step > 0 && !isLast && (
-              <button className="tour-btn ghost" onClick={back}>
+            {!isFirst && (
+              <button className="tour-btn ghost" onClick={back} disabled={pending}>
                 Back
               </button>
             )}
             {!isLast && (
-              <button className="tour-btn ghost" onClick={skip} disabled={pending}>
+              <button className="tour-btn ghost" onClick={finish} disabled={pending}>
                 Skip tour
               </button>
             )}

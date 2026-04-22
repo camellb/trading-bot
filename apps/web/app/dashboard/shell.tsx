@@ -3,7 +3,6 @@
 import React, { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { usePolymarketCredentials } from "../../lib/credentials";
 import { signOut } from "../auth/actions";
 import { setBotEnabled } from "./actions";
 import { Tour } from "./Tour";
@@ -146,9 +145,7 @@ export function DashboardShell({
   botEnabled?: boolean;
   tourCompleted?: boolean;
 }) {
-  const [mode, setMode] = useState<Mode>("simulation");
   const pathname = usePathname() || "/dashboard";
-  const { missing, canGoLive, hydrated } = usePolymarketCredentials();
 
   useEffect(() => {
     document.body.classList.add("app");
@@ -159,16 +156,10 @@ export function DashboardShell({
 
   const activeId = NAV.find((n) => n.match?.test(pathname))?.id ?? "dashboard";
 
-  const trySwitch = (next: Mode) => {
-    if (next === "live" && !canGoLive) return;
-    setMode(next);
-  };
-
   return (
     <div className="app-shell density-roomy" data-screen-label="Dashboard">
       <Sidebar activeId={activeId} user={user} pathname={pathname} isAdmin={isAdmin} />
       <main className="app-main">
-        <ModeBanner mode={mode} onSwitch={trySwitch} canGoLive={canGoLive} missing={missing} />
         <BotControlBanner botEnabled={botEnabled} />
         {children}
       </main>
@@ -302,55 +293,3 @@ function Sidebar({
   );
 }
 
-function ModeBanner({
-  mode,
-  onSwitch,
-  canGoLive,
-  missing,
-}: {
-  mode: Mode;
-  onSwitch: (m: Mode) => void;
-  canGoLive: boolean;
-  missing: string[];
-}) {
-  const isLive = mode === "live";
-  const lockedLabel =
-    missing.length === 0
-      ? "Go Live →"
-      : `Go Live locked — add ${missing[0]}${missing.length > 1 ? ` +${missing.length - 1} more` : ""}`;
-  return (
-    <div className={`mode-banner ${isLive ? "live" : "sim"}`}>
-      <div className="mode-banner-left">
-        <span className="mode-banner-pill">
-          <span className="mode-banner-dot"></span>
-          {isLive ? "LIVE MODE" : "SIMULATION MODE"}
-        </span>
-        <span className="mode-banner-text">
-          {isLive
-            ? "You're trading with real capital from your connected wallet. Every position is real."
-            : "You're in Simulation. Same signals, same decisions, paper capital. Nothing here risks real money."}
-        </span>
-      </div>
-      <div className="mode-banner-right">
-        {isLive ? (
-          <button className="mode-banner-btn" onClick={() => onSwitch("simulation")}>
-            Switch to Simulation
-          </button>
-        ) : canGoLive ? (
-          <button className="mode-banner-btn gold" onClick={() => onSwitch("live")}>
-            Go Live →
-          </button>
-        ) : (
-          <Link
-            href="/dashboard/settings/account"
-            className="mode-banner-btn locked"
-            aria-disabled="true"
-            title={`Missing: ${missing.join(", ")}`}
-          >
-            {lockedLabel}
-          </Link>
-        )}
-      </div>
-    </div>
-  );
-}
