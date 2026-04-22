@@ -1,14 +1,7 @@
-import { NextResponse } from "next/server";
-
-import { getConfigData } from "@/lib/local-bot-data";
+import { proxyGet } from "@/lib/bot-proxy";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  try {
-    return NextResponse.json(await getConfigData());
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "config failed";
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  return proxyGet("/api/config");
 }
