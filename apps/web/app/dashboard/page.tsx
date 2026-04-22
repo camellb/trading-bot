@@ -251,6 +251,7 @@ export default function DashboardPage() {
         starting={starting}
         realizedPnl={pnl}
         realizedPct={pnlPct}
+        loaded={loaded}
       />
       <DashStatus
         openCount={summary?.open_positions ?? open.length}
@@ -316,12 +317,14 @@ function DashHero({
   starting,
   realizedPnl,
   realizedPct,
+  loaded,
 }: {
   mode: string;
   bankroll: number;
   starting: number;
   realizedPnl: number;
   realizedPct: number;
+  loaded: boolean;
 }) {
   const isSim   = mode === "simulation";
   const pnlSign = realizedPnl >= 0 ? "+" : "";
@@ -337,24 +340,36 @@ function DashHero({
           </div>
         </div>
         <div className="hero-balance-value t-num">
-          <span className="hero-balance-cur">$</span>
-          {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {loaded ? (
+            <>
+              <span className="hero-balance-cur">$</span>
+              {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </>
+          ) : (
+            <span className="hero-balance-loading">—</span>
+          )}
         </div>
         <div className="hero-deltas">
           <div className="hero-delta">
             <div className="hero-delta-label">Realized P&amp;L</div>
-            <div className={`hero-delta-val t-num ${realizedPnl >= 0 ? "profit" : ""}`}>
-              {pnlSign}${Math.abs(realizedPnl).toFixed(2)}{" "}
-              <span className="hero-delta-pct">
-                {pnlSign}{realizedPct.toFixed(2)}%
-              </span>
+            <div className={`hero-delta-val t-num ${loaded && realizedPnl >= 0 ? "profit" : ""}`}>
+              {loaded ? (
+                <>
+                  {pnlSign}${Math.abs(realizedPnl).toFixed(2)}{" "}
+                  <span className="hero-delta-pct">
+                    {pnlSign}{realizedPct.toFixed(2)}%
+                  </span>
+                </>
+              ) : (
+                "—"
+              )}
             </div>
           </div>
           <div className="hero-delta-div"></div>
           <div className="hero-delta">
             <div className="hero-delta-label">Started at</div>
             <div className="hero-delta-val t-num">
-              ${starting.toLocaleString("en-US", { minimumFractionDigits: 0 })}
+              {loaded ? `$${starting.toLocaleString("en-US", { minimumFractionDigits: 0 })}` : "—"}
             </div>
           </div>
         </div>
