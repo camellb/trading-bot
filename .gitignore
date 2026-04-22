@@ -33,3 +33,10 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Claude Code session state
+.claude/
+
+# Bot runtime state (written on every tick)
+data/macro_calendar.json
+data/notifier_state.json
