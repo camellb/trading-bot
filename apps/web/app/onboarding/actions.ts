@@ -48,7 +48,12 @@ export async function completeOnboarding(formData: FormData) {
       details: error.details,
       hint: error.hint,
     });
-    redirect("/onboarding?error=save_failed");
+    const params = new URLSearchParams({
+      error: "save_failed",
+      code: error.code ?? "",
+      message: error.message ?? "",
+    });
+    redirect(`/onboarding?${params.toString()}`);
   }
 
   // Live users still need to connect Polymarket credentials before the bot

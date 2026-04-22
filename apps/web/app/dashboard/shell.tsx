@@ -133,9 +133,11 @@ export type DashboardUser = { name: string; email: string; initials: string };
 export function DashboardShell({
   children,
   user,
+  isAdmin = false,
 }: {
   children: React.ReactNode;
   user: DashboardUser;
+  isAdmin?: boolean;
 }) {
   const [mode, setMode] = useState<Mode>("simulation");
   const pathname = usePathname() || "/dashboard";
@@ -158,7 +160,7 @@ export function DashboardShell({
 
   return (
     <div className="app-shell density-roomy" data-screen-label="Dashboard">
-      <Sidebar activeId={activeId} user={user} mode={mode} pathname={pathname} />
+      <Sidebar activeId={activeId} user={user} mode={mode} pathname={pathname} isAdmin={isAdmin} />
       <main className="app-main">
         <ModeBanner mode={mode} onSwitch={trySwitch} canGoLive={canGoLive} missing={missing} />
         {showCredsBanner && <CredentialsBanner missing={missing} />}
@@ -193,11 +195,13 @@ function Sidebar({
   user,
   mode,
   pathname,
+  isAdmin,
 }: {
   activeId: string;
   user: DashboardUser;
   mode: Mode;
   pathname: string;
+  isAdmin: boolean;
 }) {
   return (
     <aside className="side">
@@ -236,6 +240,13 @@ function Sidebar({
           );
         })}
       </nav>
+
+      {isAdmin && (
+        <Link href="/admin" className="side-link side-admin-link">
+          <span className="side-icon">{ICON["shield"]}</span>
+          <span className="side-label">Admin panel</span>
+        </Link>
+      )}
 
       <div className="side-foot">
         <div className={`side-agent ${mode}`}>

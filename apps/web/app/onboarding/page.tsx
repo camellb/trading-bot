@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import "../styles/content.css";
 
 import { completeOnboarding } from "./actions";
@@ -9,6 +10,26 @@ import { completeOnboarding } from "./actions";
 type Step = 1 | 2 | 3 | 4 | 5;
 type Mode = "simulation" | "live";
 type RiskProfile = "cautious" | "balanced" | "aggressive";
+
+function OnboardingErrorBanner() {
+  const params = useSearchParams();
+  if (!params || params.get("error") !== "save_failed") return null;
+  const code = params.get("code") || "";
+  const message = params.get("message") || "Couldn't save — try again.";
+  return (
+    <div className="creds-banner" role="alert" style={{ marginBottom: 24 }}>
+      <div className="creds-banner-body">
+        <span className="creds-banner-dot" aria-hidden="true"></span>
+        <div>
+          <div className="creds-banner-title">Couldn't complete onboarding</div>
+          <div className="creds-banner-text">
+            {message}{code ? ` (${code})` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function OnboardingPage() {
   const [step, setStep] = useState<Step>(1);
@@ -54,6 +75,9 @@ export default function OnboardingPage() {
       </header>
 
       <main className="ob-main">
+        <Suspense fallback={null}>
+          <OnboardingErrorBanner />
+        </Suspense>
         {step === 1 && (
           <section>
             <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
