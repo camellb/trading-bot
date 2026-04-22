@@ -533,3 +533,44 @@ def create_all_tables() -> None:
             ))
         except Exception as exc:
             print(f"[db] skipping authenticated grants (non-Supabase?): {exc}", file=sys.stderr)
+        # Migration 014: RLS policies use auth.uid() (UUID) against user_id
+        # (TEXT). Postgres has no text=uuid operator, so the policies either
+        # error or silently deny. Cast to ::text so the predicate actually
+        # evaluates. Drop-and-recreate is idempotent and cheap.
+        try:
+            per_user_tables = (
+                "pm_positions",
+                "predictions",
+                "market_evaluations",
+                "markouts",
+                "performance_snapshots",
+                "config_change_history",
+                "event_log",
+                "news_event_log",
+                "user_config",
+                "pending_suggestions",
+            )
+            for tbl in per_user_tables:
+                for cmd in ("select", "insert", "update", "delete"):
+                    conn.execute(sa_text(
+                        f"DROP POLICY IF EXISTS {tbl}_{cmd} ON {tbl}"
+                    ))
+                conn.execute(sa_text(
+                    f"CREATE POLICY {tbl}_select ON {tbl} "
+                    f"FOR SELECT USING (user_id = auth.uid()::text)"
+                ))
+                conn.execute(sa_text(
+                    f"CREATE POLICY {tbl}_insert ON {tbl} "
+                    f"FOR INSERT WITH CHECK (user_id = auth.uid()::text)"
+                ))
+                conn.execute(sa_text(
+                    f"CREATE POLICY {tbl}_update ON {tbl} "
+                    f"FOR UPDATE USING (user_id = auth.uid()::text) "
+                    f"WITH CHECK (user_id = auth.uid()::text)"
+                ))
+                conn.execute(sa_text(
+                    f"CREATE POLICY {tbl}_delete ON {tbl} "
+                    f"FOR DELETE USING (user_id = auth.uid()::text)"
+                ))
+        except Exception as exc:
+            print(f"[db] skipping RLS text-cast refresh (non-Supabase?): {exc}", file=sys.stderr)
