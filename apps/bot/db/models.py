@@ -113,6 +113,8 @@ pm_positions = Table(
     Column("realized_pnl_usd", Float, nullable=True),
     # Event group slug for correlation caps (markets in the same event).
     Column("event_slug",    Text, nullable=True),
+    # Archetype tag used for category-level calibration analysis.
+    Column("market_archetype", Text, nullable=True),
     # Live-mode metadata.
     Column("clob_order_id", Text, nullable=True),
     Column("tx_hash",       Text, nullable=True),
@@ -145,6 +147,8 @@ market_evaluations = Table(
     Column("research_sources", Text, nullable=True),   # JSON array of urls/titles
     Column("prediction_id",    Integer, nullable=True),
     Column("pm_position_id",   Integer, nullable=True),
+    Column("market_archetype", Text, nullable=True),
+    Column("event_slug",       Text, nullable=True),
 )
 
 
@@ -383,6 +387,15 @@ def create_all_tables() -> None:
         # Migration: add event_slug to existing pm_positions tables.
         conn.execute(sa_text(
             "ALTER TABLE pm_positions ADD COLUMN IF NOT EXISTS event_slug TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE pm_positions ADD COLUMN IF NOT EXISTS market_archetype TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS market_archetype TEXT"
+        ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS event_slug TEXT"
         ))
         # Migration: historical rename edge_bps → ev_bps. The column stores
         # expected return × 10000 at entry, kept for diagnostic attribution.
