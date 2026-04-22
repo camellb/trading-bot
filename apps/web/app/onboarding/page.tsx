@@ -41,13 +41,6 @@ export default function OnboardingPage() {
           <img src="/brand/mark.svg" alt="" />
           <span>DELFI</span>
         </Link>
-        <div className="ob-progress">
-          {Array.from({ length: totalSteps }, (_, i) => i + 1).map((i) => (
-            <span key={i} className={visibleIndex >= i ? "ob-step active" : "ob-step"}>
-              {pad(i)}
-            </span>
-          ))}
-        </div>
       </header>
 
       <main className="ob-main">
