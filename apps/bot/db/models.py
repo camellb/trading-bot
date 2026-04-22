@@ -475,6 +475,16 @@ def create_all_tables() -> None:
             "ALTER COLUMN min_p_win SET DEFAULT 0.50",
         ):
             conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))
+        # Supabase's PostgREST caches the schema and won't surface newly added
+        # columns until reloaded. Without this, server actions hitting the new
+        # columns fail with `Could not find the '<col>' column ... in the
+        # schema cache`. Safe to emit even off Supabase — any Postgres without
+        # a pgrst listener treats the NOTIFY as a no-op.
+        try:
+            conn.execute(sa_text("NOTIFY pgrst, 'reload schema'"))
+        except Exception as exc:
+            print(f"[db.models] NOTIFY pgrst failed (ignored): {exc}",
+                  file=sys.stderr)
         # Backfill default skip list for rows that pre-date the default.
         # Only touches NULL — an explicit empty string means the user
         # deliberately cleared the list and is respected as-is.

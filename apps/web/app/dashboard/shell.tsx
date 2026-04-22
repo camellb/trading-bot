@@ -186,12 +186,12 @@ function BotControlBanner({ botEnabled }: { botEnabled: boolean }) {
         <span className={`bot-control-dot ${botEnabled ? "on" : "off"}`}></span>
         <div className="bot-control-body">
           <div className="bot-control-title">
-            {botEnabled ? "Delfi is running" : "Delfi is paused"}
+            {botEnabled ? "Delfi is running" : "Delfi is not working"}
           </div>
           <div className="bot-control-sub">
             {botEnabled
               ? "Scanning markets, forecasting outcomes, and opening positions within your risk limits."
-              : "You're in control. Start Delfi when you're ready and it'll begin scanning markets."}
+              : "Start Delfi when you're ready and it'll begin scanning markets and placing orders."}
           </div>
           {err && <div className="bot-control-err">Couldn't update: {err}</div>}
         </div>
