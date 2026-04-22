@@ -14,8 +14,8 @@ venv/
 # Node
 node_modules/
 .next/
-dashboard/.next/
-dashboard/node_modules/
+apps/web/.next/
+apps/web/node_modules/
 
 # Logs
 logs/
@@ -41,8 +41,8 @@ Thumbs.db
 data/macro_calendar.json
 data/notifier_state.json
 
-# Dashboard runtime logs (Phase A absorbed the dashboard into this repo)
-dashboard/logs/
+# Dashboard runtime logs
+apps/web/logs/
 
 # Local-only backups produced during the restructure (safe to delete)
 _archive/

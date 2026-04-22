@@ -1,0 +1,14 @@
+{
+  "name": "delfi",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "apps/web",
+    "packages/contracts/typescript"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @delfi/web run dev",
+    "build": "npm --workspace @delfi/web run build",
+    "start": "npm --workspace @delfi/web run start"
+  }
+}

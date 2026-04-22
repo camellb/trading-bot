@@ -6,7 +6,7 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
       "autoPort": true,
-      "cwd": "/Users/macmini/Desktop/trading-bot/dashboard"
+      "cwd": "/Users/macmini/Desktop/trading-bot/apps/web"
     }
   ]
 }
