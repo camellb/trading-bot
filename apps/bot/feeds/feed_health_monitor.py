@@ -8,7 +8,7 @@ Feeds that flow through this module:
 
 Overlay feeds (news, macro) do not gate anything; they only surface as
 warnings in Telegram. `polymarket` is the only core feed — if it fails
-for an extended period we still don't halt trading (shadow mode has no
+for an extended period we still don't halt trading (simulation mode has no
 stop loss to protect), but we do raise a critical alert so the operator
 can investigate.
 """

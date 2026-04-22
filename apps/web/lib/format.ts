@@ -114,7 +114,7 @@ export function humanizeIdentifier(raw: string): string {
     bps: "bps",
     api: "API",
     id: "ID",
-    shadow: "Simulation",
+    simulation: "Simulation",
   };
 
   // Strip leading "PM_" prefix — it adds no information in the UI.

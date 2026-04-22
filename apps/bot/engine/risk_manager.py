@@ -1,7 +1,7 @@
 """
 Risk manager — pre-trade circuit breakers.
 
-Runs identically in shadow and live modes so shadow simulates live. Reads
+Runs identically in simulation and live modes so simulation simulates live. Reads
 every parameter from UserConfig at decision time; no globals, no caches.
 
 The manager answers two questions before the sizer runs:

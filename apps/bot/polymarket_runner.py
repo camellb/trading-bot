@@ -3,13 +3,13 @@ Polymarket runner — the two scheduled entrypoints wired into main.py.
 
 scan_and_analyze(limit):
     Fetch candidate markets → research → Claude evaluation → sizing →
-    open shadow/live position. All gated by the PMAnalyst pipeline.
+    open simulation/live position. All gated by the PMAnalyst pipeline.
 
 resolve_positions():
     For every open pm_positions row, check whether the underlying Polymarket
     market has resolved. If yes, settle via PMExecutor (writes settlement
     price, realized P&L, and feeds the calibration ledger). Also opportunistically
-    backfills legacy shadow-mode predictions that lack a pm_positions row.
+    backfills legacy simulation-mode predictions that lack a pm_positions row.
 
 Both functions are safe to call repeatedly and never raise on partial failure.
 """
@@ -67,7 +67,7 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None, exe
 
         Phase A — settle every open pm_positions row against the resolved
                   Polymarket market state.
-        Phase B — resolve legacy `predictions` rows from the shadow-only
+        Phase B — resolve legacy `predictions` rows from the simulation-only
                   era that lack a pm_positions partner.
 
     Returns: {"positions_checked", "positions_settled",
@@ -203,7 +203,7 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
 def _fetch_unresolved_legacy_predictions() -> list[dict]:
     """
     Predictions that don't have a pm_positions row (e.g. from the pre-analyst
-    shadow era) and are still unresolved.
+    simulation era) and are still unresolved.
     """
     try:
         with get_engine().begin() as conn:

@@ -58,7 +58,7 @@ class NominalPathTests(unittest.TestCase):
         cfg = UserConfig()
         with stub_stats():
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertFalse(v.halted)
         self.assertEqual(v.stake_multiplier, 1.0)
         # 20% reserve → sizer sees $800.
@@ -71,7 +71,7 @@ class DailyLossBreakerTests(unittest.TestCase):
         # -$101 on $1000 starting = -10.1%, past the -10% limit.
         with stub_stats(pnl_since=-101.0):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertTrue(v.halted)
         self.assertIn("daily loss", v.halt_reason.lower())
         self.assertEqual(v.effective_bankroll, 0.0)
@@ -80,7 +80,7 @@ class DailyLossBreakerTests(unittest.TestCase):
         cfg = UserConfig(daily_loss_limit_pct=0.10)
         with stub_stats(pnl_since=-50.0):
             v = rm.evaluate(user_config=cfg, bankroll=950.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertFalse(v.halted)
 
 
@@ -96,7 +96,7 @@ class WeeklyLossBreakerTests(unittest.TestCase):
 
         with stub_stats(pnl_since=pnl_side_effect):
             v = rm.evaluate(user_config=cfg, bankroll=750.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertTrue(v.halted)
         self.assertIn("weekly", v.halt_reason.lower())
 
@@ -108,7 +108,7 @@ class DrawdownHaltTests(unittest.TestCase):
             # current_equity = starting + realized_total = 1000 - 900 = 100
             # drawdown = 1 - 100/2000 = 95%, past 40% threshold.
             v = rm.evaluate(user_config=cfg, bankroll=100.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertTrue(v.halted)
         self.assertIn("drawdown", v.halt_reason.lower())
 
@@ -117,7 +117,7 @@ class DrawdownHaltTests(unittest.TestCase):
         # Peak 1100, current 1000: 9% drawdown — well under 40%.
         with stub_stats(peak_equity=1100.0, realized_total=0.0):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertFalse(v.halted)
 
 
@@ -126,7 +126,7 @@ class StreakCooldownTests(unittest.TestCase):
         cfg = UserConfig(streak_cooldown_losses=3)
         with stub_stats(consecutive_losses=3):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertFalse(v.halted)
         self.assertEqual(v.stake_multiplier, 0.5)
         self.assertIn("streak", v.notes.lower())
@@ -135,14 +135,14 @@ class StreakCooldownTests(unittest.TestCase):
         cfg = UserConfig(streak_cooldown_losses=3)
         with stub_stats(consecutive_losses=2):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertEqual(v.stake_multiplier, 1.0)
 
     def test_triggers_above_threshold(self):
         cfg = UserConfig(streak_cooldown_losses=3)
         with stub_stats(consecutive_losses=7):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertEqual(v.stake_multiplier, 0.5)
 
 
@@ -151,7 +151,7 @@ class DryPowderReserveTests(unittest.TestCase):
         cfg = UserConfig(dry_powder_reserve_pct=0.25)
         with stub_stats():
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertAlmostEqual(v.effective_bankroll, 750.0, places=2)
 
 
@@ -160,7 +160,7 @@ class FailSafeTests(unittest.TestCase):
         cfg = UserConfig()
         with mock.patch.object(rm, "_pnl_since", side_effect=RuntimeError("db down")):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
-                            starting_cash=1000.0, mode="shadow")
+                            starting_cash=1000.0, mode="simulation")
         self.assertFalse(v.halted)
         self.assertEqual(v.stake_multiplier, 1.0)
         # Dry powder still applied.

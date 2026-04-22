@@ -7,7 +7,7 @@ from the global config module. Changes made through the dashboard take
 effect on the next evaluation.
 
 The `user_config` table stores one row per user_id. For now the bot runs in
-single-user shadow mode and uses user_id='default'; the structure supports
+single-user simulation mode and uses user_id='default'; the structure supports
 multi-user and that is intentional.
 
 DB failures fall through to the dataclass defaults so tests and offline

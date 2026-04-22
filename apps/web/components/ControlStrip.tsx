@@ -52,7 +52,7 @@ export function ControlStrip({
   };
 
   const handleModeSwitch = () => {
-    const next = mode === "live" ? "shadow" : "live";
+    const next = mode === "live" ? "simulation" : "live";
     fire(
       "/api/switch-mode",
       `mode → ${next === "live" ? "Live" : "Simulation"}`,
@@ -62,7 +62,7 @@ export function ControlStrip({
     );
   };
 
-  const currentMode = mode ?? "shadow";
+  const currentMode = mode ?? "simulation";
 
   return (
     <section className="border border-[#1a1a1a] bg-[#050505] px-3 py-2">

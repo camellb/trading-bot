@@ -14,7 +14,7 @@ Downstream uses:
   1. `execution/pm_sizer.size_position` reads the archetype against
      `user_config.archetype_skip_list` — a user can add 'tennis_qualifier'
      without muting all sports.
-  2. `execution/pm_executor._open_shadow` persists it on
+  2. `execution/pm_executor._open_simulation` persists it on
      `pm_positions.market_archetype` for post-hoc analytics.
   3. `engine/pm_analyst._log_market_evaluation` persists it on
      `market_evaluations.market_archetype` so skipped trades are also

@@ -1,12 +1,12 @@
 # ── Active configuration — Polymarket prediction-market bot ──────────────────
 
 # ── Run mode ──────────────────────────────────────────────────────────────────
-# 'shadow' — simulate fills at observed market prices, no real money.
-# 'live'   — route orders through Polymarket CLOB (requires credentials).
-PM_MODE = "shadow"
+# 'simulation' — simulate fills at observed market prices, no real money.
+# 'live'       — route orders through Polymarket CLOB (requires credentials).
+PM_MODE = "simulation"
 
-# Shadow-mode starting bankroll — simulated. Not a real deposit.
-PM_SHADOW_STARTING_CASH = 1000.0
+# Simulation-mode starting bankroll — simulated. Not a real deposit.
+PM_SIMULATION_STARTING_CASH = 1000.0
 
 # Live-mode starting bankroll — conservative, increased after track record.
 PM_LIVE_STARTING_CASH   = 200.0
@@ -33,7 +33,7 @@ PM_MAX_PER_EVENT = 3
 PM_SCAN_LIMIT           = 40          # how many markets per scan
 PM_MIN_VOLUME_24H_USD   = 5_000.0     # liquidity filter (relaxed for short-horizon)
 PM_MIN_DAYS_TO_END      = 0           # include markets resolving in hours
-PM_MAX_DAYS_TO_END      = 7           # 7-day shadow test — short-horizon only
+PM_MAX_DAYS_TO_END      = 7           # 7-day simulation test — short-horizon only
 PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving markets
 
 
@@ -61,10 +61,10 @@ SELF_IMPROVE_TARGET_BRIER = 0.22
 
 
 # ── Go-live gate ─────────────────────────────────────────────────────────────
-# Thresholds required before flipping PM_MODE from 'shadow' to 'live'.
+# Thresholds required before flipping PM_MODE from 'simulation' to 'live'.
 # These are ADVISORY only — there's no automated promotion. They appear in
 # the weekly summary to tell you when the engine has earned real capital.
-PM_TEST_END               = "2026-04-24T20:10:00+08:00"  # 7-day shadow test deadline
+PM_TEST_END               = "2026-04-24T20:10:00+08:00"  # 7-day simulation test deadline
 
 GO_LIVE_MIN_RESOLVED      = 30        # sample size
 GO_LIVE_MAX_BRIER         = 0.22

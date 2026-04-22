@@ -75,7 +75,7 @@ class Proposal:
 
 # ── Public entry points ──────────────────────────────────────────────────────
 def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
-                             mode: str = "shadow") -> dict:
+                             mode: str = "simulation") -> dict:
     """
     Called after every settlement. Runs the pipeline iff the trade-volume
     gate has been crossed since the last cycle. Returns a status dict.

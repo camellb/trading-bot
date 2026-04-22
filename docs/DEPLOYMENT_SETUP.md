@@ -149,7 +149,7 @@ shown as `...` — paste the real values from your password manager or from
 | `ANTHROPIC_API_KEY` | `sk-ant-...` | Your Anthropic dashboard |
 | `GEMINI_API_KEY` | `...` | Your Google AI Studio account |
 | `BOT_API_SECRET` | the value from prereq #2 | generated |
-| `PM_MODE` | `shadow` | start in simulation |
+| `PM_MODE` | `simulation` | start in simulation |
 | `LOG_LEVEL` | `INFO` | |
 | `TELEGRAM_BOT_TOKEN` | optional | |
 | `TELEGRAM_CHAT_ID` | optional | |

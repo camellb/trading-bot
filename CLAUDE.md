@@ -77,7 +77,7 @@ Each strategy is measured on its own ROI. Profitable strategies get more allocat
 
 ## Risk management
 
-Circuit breakers protect the bankroll from catastrophic loss. They run identically in shadow (simulation) and live, so shadow actually simulates live.
+Circuit breakers protect the bankroll from catastrophic loss. They run identically in simulation and live, so simulation actually simulates live.
 
 All risk parameters are per-user editable in the dashboard within system bounds. Defaults:
 
@@ -129,7 +129,7 @@ If the answers are yes, yes, and clear, ship the small version. Measure it. If i
 - Betting the "cheaper" side relative to the model's probability — filtering for disagreement with the market — is a losing strategy regardless of what that rule is called. Delfi backs the model's pick directly.
 - Kelly sizing amplifies estimator errors. With a noisy forecaster it produces win-small-lose-big patterns. Flat, confidence-scaled sizing until calibration is proven per category.
 - Autonomous config changes on small samples drift in harmful directions. All config changes require user approval, even when Delfi proposes them.
-- Shadow mode with disabled risk brakes does not simulate live. Shadow and live run identical risk parameters.
+- Simulation mode with disabled risk brakes does not simulate live. Simulation and live run identical risk parameters.
 - Brier score is not profit. A well-calibrated bot can still lose money. Brier is a diagnostic, not a performance target.
 - Short-horizon sports have cost us money and stay on the default skip list until category evidence says otherwise.
 

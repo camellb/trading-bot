@@ -331,7 +331,7 @@ def format_phase5_report(result: dict, old_trade_count: int = 35) -> str:
 
     lines.append("=" * 70)
     lines.append("  Decision rule:")
-    lines.append("    - Meaningfully positive ROI → resume shadow trading.")
+    lines.append("    - Meaningfully positive ROI → resume simulation trading.")
     lines.append("    - Near-zero or negative ROI → forecaster itself needs work;")
     lines.append("      no sizing paradigm can fix a bad forecast.")
     lines.append("=" * 70)

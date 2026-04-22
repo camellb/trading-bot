@@ -152,7 +152,7 @@ def _calibration_curve_impl(scope: str, _bucket: int) -> dict:
         with _get_engine().begin() as conn:
             total_row = conn.execute(text(
                 "SELECT COUNT(*) FROM predictions p "
-                "WHERE p.source IN ('polymarket','polymarket_live','polymarket_shadow') "
+                "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                 "  AND p.resolved_outcome IN (0,1) "
                 "  AND p.probability IS NOT NULL "
                 f"  AND {_scope_clause(scope)}"
@@ -165,7 +165,7 @@ def _calibration_curve_impl(scope: str, _bucket: int) -> dict:
                     "       AVG(p.probability) AS mp, "
                     "       AVG(p.resolved_outcome::float) AS ma "
                     "FROM predictions p "
-                    "WHERE p.source IN ('polymarket','polymarket_live','polymarket_shadow') "
+                    "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                     "  AND p.resolved_outcome IN (0,1) "
                     "  AND p.probability IS NOT NULL "
                     f"  AND {_scope_clause(scope)} "
@@ -208,7 +208,7 @@ def _brier_score_impl(scope: str, archetype: Optional[str],
     try:
         from sqlalchemy import text
         filters = [
-            "p.source IN ('polymarket','polymarket_live','polymarket_shadow')",
+            "p.source IN ('polymarket','polymarket_live','polymarket_simulation')",
             "p.resolved_outcome IN (0,1)",
             "p.probability IS NOT NULL",
             _scope_clause(scope),
@@ -295,7 +295,7 @@ def _fetch_resolved_rows(scope: str,
     """(probability, resolved_outcome, category, horizon_hours) tuples."""
     from sqlalchemy import text
     filters = [
-        "p.source IN ('polymarket','polymarket_live','polymarket_shadow')",
+        "p.source IN ('polymarket','polymarket_live','polymarket_simulation')",
         "p.resolved_outcome IN (0,1)",
         "p.probability IS NOT NULL",
         _scope_clause(scope),
@@ -335,7 +335,7 @@ def _brier_by_archetype_impl(scope: str, flag_threshold: float,
                 "       AVG(p.probability) AS mp, "
                 "       AVG(p.resolved_outcome::float) AS ma "
                 "FROM predictions p "
-                "WHERE p.source IN ('polymarket','polymarket_live','polymarket_shadow') "
+                "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                 "  AND p.resolved_outcome IN (0,1) "
                 "  AND p.probability IS NOT NULL "
                 "  AND p.category IS NOT NULL "

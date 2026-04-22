@@ -41,7 +41,7 @@ predictions = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("created_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
-    # 'polymarket' | 'polymarket_live' | 'polymarket_shadow' | 'backtest' | …
+    # 'polymarket' | 'polymarket_live' | 'polymarket_simulation' | 'backtest' | …
     Column("source",         Text, nullable=False),
     # Stable key per prediction (e.g. 'polymarket:0xabc…').
     Column("subject_key",    Text, nullable=False),
@@ -68,9 +68,9 @@ predictions = Table(
 
 
 # ── Polymarket positions ─────────────────────────────────────────────────────
-# A realised bet (shadow or live) on a Polymarket market.
-# Shadow rows simulate fills at observed mid/ask prices; live rows have real
-# order ids and tx hashes from the CLOB.
+# A realised bet (simulation or live) on a Polymarket market.
+# Simulation rows simulate fills at observed mid/ask prices; live rows have
+# real order ids and tx hashes from the CLOB.
 pm_positions = Table(
     "pm_positions",
     metadata,
@@ -97,7 +97,7 @@ pm_positions = Table(
     # Expected value at entry in basis points (ev × 10 000).
     Column("ev_bps",        Float,   nullable=True),
     Column("confidence",    Float,   nullable=True),
-    # 'shadow' | 'live'
+    # 'simulation' | 'live'
     Column("mode",          String(10), nullable=False),
     # 'open' | 'settled' | 'invalid' | 'closed_early'
     Column("status",        String(20), nullable=False,

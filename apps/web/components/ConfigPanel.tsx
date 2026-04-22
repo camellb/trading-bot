@@ -5,7 +5,7 @@ import { humanizeIdentifier, type ToastFn } from "@/lib/format";
 import { useEffect, useRef, useState } from "react";
 
 const CONFIG_HELP: Record<string, string> = {
-  PM_SHADOW_MIN_CONFIDENCE: "Simulation confidence gate",
+  PM_SIMULATION_MIN_CONFIDENCE: "Simulation confidence gate",
   PM_LIVE_MIN_CONFIDENCE: "Live confidence gate",
   PM_MAX_POSITION_PCT: "Max bankroll per bet",
   PM_MIN_TRADE_USD: "Minimum stake",

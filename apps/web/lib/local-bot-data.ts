@@ -23,7 +23,7 @@ const RELIABILITY_BINS: Array<[number, number]> = [
 ];
 
 const ALLOWED_CONFIG_KEYS = [
-  "PM_SHADOW_MIN_CONFIDENCE",
+  "PM_SIMULATION_MIN_CONFIDENCE",
   "PM_LIVE_MIN_CONFIDENCE",
   "PM_MAX_POSITION_PCT",
   "PM_MIN_TRADE_USD",
@@ -112,17 +112,17 @@ function currentModeFromConfig(config: ConfigSnapshot): string {
   const raw = config.PM_MODE;
   return typeof raw === "string" && raw.trim()
     ? raw.trim().toLowerCase()
-    : "shadow";
+    : "simulation";
 }
 
 function startingCashFromConfig(config: ConfigSnapshot, mode: string): number {
-  const shadow = typeof config.PM_SHADOW_STARTING_CASH === "number"
-    ? config.PM_SHADOW_STARTING_CASH
+  const simulation = typeof config.PM_SIMULATION_STARTING_CASH === "number"
+    ? config.PM_SIMULATION_STARTING_CASH
     : 1000;
   const live = typeof config.PM_LIVE_STARTING_CASH === "number"
     ? config.PM_LIVE_STARTING_CASH
     : 200;
-  return mode === "live" ? live : shadow;
+  return mode === "live" ? live : simulation;
 }
 
 function toNumber(value: unknown): number | null {

@@ -11,7 +11,7 @@ Architecture at a glance:
             │           then sizes via positive-EV with flat stakes.
             │
             ▼
-    PMExecutor       — opens shadow (or live) positions, settles them
+    PMExecutor       — opens simulation (or live) positions, settles them
                         after resolution, feeds the calibration ledger,
                         and triggers the learning cadence every 50 trades.
 
@@ -84,7 +84,7 @@ async def main() -> None:
     print(f"PM_MODE: {config.PM_MODE}", flush=True)
     print(
         f"Starting cash: "
-        f"shadow=${config.PM_SHADOW_STARTING_CASH:.0f}, "
+        f"simulation=${config.PM_SIMULATION_STARTING_CASH:.0f}, "
         f"live=${config.PM_LIVE_STARTING_CASH:.0f}",
         flush=True,
     )

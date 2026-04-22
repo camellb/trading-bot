@@ -12,7 +12,7 @@ Pipeline per market:
     6. Log a `market_evaluations` row for the dashboard/audit trail.
     7. Run the sizer (positive-EV with flat, confidence-scaled stake).
     8. If the sizer approves and we're under the concurrent cap,
-       open a shadow/live position via PMExecutor.
+       open a simulation/live position via PMExecutor.
     9. Send Telegram notification.
 
 The analyst never crashes the caller. Every stage is wrapped; failures

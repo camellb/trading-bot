@@ -211,7 +211,7 @@ class TelegramNotifier:
             return
         try:
             stats = self._executor.get_portfolio_stats() if self._executor else {}
-            simulated = stats.get("mode", "shadow") != "live"
+            simulated = stats.get("mode", "simulation") != "live"
             balance = float(stats.get("bankroll", 0.0))
             open_n = int(stats.get("open_positions", 0))
             at_risk = float(stats.get("open_cost", 0.0))
@@ -232,7 +232,7 @@ class TelegramNotifier:
             return
         try:
             stats = self._executor.get_portfolio_stats()
-            mode  = stats.get("mode", "shadow")
+            mode  = stats.get("mode", "simulation")
 
             def _daily_db():
                 with get_engine().begin() as conn:
@@ -283,7 +283,7 @@ class TelegramNotifier:
             return
         try:
             stats = self._executor.get_portfolio_stats()
-            mode  = stats.get("mode", "shadow")
+            mode  = stats.get("mode", "simulation")
 
             def _weekly_db():
                 with get_engine().begin() as conn:

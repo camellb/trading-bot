@@ -61,8 +61,8 @@ from engine.learning_cadence import (
 from process_health import health as proc_health
 
 
-BOT_API_HOST = "127.0.0.1"
-BOT_API_PORT = 8765
+BOT_API_HOST = os.environ.get("BOT_API_HOST", "127.0.0.1")
+BOT_API_PORT = int(os.environ.get("PORT") or os.environ.get("BOT_API_PORT") or 8765)
 
 
 def _parse_json_field(val) -> list | dict | None:
@@ -119,7 +119,7 @@ class BotAPI:
         ph = proc_health.snapshot()
         return web.json_response({
             "status":          "degraded" if degraded else "ok",
-            "mode":            getattr(self._executor, "mode", "shadow"),
+            "mode":            getattr(self._executor, "mode", "simulation"),
             "started_at":      ph["started_at"],
             "uptime_s":        round(ph["uptime_s"]),
             "error_count":     ph["error_count"],
@@ -151,7 +151,7 @@ class BotAPI:
 
     async def _handle_positions(self, _request: web.Request) -> web.Response:
         open_rows = self._executor.get_open_positions() if self._executor else []
-        mode      = getattr(self._executor, "mode", "shadow")
+        mode      = getattr(self._executor, "mode", "simulation")
         try:
             def _q():
                 with get_engine().begin() as conn:
@@ -293,8 +293,8 @@ class BotAPI:
 
     async def _handle_config(self, _request: web.Request) -> web.Response:
         snapshot = {k: getattr(config, k, None) for k in ALLOWED_CONFIG_KEYS}
-        active_mode = self._executor.mode if self._executor else "shadow"
-        configured_mode = self._disk_mode or getattr(config, "PM_MODE", "shadow")
+        active_mode = self._executor.mode if self._executor else "simulation"
+        configured_mode = self._disk_mode or getattr(config, "PM_MODE", "simulation")
         snapshot["PM_MODE"] = active_mode
         restart_pending = active_mode != configured_mode
         return web.json_response({"config": snapshot,
@@ -559,7 +559,7 @@ class BotAPI:
         return web.json_response({"markouts": markouts, "accuracy": accuracy})
 
     async def _handle_reset_test(self, _request: web.Request) -> web.Response:
-        current_mode = getattr(self._executor, "mode", "shadow") if self._executor else "shadow"
+        current_mode = getattr(self._executor, "mode", "simulation") if self._executor else "simulation"
         if current_mode == "live":
             return web.json_response(
                 {"error": "reset-test is disabled in live mode"}, status=403)
@@ -576,10 +576,10 @@ class BotAPI:
     async def _handle_switch_mode(self, request: web.Request) -> web.Response:
         data = await request.json()
         mode = str(data.get("mode") or "").strip().lower()
-        if mode not in ("shadow", "live"):
+        if mode not in ("simulation", "live"):
             return web.json_response(
-                {"error": "mode must be 'shadow' or 'live'"}, status=400)
-        current = self._disk_mode or getattr(config, "PM_MODE", "shadow")
+                {"error": "mode must be 'simulation' or 'live'"}, status=400)
+        current = self._disk_mode or getattr(config, "PM_MODE", "simulation")
         if mode == current:
             return web.json_response({"status": "no_change", "mode": current})
 

@@ -1,9 +1,9 @@
 """
-Polymarket executor — shadow mode today, live mode tomorrow.
+Polymarket executor — simulation mode today, live mode tomorrow.
 
-Shadow mode:
+Simulation mode:
     Simulates fills at the observed market mid-price. Writes a pm_positions
-    row with mode='shadow'. No external calls, no wallet, no risk.
+    row with mode='simulation'. No external calls, no wallet, no risk.
 
 Live mode (stubbed until CLOB credentials are wired):
     Will submit a limit order via py-clob-client, wait for fill, then write
@@ -11,7 +11,7 @@ Live mode (stubbed until CLOB credentials are wired):
     we wire credentials the live path raises explicitly.
 
 All position bookkeeping and P&L flow through the same database, so the
-dashboard treats shadow and live positions uniformly — only the `mode`
+dashboard treats simulation and live positions uniformly — only the `mode`
 column differs.
 
 Bankroll model:
@@ -47,20 +47,20 @@ class PMExecutor:
     """
 
     def __init__(self, mode: Optional[str] = None):
-        # Respect env first, then config — keeps "shadow" as the default
+        # Respect env first, then config — keeps "simulation" as the default
         # until live credentials are explicitly wired.
         self.mode = (mode
                      or os.environ.get("PM_MODE")
-                     or getattr(config, "PM_MODE", "shadow")).lower()
-        if self.mode not in ("shadow", "live"):
-            raise ValueError(f"PM_MODE must be 'shadow' or 'live', got: {self.mode}")
+                     or getattr(config, "PM_MODE", "simulation")).lower()
+        if self.mode not in ("simulation", "live"):
+            raise ValueError(f"PM_MODE must be 'simulation' or 'live', got: {self.mode}")
 
     # ── Bankroll ─────────────────────────────────────────────────────────────
     def get_starting_cash(self) -> float:
         """Configured starting cash for the active mode."""
         if self.mode == "live":
             return float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
-        return float(getattr(config, "PM_SHADOW_STARTING_CASH", 500.0))
+        return float(getattr(config, "PM_SIMULATION_STARTING_CASH", 500.0))
 
     def get_bankroll(self) -> float:
         """
@@ -70,7 +70,7 @@ class PMExecutor:
                      + Σ realized_pnl_usd (settled positions)
                      - Σ cost_usd         (open positions)
         """
-        starting = float(getattr(config, "PM_SHADOW_STARTING_CASH", 500.0))
+        starting = float(getattr(config, "PM_SIMULATION_STARTING_CASH", 500.0))
         if self.mode == "live":
             starting = float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
         try:
@@ -94,7 +94,7 @@ class PMExecutor:
         """
         Dashboard-friendly summary for the active mode.
         """
-        starting = float(getattr(config, "PM_SHADOW_STARTING_CASH", 500.0))
+        starting = float(getattr(config, "PM_SIMULATION_STARTING_CASH", 500.0))
         if self.mode == "live":
             starting = float(getattr(config, "PM_LIVE_STARTING_CASH", 200.0))
         try:
@@ -143,7 +143,7 @@ class PMExecutor:
         market_archetype: Optional[str] = None,
     ) -> Optional[int]:
         """
-        Record a new position. In shadow mode this is an immediate fill at
+        Record a new position. In simulation mode this is an immediate fill at
         the observed price. In live mode this will submit a CLOB order and
         only persist after fill confirmation.
 
@@ -159,7 +159,7 @@ class PMExecutor:
                                       prediction_id, reasoning, category,
                                       market_archetype)
         else:
-            pos_id = self._open_shadow(market, decision, claude_probability,
+            pos_id = self._open_simulation(market, decision, claude_probability,
                                         prediction_id, reasoning, category,
                                         market_archetype)
 
@@ -173,7 +173,7 @@ class PMExecutor:
             )
         return pos_id
 
-    def _open_shadow(self, market, decision, claude_p,
+    def _open_simulation(self, market, decision, claude_p,
                      prediction_id, reasoning, category,
                      market_archetype=None) -> Optional[int]:
         try:
@@ -189,7 +189,7 @@ class PMExecutor:
                     "  :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
-                    "  'shadow', 'open', :exp, :reason, :event_slug, "
+                    "  'simulation', 'open', :exp, :reason, :event_slug, "
                     "  :arch"
                     ") RETURNING id"
                 ), {
@@ -213,7 +213,7 @@ class PMExecutor:
                 }).fetchone()
                 return int(row[0]) if row else None
         except Exception as exc:
-            print(f"[pm_executor] _open_shadow failed: {exc}", file=sys.stderr)
+            print(f"[pm_executor] _open_simulation failed: {exc}", file=sys.stderr)
             return None
 
     def _open_live(self, market, decision, claude_p,
@@ -224,7 +224,7 @@ class PMExecutor:
         """
         raise NotImplementedError(
             "Live execution requires Polymarket CLOB credentials. Set "
-            "PM_MODE='shadow' in config.py, or provide POLYMARKET_API_KEY / "
+            "PM_MODE='simulation' in config.py, or provide POLYMARKET_API_KEY / "
             "PROXY_ADDRESS / PRIVATE_KEY and implement _open_live via "
             "py-clob-client."
         )

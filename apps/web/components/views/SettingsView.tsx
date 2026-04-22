@@ -5,7 +5,7 @@ import { humanizeIdentifier, type ToastFn } from "@/lib/format";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const RISK_KEYS = [
-  "PM_SHADOW_MIN_CONFIDENCE",
+  "PM_SIMULATION_MIN_CONFIDENCE",
   "PM_LIVE_MIN_CONFIDENCE",
   "PM_MAX_POSITION_PCT",
   "PM_MIN_TRADE_USD",
@@ -19,12 +19,12 @@ const SCAN_KEYS = [
   "PM_MAX_DAYS_TO_END",
   "PM_SKIP_EXISTING_DAYS",
   "PM_MIN_RESOLUTION_QUALITY",
-  "PM_SHADOW_SPREAD_ESTIMATE",
-  "PM_SHADOW_FEE_RATE",
+  "PM_SIMULATION_SPREAD_ESTIMATE",
+  "PM_SIMULATION_FEE_RATE",
 ];
 
 const CONFIG_HELP: Record<string, string> = {
-  PM_SHADOW_MIN_CONFIDENCE: "Minimum Claude confidence to trade in simulation",
+  PM_SIMULATION_MIN_CONFIDENCE: "Minimum Claude confidence to trade in simulation",
   PM_LIVE_MIN_CONFIDENCE: "Minimum Claude confidence to trade in live mode",
   PM_MAX_POSITION_PCT: "Maximum % of bankroll per position",
   PM_MIN_TRADE_USD: "Minimum trade size in USD",
@@ -35,8 +35,8 @@ const CONFIG_HELP: Record<string, string> = {
   PM_MAX_DAYS_TO_END: "Maximum days until market resolution",
   PM_SKIP_EXISTING_DAYS: "Days before re-evaluating a market",
   PM_MIN_RESOLUTION_QUALITY: "Minimum resolution quality score (0-1)",
-  PM_SHADOW_SPREAD_ESTIMATE: "Estimated spread for simulated fill adjustment",
-  PM_SHADOW_FEE_RATE: "Estimated fee rate for simulated fill adjustment",
+  PM_SIMULATION_SPREAD_ESTIMATE: "Estimated spread for simulated fill adjustment",
+  PM_SIMULATION_FEE_RATE: "Estimated fee rate for simulated fill adjustment",
 };
 
 type ControlsStatus = {
@@ -78,7 +78,7 @@ export function SettingsView({
   }, [fetchControls]);
 
   const handleModeSwitch = async () => {
-    const next = mode === "live" ? "shadow" : "live";
+    const next = mode === "live" ? "simulation" : "live";
     setSwitching(true);
     try {
       const res = await fetch("/api/switch-mode", {

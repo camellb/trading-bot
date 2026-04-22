@@ -33,7 +33,7 @@ export function AppShell() {
     );
   }, []);
 
-  const mode = data.summary?.mode ?? data.health?.mode ?? "shadow";
+  const mode = data.summary?.mode ?? data.health?.mode ?? "simulation";
   const handleNav = (v: NavView) => {
     setView(v);
     setSidebarOpen(false);

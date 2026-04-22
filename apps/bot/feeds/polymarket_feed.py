@@ -1,5 +1,5 @@
 """
-Polymarket Gamma API client — shadow mode.
+Polymarket Gamma API client — simulation mode.
 
 Read-only. Purpose is to surface a curated candidate list of binary markets
 where an LLM could plausibly add value (genuine uncertainty, liquid, resolvable

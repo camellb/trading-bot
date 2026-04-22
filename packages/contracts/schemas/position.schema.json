@@ -26,7 +26,7 @@
     "claude_probability":    { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
     "ev_bps":                { "type": ["number", "null"] },
     "confidence":            { "type": ["number", "null"], "minimum": 0.0, "maximum": 1.0 },
-    "mode":                  { "type": "string", "enum": ["shadow", "live"] },
+    "mode":                  { "type": "string", "enum": ["simulation", "live"] },
     "status":                { "type": "string", "enum": ["open", "settled", "invalid", "closed_early"] },
     "expected_resolution_at":{ "type": ["string", "null"], "format": "date-time" },
     "settled_at":            { "type": ["string", "null"], "format": "date-time" },
