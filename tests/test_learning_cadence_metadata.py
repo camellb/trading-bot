@@ -110,7 +110,7 @@ class ApplyListAppendDispatchTests(unittest.TestCase):
         self.lc.update_user_config = fake_update
 
     def test_empty_list_gets_item(self):
-        self._install_stubs(self.UserConfig())
+        self._install_stubs(self.UserConfig(archetype_skip_list=()))
         result = self.lc._apply_list_append("default", {
             "operation":    "list_append",
             "target_field": "archetype_skip_list",

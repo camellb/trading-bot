@@ -138,7 +138,12 @@ class DiagnosticOverrideFieldsTests(unittest.TestCase):
     def test_defaults_are_unset(self):
         u = UserConfig()
         self.assertIsNone(u.cost_assumption_override)
-        self.assertEqual(u.archetype_skip_list, tuple())
+        # Short-horizon tennis archetypes default to the skip list
+        # per resolution-data findings.
+        self.assertEqual(
+            u.archetype_skip_list,
+            ("tennis_qualifier", "tennis_lower_tier"),
+        )
 
     def test_nullable_cast_accepts_none_and_empty(self):
         self.assertIsNone(cast_value("cost_assumption_override", None))

@@ -47,9 +47,14 @@ class UserConfig:
     dry_powder_reserve_pct: float = 0.20
 
     # Diagnostic-driven overrides (populated by learning cadence proposals).
-    # None / empty mean "use the sizer default".
+    # None means "use the sizer default".
     cost_assumption_override: Optional[float]   = None
-    archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
+    # Default skip list: short-horizon tennis archetypes. Resolution data
+    # showed these categories lose money at the forecaster's current
+    # calibration; users can remove entries via the Risk-controls UI.
+    archetype_skip_list:      Tuple[str, ...]   = field(
+        default_factory=lambda: ("tennis_qualifier", "tennis_lower_tier")
+    )
 
     def to_dict(self) -> dict:
         return asdict(self)

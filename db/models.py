@@ -449,6 +449,14 @@ def create_all_tables() -> None:
             "ALTER COLUMN min_p_win SET DEFAULT 0.50",
         ):
             conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))
+        # Backfill default skip list for rows that pre-date the default.
+        # Only touches NULL — an explicit empty string means the user
+        # deliberately cleared the list and is respected as-is.
+        conn.execute(sa_text(
+            "UPDATE user_config "
+            "SET archetype_skip_list = 'tennis_qualifier,tennis_lower_tier' "
+            "WHERE archetype_skip_list IS NULL"
+        ))
         # Migration: metadata JSONB column for list-append and future
         # non-scalar proposal operations. Idempotent.
         conn.execute(sa_text(
