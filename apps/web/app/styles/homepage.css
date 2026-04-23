@@ -116,7 +116,7 @@ html, body { scroll-behavior: smooth; }
     linear-gradient(to bottom, rgba(10,10,15,0.3) 0%, transparent 35%, var(--obsidian) 100%);
   pointer-events: none;
 }
-.hero-inner { position: relative; z-index: 2; max-width: 920px; text-align: center; display: flex; flex-direction: column; align-items: center; }
+.hero-inner { position: relative; z-index: 2; width: 100%; max-width: 920px; text-align: center; display: flex; flex-direction: column; align-items: center; }
 .hero-head {
   margin: 28px 0 28px;
   font-size: 96px;
@@ -134,7 +134,7 @@ html, body { scroll-behavior: smooth; }
 }
 .hero-sub {
   font-family: var(--font-body); font-size: 18px; line-height: 1.6;
-  color: var(--vellum-60); max-width: 620px; margin: 0 auto 36px;
+  color: var(--vellum-60); width: 100%; max-width: 620px; margin: 0 auto 36px;
 }
 .hero-ctas { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
 .hero-note {
@@ -929,8 +929,8 @@ html, body { scroll-behavior: smooth; }
   .btn-ghost { padding: 12px 20px; font-size: 12px; letter-spacing: 0.08em; }
   .btn-primary.large { padding: 16px 30px; font-size: 13px; }
 
-  /* Hero: taller (+~10%) and bigger headline */
-  .hero { padding: 120px 20px 88px; min-height: 88vh; }
+  /* Hero: content-driven height on mobile to avoid dead space before ribbon */
+  .hero { padding: 120px 20px 56px; min-height: auto; justify-content: flex-start; }
   .hero-head { font-size: 48px; line-height: 1.04; max-width: none; margin: 20px 0 22px; letter-spacing: -0.025em; }
   .hero-sub { font-size: 15px; margin-bottom: 28px; }
   .hero-ctas { gap: 10px; flex-direction: column; width: 100%; max-width: 300px; }
@@ -1052,7 +1052,7 @@ html, body { scroll-behavior: smooth; }
 }
 
 @media (max-width: 420px) {
-  .hero { padding: 110px 18px 72px; min-height: 88vh; }
+  .hero { padding: 110px 18px 48px; min-height: auto; }
   .hero-head { font-size: 42px; letter-spacing: -0.025em; }
   .hero-sub { font-size: 14.5px; }
   .problem-num { font-size: 30px; }

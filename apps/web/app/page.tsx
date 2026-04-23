@@ -650,7 +650,6 @@ function FinalCTA() {
   return (
     <section className="final-cta" data-screen-label="12 Final CTA">
       <div className="quantum-grid" />
-      <div className="final-meridian"></div>
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">Sign up in three minutes. Delfi will take care of the rest.</p>
