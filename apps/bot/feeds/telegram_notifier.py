@@ -161,6 +161,32 @@ class TelegramNotifier:
         except Exception as exc:
             print(f"[telegram] send exception: {exc}", file=sys.stderr)
 
+    async def send_checked(self, user_id: str, message: str) -> Tuple[bool, str]:
+        """Send and return (ok, detail). Used by the dashboard test button so
+        users see real Telegram errors ('Unauthorized', 'chat not found', ...)
+        instead of a silent 'sent' when delivery actually failed."""
+        creds = self._get_creds(user_id)
+        if creds is None:
+            return False, "No Telegram credentials saved."
+        token, chat_id = creds
+        url = _TELEGRAM_BASE.format(token=token)
+        safe = _sanitize_html(message)
+        payload = {"chat_id": chat_id, "text": safe, "parse_mode": "HTML"}
+        try:
+            session = await self._get_session()
+            async with session.post(url, json=payload) as resp:
+                body = await resp.text()
+                if resp.status == 200:
+                    return True, "ok"
+                try:
+                    j = json.loads(body)
+                    desc = j.get("description") or body[:200]
+                except Exception:
+                    desc = body[:200]
+                return False, f"Telegram API {resp.status}: {desc}"
+        except Exception as exc:
+            return False, f"Network error: {exc}"
+
     def send_sync(self, user_id: str, message: str) -> None:
         """Blocking send for use outside the event loop (crash handler, shutdown)."""
         creds = self._get_creds(user_id)

@@ -9,10 +9,39 @@ export default function NotificationsPage() {
   const [botToken, setBotToken] = useState("");
   const [chatId, setChatId] = useState("");
   const [reveal, setReveal] = useState(false);
+  const [revealing, setRevealing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const toggleReveal = async () => {
+    if (reveal) {
+      setBotToken("");
+      setChatId("");
+      setReveal(false);
+      return;
+    }
+    if (!configured) {
+      setReveal(true);
+      return;
+    }
+    setRevealing(true);
+    setStatus(null);
+    setError(null);
+    try {
+      const r = await fetch("/api/config/telegram/reveal", { cache: "no-store" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`);
+      setBotToken(String(data?.bot_token ?? ""));
+      setChatId(String(data?.chat_id ?? ""));
+      setReveal(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRevealing(false);
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -190,9 +219,10 @@ export default function NotificationsPage() {
             <button
               type="button"
               className="btn-sm"
-              onClick={() => setReveal((r) => !r)}
+              onClick={toggleReveal}
+              disabled={revealing}
             >
-              {reveal ? "Hide values" : "Reveal values"}
+              {revealing ? "Loading…" : reveal ? "Hide values" : "Reveal values"}
             </button>
             {configured && (
               <button

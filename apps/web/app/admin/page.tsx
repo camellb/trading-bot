@@ -12,6 +12,16 @@ type Stats = {
   trades_24h:          number;
   total_realized:      number;
   total_evaluations:   number;
+  plan_monthly:        number;
+  plan_annual:         number;
+  past_due:            number;
+  canceled:            number;
+  new_signups_7d:      number;
+  new_subs_7d:         number;
+  settles_24h:         number;
+  realized_24h:        number;
+  mrr:                 number;
+  arr:                 number;
 };
 
 type Alert = {
@@ -79,27 +89,33 @@ export default function AdminOverviewPage() {
   }, []);
 
   const s = data?.stats;
-  const statCells = [
-    {
-      label: "Active subscribers",
-      value: s ? s.active_subscribers.toLocaleString() : "-",
-      delta: s ? `${s.onboarded_users} onboarded / ${s.total_users} total` : "",
-    },
-    {
-      label: "Bankroll under management",
-      value: s ? `$${s.bankroll_under_mgmt.toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "-",
-      delta: s ? `across ${s.active_subscribers} active users` : "",
-    },
-    {
-      label: "Trades (24h)",
-      value: s ? s.trades_24h.toLocaleString() : "-",
-      delta: s ? `${s.open_positions} currently open` : "",
-    },
-    {
-      label: "Realized P&L (all time)",
-      value: s ? fmtMoney(s.total_realized) : "-",
-      delta: s ? `${s.total_evaluations.toLocaleString()} evaluations run` : "",
-    },
+  const fmtInt = (v: number) => v.toLocaleString("en-US");
+  const fmtDollars = (v: number) =>
+    `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
+  const topStats = [
+    { label: "Total users",        value: s ? fmtInt(s.total_users)        : "-" },
+    { label: "Active subscribers", value: s ? fmtInt(s.active_subscribers) : "-" },
+    { label: "Bankroll under mgmt", value: s ? fmtDollars(s.bankroll_under_mgmt) : "-" },
+    { label: "Open positions",     value: s ? fmtInt(s.open_positions)     : "-" },
+  ];
+
+  const financeStats = [
+    { label: "MRR",       value: s ? fmtDollars(s.mrr) : "-" },
+    { label: "ARR",       value: s ? fmtDollars(s.arr) : "-" },
+    { label: "Monthly",   value: s ? fmtInt(s.plan_monthly) : "-" },
+    { label: "Annual",    value: s ? fmtInt(s.plan_annual)  : "-" },
+    { label: "Past due",  value: s ? fmtInt(s.past_due)     : "-" },
+    { label: "Canceled",  value: s ? fmtInt(s.canceled)     : "-" },
+  ];
+
+  const tradingStats = [
+    { label: "Trades (24h)",    value: s ? fmtInt(s.trades_24h)        : "-" },
+    { label: "Settled (24h)",   value: s ? fmtInt(s.settles_24h)       : "-" },
+    { label: "Realized (24h)",  value: s ? fmtMoney(s.realized_24h)    : "-" },
+    { label: "Realized (all)",  value: s ? fmtMoney(s.total_realized)  : "-" },
+    { label: "Evaluations",     value: s ? fmtInt(s.total_evaluations) : "-" },
+    { label: "New signups (7d)", value: s ? fmtInt(s.new_signups_7d)   : "-" },
   ];
 
   return (
@@ -129,13 +145,42 @@ export default function AdminOverviewPage() {
       ) : null}
 
       <div className="stat-row">
-        {statCells.map((c, i) => (
+        {topStats.map((c, i) => (
           <div className="stat-cell" key={i}>
             <div className="stat-cell-label">{c.label}</div>
             <div className="stat-cell-val">{c.value}</div>
-            <div className="stat-cell-delta">{c.delta}</div>
           </div>
         ))}
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Finance</h2>
+          <span className="panel-meta">Subscriptions and recurring revenue</span>
+        </div>
+        <div className="stat-row" style={{ padding: "0 0 8px 0" }}>
+          {financeStats.map((c, i) => (
+            <div className="stat-cell" key={i}>
+              <div className="stat-cell-label">{c.label}</div>
+              <div className="stat-cell-val">{c.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Trading</h2>
+          <span className="panel-meta">Activity across all users</span>
+        </div>
+        <div className="stat-row" style={{ padding: "0 0 8px 0" }}>
+          {tradingStats.map((c, i) => (
+            <div className="stat-cell" key={i}>
+              <div className="stat-cell-label">{c.label}</div>
+              <div className="stat-cell-val">{c.value}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="panel">

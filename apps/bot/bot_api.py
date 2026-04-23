@@ -607,6 +607,31 @@ class BotAPI:
             "configured": creds is not None,
         })
 
+    async def _handle_reveal_telegram_config(self, request: web.Request) -> web.Response:
+        """Return the user's saved bot_token and chat_id so the settings page can
+        prefill the inputs when the user clicks 'Reveal'. Gated by the same
+        session-auth the PUT endpoint uses - reading back creds the user just
+        saved is no additional exposure beyond what they've already provided."""
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        loop = asyncio.get_running_loop()
+        creds = await loop.run_in_executor(
+            self._pool, get_user_telegram_creds, user_id,
+        )
+        if creds is None:
+            return web.json_response({
+                "configured": False,
+                "bot_token":  "",
+                "chat_id":    "",
+            })
+        return web.json_response({
+            "configured": True,
+            "bot_token":  creds[0] or "",
+            "chat_id":    creds[1] or "",
+        })
+
     async def _handle_telegram_test(self, request: web.Request) -> web.Response:
         """Send a one-off test message so the user can verify Telegram hookup."""
         user_id = self._user_id_from(request) or request.query.get("user_id")
@@ -622,12 +647,18 @@ class BotAPI:
                 {"error": "Save your Telegram bot token and chat ID first."},
                 status=400,
             )
+        message = (
+            "<b>Delfi test message</b>\nYou're connected. "
+            "You'll receive positions, resolutions, and summaries here."
+        )
+        if hasattr(self._notifier, "send_checked"):
+            ok, detail = await self._notifier.send_checked(user_id, message)
+            if not ok:
+                return web.json_response({"error": detail}, status=502)
+            return web.json_response({"status": "sent", "user_id": user_id})
+        # Legacy fallback - old notifier without checked send
         try:
-            await self._notifier.send(
-                user_id,
-                "<b>Delfi test message</b>\nYou're connected. "
-                "You'll receive positions, resolutions, and summaries here.",
-            )
+            await self._notifier.send(user_id, message)
         except Exception as exc:
             return web.json_response(
                 {"error": f"send failed: {exc}"}, status=502,
@@ -810,7 +841,34 @@ class BotAPI:
                         "     FROM pm_positions WHERE status = 'settled') "
                         "    AS realized_pnl, "
                         "  (SELECT COUNT(*) FROM market_evaluations) "
-                        "    AS total_evaluations"
+                        "    AS total_evaluations, "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE subscription_status = 'active' "
+                        "       AND subscription_plan = 'monthly') AS plan_monthly, "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE subscription_status = 'active' "
+                        "       AND subscription_plan = 'annual') AS plan_annual, "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE subscription_status = 'past_due') AS past_due, "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE subscription_status = 'canceled') AS canceled, "
+                        "  (SELECT COUNT(*) FROM auth.users "
+                        "     WHERE created_at >= NOW() - INTERVAL '7 days') "
+                        "    AS new_signups_7d, "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE subscription_status = 'active' "
+                        "       AND subscription_started_at "
+                        "           >= NOW() - INTERVAL '7 days') "
+                        "    AS new_subs_7d, "
+                        "  (SELECT COUNT(*) FROM pm_positions "
+                        "     WHERE status = 'settled' "
+                        "       AND settled_at >= NOW() - INTERVAL '24 hours') "
+                        "    AS settles_24h, "
+                        "  (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
+                        "     FROM pm_positions "
+                        "     WHERE status = 'settled' "
+                        "       AND settled_at >= NOW() - INTERVAL '24 hours') "
+                        "    AS realized_24h"
                     )).fetchone()
 
                     alert_rows = conn.execute(text(
@@ -890,6 +948,11 @@ class BotAPI:
         activity.sort(key=lambda x: x["timestamp"] or "", reverse=True)
         activity = activity[:30]
 
+        plan_monthly = int(totals[8] or 0)
+        plan_annual  = int(totals[9] or 0)
+        mrr = plan_monthly * 69.99 + plan_annual * 52.50
+        arr = mrr * 12.0
+
         return web.json_response({
             "stats": {
                 "onboarded_users":    int(totals[0] or 0),
@@ -900,6 +963,16 @@ class BotAPI:
                 "trades_24h":         int(totals[5] or 0),
                 "total_realized":     float(totals[6] or 0.0),
                 "total_evaluations":  int(totals[7] or 0),
+                "plan_monthly":       plan_monthly,
+                "plan_annual":        plan_annual,
+                "past_due":           int(totals[10] or 0),
+                "canceled":           int(totals[11] or 0),
+                "new_signups_7d":     int(totals[12] or 0),
+                "new_subs_7d":        int(totals[13] or 0),
+                "settles_24h":        int(totals[14] or 0),
+                "realized_24h":       float(totals[15] or 0.0),
+                "mrr":                round(mrr, 2),
+                "arr":                round(arr, 2),
             },
             "alerts":   alerts,
             "activity": activity,
@@ -1292,6 +1365,7 @@ class BotAPI:
         app.router.add_put ("/api/user-config", self._handle_update_user_config)
         app.router.add_get ("/api/config/telegram", self._handle_get_telegram_config)
         app.router.add_put ("/api/config/telegram", self._handle_put_telegram_config)
+        app.router.add_get ("/api/config/telegram/reveal", self._handle_reveal_telegram_config)
         app.router.add_post("/api/config/telegram/test", self._handle_telegram_test)
         app.router.add_get ("/api/config/polymarket", self._handle_get_polymarket_config)
         app.router.add_put ("/api/config/polymarket", self._handle_put_polymarket_config)

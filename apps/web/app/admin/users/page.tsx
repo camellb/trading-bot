@@ -65,12 +65,19 @@ export default function AdminUsersPage() {
     let cancelled = false;
     const load = async () => {
       try {
-        const res = await getJSON<UsersPayload>("/api/admin/users");
+        const r = await fetch("/api/admin/users", { cache: "no-store" });
         if (cancelled) return;
+        if (!r.ok) {
+          setError(`HTTP ${r.status}: ${await r.text().catch(() => "request failed")}`);
+          setUsers([]);
+          return;
+        }
+        const res = (await r.json()) as UsersPayload;
         setUsers(res?.users ?? []);
       } catch (e: unknown) {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : "Failed to load users");
+        setUsers([]);
       } finally {
         if (!cancelled) setLoaded(true);
       }
@@ -78,6 +85,15 @@ export default function AdminUsersPage() {
     load();
     return () => { cancelled = true; };
   }, []);
+
+  const summary = useMemo(() => {
+    const list = users ?? [];
+    const active    = list.filter((u) => u.subscription_status === "active").length;
+    const pastDue   = list.filter((u) => u.subscription_status === "past_due").length;
+    const onboarded = list.filter((u) => !!u.onboarded_at).length;
+    const admins    = list.filter((u) => u.is_admin).length;
+    return { total: list.length, active, pastDue, onboarded, admins };
+  }, [users]);
 
   const filtered = useMemo(() => {
     const list = users ?? [];
@@ -131,6 +147,31 @@ export default function AdminUsersPage() {
         </div>
       </div>
 
+      {loaded && !error ? (
+        <div className="stat-row">
+          <div className="stat-cell">
+            <div className="stat-cell-label">Total</div>
+            <div className="stat-cell-val">{summary.total.toLocaleString()}</div>
+          </div>
+          <div className="stat-cell">
+            <div className="stat-cell-label">Active</div>
+            <div className="stat-cell-val">{summary.active.toLocaleString()}</div>
+          </div>
+          <div className="stat-cell">
+            <div className="stat-cell-label">Past due</div>
+            <div className="stat-cell-val">{summary.pastDue.toLocaleString()}</div>
+          </div>
+          <div className="stat-cell">
+            <div className="stat-cell-label">Onboarded</div>
+            <div className="stat-cell-val">{summary.onboarded.toLocaleString()}</div>
+          </div>
+          <div className="stat-cell">
+            <div className="stat-cell-label">Admins</div>
+            <div className="stat-cell-val">{summary.admins.toLocaleString()}</div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">
@@ -141,11 +182,28 @@ export default function AdminUsersPage() {
         </div>
 
         {error ? (
-          <div className="split-row"><div className="split-body"><div className="split-desc">{error}</div></div></div>
+          <div className="split-row">
+            <div className="split-body">
+              <div className="split-title">Could not load users</div>
+              <div className="split-desc">{error}</div>
+              <div className="split-desc" style={{ marginTop: 6, fontSize: 12 }}>
+                The bot API may be waking up (Railway cold start). Refresh in a few seconds.
+              </div>
+            </div>
+          </div>
         ) : !loaded ? (
           <div className="split-row"><div className="split-body"><div className="split-desc">Loading...</div></div></div>
+        ) : (users ?? []).length === 0 ? (
+          <div className="split-row">
+            <div className="split-body">
+              <div className="split-title">No users yet</div>
+              <div className="split-desc">
+                The query returned zero rows. Either no one has signed up, or the bot API is still waking up. If the overview shows users but this page does not, force-refresh in a moment.
+              </div>
+            </div>
+          </div>
         ) : filtered.length === 0 ? (
-          <div className="split-row"><div className="split-body"><div className="split-desc">No users match.</div></div></div>
+          <div className="split-row"><div className="split-body"><div className="split-desc">No users match your filter.</div></div></div>
         ) : (
           <table className="table-simple">
             <thead>
