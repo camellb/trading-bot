@@ -232,7 +232,8 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "verdict":            "insufficient_data",
     }
 
-    rows = _fetch_settled_rows(mode=mode, cycle_size=cycle_size)
+    rows = _fetch_settled_rows(user_id=user_id, mode=mode,
+                               cycle_size=cycle_size)
     if not rows:
         return data
 
@@ -313,9 +314,10 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     return data
 
 
-def _fetch_settled_rows(mode: str, cycle_size: int) -> list[dict]:
-    """Most-recently-settled `cycle_size` positions in `mode` joined to
-    their market_evaluation for the research reasoning excerpt."""
+def _fetch_settled_rows(user_id: str, mode: str,
+                        cycle_size: int) -> list[dict]:
+    """Most-recently-settled `cycle_size` positions in `mode` for `user_id`
+    joined to their market_evaluation for the research reasoning excerpt."""
     try:
         from sqlalchemy import text
         from db.engine import get_engine
@@ -329,9 +331,11 @@ def _fetch_settled_rows(mode: str, cycle_size: int) -> list[dict]:
                 "       e.reasoning AS eval_reasoning "
                 "FROM pm_positions p "
                 "LEFT JOIN market_evaluations e ON e.pm_position_id = p.id "
-                "WHERE p.mode = :m AND p.status IN ('settled', 'invalid') "
+                "WHERE p.user_id = :uid AND p.mode = :m "
+                "  AND p.status IN ('settled', 'invalid') "
                 "ORDER BY p.settled_at DESC LIMIT :lim"
-            ), {"m": mode, "lim": int(cycle_size)}).fetchall()
+            ), {"uid": user_id, "m": mode,
+                "lim": int(cycle_size)}).fetchall()
     except Exception as exc:
         print(f"[review_report] fetch_settled_rows failed: {exc}",
               file=sys.stderr)

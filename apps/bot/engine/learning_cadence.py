@@ -104,7 +104,7 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
     gate has been crossed since the last cycle. Returns a status dict.
     """
     try:
-        settled_now = _count_settled_trades(mode)
+        settled_now = _count_settled_trades(user_id, mode)
         last_cycle = _last_cycle_settled_count(user_id)
         delta = settled_now - last_cycle
         if delta < LEARNING_CYCLE_TRADE_INTERVAL:
@@ -115,7 +115,8 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
                 "threshold":   LEARNING_CYCLE_TRADE_INTERVAL,
             }
 
-        stats = _gather_stats(mode, limit=LEARNING_CYCLE_TRADE_INTERVAL)
+        stats = _gather_stats(user_id, mode,
+                              limit=LEARNING_CYCLE_TRADE_INTERVAL)
         current_cfg = get_user_config(user_id)
         proposals = propose_suggestions(stats, current_cfg)
 
@@ -408,15 +409,16 @@ def _send_report_via_telegram(user_id: str, report: dict) -> None:
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
-def _count_settled_trades(mode: str) -> int:
+def _count_settled_trades(user_id: str, mode: str) -> int:
     try:
         from sqlalchemy import text
         from db.engine import get_engine
         with get_engine().begin() as conn:
             return int(conn.execute(text(
                 "SELECT COUNT(*) FROM pm_positions "
-                "WHERE mode = :m AND status IN ('settled', 'invalid')"
-            ), {"m": mode}).scalar() or 0)
+                "WHERE user_id = :uid AND mode = :m "
+                "  AND status IN ('settled', 'invalid')"
+            ), {"uid": user_id, "m": mode}).scalar() or 0)
     except Exception as exc:
         print(f"[learning_cadence] count_settled failed: {exc}", file=sys.stderr)
         return 0
@@ -439,7 +441,7 @@ def _last_cycle_settled_count(user_id: str) -> int:
         return 0
 
 
-def _gather_stats(mode: str, limit: int) -> dict:
+def _gather_stats(user_id: str, mode: str, limit: int) -> dict:
     """Pull last `limit` settled trades and summarise for the proposers."""
     try:
         from sqlalchemy import text
@@ -448,10 +450,11 @@ def _gather_stats(mode: str, limit: int) -> dict:
             rows = conn.execute(text(
                 "SELECT cost_usd, realized_pnl_usd, category "
                 "FROM pm_positions "
-                "WHERE mode = :m AND status IN ('settled', 'invalid') "
+                "WHERE user_id = :uid AND mode = :m "
+                "  AND status IN ('settled', 'invalid') "
                 "ORDER BY settled_at DESC "
                 "LIMIT :lim"
-            ), {"m": mode, "lim": limit}).fetchall()
+            ), {"uid": user_id, "m": mode, "lim": limit}).fetchall()
     except Exception as exc:
         print(f"[learning_cadence] gather_stats failed: {exc}", file=sys.stderr)
         return {"recent_window": {"n": 0}}
