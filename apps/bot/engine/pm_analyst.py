@@ -308,9 +308,9 @@ class PMAnalyst:
 
         Returns a summary keyed by counters across all users.
         """
-        skip_days = int(getattr(config, "PM_SKIP_EXISTING_DAYS", 3))
+        skip_days = int(getattr(config, "PM_SKIP_EXISTING_DAYS", 1))
         min_days  = int(getattr(config, "PM_MIN_DAYS_TO_END", 0))
-        max_days  = int(getattr(config, "PM_MAX_DAYS_TO_END", 90))
+        max_days  = int(getattr(config, "PM_MAX_DAYS_TO_END", 7))
 
         summary = {
             "fetched":     0,

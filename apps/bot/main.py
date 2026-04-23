@@ -128,7 +128,7 @@ async def main() -> None:
     async def _run_scan():
         try:
             await scan_and_analyze(
-                limit          = int(getattr(config, "PM_SCAN_LIMIT", 20)),
+                limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
                 min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
                 notifier       = notifier,
                 analyst        = analyst,

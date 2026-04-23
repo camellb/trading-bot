@@ -434,8 +434,8 @@ class BotAPI:
 
     async def _handle_list_learning_reports(self,
                                             request: web.Request) -> web.Response:
-        user_id = self._user_id_from(request) or request.query.get("user_id")
-        if not user_id:
+        caller_id = self._user_id_from(request)
+        if not caller_id:
             return web.json_response({"error": "X-User-Id header required"},
                                       status=401)
         try:
@@ -445,12 +445,19 @@ class BotAPI:
         # include_admin=1 flips the reasoning-bearing variant on, but only for
         # verified admins. Non-admins asking for it silently get the user view.
         want_admin = request.query.get("include_admin", "0") == "1"
-        include_admin = False
-        if want_admin:
-            loop = asyncio.get_running_loop()
-            include_admin = bool(await loop.run_in_executor(
-                self._pool, _user_is_admin, user_id,
-            ))
+        loop = asyncio.get_running_loop()
+        is_admin = bool(await loop.run_in_executor(
+            self._pool, _user_is_admin, caller_id,
+        ))
+        include_admin = bool(want_admin and is_admin)
+
+        # Admins can inspect any user's reports via ?user_id=... ; non-admins
+        # are silently pinned to their own id regardless of query param.
+        target_user_id = request.query.get("user_id") or ""
+        if target_user_id and is_admin:
+            user_id = target_user_id
+        else:
+            user_id = caller_id
 
         from engine.review_report import list_learning_reports
         loop = asyncio.get_running_loop()
@@ -820,7 +827,7 @@ class BotAPI:
         async def _runner():
             try:
                 summary = await scan_and_analyze(
-                    limit=int(getattr(config, "PM_SCAN_LIMIT", 20)),
+                    limit=int(getattr(config, "PM_SCAN_LIMIT", 100)),
                     min_volume_24h=float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
                     analyst=self._analyst,
                 )

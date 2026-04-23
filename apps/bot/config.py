@@ -30,7 +30,7 @@ PM_MAX_PER_EVENT = 3
 
 
 # ── Market discovery ─────────────────────────────────────────────────────────
-PM_SCAN_LIMIT           = 40          # how many markets per scan
+PM_SCAN_LIMIT           = 100         # how many markets per scan (locked value)
 PM_MIN_VOLUME_24H_USD   = 5_000.0     # liquidity filter (relaxed for short-horizon)
 PM_MIN_DAYS_TO_END      = 0           # include markets resolving in hours
 PM_MAX_DAYS_TO_END      = 7           # 7-day simulation test - short-horizon only
