@@ -23,8 +23,13 @@ Confidence softener (size only - never skips)
     At confidence 0 the stake is 1% of base; at confidence_full_stake (default
     0.70) the stake is full; above that the multiplier is capped at 1.0.
 
-Final stake = bankroll * base_stake_pct * multiplier, capped at
-bankroll * max_stake_pct, with an absolute $2 minimum.
+Archetype multiplier (size only - never skips)
+    archetype_stake_multipliers[archetype] × the confidence multiplier. 1.0
+    by default for archetypes without an override. Clamped to [0.1, 10.0].
+    Populated by the learning cadence after 25+ settled trades per archetype.
+
+Final stake = bankroll * base_stake_pct * confidence_mult * archetype_mult,
+capped at bankroll * max_stake_pct, with an absolute $2 minimum.
 
 Why there is no Gate 3. A prior version of this sizer gated on minimum
 expected return - (1/ask) - 1 - cost >= min_expected_return. It was removed
@@ -130,6 +135,19 @@ def size_position(
 
     # ── Confidence softener (size only, never skip) ─────────────────────────
     multiplier = _confidence_multiplier(cf, full_stake=confidence_full_stake)
+
+    # ── Archetype stake multiplier ──────────────────────────────────────────
+    # Learning-cadence-proposed per-archetype sizing knob. 1.0 = no change.
+    # Missing key → 1.0. Compose multiplicatively with the confidence softener;
+    # max_stake_pct cap below is still authoritative.
+    if archetype is not None:
+        multipliers = getattr(user_config, "archetype_stake_multipliers", None) or {}
+        try:
+            arch_mult = float(multipliers.get(archetype, 1.0))
+        except (TypeError, ValueError):
+            arch_mult = 1.0
+        arch_mult = max(0.1, min(10.0, arch_mult))
+        multiplier *= arch_mult
 
     # ── Stake sizing ────────────────────────────────────────────────────────
     base_pct = float(user_config.base_stake_pct)

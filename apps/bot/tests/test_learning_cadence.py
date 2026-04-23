@@ -178,12 +178,16 @@ class CostCorrectionProposerTests(unittest.TestCase):
 
 
 class AdvisoryProposalsHaveNoBacktestTests(unittest.TestCase):
-    """Advisory proposals skip the backtest delta. After the doctrine change
-    the only advisory target is `archetype_skip_list` - cost overrides are
-    now scalar-valued and do get a backtest delta."""
+    """Advisory proposals skip the backtest delta. Advisory targets are the
+    list- and dict-shaped config fields: `archetype_skip_list` and
+    `archetype_stake_multipliers`. Cost overrides are scalar-valued and
+    do get a backtest delta."""
 
-    def test_advisory_params_is_list_targets_only(self):
-        self.assertEqual(ADVISORY_PARAMS, {"archetype_skip_list"})
+    def test_advisory_params_are_collection_targets_only(self):
+        self.assertEqual(
+            ADVISORY_PARAMS,
+            {"archetype_skip_list", "archetype_stake_multipliers"},
+        )
 
     def test_attach_backtest_delta_skips_advisory_without_db(self):
         from engine.learning_cadence import Proposal, _attach_backtest_delta

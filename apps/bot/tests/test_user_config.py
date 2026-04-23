@@ -19,6 +19,7 @@ from engine.user_config import (
     UserConfig,
     USER_CONFIG_BOUNDS,
     USER_CONFIG_DESCRIPTIONS,
+    USER_CONFIG_DICT_FIELDS,
     USER_CONFIG_LIST_FIELDS,
     USER_CONFIG_NULLABLE_FIELDS,
     cast_value,
@@ -47,11 +48,12 @@ class DefaultsMatchDoctrineTests(unittest.TestCase):
         self.assertAlmostEqual(u.dry_powder_reserve_pct, 0.20)
 
     def test_every_field_has_bounds(self):
-        # List fields don't use numeric bounds; nullable fields only enforce
-        # bounds when the value is set. Every field still has a description.
+        # List and dict fields don't use numeric bounds; nullable fields only
+        # enforce bounds when the value is set. Every field still has a
+        # description.
         for fld in UserConfig.__dataclass_fields__:
             self.assertIn(fld, USER_CONFIG_DESCRIPTIONS)
-            if fld in USER_CONFIG_LIST_FIELDS:
+            if fld in USER_CONFIG_LIST_FIELDS or fld in USER_CONFIG_DICT_FIELDS:
                 continue
             self.assertIn(fld, USER_CONFIG_BOUNDS)
 

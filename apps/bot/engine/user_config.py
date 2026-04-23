@@ -16,9 +16,10 @@ scripts keep working without a DATABASE_URL.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import dataclass, asdict, field
-from typing import Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union
 
 
 DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -53,6 +54,11 @@ class UserConfig:
     # this list per-user based on resolved-trade evidence. Users can also
     # edit it manually via the Risk-controls UI.
     archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
+    # Per-archetype stake multiplier, applied after the confidence softener
+    # in pm_sizer. Missing keys default to 1.0 (no adjustment). Each value
+    # is clamped to [0.1, 10.0] on write. Populated by the learning cadence
+    # once an archetype has >=25 settled trades of evidence.
+    archetype_stake_multipliers: Dict[str, float] = field(default_factory=dict)
 
     # Per-user execution state (SaaS multi-tenancy).
     # All four default to None for brand-new users who haven't onboarded.
@@ -123,6 +129,16 @@ USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = (
     "archetype_skip_list",
 )
 
+# Fields whose concrete values are dicts (archetype → numeric). Each entry's
+# value is clamped to ARCHETYPE_MULTIPLIER_BOUNDS on write. `None` / empty
+# means "no overrides".
+USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = (
+    "archetype_stake_multipliers",
+)
+
+# Per-entry bounds for every key inside USER_CONFIG_DICT_FIELDS.
+ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)
+
 # Fields whose numeric values may legally be `None` (unset).
 USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
     "cost_assumption_override",
@@ -175,6 +191,12 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Archetypes the sizer will refuse to trade. Populated by the "
         "learning cadence when an archetype's Brier score exceeds the "
         "uninformed baseline over a reliable sample.",
+    "archetype_stake_multipliers":
+        "Per-archetype stake multiplier applied after the confidence "
+        "softener. 1.0 = no adjustment, 2.0 = double-size, 0.5 = half-size. "
+        "Populated by the learning cadence once an archetype has at least "
+        "25 settled trades. Users can override directly from the Risk "
+        "controls page. Each entry is clamped to [0.1, 10.0].",
 }
 
 
@@ -209,13 +231,17 @@ _NON_EDITABLE_VIA_USER_CONFIG: frozenset[str] = frozenset({
 })
 
 
-def cast_value(key: str, raw) -> Union[int, float, tuple, None]:
+def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None]:
     """Cast a raw dashboard value to the field's expected type.
 
     Nullable numeric fields accept None / "" / "null" as "unset". List fields
     accept tuple/list/comma-separated string and return a tuple of stripped
-    non-empty strings.
+    non-empty strings. Dict fields accept dict or JSON string and return a
+    dict with stringified keys and float values clamped to the per-field
+    bounds.
     """
+    if key in USER_CONFIG_DICT_FIELDS:
+        return _cast_archetype_multipliers(raw)
     if key in USER_CONFIG_LIST_FIELDS:
         return _cast_list(raw)
     if key in USER_CONFIG_NULLABLE_FIELDS and _is_unset(raw):
@@ -242,12 +268,59 @@ def _cast_list(raw) -> Tuple[str, ...]:
     raise ValueError(f"list field must be tuple/list/str, got {type(raw).__name__}")
 
 
+def _cast_archetype_multipliers(raw) -> Dict[str, float]:
+    """Accept dict | JSON-string | None. Clamp each value to bounds, drop
+    entries that aren't parseable floats or have empty archetype keys."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "archetype_stake_multipliers must be a JSON object"
+            ) from exc
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"archetype_stake_multipliers must be a dict, got {type(raw).__name__}"
+        )
+    lo, hi = ARCHETYPE_MULTIPLIER_BOUNDS
+    clean: Dict[str, float] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"archetype_stake_multipliers[{key!r}] must be numeric"
+            ) from exc
+        clean[key] = max(lo, min(hi, f))
+    return clean
+
+
 def validate_user_config_value(key: str, value) -> None:
     """Raise ValueError if key is unknown or value is out of bounds.
 
-    List fields accept any tuple of strings; nullable numeric fields accept
-    None. Everything else must be within its (min, max) bounds.
+    List fields accept any tuple of strings; dict fields accept any dict with
+    numeric values already clamped by the caster; nullable numeric fields
+    accept None. Everything else must be within its (min, max) bounds.
     """
+    if key in USER_CONFIG_DICT_FIELDS:
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be a dict")
+        lo, hi = ARCHETYPE_MULTIPLIER_BOUNDS
+        for k, v in value.items():
+            if not isinstance(k, str) or not k:
+                raise ValueError(f"{key} keys must be non-empty strings")
+            if not isinstance(v, (int, float)):
+                raise ValueError(f"{key}[{k!r}] must be numeric")
+            if v < lo or v > hi:
+                raise ValueError(
+                    f"{key}[{k!r}]={v} outside bounds [{lo}, {hi}]"
+                )
+        return
     if key in USER_CONFIG_LIST_FIELDS:
         if not isinstance(value, tuple):
             raise ValueError(f"{key} must be a tuple of strings")
@@ -323,7 +396,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       mode, starting_cash, "
                 "       polymarket_api_key, polymarket_api_secret, "
                 "       polymarket_passphrase, wallet_address, "
-                "       bot_enabled "
+                "       bot_enabled, archetype_stake_multipliers "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
             if row is None:
@@ -348,6 +421,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 polymarket_passphrase         = (str(row[16]) if row[16] is not None else None),
                 wallet_address                = (str(row[17]) if row[17] is not None else None),
                 bot_enabled                   = bool(row[18]) if row[18] is not None else False,
+                archetype_stake_multipliers   = _decode_archetype_multipliers(row[19]),
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",
@@ -361,6 +435,33 @@ def _decode_csv(raw) -> Tuple[str, ...]:
     if isinstance(raw, (list, tuple)):
         return tuple(str(x).strip() for x in raw if str(x).strip())
     return tuple(s.strip() for s in str(raw).split(",") if s.strip())
+
+
+def _decode_archetype_multipliers(raw) -> Dict[str, float]:
+    """JSONB arrives as dict from SQLAlchemy, but a string is possible if the
+    column was backfilled by hand. Silently drop malformed entries - a stale
+    write should never prevent the sizer from loading the rest of the config."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    lo, hi = ARCHETYPE_MULTIPLIER_BOUNDS
+    out: Dict[str, float] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        out[key] = max(lo, min(hi, f))
+    return out
 
 
 def _encode_csv(value) -> Optional[str]:
@@ -388,12 +489,24 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
         validate_user_config_value(key, value)
         clean[key] = value
 
-    set_parts = ", ".join(f"{k} = :{k}" for k in clean)
+    # Dict-typed fields cast with an explicit `::jsonb` so the driver sends
+    # the payload as a JSON string; without the cast Postgres treats it as
+    # plain TEXT and the INSERT fails on JSONB columns.
+    set_parts = ", ".join(
+        (f"{k} = CAST(:{k} AS JSONB)" if k in USER_CONFIG_DICT_FIELDS
+         else f"{k} = :{k}")
+        for k in clean
+    )
     params: dict = {}
     for k, v in clean.items():
-        # List-typed fields persist as CSV TEXT columns; tuples must be
-        # flattened before hitting SQLAlchemy's text() parameter binding.
-        params[k] = _encode_csv(v) if k in USER_CONFIG_LIST_FIELDS else v
+        if k in USER_CONFIG_LIST_FIELDS:
+            # List-typed fields persist as CSV TEXT columns; tuples must be
+            # flattened before hitting SQLAlchemy's text() parameter binding.
+            params[k] = _encode_csv(v)
+        elif k in USER_CONFIG_DICT_FIELDS:
+            params[k] = json.dumps(v or {})
+        else:
+            params[k] = v
     params["uid"] = user_id
 
     from sqlalchemy import text

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from engine.user_config import (
+    ARCHETYPE_MULTIPLIER_BOUNDS,
     DEFAULT_USER_ID,
     USER_CONFIG_BOUNDS,
     UserConfig,
@@ -44,12 +45,34 @@ MIN_BUCKET_N = 20
 STRICT_BUCKET_N = 30          # archetype-level decisions.
 COST_CORRECTION_MIN_N = 50    # cost assumption correction.
 
-# Proposals whose target field is list-shaped. `_attach_backtest_delta` still
-# builds a modified config and runs the simulation, but these proposals
+# Proposals whose target field is list- or dict-shaped. `_attach_backtest_delta`
+# still builds a modified config and runs the simulation, but these proposals
 # surface without a numeric backtest_delta in the dashboard for now.
 ADVISORY_PARAMS = {
     "archetype_skip_list",
+    "archetype_stake_multipliers",
 }
+
+# Minimum settled-trade count per archetype before the multiplier proposer
+# will emit a suggestion. 25 is higher than MIN_BUCKET_N (20) because a
+# bad multiplier compounds with every trade on that archetype.
+ARCHETYPE_MULTIPLIER_MIN_N = 25
+
+# ROI bands → proposed multiplier. Anything inside the neutral band
+# (-3% to +5%) is treated as noise and produces no proposal. Outside the
+# band, the bot halves / upsizes stake progressively.
+ARCHETYPE_MULTIPLIER_TIERS: list[tuple[float, float, float]] = [
+    #   (roi_lo,     roi_hi,    multiplier)
+    (float("-inf"), -0.10,     0.5),   # deeply unprofitable: half size
+    (-0.10,         -0.03,     0.75),  # mildly unprofitable: 3/4 size
+    ( 0.05,          0.15,     1.25),  # reliably profitable: 1.25x
+    ( 0.15,  float("inf"),     1.5),   # strongly profitable: 1.5x
+]
+
+# Don't re-emit a proposal whose proposed multiplier differs from the
+# currently applied one by less than this amount. Prevents flickering
+# between adjacent tiers when ROI drifts across a boundary.
+ARCHETYPE_MULTIPLIER_HYSTERESIS = 0.1
 
 # 0.25 is the Brier score of uninformed forecasts on binary outcomes; an
 # archetype scoring worse than that is demonstrably mis-forecast.
@@ -167,6 +190,7 @@ def propose_suggestions(stats: dict, current: UserConfig,
 
     out.extend(_propose_archetype_threshold(diag, current))
     out.extend(_propose_cost_correction(diag, current))
+    out.extend(_propose_archetype_stake_multiplier(diag, current))
 
     return out
 
@@ -177,8 +201,9 @@ def _collect_diagnostics() -> dict:
     try:
         from engine import diagnostics as D
         return {
-            "brier_by_archetype": D.brier_by_archetype("all"),
-            "cost_validation":    D.cost_validation(),
+            "brier_by_archetype":  D.brier_by_archetype("all"),
+            "cost_validation":     D.cost_validation(),
+            "archetype_pnl":       D.archetype_pnl_attribution(),
         }
     except Exception as exc:
         print(f"[learning_cadence] diag collection failed: {exc}",
@@ -259,6 +284,64 @@ def _propose_cost_correction(diag: dict,
         },
     ))
     return out
+
+
+def _propose_archetype_stake_multiplier(diag: dict,
+                                        current: UserConfig) -> list[Proposal]:
+    """
+    Read ROI-by-archetype. For each archetype with >=25 settled trades, if
+    the ROI falls into one of the discrete tiers, propose setting that
+    archetype's stake multiplier accordingly. Skip archetypes already on
+    the skip list (no point multiplying a zero), and skip when the proposed
+    multiplier is within hysteresis of the current one.
+    """
+    out: list[Proposal] = []
+    rows = diag.get("archetype_pnl") or []
+    current_map = dict(getattr(current, "archetype_stake_multipliers", {}) or {})
+    skip_set = set(getattr(current, "archetype_skip_list", ()) or ())
+    lo, hi = ARCHETYPE_MULTIPLIER_BOUNDS
+
+    for r in rows:
+        archetype = r.get("archetype")
+        n = int(r.get("n", 0) or 0)
+        roi = r.get("roi")
+        if not archetype or archetype in skip_set:
+            continue
+        if n < ARCHETYPE_MULTIPLIER_MIN_N or roi is None:
+            continue
+        tier = _pick_multiplier_tier(float(roi))
+        if tier is None:
+            continue
+        proposed = max(lo, min(hi, float(tier)))
+        currently = float(current_map.get(archetype, 1.0))
+        if abs(proposed - currently) < ARCHETYPE_MULTIPLIER_HYSTERESIS:
+            continue
+        verb = "upsizing" if proposed > 1.0 else "downsizing"
+        out.append(Proposal(
+            param_name="archetype_stake_multipliers",
+            current_value=currently,
+            proposed_value=proposed,
+            evidence=(
+                f"Archetype '{archetype}' ROI {roi*100:.1f}% over {n} settled "
+                f"trades. Proposal: {verb} stake by setting the multiplier to "
+                f"{proposed:.2f}x (currently {currently:.2f}x). The multiplier "
+                f"is applied after the confidence softener."
+            ),
+            proposal_metadata={
+                "operation":    "dict_set",
+                "target_field": "archetype_stake_multipliers",
+                "key":          archetype,
+                "value":        proposed,
+            },
+        ))
+    return out
+
+
+def _pick_multiplier_tier(roi: float) -> Optional[float]:
+    for lo, hi, mult in ARCHETYPE_MULTIPLIER_TIERS:
+        if lo <= roi < hi:
+            return mult
+    return None
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
@@ -415,6 +498,18 @@ def _build_modified_config(prop: Proposal,
             return None
         return dataclasses.replace(current, **{target: tuple(merged)})
 
+    if operation == "dict_set":
+        target = meta.get("target_field") or prop.param_name
+        key = meta.get("key")
+        value = meta.get("value")
+        if value is None:
+            value = prop.proposed_value
+        if not key or value is None:
+            return None
+        existing = dict(getattr(current, target, {}) or {})
+        existing[str(key)] = float(value)
+        return dataclasses.replace(current, **{target: existing})
+
     # Scalar path: prefer proposed_value; fall back to metadata['value'].
     target = meta.get("field") or prop.param_name
     value = prop.proposed_value
@@ -552,6 +647,8 @@ def apply_suggestion(suggestion_id: int,
         result = _apply_scalar(user_id, param_name, proposed_value)
     elif operation == "list_append":
         result = _apply_list_append(user_id, metadata)
+    elif operation == "dict_set":
+        result = _apply_dict_set(user_id, metadata)
     else:
         raise ValueError(f"unknown proposal operation: {operation!r}")
 
@@ -574,6 +671,28 @@ def _apply_scalar(user_id: str, param_name: str, proposed_value) -> dict:
     value = float(proposed_value)
     update_user_config(user_id, **{param_name: value})
     return {"param_name": param_name, "value": value, "operation": "scalar_set"}
+
+
+def _apply_dict_set(user_id: str, metadata: dict) -> dict:
+    """Merge a single {key: value} into an existing dict-valued user_config
+    field (e.g. archetype_stake_multipliers). Preserves every other key."""
+    target_field = metadata.get("target_field")
+    key = metadata.get("key")
+    value = metadata.get("value")
+    if not target_field or not key or value is None:
+        raise ValueError(
+            "dict_set proposal requires 'target_field', 'key', and 'value'"
+        )
+    current_cfg = get_user_config(user_id)
+    current_map = dict(getattr(current_cfg, target_field, {}) or {})
+    current_map[str(key)] = float(value)
+    update_user_config(user_id, **{target_field: current_map})
+    return {
+        "param_name":   target_field,
+        "operation":    "dict_set",
+        "key":          str(key),
+        "value":        float(value),
+    }
 
 
 def _apply_list_append(user_id: str, metadata: dict) -> dict:

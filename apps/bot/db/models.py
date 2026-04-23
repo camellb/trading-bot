@@ -339,8 +339,14 @@ user_config = Table(
     # Diagnostic-driven overrides. Nullable: the learning cadence only fills
     # these in when a proposal is applied; the sizer treats NULL / empty as
     # "use the built-in default".
-    Column("cost_assumption_override", Float, nullable=True),
-    Column("archetype_skip_list",      Text,  nullable=True),   # CSV
+    Column("cost_assumption_override",     Float, nullable=True),
+    Column("archetype_skip_list",          Text,  nullable=True),   # CSV
+    # Per-archetype stake multiplier. Applied on top of the confidence softener
+    # in the sizer: final multiplier = confidence_mult * archetype_mult. Clamped
+    # to [0.1, 10.0] per entry. Missing keys default to 1.0. Empty object = no
+    # archetype has an override.
+    Column("archetype_stake_multipliers",  JSONB, nullable=False,
+           server_default=sa_text("'{}'::jsonb")),
 
     # Per-user Telegram bot credentials. Opt-in: NULL on either column means
     # the notifier silently no-ops for that user. Every tenant brings their
@@ -468,6 +474,7 @@ def create_all_tables() -> None:
             "ADD COLUMN IF NOT EXISTS is_admin                        BOOLEAN NOT NULL DEFAULT FALSE",
             "ADD COLUMN IF NOT EXISTS bot_enabled                     BOOLEAN NOT NULL DEFAULT FALSE",
             "ADD COLUMN IF NOT EXISTS tour_completed_at               TIMESTAMPTZ",
+            "ADD COLUMN IF NOT EXISTS archetype_stake_multipliers     JSONB NOT NULL DEFAULT '{}'::jsonb",
             "DROP COLUMN IF EXISTS confidence_skip_floor",
             "DROP COLUMN IF EXISTS min_ev_threshold",
             "DROP COLUMN IF EXISTS probability_cap",

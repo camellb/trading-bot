@@ -271,6 +271,103 @@ class InvariantTests(unittest.TestCase):
         self.assertIsNone(d.skip_reason)
 
 
+# ── Archetype stake multiplier ───────────────────────────────────────────────
+class ArchetypeStakeMultiplierTests(unittest.TestCase):
+    """
+    `archetype_stake_multipliers` composes multiplicatively with the
+    confidence softener. `max_stake_pct` still caps the final stake.
+    """
+
+    def _full_conf_cfg(self, **overrides) -> UserConfig:
+        base = cfg(
+            confidence_override_threshold=0.01,  # always override
+            base_stake_pct=0.02,
+            max_stake_pct=0.05,
+        )
+        for k, v in overrides.items():
+            setattr(base, k, v)
+        return base
+
+    def _call(self, archetype, user_config):
+        # conf=1.0 → softener multiplier = 1.0, so stake reflects arch_mult cleanly.
+        return call(
+            claude_p=0.85, confidence=1.0,
+            ask_yes=0.50, ask_no=0.50,
+            user_config=user_config, bankroll=10_000.0,
+            archetype=archetype,
+        )
+
+    def test_archetype_none_preserves_behaviour(self):
+        # conf=1.0, base_stake_pct=0.02, bankroll 10k → $200.
+        d = self._call(None, self._full_conf_cfg())
+        self.assertAlmostEqual(d.stake_usd, 200.0, delta=0.5)
+
+    def test_half_multiplier_halves_stake(self):
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"sports": 0.5},
+        )
+        d = self._call("sports", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 100.0, delta=0.5)
+
+    def test_double_multiplier_doubles_stake_up_to_max_cap(self):
+        # 0.02 * 2.0 = 0.04, under max_stake_pct=0.05 → $400.
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"markets": 2.0},
+        )
+        d = self._call("markets", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 400.0, delta=0.5)
+
+    def test_multiplier_capped_by_max_stake_pct(self):
+        # 0.02 * 5.0 = 0.10, clipped by max_stake_pct=0.05 → $500.
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"markets": 5.0},
+        )
+        d = self._call("markets", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 500.0, delta=0.5)
+
+    def test_unknown_archetype_defaults_to_one(self):
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"sports": 2.0},
+        )
+        # archetype="weather" not in map → multiplier 1.0 → $200.
+        d = self._call("weather", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 200.0, delta=0.5)
+
+    def test_value_below_floor_clamps_to_min(self):
+        # 0.01 below the 0.1 floor → clamps to 0.1 → 0.02 * 0.1 = 0.002 →
+        # $20, which is above the $2 absolute floor.
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"sports": 0.01},
+        )
+        d = self._call("sports", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 20.0, delta=0.5)
+
+    def test_value_above_ceiling_clamps_to_max(self):
+        # 50.0 clamps to 10.0 → 0.02 * 10 = 0.20 → capped by max_stake_pct=0.05 → $500.
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"markets": 50.0},
+        )
+        d = self._call("markets", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 500.0, delta=0.5)
+
+    def test_non_numeric_multiplier_falls_back_to_one(self):
+        cfg_ = self._full_conf_cfg(
+            archetype_stake_multipliers={"sports": "not-a-number"},
+        )
+        d = self._call("sports", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 200.0, delta=0.5)
+
+    def test_missing_attr_falls_back_to_one(self):
+        # Strip the attribute entirely to simulate an older config path.
+        cfg_ = self._full_conf_cfg()
+        try:
+            delattr(cfg_, "archetype_stake_multipliers")
+        except AttributeError:
+            pass
+        d = self._call("sports", cfg_)
+        self.assertAlmostEqual(d.stake_usd, 200.0, delta=0.5)
+
+
 # ── Row-#20 regression (the "big NO win" the prior rule killed) ─────────────
 class Row20ScenarioTests(unittest.TestCase):
     """

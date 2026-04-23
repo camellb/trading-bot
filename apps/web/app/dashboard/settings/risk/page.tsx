@@ -13,7 +13,11 @@ type BotConfig = {
   streak_cooldown_losses: number;
   dry_powder_reserve_pct: number;
   archetype_skip_list: string[];
+  archetype_stake_multipliers: Record<string, number>;
 };
+
+const ARCHETYPE_MULTIPLIER_MIN = 0.1;
+const ARCHETYPE_MULTIPLIER_MAX = 10.0;
 
 type Bounds = Record<string, { min: number; max: number }>;
 
@@ -64,6 +68,15 @@ async function getJSON<T>(path: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function clampMultiplier(n: number): number {
+  if (!Number.isFinite(n)) return 1.0;
+  return Math.max(ARCHETYPE_MULTIPLIER_MIN, Math.min(ARCHETYPE_MULTIPLIER_MAX, n));
 }
 
 export default function RiskPage() {
@@ -123,6 +136,9 @@ export default function RiskPage() {
       if (Array.isArray(a) && Array.isArray(b)) {
         return a.length !== b.length || a.some((x, i) => x !== b[i]);
       }
+      if (isPlainObject(a) && isPlainObject(b)) {
+        return JSON.stringify(a) !== JSON.stringify(b);
+      }
       return a !== b;
     });
   }, [payload, draft]);
@@ -137,9 +153,14 @@ export default function RiskPage() {
     for (const k of keys) {
       const a = payload.config[k];
       const b = draft[k];
-      const changed = Array.isArray(a) && Array.isArray(b)
-        ? (a.length !== b.length || a.some((x, i) => x !== b[i]))
-        : a !== b;
+      let changed: boolean;
+      if (Array.isArray(a) && Array.isArray(b)) {
+        changed = a.length !== b.length || a.some((x, i) => x !== b[i]);
+      } else if (isPlainObject(a) && isPlainObject(b)) {
+        changed = JSON.stringify(a) !== JSON.stringify(b);
+      } else {
+        changed = a !== b;
+      }
       if (changed) changes[k] = b;
     }
 
@@ -347,6 +368,36 @@ export default function RiskPage() {
 
       <div className="panel">
         <div className="panel-head">
+          <h2 className="panel-title">Category stake multipliers</h2>
+          <span className="panel-meta">Per-category sizing overrides</span>
+        </div>
+        <p className="slider-desc" style={{ marginBottom: 16 }}>
+          1.0x means Delfi uses its default stake for that category. Go above 1x
+          to up-size categories that Delfi has proven profitable on; drop below
+          1x to shrink stake on noisier categories. Delfi proposes changes after
+          every 25 settled trades in a category; you can also adjust directly.
+        </p>
+        <ArchetypeMultipliersPanel
+          items={ALL_ARCHETYPES}
+          multipliers={draft.archetype_stake_multipliers ?? {}}
+          skipList={draft.archetype_skip_list}
+          onChange={(id, value) =>
+            setDraft((prev) => {
+              if (!prev) return prev;
+              const next = { ...(prev.archetype_stake_multipliers ?? {}) };
+              if (value === null) {
+                delete next[id];
+              } else {
+                next[id] = clampMultiplier(value);
+              }
+              return { ...prev, archetype_stake_multipliers: next };
+            })
+          }
+        />
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
           <h2 className="panel-title">Current usage</h2>
           <span className="panel-meta">Today</span>
         </div>
@@ -522,6 +573,116 @@ function ArchetypeMatrix({
                   >
                     {i.label}
                   </button>
+                );
+              })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ArchetypeMultipliersPanel({
+  items, multipliers, skipList, onChange,
+}: {
+  items: { id: string; label: string; group: string }[];
+  multipliers: Record<string, number>;
+  skipList: string[];
+  onChange: (id: string, value: number | null) => void;
+}) {
+  const groups = Array.from(new Set(items.map((i) => i.group)));
+  return (
+    <div>
+      {groups.map((g) => (
+        <div key={g} style={{ marginBottom: 20 }}>
+          <div
+            style={{
+              marginBottom: 8,
+              color: "var(--vellum-60, rgba(232,228,216,0.6))",
+              fontSize: 12,
+              letterSpacing: 0.5,
+              textTransform: "uppercase",
+            }}
+          >
+            {g}
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {items
+              .filter((i) => i.group === g)
+              .map((i) => {
+                const skipped = skipList.includes(i.id);
+                const value = multipliers[i.id];
+                const hasOverride = value !== undefined;
+                const display = hasOverride ? value : 1.0;
+                return (
+                  <div
+                    key={i.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 12,
+                      opacity: skipped ? 0.5 : 1,
+                    }}
+                  >
+                    <div style={{ minWidth: 200 }}>
+                      <div style={{ fontSize: 14 }}>
+                        {i.label}
+                        {skipped && (
+                          <span style={{ marginLeft: 8, fontSize: 11, color: "var(--vellum-40)" }}>
+                            skipped - multiplier ignored
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input
+                        type="number"
+                        step={0.05}
+                        min={ARCHETYPE_MULTIPLIER_MIN}
+                        max={ARCHETYPE_MULTIPLIER_MAX}
+                        value={display}
+                        disabled={skipped}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === "") {
+                            onChange(i.id, null);
+                            return;
+                          }
+                          const n = Number(raw);
+                          if (Number.isFinite(n)) onChange(i.id, n);
+                        }}
+                        style={{
+                          width: 90,
+                          padding: "4px 8px",
+                          background: "rgba(232, 228, 216, 0.05)",
+                          border: "1px solid rgba(232, 228, 216, 0.15)",
+                          borderRadius: 4,
+                          color: "var(--vellum)",
+                          fontSize: 13,
+                          textAlign: "right",
+                        }}
+                      />
+                      <span style={{ fontSize: 12, color: "var(--vellum-60)" }}>x</span>
+                      {hasOverride && !skipped && (
+                        <button
+                          type="button"
+                          onClick={() => onChange(i.id, null)}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: "var(--vellum-40)",
+                            cursor: "pointer",
+                            fontSize: 11,
+                            padding: "2px 6px",
+                          }}
+                          title="Reset to 1.0x default"
+                        >
+                          reset
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 );
               })}
           </div>
