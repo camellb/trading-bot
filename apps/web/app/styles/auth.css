@@ -253,6 +253,27 @@
   color: var(--vellum-60);
 }
 .auth-field-opt { color: var(--vellum-40); text-transform: none; letter-spacing: 0; }
+
+/* Inline status + error messages */
+.auth-notice,
+.auth-error {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 4px;
+  margin: 0;
+}
+.auth-notice {
+  color: var(--vellum-60);
+  background: rgba(0, 255, 255, 0.04);
+  border: 1px solid var(--teal-line, rgba(0, 255, 255, 0.18));
+}
+.auth-error {
+  color: var(--vellum);
+  background: rgba(220, 80, 80, 0.06);
+  border: 1px solid rgba(220, 80, 80, 0.25);
+}
 .auth-forgot {
   font-family: var(--font-mono); font-size: 10px;
   letter-spacing: 0.14em; text-transform: uppercase;
