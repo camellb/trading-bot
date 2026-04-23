@@ -84,7 +84,7 @@ async function getJSON<T>(path: string): Promise<T | null> {
 type Tone = "gold" | "muted" | "teal" | "profit";
 type ActivityItem = {
   t: string;
-  kind: "execute" | "pass" | "update" | "resolve" | "scan";
+  kind: "execute" | "pass" | "update" | "resolve" | "resolve-loss" | "scan";
   text: string;
   meta: string;
   tone: Tone;
@@ -98,6 +98,7 @@ const ACT_ICON: Record<ActivityItem["kind"], string> = {
   pass: "–",
   update: "~",
   resolve: "✓",
+  "resolve-loss": "✕",
   scan: "·",
 };
 
@@ -144,7 +145,7 @@ function evaluationsToActivity(evals: Evaluation[], settled: SettledPosition[]):
     const win = pnl >= 0;
     return {
       t: fmtTime(s.settled_at),
-      kind: "resolve",
+      kind: win ? "resolve" : "resolve-loss",
       text: `Resolved ${win ? "WIN" : "LOSS"} · ${s.question}`,
       meta: `${win ? "+" : ""}$${pnl.toFixed(2)}`,
       tone: win ? "profit" : "muted",
@@ -332,9 +333,7 @@ function DashHero({
     <section className="dash-hero">
       <div className="hero-balance">
         <div className="hero-balance-head">
-          <div className="hero-balance-label">
-            {isSim ? "Simulation balance" : "Live balance"}
-          </div>
+          <div className="hero-balance-label">Balance</div>
           <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
             {isSim ? "Paper" : "Live"}
           </div>
