@@ -7,10 +7,8 @@ import "../styles/content.css";
 const ADMIN_NAV = [
   { id: "overview", label: "Overview", href: "/admin", match: /^\/admin\/?$/ },
   { id: "users", label: "Users", href: "/admin/users", match: /^\/admin\/users/ },
-  { id: "learning", label: "Learning", href: "/admin/learning", match: /^\/admin\/learning/ },
   { id: "trades", label: "Trades", href: "/admin/trades", match: /^\/admin\/trades/ },
-  { id: "flags", label: "Feature flags", href: "/admin/flags", match: /^\/admin\/flags/ },
-  { id: "health", label: "System health", href: "/admin/health", match: /^\/admin\/health/ },
+  { id: "learning", label: "Learning", href: "/admin/learning", match: /^\/admin\/learning/ },
 ];
 
 export default function AdminNav({ children }: { children: React.ReactNode }) {

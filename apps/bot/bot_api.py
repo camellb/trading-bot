@@ -744,6 +744,8 @@ class BotAPI:
                     return conn.execute(text(
                         "SELECT uc.user_id, uc.display_name, uc.mode, "
                         "       uc.starting_cash, uc.onboarded_at, uc.is_admin, "
+                        "       uc.bot_enabled, "
+                        "       uc.subscription_status, uc.subscription_plan, "
                         "       au.email, au.created_at, "
                         "       (SELECT COUNT(*) FROM pm_positions p "
                         "          WHERE p.user_id = uc.user_id) AS total_positions, "
@@ -761,23 +763,26 @@ class BotAPI:
             return web.json_response({"error": f"db error: {exc}"}, status=500)
         users = [
             {
-                "user_id":         str(r[0]),
-                "display_name":    r[1],
-                "mode":            r[2],
-                "starting_cash":   float(r[3]) if r[3] is not None else None,
-                "onboarded_at":    r[4].isoformat() if r[4] else None,
-                "is_admin":        bool(r[5]),
-                "email":           r[6],
-                "created_at":      r[7].isoformat() if r[7] else None,
-                "total_positions": int(r[8] or 0),
-                "realized_pnl":    float(r[9] or 0.0),
+                "user_id":             str(r[0]),
+                "display_name":        r[1],
+                "mode":                r[2],
+                "starting_cash":       float(r[3]) if r[3] is not None else None,
+                "onboarded_at":        r[4].isoformat() if r[4] else None,
+                "is_admin":            bool(r[5]),
+                "bot_enabled":         bool(r[6]),
+                "subscription_status": r[7],
+                "subscription_plan":   r[8],
+                "email":               r[9],
+                "created_at":          r[10].isoformat() if r[10] else None,
+                "total_positions":     int(r[11] or 0),
+                "realized_pnl":        float(r[12] or 0.0),
             }
             for r in rows
         ]
         return web.json_response({"users": users})
 
     async def _handle_admin_overview(self, request: web.Request) -> web.Response:
-        """Aggregate cross-user stats for the admin home page."""
+        """Aggregate cross-user stats, recent alerts, and activity feed."""
         admin_uid = await self._require_admin(request)
         if not admin_uid:
             return web.json_response({"error": "admin access required"},
@@ -791,24 +796,216 @@ class BotAPI:
                         "  (SELECT COUNT(*) FROM user_config "
                         "     WHERE onboarded_at IS NOT NULL) AS onboarded, "
                         "  (SELECT COUNT(*) FROM user_config) AS total, "
+                        "  (SELECT COUNT(*) FROM user_config "
+                        "     WHERE subscription_status = 'active') AS active_subs, "
+                        "  (SELECT COALESCE(SUM(starting_cash), 0) FROM user_config "
+                        "     WHERE subscription_status = 'active' "
+                        "       AND bot_enabled = TRUE) AS bankroll_um, "
                         "  (SELECT COUNT(*) FROM pm_positions "
                         "     WHERE status = 'open') AS open_positions, "
+                        "  (SELECT COUNT(*) FROM pm_positions "
+                        "     WHERE created_at >= NOW() - INTERVAL '24 hours') "
+                        "    AS trades_24h, "
                         "  (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
                         "     FROM pm_positions WHERE status = 'settled') "
                         "    AS realized_pnl, "
                         "  (SELECT COUNT(*) FROM market_evaluations) "
                         "    AS total_evaluations"
                     )).fetchone()
-                    return totals
-            row = await loop.run_in_executor(self._pool, _q)
+
+                    alert_rows = conn.execute(text(
+                        "SELECT timestamp, feed_name, state, detail "
+                        "FROM feed_health_log "
+                        "WHERE state IN ('down', 'degraded') "
+                        "  AND timestamp >= NOW() - INTERVAL '1 hour' "
+                        "ORDER BY timestamp DESC "
+                        "LIMIT 10"
+                    )).fetchall()
+
+                    signup_rows = conn.execute(text(
+                        "SELECT au.created_at, au.email "
+                        "FROM auth.users au "
+                        "WHERE au.created_at >= NOW() - INTERVAL '24 hours' "
+                        "ORDER BY au.created_at DESC "
+                        "LIMIT 15"
+                    )).fetchall()
+
+                    settle_rows = conn.execute(text(
+                        "SELECT p.settled_at, p.question, p.realized_pnl_usd, p.user_id "
+                        "FROM pm_positions p "
+                        "WHERE p.status = 'settled' "
+                        "  AND p.settled_at >= NOW() - INTERVAL '24 hours' "
+                        "ORDER BY p.settled_at DESC "
+                        "LIMIT 15"
+                    )).fetchall()
+
+                    event_rows = conn.execute(text(
+                        "SELECT timestamp, event_type, description, source "
+                        "FROM event_log "
+                        "WHERE timestamp >= NOW() - INTERVAL '24 hours' "
+                        "  AND severity >= 2 "
+                        "ORDER BY timestamp DESC "
+                        "LIMIT 15"
+                    )).fetchall()
+
+                    return (totals, alert_rows, signup_rows, settle_rows, event_rows)
+
+            totals, alert_rows, signup_rows, settle_rows, event_rows = (
+                await loop.run_in_executor(self._pool, _q)
+            )
         except Exception as exc:
             return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        alerts = [
+            {
+                "level":     "warn" if r[2] == "down" else "info",
+                "title":     f"{r[1]} · {r[2]}",
+                "detail":    r[3] or "",
+                "timestamp": r[0].isoformat() if r[0] else None,
+            }
+            for r in alert_rows
+        ]
+
+        activity: list[dict] = []
+        for r in signup_rows:
+            activity.append({
+                "timestamp":   r[0].isoformat() if r[0] else None,
+                "kind":        "signup",
+                "description": f"New signup - {r[1] or 'unknown'}",
+            })
+        for r in settle_rows:
+            pnl = float(r[2] or 0.0)
+            sign = "+" if pnl > 0 else ""
+            activity.append({
+                "timestamp":   r[0].isoformat() if r[0] else None,
+                "kind":        "settle",
+                "description": f"Settled: {(r[1] or 'market')[:60]} ({sign}${pnl:.2f})",
+            })
+        for r in event_rows:
+            activity.append({
+                "timestamp":   r[0].isoformat() if r[0] else None,
+                "kind":        r[1] or "event",
+                "description": r[2] or "",
+            })
+        activity.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+        activity = activity[:30]
+
         return web.json_response({
-            "onboarded_users":  int(row[0] or 0),
-            "total_users":      int(row[1] or 0),
-            "open_positions":   int(row[2] or 0),
-            "total_realized":   float(row[3] or 0.0),
-            "total_evaluations": int(row[4] or 0),
+            "stats": {
+                "onboarded_users":    int(totals[0] or 0),
+                "total_users":        int(totals[1] or 0),
+                "active_subscribers": int(totals[2] or 0),
+                "bankroll_under_mgmt": float(totals[3] or 0.0),
+                "open_positions":     int(totals[4] or 0),
+                "trades_24h":         int(totals[5] or 0),
+                "total_realized":     float(totals[6] or 0.0),
+                "total_evaluations":  int(totals[7] or 0),
+            },
+            "alerts":   alerts,
+            "activity": activity,
+        })
+
+    async def _handle_admin_trades(self, request: web.Request) -> web.Response:
+        """Paginated, filtered list of every trade across every user."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+
+        mode   = (request.query.get("mode")   or "all").lower()
+        status = (request.query.get("status") or "all").lower()
+        q_raw  = (request.query.get("q")      or "").strip()
+        try:
+            limit = max(1, min(200, int(request.query.get("limit")  or "50")))
+            offset = max(0, int(request.query.get("offset") or "0"))
+        except ValueError:
+            return web.json_response({"error": "invalid limit/offset"}, status=400)
+
+        filters: list[str] = []
+        params: dict[str, object] = {"lim": limit, "off": offset}
+
+        if mode in ("live", "simulation"):
+            filters.append("p.mode = :mode")
+            params["mode"] = mode
+
+        if status == "open":
+            filters.append("p.status = 'open'")
+        elif status == "settled":
+            filters.append("p.status = 'settled'")
+        elif status == "won":
+            filters.append("p.status = 'settled' AND COALESCE(p.realized_pnl_usd, 0) > 0")
+        elif status == "lost":
+            filters.append("p.status = 'settled' AND COALESCE(p.realized_pnl_usd, 0) < 0")
+
+        if q_raw:
+            filters.append(
+                "(LOWER(COALESCE(au.email, '')) LIKE :q "
+                " OR LOWER(COALESCE(uc.display_name, '')) LIKE :q "
+                " OR LOWER(p.user_id) LIKE :q)"
+            )
+            params["q"] = f"%{q_raw.lower()}%"
+
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+
+        loop = asyncio.get_running_loop()
+        try:
+            def _q():
+                with get_engine().begin() as conn:
+                    rows = conn.execute(text(
+                        "SELECT p.id, p.created_at, p.user_id, au.email, "
+                        "       uc.display_name, p.mode, p.market_id, p.slug, "
+                        "       p.question, p.category, p.market_archetype, "
+                        "       p.side, p.cost_usd, p.entry_price, "
+                        "       p.claude_probability, p.status, "
+                        "       p.realized_pnl_usd, p.settled_at "
+                        "FROM pm_positions p "
+                        "LEFT JOIN auth.users au ON au.id::text = p.user_id "
+                        "LEFT JOIN user_config uc ON uc.user_id = p.user_id "
+                        f"{where} "
+                        "ORDER BY p.created_at DESC "
+                        "LIMIT :lim OFFSET :off"
+                    ), params).fetchall()
+
+                    total = conn.execute(text(
+                        f"SELECT COUNT(*) FROM pm_positions p "
+                        "LEFT JOIN auth.users au ON au.id::text = p.user_id "
+                        "LEFT JOIN user_config uc ON uc.user_id = p.user_id "
+                        f"{where}"
+                    ), params).scalar()
+                    return rows, total
+            rows, total = await loop.run_in_executor(self._pool, _q)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        trades = [
+            {
+                "id":                 int(r[0]),
+                "created_at":         r[1].isoformat() if r[1] else None,
+                "user_id":            str(r[2]),
+                "email":              r[3],
+                "display_name":       r[4],
+                "mode":               r[5],
+                "market_id":          r[6],
+                "slug":               r[7],
+                "question":           r[8],
+                "category":           r[9],
+                "market_archetype":   r[10],
+                "side":               r[11],
+                "cost_usd":           float(r[12]) if r[12] is not None else None,
+                "entry_price":        float(r[13]) if r[13] is not None else None,
+                "claude_probability": float(r[14]) if r[14] is not None else None,
+                "status":             r[15],
+                "realized_pnl_usd":   float(r[16]) if r[16] is not None else None,
+                "settled_at":         r[17].isoformat() if r[17] else None,
+            }
+            for r in rows
+        ]
+
+        return web.json_response({
+            "trades": trades,
+            "total":  int(total or 0),
+            "limit":  limit,
+            "offset": offset,
         })
 
     # ── Action handlers ──────────────────────────────────────────────────────
@@ -1115,6 +1312,7 @@ class BotAPI:
         app.router.add_post("/api/update-config", self._handle_update_config)
         app.router.add_get ("/api/admin/users",    self._handle_admin_users)
         app.router.add_get ("/api/admin/overview", self._handle_admin_overview)
+        app.router.add_get ("/api/admin/trades",   self._handle_admin_trades)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, BOT_API_HOST, BOT_API_PORT)
