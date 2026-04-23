@@ -325,7 +325,7 @@ function DashHero({
         <div className="hero-balance-head">
           <div className="hero-balance-label">Balance</div>
           <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
-            {isSim ? "Paper" : "Live"}
+            {isSim ? "Simulation" : "Live"}
           </div>
         </div>
         <div className="hero-balance-value t-num">
@@ -367,9 +367,6 @@ function DashHero({
       <div className="hero-chart">
         <div className="hero-chart-head">
           <div className="hero-chart-label">Equity history</div>
-          <div className="hero-chart-tabs">
-            <span className="chart-tab on">Coming soon</span>
-          </div>
         </div>
         <div className="hero-chart-placeholder">
           Equity time series wiring pending - daily snapshots will appear here
