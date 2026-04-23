@@ -189,12 +189,13 @@ function ReportCard({
   expanded:  boolean;
   onToggle:  () => void;
 }) {
-  const mode = (report.mode || "simulation").toUpperCase();
+  const modeRaw = (report.mode || "simulation").toLowerCase();
+  const mode = modeRaw.toUpperCase();
   return (
     <article className="intel-card">
       <header className="intel-card-head">
         <div className="intel-card-date">{fmtDateTime(report.created_at)}</div>
-        <div className="intel-card-status pending">{mode}</div>
+        <div className={`intel-card-status mode-${modeRaw}`}>{mode}</div>
       </header>
 
       <div className="intel-card-param">

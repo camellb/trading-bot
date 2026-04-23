@@ -18,7 +18,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         <div className="page-head-row">
           <div>
             <h1 className="page-h1">Settings</h1>
-            <p className="page-sub">Configure your account, subscription, notifications, and security.</p>
+            <p className="page-sub">Manage your account, risk controls, and notification preferences.</p>
           </div>
         </div>
       </div>
