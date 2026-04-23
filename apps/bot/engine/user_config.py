@@ -49,12 +49,10 @@ class UserConfig:
     # Diagnostic-driven overrides (populated by learning cadence proposals).
     # None means "use the sizer default".
     cost_assumption_override: Optional[float]   = None
-    # Default skip list: short-horizon tennis archetypes. Resolution data
-    # showed these categories lose money at the forecaster's current
-    # calibration; users can remove entries via the Risk-controls UI.
-    archetype_skip_list:      Tuple[str, ...]   = field(
-        default_factory=lambda: ("tennis_qualifier", "tennis_lower_tier")
-    )
+    # No archetypes blocked by default — the learning cadence populates
+    # this list per-user based on resolved-trade evidence. Users can also
+    # edit it manually via the Risk-controls UI.
+    archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
 
     # Per-user execution state (SaaS multi-tenancy).
     # All four default to None for brand-new users who haven't onboarded.
