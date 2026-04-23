@@ -7,7 +7,7 @@ import "../styles/content.css";
 
 import { completeOnboarding } from "./actions";
 
-type Step = 1 | 2 | 3 | 4 | 5;
+type Step = 1 | 2 | 3 | 4;
 type Mode = "simulation" | "live";
 type RiskProfile = "cautious" | "balanced" | "aggressive";
 
@@ -15,7 +15,7 @@ function OnboardingErrorBanner() {
   const params = useSearchParams();
   if (!params || params.get("error") !== "save_failed") return null;
   const code = params.get("code") || "";
-  const message = params.get("message") || "Couldn't save — try again.";
+  const message = params.get("message") || "Couldn't save. Try again.";
   return (
     <div className="creds-banner" role="alert" style={{ marginBottom: 24 }}>
       <div className="creds-banner-body">
@@ -35,35 +35,20 @@ export default function OnboardingPage() {
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState<string>("");
   const [mode, setMode] = useState<Mode>("simulation");
-  const [capital, setCapital] = useState<number>(1000);
   const [riskProfile, setRiskProfile] = useState<RiskProfile>("balanced");
   const [notify, setNotify] = useState<boolean>(true);
 
-  const skipCapital = mode === "live";
-  // Step 1 = name, 2 = mode, 3 = capital (skipped in live), 4 = risk, 5 = notify
-  const totalSteps = skipCapital ? 4 : 5;
-  const visibleIndex =
-    step === 1
-      ? 1
-      : step === 2
-      ? 2
-      : skipCapital && step > 3
-      ? step - 1
-      : step;
+  // Step 1 = name, 2 = mode, 3 = risk, 4 = notify. Bankroll defaults to
+  // $1,000 for simulation; live mode uses the real wallet balance.
+  const totalSteps = 4;
   const pad = (n: number) => String(n).padStart(2, "0");
 
   const canContinueFromName = name.trim().length >= 2;
 
   const next = () =>
-    setStep((s) => {
-      if (s === 2 && skipCapital) return 4;
-      return s < 5 ? ((s + 1) as Step) : s;
-    });
+    setStep((s) => (s < 4 ? ((s + 1) as Step) : s));
   const back = () =>
-    setStep((s) => {
-      if (s === 4 && skipCapital) return 2;
-      return s > 1 ? ((s - 1) as Step) : s;
-    });
+    setStep((s) => (s > 1 ? ((s - 1) as Step) : s));
 
   return (
     <div className="ob-page">
@@ -80,7 +65,7 @@ export default function OnboardingPage() {
         </Suspense>
         {step === 1 && (
           <section>
-            <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
+            <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">What should Delfi call you?</h1>
             <p className="ob-sub">
               This is how we'll greet you on the dashboard and in weekly review emails. You can change
@@ -105,7 +90,7 @@ export default function OnboardingPage() {
 
         {step === 2 && (
           <section>
-            <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
+            <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">How would you like to start?</h1>
             <p className="ob-sub">
               You can always switch modes later from your dashboard. Most users begin in Simulation to build
@@ -145,45 +130,7 @@ export default function OnboardingPage() {
 
         {step === 3 && (
           <section>
-            <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
-            <h1 className="ob-title">Paper bankroll</h1>
-            <p className="ob-sub">
-              This is the pretend balance Delfi will size positions against in Simulation. No real
-              money is ever at stake — it's a sandbox for watching the system trade. You can adjust
-              or reset it any time from Settings.
-            </p>
-
-            <div className="ob-form">
-              <label className="ob-field">
-                <span className="ob-field-label">Amount (USD)</span>
-                <input
-                  type="number"
-                  className="ob-input"
-                  value={capital}
-                  onChange={(e) => setCapital(Number(e.target.value) || 0)}
-                  min={100}
-                  step={100}
-                />
-              </label>
-
-              <div className="ob-quick">
-                {[500, 1000, 5000, 10000].map((v) => (
-                  <button
-                    key={v}
-                    className={`ob-quick-btn ${capital === v ? "selected" : ""}`}
-                    onClick={() => setCapital(v)}
-                  >
-                    ${v.toLocaleString()}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {step === 4 && (
-          <section>
-            <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
+            <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Risk profile</h1>
             <p className="ob-sub">
               Pick a starting profile. Every value is adjustable later from the Risk Controls page. These
@@ -237,9 +184,9 @@ export default function OnboardingPage() {
           </section>
         )}
 
-        {step === 5 && (
+        {step === 4 && (
           <section>
-            <div className="ob-eyebrow">Step {pad(visibleIndex)} of {pad(totalSteps)}</div>
+            <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Notifications</h1>
             <p className="ob-sub">
               Delfi can email you when something meaningful happens. You'll still see everything on the
@@ -295,7 +242,7 @@ export default function OnboardingPage() {
             )}
           </div>
           <div className="ob-actions-right">
-            {step < 5 ? (
+            {step < 4 ? (
               <button
                 className="ob-next"
                 onClick={next}
@@ -308,7 +255,6 @@ export default function OnboardingPage() {
               <form action={completeOnboarding} style={{ display: "inline" }}>
                 <input type="hidden" name="display_name" value={name.trim()} />
                 <input type="hidden" name="mode" value={mode} />
-                <input type="hidden" name="starting_cash" value={String(capital)} />
                 <button type="submit" className="ob-next" disabled={!canContinueFromName}>
                   {mode === "live" ? "Connect wallet →" : "Enter dashboard →"}
                 </button>

@@ -16,16 +16,10 @@ export async function completeOnboarding(formData: FormData) {
   const mode: "simulation" | "live" =
     rawMode === "live" ? "live" : "simulation";
 
-  const rawStartingCash = Number(formData.get("starting_cash") ?? 0);
-  // In live mode the user provides no paper bankroll in onboarding — their
-  // real wallet balance will drive sizing once CLOB is wired. We still
-  // persist a placeholder so the executor has a value to read.
-  const startingCash =
-    mode === "live"
-      ? 0
-      : Number.isFinite(rawStartingCash) && rawStartingCash >= 10
-        ? Math.min(rawStartingCash, 100_000)
-        : 1000;
+  // Simulation bankroll is fixed at $1,000 for every new user. Live mode
+  // uses the real wallet balance once CLOB is wired, so we persist 0 as a
+  // placeholder the executor can read.
+  const startingCash = mode === "live" ? 0 : 1000;
 
   const { error } = await supabase
     .from("user_config")
