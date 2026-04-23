@@ -126,9 +126,10 @@ export default function ActivityPage() {
       if (!p.created_at) continue;
       const d = new Date(p.created_at);
       if (Number.isNaN(d.getTime())) continue;
-      const entryCents = Math.round(p.entry_price * 100);
-      const pWin = p.claude_probability != null ? p.claude_probability.toFixed(2) : "-";
-      const conf = p.confidence != null ? p.confidence.toFixed(2) : "-";
+      const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+      const mYesPct   = Math.round(marketYes * 100);
+      const dYesPct   = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+      const dConfPct  = p.confidence != null ? Math.round(p.confidence * 100) : null;
       out.push({
         id: `open-${p.id}`,
         ts: d.getTime(),
@@ -136,7 +137,7 @@ export default function ActivityPage() {
         timeLabel: timeLabel(d),
         kind: "execute",
         title: `Opened ${p.side} · ${p.question}`,
-        meta: `$${p.cost_usd.toFixed(0)} · ${entryCents}¢ · p_win ${pWin} · conf ${conf}`,
+        meta: `$${p.cost_usd.toFixed(0)} · M YES ${mYesPct}% · D YES ${dYesPct != null ? `${dYesPct}%` : "-"} · D CONF ${dConfPct != null ? `${dConfPct}%` : "-"}`,
         detail: p.reasoning ?? undefined,
       });
     }
@@ -176,7 +177,7 @@ export default function ActivityPage() {
         timeLabel: timeLabel(d),
         kind: "pass",
         title: `Passed · ${e.question}`,
-        meta: `Delfi ${delfi != null ? `${delfi}¢` : "-"} · market ${market != null ? `${market}¢` : "-"} · ${rec || "SKIP"}`,
+        meta: `D YES ${delfi != null ? `${delfi}%` : "-"} · M YES ${market != null ? `${market}%` : "-"} · ${rec || "SKIP"}`,
         detail: e.reasoning ?? undefined,
       });
     }

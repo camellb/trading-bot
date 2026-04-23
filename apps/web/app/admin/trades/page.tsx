@@ -210,8 +210,8 @@ export default function AdminTradesPage() {
                 <th>Market</th>
                 <th>Side</th>
                 <th>Size</th>
-                <th>Entry</th>
-                <th>Forecast</th>
+                <th>M YES %</th>
+                <th>D YES %</th>
                 <th>P&amp;L</th>
                 <th>Status</th>
               </tr>
@@ -257,9 +257,15 @@ export default function AdminTradesPage() {
                         ? `$${t.cost_usd.toLocaleString("en-US", { maximumFractionDigits: 2 })}`
                         : "-"}
                     </td>
-                    <td className="mono">{fmtPrice(t.entry_price)}</td>
+                    <td className="mono">
+                      {t.entry_price != null && t.side
+                        ? `${Math.round((t.side === "YES" ? t.entry_price : 1 - t.entry_price) * 100)}%`
+                        : "-"}
+                    </td>
                     <td className="mono" style={{ color: "var(--vellum-60)" }}>
-                      {fmtProb(t.claude_probability)}
+                      {t.claude_probability != null
+                        ? `${Math.round(t.claude_probability * 100)}%`
+                        : "-"}
                     </td>
                     <td className={`mono ${
                       (t.realized_pnl_usd ?? 0) > 0 ? "cell-up"

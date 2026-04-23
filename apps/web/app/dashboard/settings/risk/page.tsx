@@ -314,7 +314,7 @@ export default function RiskPage() {
         </div>
 
         <PctSlider
-          label="Minimum p_win"
+          label="Minimum chosen-side probability"
           desc="Delfi's probability for the chosen side must clear this floor. Below it, the trade is skipped."
           field="min_p_win"
           bounds={bounds}

@@ -123,16 +123,16 @@ function evaluationsToActivity(
   // user-scoped by join_time; positions are user-scoped by user_id, so a
   // position always shows even when its evaluation predates the user).
   const fromOpen: ActivityItem[] = open.slice(0, 8).map((p) => {
-    const entryCents = Math.round(p.entry_price * 100);
-    const pWin = p.claude_probability != null
-      ? `${Math.round(p.claude_probability * 100)}%`
-      : "-";
+    const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+    const mYesPct   = Math.round(marketYes * 100);
+    const dYesPct   = p.claude_probability != null ? `${Math.round(p.claude_probability * 100)}%` : "-";
+    const dConfPct  = p.confidence != null ? `${Math.round(p.confidence * 100)}%` : "-";
     return {
       t: fmtTime(p.created_at),
       sortKey: p.created_at ?? "",
       kind: "execute",
       text: `Bought ${p.side} · ${p.question}`,
-      meta: `${entryCents}¢ · $${p.cost_usd.toFixed(0)} · p_win ${pWin}${p.category ? ` · ${p.category}` : ""}`,
+      meta: `$${p.cost_usd.toFixed(0)} · M YES ${mYesPct}% · D YES ${dYesPct} · D CONF ${dConfPct}${p.category ? ` · ${p.category}` : ""}`,
       tone: "gold",
     };
   });
@@ -146,16 +146,15 @@ function evaluationsToActivity(
     })
     .slice(0, 8)
     .map((e) => {
-      const pWin = e.claude_probability != null
-        ? `${Math.round(e.claude_probability * 100)}%`
-        : "-";
-      const conf = e.confidence != null ? `${Math.round(e.confidence * 100)}%` : "-";
+      const dYesPct  = e.claude_probability != null ? `${Math.round(e.claude_probability * 100)}%` : "-";
+      const mYesPct  = e.market_price_yes   != null ? `${Math.round(e.market_price_yes   * 100)}%` : "-";
+      const dConfPct = e.confidence         != null ? `${Math.round(e.confidence         * 100)}%` : "-";
       return {
         t: fmtTime(e.evaluated_at),
         sortKey: e.evaluated_at ?? "",
         kind: "pass",
         text: `Skipped · ${e.question}`,
-        meta: `p_win ${pWin} · conf ${conf}${e.category ? ` · ${e.category}` : ""}`,
+        meta: `M YES ${mYesPct} · D YES ${dYesPct} · D CONF ${dConfPct}${e.category ? ` · ${e.category}` : ""}`,
         tone: "muted",
       };
     });
@@ -442,25 +441,27 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
         <div>Market</div>
         <div>Category</div>
         <div>Side</div>
-        <div>Market %</div>
+        <div>M YES %</div>
         <div>Size</div>
-        <div>Delfi %</div>
-        <div>Confidence</div>
+        <div>D YES %</div>
+        <div>D CONF</div>
         <div>Closes</div>
       </div>
       {positions.map((p) => {
-        const marketPct = Math.round(p.entry_price * 100);
-        const delfiPct  = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
-        const confPct   = p.confidence != null ? Math.round(p.confidence * 100) : null;
+        // Market's implied probability of YES regardless of chosen side.
+        const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+        const mYesPct   = Math.round(marketYes * 100);
+        const dYesPct   = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+        const dConfPct  = p.confidence != null ? Math.round(p.confidence * 100) : null;
         return (
           <div className="pos-row" key={p.id}>
             <div className="pos-q">{p.question}</div>
             <div className="pos-cat">{p.category || "-"}</div>
             <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-            <div className="pos-num t-num">{marketPct}%</div>
+            <div className="pos-num t-num">{mYesPct}%</div>
             <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
-            <div className="pos-num t-num">{delfiPct != null ? `${delfiPct}%` : "-"}</div>
-            <div className="pos-num t-num">{confPct != null ? `${confPct}%` : "-"}</div>
+            <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
+            <div className="pos-num t-num">{dConfPct != null ? `${dConfPct}%` : "-"}</div>
             <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>
           </div>
         );

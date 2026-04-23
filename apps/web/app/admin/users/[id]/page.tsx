@@ -379,8 +379,8 @@ export default function AdminUserDetailPage({
                 <th>Category</th>
                 <th>Side</th>
                 <th>Cost</th>
-                <th>Entry</th>
-                <th>Forecast</th>
+                <th>M YES %</th>
+                <th>D YES %</th>
                 <th>Status</th>
                 <th>P&amp;L</th>
               </tr>
@@ -399,13 +399,13 @@ export default function AdminUserDetailPage({
                   <td>{p.side || "-"}</td>
                   <td className="mono">{fmtMoney(p.cost_usd)}</td>
                   <td className="mono">
-                    {p.entry_price !== null && p.entry_price !== undefined
-                      ? p.entry_price.toFixed(3)
+                    {p.entry_price != null && p.side
+                      ? `${Math.round((p.side === "YES" ? p.entry_price : 1 - p.entry_price) * 100)}%`
                       : "-"}
                   </td>
                   <td className="mono">
-                    {p.claude_probability !== null && p.claude_probability !== undefined
-                      ? p.claude_probability.toFixed(3)
+                    {p.claude_probability != null
+                      ? `${Math.round(p.claude_probability * 100)}%`
                       : "-"}
                   </td>
                   <td>

@@ -192,18 +192,19 @@ export default function PositionsPage() {
                   <th>Market</th>
                   <th>Category</th>
                   <th>Side</th>
-                  <th>Entry</th>
+                  <th>M YES %</th>
                   <th>Size</th>
-                  <th>p_win</th>
-                  <th>Confidence</th>
+                  <th>D YES %</th>
+                  <th>D CONF</th>
                   <th>Closes</th>
                 </tr>
               </thead>
               <tbody>
                 {open.map((p) => {
-                  const entryCents = Math.round(p.entry_price * 100);
-                  const pWin = p.claude_probability;
-                  const conf = p.confidence;
+                  const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+                  const mYesPct   = Math.round(marketYes * 100);
+                  const dYesPct   = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+                  const dConfPct  = p.confidence != null ? Math.round(p.confidence * 100) : null;
                   return (
                     <tr key={p.id}>
                       <td>{p.question}</td>
@@ -213,10 +214,10 @@ export default function PositionsPage() {
                           {p.side}
                         </span>
                       </td>
-                      <td className="mono">{entryCents}¢</td>
+                      <td className="mono">{mYesPct}%</td>
                       <td className="mono">${p.cost_usd.toFixed(0)}</td>
-                      <td className="mono">{pWin != null ? pWin.toFixed(2) : "-"}</td>
-                      <td className="mono">{conf != null ? conf.toFixed(2) : "-"}</td>
+                      <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
+                      <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
                       <td className="mono">{daysFromNow(p.expected_resolution_at)}</td>
                     </tr>
                   );
@@ -247,10 +248,6 @@ export default function PositionsPage() {
                 s.market_price_yes != null ? Math.round(s.market_price_yes * 100) : null;
               const delfiPct =
                 s.claude_probability != null ? Math.round(s.claude_probability * 100) : null;
-              const pWinPct =
-                marketPct != null && delfiPct != null
-                  ? Math.round((marketPct + delfiPct) / 2)
-                  : null;
               const reasonFull = (s.reasoning ?? "").trim();
               const shortFromModel = (s.reasoning_short ?? "").trim();
               const reasonShort = shortFromModel || shortReason(reasonFull, 80);
@@ -286,21 +283,21 @@ export default function PositionsPage() {
                       }}
                     >
                       <div>
-                        <div className="kv-label">Market</div>
+                        <div className="kv-label">M YES %</div>
                         <div className="mono" style={{ fontSize: 13 }}>
                           {marketPct != null ? `${marketPct}%` : "-"}
                         </div>
                       </div>
                       <div>
-                        <div className="kv-label">Delfi</div>
+                        <div className="kv-label">D YES %</div>
                         <div className="mono" style={{ fontSize: 13, color: "var(--gold)" }}>
                           {delfiPct != null ? `${delfiPct}%` : "-"}
                         </div>
                       </div>
                       <div>
-                        <div className="kv-label">p_win</div>
+                        <div className="kv-label">D CONF</div>
                         <div className="mono" style={{ fontSize: 13 }}>
-                          {pWinPct != null ? `${pWinPct}%` : "-"}
+                          {s.confidence != null ? `${Math.round(s.confidence * 100)}%` : "-"}
                         </div>
                       </div>
                       <div>

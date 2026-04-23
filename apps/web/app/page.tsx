@@ -324,15 +324,15 @@ function Versus() {
 
 // ─── Proof ───────────────────────────────────────────────
 const TRADE_LOG = [
-  { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · p_win 0.78 · conf 0.81", cls: "" },
+  { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · M YES 58% · D YES 78% · D CONF 81%", cls: "" },
   { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 mkts - no forecasts cleared gates", meta: "", cls: "" },
   { ts: "14:19", type: "RESOLVE", typeCls: "resolve", mkt: "ETH > $6000?", meta: "correct · +$47", cls: "pos" },
-  { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · p_win 0.77 · conf 0.74", cls: "" },
+  { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · M YES 41% · D YES 23% · D CONF 74%", cls: "" },
   { ts: "13:44", type: "RESOLVE", typeCls: "resolve", mkt: "NFL Week 12 MIA", meta: "incorrect · −$31", cls: "neg" },
-  { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · p_win 0.72 · conf 0.68", cls: "" },
+  { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · M YES 55% · D YES 72% · D CONF 68%", cls: "" },
   { ts: "12:58", type: "RESOLVE", typeCls: "resolve", mkt: "Warriors beat Suns?", meta: "correct · +$22", cls: "pos" },
   { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 mkts - 3 forecasts cleared gates", meta: "", cls: "" },
-  { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · p_win 0.81 · conf 0.70", cls: "" },
+  { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · M YES 32% · D YES 19% · D CONF 70%", cls: "" },
   { ts: "11:54", type: "RESOLVE", typeCls: "resolve", mkt: "OPEC production cut?", meta: "correct · +$38", cls: "pos" },
 ];
 
