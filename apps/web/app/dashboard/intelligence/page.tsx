@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import "../../styles/content.css";
 
@@ -88,6 +89,11 @@ export default function IntelligencePage() {
               calibration, skip-list candidates - and proposes changes with evidence.
               Each review is dated and shows the data behind the recommendation.
             </p>
+          </div>
+          <div className="page-head-right">
+            <Link href="/dashboard/intelligence/learning" className="btn-sm">
+              View learning reports
+            </Link>
           </div>
         </div>
       </div>

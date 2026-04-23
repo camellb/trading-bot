@@ -432,6 +432,40 @@ class BotAPI:
         )
         return web.json_response({"user_id": user_id, "suggestions": rows})
 
+    async def _handle_list_learning_reports(self,
+                                            request: web.Request) -> web.Response:
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        try:
+            limit = int(request.query.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        # include_admin=1 flips the reasoning-bearing variant on, but only for
+        # verified admins. Non-admins asking for it silently get the user view.
+        want_admin = request.query.get("include_admin", "0") == "1"
+        include_admin = False
+        if want_admin:
+            loop = asyncio.get_running_loop()
+            include_admin = bool(await loop.run_in_executor(
+                self._pool, _user_is_admin, user_id,
+            ))
+
+        from engine.review_report import list_learning_reports
+        loop = asyncio.get_running_loop()
+        rows = await loop.run_in_executor(
+            self._pool,
+            lambda: list_learning_reports(
+                user_id=user_id, limit=limit, include_admin=include_admin,
+            ),
+        )
+        return web.json_response({
+            "user_id":       user_id,
+            "include_admin": include_admin,
+            "reports":       rows,
+        })
+
     async def _handle_apply_suggestion(self, request: web.Request) -> web.Response:
         return await self._suggestion_action(request, apply_suggestion)
 
@@ -1093,6 +1127,8 @@ class BotAPI:
         app.router.add_get ("/api/config/polymarket", self._handle_get_polymarket_config)
         app.router.add_put ("/api/config/polymarket", self._handle_put_polymarket_config)
         app.router.add_get ("/api/suggestions", self._handle_list_suggestions)
+        app.router.add_get ("/api/learning-reports",
+                            self._handle_list_learning_reports)
         app.router.add_post("/api/suggestions/{suggestion_id}/apply",
                             self._handle_apply_suggestion)
         app.router.add_post("/api/suggestions/{suggestion_id}/skip",

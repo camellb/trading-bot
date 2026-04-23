@@ -129,12 +129,17 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
                                           settled_count=settled_now):
                 stored += 1
 
+        report_id = _compose_and_deliver_report(
+            user_id=user_id, mode=mode, cycle_size=LEARNING_CYCLE_TRADE_INTERVAL,
+        )
+
         return {
             "status":       "ran",
             "settled_now":  settled_now,
             "since_last":   delta,
             "proposals":    len(proposals),
             "stored":       stored,
+            "report_id":    report_id,
         }
     except Exception as exc:
         print(f"[learning_cadence] maybe_run failed: {exc}", file=sys.stderr)
@@ -342,6 +347,64 @@ def _pick_multiplier_tier(roi: float) -> Optional[float]:
         if lo <= roi < hi:
             return mult
     return None
+
+
+# ── Review-report composition + delivery ─────────────────────────────────────
+def _compose_and_deliver_report(user_id: str, mode: str,
+                                cycle_size: int) -> Optional[int]:
+    """
+    Compose the 50-trade review report, persist it to `learning_reports`,
+    and fire the user-facing version through Telegram. Every step is
+    wrapped in its own try/except so a flaky downstream doesn't sink
+    the learning cycle.
+    """
+    try:
+        from engine import review_report
+        report = review_report.compose_report(
+            user_id=user_id, mode=mode, cycle_size=cycle_size,
+        )
+    except Exception as exc:
+        print(f"[learning_cadence] compose_report failed: {exc}", file=sys.stderr)
+        return None
+
+    report_id: Optional[int] = None
+    try:
+        report_id = review_report.save_report(
+            user_id=user_id, mode=mode, report=report,
+        )
+    except Exception as exc:
+        print(f"[learning_cadence] save_report failed: {exc}", file=sys.stderr)
+
+    try:
+        _send_report_via_telegram(user_id=user_id, report=report)
+    except Exception as exc:
+        print(f"[learning_cadence] telegram send failed: {exc}",
+              file=sys.stderr)
+
+    return report_id
+
+
+def _send_report_via_telegram(user_id: str, report: dict) -> None:
+    """Wrap the plain-text body in <pre> so Telegram HTML mode preserves
+    the column alignment of the deterministic tables."""
+    try:
+        from feeds.telegram_notifier import TelegramNotifier
+    except Exception as exc:
+        print(f"[learning_cadence] telegram import failed: {exc}",
+              file=sys.stderr)
+        return
+
+    body = (report.get("user_text") or "").strip()
+    if not body:
+        return
+    # Minimal HTML-escape for the three characters that matter inside <pre>.
+    safe = (
+        body.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    )
+    message = f"<b>Delfi 50-trade review</b>\n<pre>{safe}</pre>"
+    TelegramNotifier().send_sync(user_id, message)
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
