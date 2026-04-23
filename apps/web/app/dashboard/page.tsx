@@ -277,7 +277,11 @@ export default function DashboardPage() {
         <section className="dash-card card-positions">
           <CardHead
             title="Open positions"
-            meta={`${open.length} active`}
+            meta={
+              open.length === 0
+                ? "0 active"
+                : `${open.length} active · $${open.reduce((s, p) => s + (p.cost_usd || 0), 0).toFixed(0)} deployed`
+            }
             href="/dashboard/positions"
           />
           {open.length === 0 ? (
@@ -436,24 +440,27 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
     <div className="pos-table">
       <div className="pos-row head">
         <div>Market</div>
+        <div>Category</div>
         <div>Side</div>
-        <div>Entry</div>
+        <div>Market %</div>
         <div>Size</div>
-        <div>p_win</div>
+        <div>Delfi %</div>
+        <div>Confidence</div>
         <div>Closes</div>
       </div>
       {positions.map((p) => {
-        const entryCents = Math.round(p.entry_price * 100);
-        const pWin = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+        const marketPct = Math.round(p.entry_price * 100);
+        const delfiPct  = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
+        const confPct   = p.confidence != null ? Math.round(p.confidence * 100) : null;
         return (
           <div className="pos-row" key={p.id}>
             <div className="pos-q">{p.question}</div>
+            <div className="pos-cat">{p.category || "-"}</div>
             <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-            <div className="pos-num t-num">
-              <span className="pos-entry">{entryCents}¢</span>
-            </div>
+            <div className="pos-num t-num">{marketPct}%</div>
             <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
-            <div className="pos-num t-num">{pWin != null ? `${pWin}%` : "-"}</div>
+            <div className="pos-num t-num">{delfiPct != null ? `${delfiPct}%` : "-"}</div>
+            <div className="pos-num t-num">{confPct != null ? `${confPct}%` : "-"}</div>
             <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>
           </div>
         );

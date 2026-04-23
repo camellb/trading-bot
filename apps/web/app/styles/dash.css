@@ -685,12 +685,16 @@ body.app {
 .pos-table { display: flex; flex-direction: column; }
 .pos-row {
   display: grid;
-  grid-template-columns: 2.5fr 0.5fr 1.2fr 0.7fr 0.8fr 0.6fr;
-  gap: 16px;
+  grid-template-columns: 2.2fr 0.9fr 0.5fr 0.8fr 0.7fr 0.8fr 0.9fr 0.6fr;
+  gap: 14px;
   padding: 14px 0;
   align-items: center;
   border-bottom: 1px solid var(--vellum-05);
   font-family: var(--font-body); font-size: 13.5px;
+}
+.pos-cat {
+  color: var(--vellum-60);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pos-row:last-child { border-bottom: none; }
 .pos-row.head {
@@ -1016,8 +1020,8 @@ body.app {
   .app-main { padding: 0 24px 60px; }
   .dash-status { flex-direction: column; align-items: stretch; }
   .card-risk, .card-upcoming { grid-column: span 12; }
-  .pos-row { grid-template-columns: 1.8fr 0.6fr 0.8fr 0.6fr; gap: 10px; }
-  .pos-row > :nth-child(3), .pos-row > :nth-child(6) { display: none; }
+  .pos-row { grid-template-columns: 1.8fr 0.5fr 0.8fr 0.8fr 0.6fr; gap: 10px; }
+  .pos-row > :nth-child(2), .pos-row > :nth-child(4), .pos-row > :nth-child(7) { display: none; }
   .mode-banner { flex-direction: column; align-items: flex-start; }
   .hero-deltas { flex-wrap: wrap; gap: 18px; }
   .hero-delta-div { display: none; }
