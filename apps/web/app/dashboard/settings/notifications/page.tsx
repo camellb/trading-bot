@@ -113,6 +113,23 @@ export default function NotificationsPage() {
     }
   };
 
+  const humanizeTelegramError = (raw: string): string => {
+    const s = raw.toLowerCase();
+    if (s.includes("chat not found")) {
+      return "Telegram can't find that chat. Open your bot in Telegram, tap Start (or send any message), then copy the chat ID again from https://api.telegram.org/bot<TOKEN>/getUpdates. Group chats use a negative ID.";
+    }
+    if (s.includes("unauthorized")) {
+      return "Telegram rejected the bot token. Double-check you copied the full token from @BotFather (including the colon).";
+    }
+    if (s.includes("bot was blocked") || s.includes("blocked by the user")) {
+      return "You've blocked this bot in Telegram. Unblock it and send /start, then retry.";
+    }
+    if (s.includes("forbidden")) {
+      return "Telegram refused delivery. For groups, make sure the bot is a member. For personal chats, message the bot first.";
+    }
+    return raw;
+  };
+
   const sendTest = async () => {
     setTesting(true);
     setStatus(null);
@@ -123,7 +140,8 @@ export default function NotificationsPage() {
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
       setStatus("Test message sent - check your Telegram.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const raw = err instanceof Error ? err.message : String(err);
+      setError(humanizeTelegramError(raw));
     } finally {
       setTesting(false);
     }
@@ -236,28 +254,47 @@ export default function NotificationsPage() {
                 {testing ? "Sending…" : "Send test message"}
               </button>
             )}
-            {configured && (
-              <button
-                type="button"
-                className="btn-sm danger"
-                onClick={disconnect}
-                disabled={saving}
-              >
-                Disconnect
-              </button>
-            )}
           </div>
-          {(status || error) && (
-            <div style={{ marginTop: 10, minHeight: 18 }}>
-              {status && (
-                <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
-                  {status}
-                </span>
-              )}
-              {error && (
-                <span style={{ color: "var(--red)", fontSize: 13 }}>
-                  {error}
-                </span>
+          {(status || error || configured) && (
+            <div
+              style={{
+                marginTop: 14,
+                paddingTop: 14,
+                borderTop: "1px solid var(--vellum-10)",
+                display: "flex",
+                gap: 12,
+                alignItems: "flex-start",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flex: "1 1 280px", minHeight: 18 }}>
+                {status && (
+                  <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
+                    {status}
+                  </span>
+                )}
+                {error && (
+                  <span
+                    style={{
+                      color: "var(--red)",
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    {error}
+                  </span>
+                )}
+              </div>
+              {configured && (
+                <button
+                  type="button"
+                  className="btn-sm danger"
+                  onClick={disconnect}
+                  disabled={saving}
+                >
+                  Disconnect
+                </button>
               )}
             </div>
           )}
