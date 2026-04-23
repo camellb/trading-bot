@@ -149,7 +149,7 @@ USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
 USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "min_p_win":
         "Minimum probability the chosen side must have to take a bet. "
-        "Side is the side Claude's forecast favors; p_win is Claude's "
+        "Side is the side Delfi's forecast favors; p_win is Delfi's "
         "probability for that side. Higher values filter out low-conviction "
         "bets even when direction agrees with the market.",
     "confidence_full_stake":
@@ -159,8 +159,8 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "skips - only shrinks size when confidence is low.",
     "confidence_override_threshold":
         "Confidence at or above which the sizer ignores the market and "
-        "follows Claude's forecast directly. Below this value the side is "
-        "picked by the mean of Claude's probability and the market's "
+        "follows Delfi's forecast directly. Below this value the side is "
+        "picked by the mean of Delfi's probability and the market's "
         "implied probability.",
     "base_stake_pct":
         "Baseline stake as a fraction of bankroll at full confidence, "

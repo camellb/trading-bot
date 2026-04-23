@@ -51,6 +51,7 @@ _REASONING_EXCERPT_CHARS = 600
 _BANNED_WORDS = (
     "claude", "anthropic", "gemini", "openai", "gpt",
     "llm", "prompt", "system prompt",
+    "edge", "edge-hunting",
 )
 _BANNED_REPLACEMENT = "the model"
 
@@ -406,7 +407,7 @@ def _shape_per_archetype(pnl_rows: list[dict],
         shaped.append({
             "archetype": r.get("archetype"),
             "n":         int(r.get("n") or 0),
-            "pnl_usd":   float(r.get("pnl_usd") or 0.0),
+            "pnl_usd":   float(r.get("pnl") or 0.0),
             "roi":       r.get("roi"),
             "win_rate":  r.get("win_rate"),
             "brier":     brier_map.get(key),
@@ -569,7 +570,7 @@ def _fallback_thesis(data: dict) -> str:
     elif verdict == "neutral":
         tone = "Delfi is hovering near break-even. "
     elif verdict == "mildly_unprofitable":
-        tone = "Delfi is giving up a small edge to the market. "
+        tone = "Delfi is giving up a small margin to the market. "
     elif verdict == "deeply_unprofitable":
         tone = "Delfi is losing materially. "
     elif verdict == "mis_calibrated":

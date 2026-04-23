@@ -550,7 +550,7 @@ function TradesTable({
                 <th className="px-3 py-2 text-center font-medium">Side</th>
                 <th className="px-3 py-2 text-right font-medium">Entry</th>
                 <th className="px-3 py-2 text-right font-medium">P&L</th>
-                <th className="px-3 py-2 text-right font-medium hidden sm:table-cell">Edge</th>
+                <th className="px-3 py-2 text-right font-medium hidden sm:table-cell">Δ</th>
                 <th className="px-3 py-2 text-right font-medium hidden sm:table-cell">Conf.</th>
               </tr>
             </thead>

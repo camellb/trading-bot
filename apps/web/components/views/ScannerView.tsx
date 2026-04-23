@@ -165,7 +165,7 @@ export function ScannerView({
                 <th className="text-center px-3 py-2.5 font-medium">Decision</th>
                 <th className="text-right px-3 py-2.5 font-medium hidden sm:table-cell">Bot Est.</th>
                 <th className="text-right px-3 py-2.5 font-medium hidden md:table-cell">Crowd</th>
-                <th className="text-right px-3 py-2.5 font-medium hidden sm:table-cell">Edge</th>
+                <th className="text-right px-3 py-2.5 font-medium hidden sm:table-cell">Δ</th>
                 <th className="text-right px-3 py-2.5 font-medium hidden lg:table-cell">Conf.</th>
                 <th className="text-right px-3 py-2.5 font-medium">When</th>
               </tr>

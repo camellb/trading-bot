@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   usePolymarketCredentials,
@@ -11,6 +11,14 @@ import {
 type Profile = { email: string; displayName: string };
 
 export default function AccountPage() {
+  return (
+    <Suspense fallback={null}>
+      <AccountPageInner />
+    </Suspense>
+  );
+}
+
+function AccountPageInner() {
   const params = useSearchParams();
   const setupFlag = params?.get("setup");
 
