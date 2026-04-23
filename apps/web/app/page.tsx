@@ -82,7 +82,7 @@ function TopNav() {
           ) : (
             <>
               <Link className="nav-login" href="/auth#login">Log In</Link>
-              <Link className="btn-primary" href="/auth#signup">Get Started Free</Link>
+              <Link className="btn-primary" href="/auth#signup">Get Started</Link>
             </>
           )}
         </div>
@@ -107,10 +107,9 @@ function Hero() {
           The first autonomous, self-improving forecasting AI agent for Polymarket.
         </p>
         <div className="hero-ctas">
-          <Link className="btn-primary" href="/auth#signup">Get Started Free</Link>
+          <Link className="btn-primary" href="/auth#signup">Get Started</Link>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
-        <div className="hero-note">No credit card required</div>
         <HeroPress />
       </div>
     </section>
@@ -639,8 +638,7 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">Sign up in three minutes. Delfi will take care of the rest.</p>
-        <Link className="btn-primary large" href="/auth#signup">Get Started Free</Link>
-        <div className="final-note">No credit card required</div>
+        <Link className="btn-primary large" href="/auth#signup">Get Started</Link>
       </div>
     </section>
   );
