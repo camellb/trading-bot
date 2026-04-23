@@ -47,6 +47,7 @@ from engine.notifier_state import (
 from engine.user_config import (
     DEFAULT_USER_ID,
     get_user_telegram_creds,
+    list_admin_users_with_telegram,
     list_users_with_telegram,
 )
 from feeds import telegram_messages as tm
@@ -210,12 +211,22 @@ class TelegramNotifier:
             print(f"[telegram] sync send failed: {exc}", file=sys.stderr)
 
     async def _broadcast(self, message: str) -> None:
-        """Send to every user with configured creds. For startup/shutdown."""
+        """Send to every user with configured creds. For daily/weekly summaries."""
         for uid in list_users_with_telegram():
             await self.send(uid, message)
 
     def _broadcast_sync(self, message: str) -> None:
         for uid in list_users_with_telegram():
+            self.send_sync(uid, message)
+
+    async def _broadcast_admins(self, message: str) -> None:
+        """Admin-only fanout. Used for operator/process-level notices that
+        regular users should not see (startup, restart, uncaught errors)."""
+        for uid in list_admin_users_with_telegram():
+            await self.send(uid, message)
+
+    def _broadcast_admins_sync(self, message: str) -> None:
+        for uid in list_admin_users_with_telegram():
             self.send_sync(uid, message)
 
     # ── Feed health (admin log only) ─────────────────────────────────────────
@@ -278,8 +289,9 @@ class TelegramNotifier:
         await self.send(user_id, tm.generic_error(context=context, detail=detail))
 
     async def broadcast_error(self, context: str, detail: str) -> None:
-        """Operator-style alert fanned out to every configured user."""
-        await self._broadcast(tm.generic_error(context=context, detail=detail))
+        """Operator-style alert fanned out to admin users only. Regular
+        users should not see process-level errors."""
+        await self._broadcast_admins(tm.generic_error(context=context, detail=detail))
 
     # ── Startup ──────────────────────────────────────────────────────────────
     async def notify_startup(self, user_id: str) -> None:
@@ -304,7 +316,9 @@ class TelegramNotifier:
             await self.send(user_id, tm.startup_fallback())
 
     async def broadcast_startup(self) -> None:
-        for uid in list_users_with_telegram():
+        """Admin-only. Regular users should not see "Delfi is online"
+        broadcasts; that is process-level operator information."""
+        for uid in list_admin_users_with_telegram():
             await self.notify_startup(uid)
 
     # ── Daily / weekly summaries ────────────────────────────────────────────
@@ -422,7 +436,9 @@ class TelegramNotifier:
 
     # ── Shutdown / crash broadcasts ─────────────────────────────────────────
     def broadcast_restart_sync(self, message: str) -> None:
-        self._broadcast_sync(message)
+        """Admin-only. "Delfi is restarting" is process-level; regular
+        users should not see it."""
+        self._broadcast_admins_sync(message)
 
     # ── Polling thread ───────────────────────────────────────────────────────
     def start_polling_for_all(self) -> None:

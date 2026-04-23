@@ -605,6 +605,29 @@ def list_users_with_telegram() -> list[str]:
         return []
 
 
+def list_admin_users_with_telegram() -> list[str]:
+    """
+    Return every admin user_id that has both bot_token and chat_id configured.
+    Used for operator/process-level broadcasts (startup, restart, generic
+    errors) that should not reach regular users.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT user_id FROM user_config "
+                "WHERE is_admin = TRUE "
+                "  AND COALESCE(telegram_bot_token, '') <> '' "
+                "  AND COALESCE(telegram_chat_id,   '') <> ''"
+            )).fetchall()
+        return [str(r[0]) for r in rows]
+    except Exception as exc:
+        print(f"[user_config] list_admin_users_with_telegram failed: {exc}",
+              file=sys.stderr)
+        return []
+
+
 # ── Polymarket creds ────────────────────────────────────────────────────────
 # Per-user Polymarket API key/secret/passphrase + Polygon wallet address.
 # Live-mode execution requires all three of (api_key, api_secret, wallet)
