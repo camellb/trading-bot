@@ -807,13 +807,19 @@ body.app {
   color: var(--vellum); margin-bottom: 6px;
 }
 .up-meta {
-  display: flex; align-items: center; gap: 14px;
+  display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap;
   font-family: var(--font-mono); font-size: 11px;
   color: var(--vellum-60);
 }
+.up-metric { display: inline-flex; flex-direction: column; gap: 3px; }
+.up-metric:last-child { margin-left: auto; align-items: flex-end; }
+.up-metric-label {
+  font-family: var(--font-body); font-size: 10px;
+  color: var(--vellum-40); letter-spacing: 0.08em; text-transform: uppercase;
+}
 .up-in { color: var(--gold); letter-spacing: 0.04em; }
 .up-you { color: var(--vellum); }
-.up-conv { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+.up-conv { display: inline-flex; align-items: center; gap: 6px; }
 .up-conv-bar {
   width: 60px; height: 3px;
   background: var(--vellum-10); border-radius: 2px;

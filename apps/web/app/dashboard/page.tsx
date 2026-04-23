@@ -73,6 +73,7 @@ type EvaluationsPayload = { evaluations: Evaluation[] };
 type Tone = "gold" | "muted" | "teal" | "profit";
 type ActivityItem = {
   t: string;
+  sortKey: string;
   kind: "execute" | "pass" | "update" | "resolve" | "resolve-loss" | "scan";
   text: string;
   meta: string;
@@ -112,37 +113,68 @@ function daysFromNow(iso: string | null): string {
   return `${days}d`;
 }
 
-function evaluationsToActivity(evals: Evaluation[], settled: SettledPosition[]): ActivityItem[] {
-  const fromEvals: ActivityItem[] = evals.slice(0, 8).map((e) => {
-    const rec = (e.recommendation ?? "").toUpperCase();
-    const traded = rec === "YES" || rec === "NO" || rec === "BUY";
-    const kind: ActivityItem["kind"] = traded ? "execute" : "pass";
-    const pWin = e.claude_probability != null ? e.claude_probability.toFixed(2) : "-";
-    const conf = e.confidence != null ? e.confidence.toFixed(2) : "-";
-    const pre = traded ? `Opened ${rec} · ` : "Passed · ";
+function evaluationsToActivity(
+  evals: Evaluation[],
+  open: OpenPosition[],
+  settled: SettledPosition[],
+): ActivityItem[] {
+  // Buys come from the user's own pm_positions rows - authoritative and
+  // survive the shared-evaluation visibility filter (evaluations are
+  // user-scoped by join_time; positions are user-scoped by user_id, so a
+  // position always shows even when its evaluation predates the user).
+  const fromOpen: ActivityItem[] = open.slice(0, 8).map((p) => {
+    const entryCents = Math.round(p.entry_price * 100);
+    const pWin = p.claude_probability != null
+      ? `${Math.round(p.claude_probability * 100)}%`
+      : "-";
     return {
-      t: fmtTime(e.evaluated_at),
-      kind,
-      text: `${pre}${e.question}`,
-      meta: `p_win ${pWin} · conf ${conf}${e.category ? ` · ${e.category}` : ""}`,
-      tone: traded ? "gold" : "muted",
+      t: fmtTime(p.created_at),
+      sortKey: p.created_at ?? "",
+      kind: "execute",
+      text: `Bought ${p.side} · ${p.question}`,
+      meta: `${entryCents}¢ · $${p.cost_usd.toFixed(0)} · p_win ${pWin}${p.category ? ` · ${p.category}` : ""}`,
+      tone: "gold",
     };
   });
+
+  // Skipped evaluations only - traded rows are already surfaced as buys
+  // with better metadata from the positions feed above.
+  const fromEvals: ActivityItem[] = evals
+    .filter((e) => {
+      const rec = (e.recommendation ?? "").toUpperCase();
+      return rec !== "YES" && rec !== "NO" && rec !== "BUY";
+    })
+    .slice(0, 8)
+    .map((e) => {
+      const pWin = e.claude_probability != null
+        ? `${Math.round(e.claude_probability * 100)}%`
+        : "-";
+      const conf = e.confidence != null ? `${Math.round(e.confidence * 100)}%` : "-";
+      return {
+        t: fmtTime(e.evaluated_at),
+        sortKey: e.evaluated_at ?? "",
+        kind: "pass",
+        text: `Skipped · ${e.question}`,
+        meta: `p_win ${pWin} · conf ${conf}${e.category ? ` · ${e.category}` : ""}`,
+        tone: "muted",
+      };
+    });
 
   const fromSettled: ActivityItem[] = settled.slice(0, 4).map((s) => {
     const pnl = s.realized_pnl_usd ?? 0;
     const win = pnl >= 0;
     return {
       t: fmtTime(s.settled_at),
+      sortKey: s.settled_at ?? "",
       kind: win ? "resolve" : "resolve-loss",
-      text: `Resolved ${win ? "WIN" : "LOSS"} · ${s.question}`,
+      text: `Closed ${win ? "WIN" : "LOSS"} · ${s.question}`,
       meta: `${win ? "+" : ""}$${pnl.toFixed(2)}`,
       tone: win ? "profit" : "muted",
     };
   });
 
-  return [...fromEvals, ...fromSettled]
-    .sort((a, b) => (a.t < b.t ? 1 : -1))
+  return [...fromOpen, ...fromEvals, ...fromSettled]
+    .sort((a, b) => (a.sortKey < b.sortKey ? 1 : -1))
     .slice(0, 10);
 }
 
@@ -220,7 +252,7 @@ export default function DashboardPage() {
   const open     = positions?.open ?? [];
   const settled  = positions?.settled ?? [];
   const evals    = evaluations?.evaluations ?? [];
-  const activity = useMemo(() => evaluationsToActivity(evals, settled), [evals, settled]);
+  const activity = useMemo(() => evaluationsToActivity(evals, open, settled), [evals, open, settled]);
   const resolving = useMemo(() => openToResolutions(open), [open]);
   const risk      = useMemo(() => buildRisk(summary ?? ({} as Summary), open), [summary, open]);
 
@@ -265,12 +297,12 @@ export default function DashboardPage() {
         </section>
 
         <section className="dash-card card-risk">
-          <CardHead title="Risk today" meta="Delfi's guardrails" href="/dashboard/risk" linkLabel="Risk controls" />
+          <CardHead title="Risk today" href="/dashboard/risk" linkLabel="Risk controls" />
           <RiskGauges risk={risk} />
         </section>
 
         <section className="dash-card card-upcoming">
-          <CardHead title="Resolving soon" meta="Next 30 days" />
+          <CardHead title="Resolving soon" />
           {resolving.length === 0 ? (
             <Empty label={loaded ? "No positions resolving soon." : "Loading..."} />
           ) : (
@@ -279,7 +311,7 @@ export default function DashboardPage() {
         </section>
 
         <section className="dash-card card-summary">
-          <CardHead title="This week" meta="Performance snapshot" href="/dashboard/performance" />
+          <CardHead title="This week" href="/dashboard/performance" />
           <SummaryCard
             brier={summary?.brier ?? null}
             winRate={summary?.win_rate ?? null}
@@ -495,14 +527,23 @@ function UpcomingList({ items }: { items: ResolutionItem[] }) {
         <li className="up-row" key={i}>
           <div className="up-q">{r.q}</div>
           <div className="up-meta">
-            <span className="up-in t-num">{r.in}</span>
-            <span className="up-you">{r.you}</span>
+            <span className="up-metric">
+              <span className="up-metric-label">Closes in</span>
+              <span className="up-in t-num">{r.in}</span>
+            </span>
+            <span className="up-metric">
+              <span className="up-metric-label">Your side</span>
+              <span className="up-you">{r.you}</span>
+            </span>
             {r.conviction > 0 && (
-              <span className="up-conv">
-                <span className="up-conv-bar">
-                  <span style={{ width: r.conviction * 100 + "%" }}></span>
+              <span className="up-metric">
+                <span className="up-metric-label">Confidence</span>
+                <span className="up-conv">
+                  <span className="up-conv-bar">
+                    <span style={{ width: r.conviction * 100 + "%" }}></span>
+                  </span>
+                  <span className="up-conv-pct t-num">{Math.round(r.conviction * 100)}%</span>
                 </span>
-                <span className="up-conv-pct t-num">{Math.round(r.conviction * 100)}%</span>
               </span>
             )}
           </div>
