@@ -44,6 +44,12 @@ export default function NotificationsPage() {
   };
 
   useEffect(() => {
+    if (!status) return;
+    const t = setTimeout(() => setStatus(null), 2500);
+    return () => clearTimeout(t);
+  }, [status]);
+
+  useEffect(() => {
     let cancelled = false;
     fetch("/api/config/telegram", { cache: "no-store" })
       .then((r) => r.json() as Promise<TelegramStatus>)
@@ -78,11 +84,7 @@ export default function NotificationsPage() {
       setConfigured(Boolean(data?.configured));
       setBotToken("");
       setChatId("");
-      setStatus(
-        data?.configured
-          ? "Saved - Telegram alerts are on."
-          : "Cleared - Telegram alerts are off.",
-      );
+      setStatus(data?.configured ? "Saved" : "Cleared");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -204,7 +206,7 @@ export default function NotificationsPage() {
             style={{
               marginTop: 12,
               display: "flex",
-              gap: 12,
+              gap: 10,
               alignItems: "center",
               flexWrap: "wrap",
             }}
@@ -244,17 +246,21 @@ export default function NotificationsPage() {
                 Disconnect
               </button>
             )}
-            {status && (
-              <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
-                {status}
-              </span>
-            )}
-            {error && (
-              <span style={{ color: "var(--red)", fontSize: 13 }}>
-                {error}
-              </span>
-            )}
           </div>
+          {(status || error) && (
+            <div style={{ marginTop: 10, minHeight: 18 }}>
+              {status && (
+                <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
+                  {status}
+                </span>
+              )}
+              {error && (
+                <span style={{ color: "var(--red)", fontSize: 13 }}>
+                  {error}
+                </span>
+              )}
+            </div>
+          )}
         </form>
       </div>
 
