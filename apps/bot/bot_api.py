@@ -1401,6 +1401,49 @@ class BotAPI:
         })
 
     # ── Action handlers ──────────────────────────────────────────────────────
+    async def _handle_bot_toggle(self, request: web.Request) -> web.Response:
+        """
+        Called by the dashboard after it flips user_config.bot_enabled in
+        Supabase. Fires the Telegram "Delfi is online" (or "Trading paused")
+        message for that user. This endpoint does NOT touch user_config - the
+        web action is the authoritative writer. It only handles the side
+        effects the bot owns (Telegram).
+        """
+        user_id = self._user_id_from(request)
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                     status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json body"}, status=400)
+        enabled = bool(body.get("enabled"))
+
+        if self._notifier is None:
+            return web.json_response({
+                "status":  "skipped",
+                "reason":  "notifier not initialised",
+                "enabled": enabled,
+            })
+
+        async def _fire():
+            try:
+                if enabled:
+                    await self._notifier.notify_startup(user_id)
+                else:
+                    from feeds import telegram_messages as tm
+                    await self._notifier.send(user_id, tm.paused())
+            except Exception as exc:
+                print(f"[bot_api] bot-toggle telegram fire failed: {exc}",
+                      file=sys.stderr)
+
+        asyncio.create_task(_fire())
+        return web.json_response({
+            "status":  "notified",
+            "enabled": enabled,
+            "user_id": user_id,
+        })
+
     async def _handle_scan_now(self, _request: web.Request) -> web.Response:
         if self._analyst is None:
             return web.json_response({"error": "analyst not available"}, status=503)
@@ -1698,6 +1741,7 @@ class BotAPI:
         app.router.add_post("/api/suggestions/{suggestion_id}/snooze",
                             self._handle_snooze_suggestion)
         app.router.add_get ("/api/markouts",    self._handle_markouts)
+        app.router.add_post("/api/bot-toggle",  self._handle_bot_toggle)
         app.router.add_post("/api/scan-now",    self._handle_scan_now)
         app.router.add_post("/api/resolve-now", self._handle_resolve_now)
         app.router.add_post("/api/reset-test",    self._handle_reset_test)
