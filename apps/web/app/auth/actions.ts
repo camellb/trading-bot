@@ -54,7 +54,7 @@ export async function signUp(_: AuthState, formData: FormData): Promise<AuthStat
   });
   if (error) return { error: error.message };
 
-  if (data.session) redirect("/onboarding");
+  if (data.session) redirect("/subscribe");
   return { ok: true };
 }
 

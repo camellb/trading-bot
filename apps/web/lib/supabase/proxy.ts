@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-const PROTECTED_PREFIXES = ["/dashboard", "/onboarding", "/admin"];
+const PROTECTED_PREFIXES = ["/dashboard", "/onboarding", "/admin", "/subscribe"];
+const SUBSCRIPTION_GATED_PREFIXES = ["/dashboard", "/onboarding"];
 const AUTH_ROUTES = ["/auth", "/login"];
 
 export async function updateSession(request: NextRequest) {
@@ -52,6 +53,28 @@ export async function updateSession(request: NextRequest) {
     url.search = "";
     url.hash = "";
     return NextResponse.redirect(url);
+  }
+
+  const needsSubscriptionCheck =
+    user && SUBSCRIPTION_GATED_PREFIXES.some((p) => pathname.startsWith(p));
+
+  if (needsSubscriptionCheck) {
+    const { data: cfg } = await supabase
+      .from("user_config")
+      .select("subscription_status, is_admin")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    const hasAccess =
+      cfg?.is_admin === true || cfg?.subscription_status === "active";
+
+    if (!hasAccess) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/subscribe";
+      url.search = "";
+      url.hash = "";
+      return NextResponse.redirect(url);
+    }
   }
 
   return response;

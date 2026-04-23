@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 
   const { data: cfg, error: cfgError } = await supabase
     .from("user_config")
-    .select("onboarded_at")
+    .select("onboarded_at, subscription_status, is_admin")
     .eq("user_id", user.id)
     .maybeSingle();
 
@@ -47,9 +47,21 @@ export async function GET(request: NextRequest) {
       userId: user.id,
       hasRow: !!cfg,
       onboardedAt: cfg?.onboarded_at ?? null,
+      subscriptionStatus: cfg?.subscription_status ?? null,
     });
   }
 
-  const target = cfg?.onboarded_at ? (next ?? "/dashboard") : "/onboarding";
+  const hasAccess =
+    cfg?.is_admin === true || cfg?.subscription_status === "active";
+
+  let target: string;
+  if (!hasAccess) {
+    target = "/subscribe";
+  } else if (!cfg?.onboarded_at) {
+    target = "/onboarding";
+  } else {
+    target = next ?? "/dashboard";
+  }
+
   return NextResponse.redirect(new URL(target, url.origin));
 }
