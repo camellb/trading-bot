@@ -1115,6 +1115,120 @@ class BotAPI:
             "offset": offset,
         })
 
+    async def _handle_admin_audit_log(self,
+                                      request: web.Request) -> web.Response:
+        """Combined audit log: config changes + event_log entries. Admin only."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+        try:
+            limit = max(1, min(500, int(request.query.get("limit", "100"))))
+        except ValueError:
+            limit = 100
+        try:
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            offset = 0
+        user_id = request.query.get("user_id", "").strip() or None
+        kind = request.query.get("kind", "all").strip().lower()
+        q_text = request.query.get("q", "").strip() or None
+
+        loop = asyncio.get_running_loop()
+
+        def _q():
+            with get_engine().begin() as conn:
+                out: list[dict] = []
+                if kind in ("all", "config"):
+                    where = ["1=1"]
+                    params: dict = {}
+                    if user_id:
+                        where.append("cch.user_id = :uid")
+                        params["uid"] = user_id
+                    if q_text:
+                        where.append("(cch.param_name ILIKE :q OR "
+                                     "cch.reason ILIKE :q OR "
+                                     "cch.new_value ILIKE :q)")
+                        params["q"] = f"%{q_text}%"
+                    sql = (
+                        "SELECT cch.id, cch.changed_at, cch.user_id, "
+                        "       au.email, cch.param_name, cch.old_value, "
+                        "       cch.new_value, cch.reason, cch.suggested_by, "
+                        "       cch.outcome "
+                        "FROM config_change_history cch "
+                        "LEFT JOIN auth.users au ON au.id::text = cch.user_id "
+                        f"WHERE {' AND '.join(where)} "
+                        "ORDER BY cch.changed_at DESC LIMIT :lim"
+                    )
+                    params["lim"] = limit
+                    for r in conn.execute(text(sql), params).fetchall():
+                        out.append({
+                            "kind":       "config",
+                            "id":         f"cfg-{r[0]}",
+                            "timestamp":  r[1].isoformat() if r[1] else None,
+                            "user_id":    str(r[2]),
+                            "email":      r[3],
+                            "param_name": r[4],
+                            "old_value":  r[5],
+                            "new_value":  r[6],
+                            "reason":     r[7],
+                            "source":     r[8],
+                            "outcome":    r[9],
+                            "severity":   None,
+                            "event_type": None,
+                            "description": None,
+                        })
+                if kind in ("all", "event"):
+                    where = ["1=1"]
+                    params = {}
+                    if user_id:
+                        where.append("el.user_id = :uid")
+                        params["uid"] = user_id
+                    if q_text:
+                        where.append("(el.event_type ILIKE :q OR "
+                                     "el.description ILIKE :q OR "
+                                     "el.source ILIKE :q)")
+                        params["q"] = f"%{q_text}%"
+                    sql = (
+                        "SELECT el.id, el.timestamp, el.user_id, "
+                        "       au.email, el.event_type, el.severity, "
+                        "       el.description, el.source "
+                        "FROM event_log el "
+                        "LEFT JOIN auth.users au ON au.id::text = el.user_id "
+                        f"WHERE {' AND '.join(where)} "
+                        "ORDER BY el.timestamp DESC LIMIT :lim"
+                    )
+                    params["lim"] = limit
+                    for r in conn.execute(text(sql), params).fetchall():
+                        out.append({
+                            "kind":        "event",
+                            "id":          f"evt-{r[0]}",
+                            "timestamp":   r[1].isoformat() if r[1] else None,
+                            "user_id":     str(r[2]),
+                            "email":       r[3],
+                            "event_type":  r[4],
+                            "severity":    int(r[5]) if r[5] is not None else None,
+                            "description": r[6],
+                            "source":      r[7],
+                            "param_name":  None,
+                            "old_value":   None,
+                            "new_value":   None,
+                            "reason":      None,
+                            "outcome":     None,
+                        })
+                out.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+                return out[offset:offset + limit]
+
+        try:
+            entries = await loop.run_in_executor(self._pool, _q)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        return web.json_response({
+            "entries": entries,
+            "limit":   limit,
+            "offset":  offset,
+        })
+
     async def _handle_admin_user_detail(self, request: web.Request) -> web.Response:
         """Detail view for a single user (admin only)."""
         admin_uid = await self._require_admin(request)
@@ -1889,6 +2003,7 @@ class BotAPI:
         app.router.add_get ("/api/admin/users",    self._handle_admin_users)
         app.router.add_get ("/api/admin/overview", self._handle_admin_overview)
         app.router.add_get ("/api/admin/trades",   self._handle_admin_trades)
+        app.router.add_get ("/api/admin/audit-log", self._handle_admin_audit_log)
         app.router.add_get ("/api/admin/users/{user_id}",
                             self._handle_admin_user_detail)
         app.router.add_post("/api/admin/users/{user_id}/action",
