@@ -304,6 +304,26 @@ def help_text() -> str:
     )
 
 
+# ── 15a. /start welcome ──────────────────────────────────────────────────────
+def welcome() -> str:
+    return (
+        f"👋 <b>Welcome to Delfi</b>\n"
+        f"\n"
+        f"Delfi is an autonomous prediction market trader. It watches "
+        f"Polymarket, forecasts outcomes, and backs every forecast with a "
+        f"small, confidence-scaled stake.\n"
+        f"\n"
+        f"You will get a message for:\n"
+        f"• every new position opened\n"
+        f"• every resolution, with P&amp;L\n"
+        f"• daily and weekly summaries\n"
+        f"• any risk event (loss cap, drawdown halt, cooldown)\n"
+        f"\n"
+        f"Send /status any time for balance, open positions, and win rate. "
+        f"Send /help for the full command list."
+    )
+
+
 # ── 16. Startup (full) ───────────────────────────────────────────────────────
 def startup_full(
     *,

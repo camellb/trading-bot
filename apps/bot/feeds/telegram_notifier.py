@@ -465,6 +465,7 @@ class TelegramNotifier:
                       file=sys.stderr)
 
             handlers = {
+                "/start":  lambda: self._handle_start(user_id),
                 "/status": lambda: self._send_status(user_id),
                 "/pause":  lambda: self._handle_pause(user_id),
                 "/resume": lambda: self._handle_resume(user_id),
@@ -510,6 +511,9 @@ class TelegramNotifier:
         ).start()
 
     # ── Command handlers ─────────────────────────────────────────────────────
+    async def _handle_start(self, user_id: str) -> None:
+        await self.send(user_id, tm.welcome())
+
     async def _handle_help(self, user_id: str) -> None:
         await self.send(user_id, tm.help_text())
 
