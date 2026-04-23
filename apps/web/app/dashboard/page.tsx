@@ -256,7 +256,7 @@ export default function DashboardPage() {
         </section>
 
         <section className="dash-card card-activity">
-          <CardHead title="Today" meta="Live feed" href="/dashboard/activity" live />
+          <CardHead title="Recent activity" href="/dashboard/activity" />
           {activity.length === 0 ? (
             <Empty label={loaded ? "No activity yet - Delfi is scanning." : "Loading..."} />
           ) : (
