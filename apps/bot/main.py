@@ -121,11 +121,14 @@ async def main() -> None:
 
     # ── Scheduler ───────────────────────────────────────────────────────────
     scheduler = AsyncIOScheduler()
+    bot_api.set_scheduler(scheduler)
 
     # PM scan - cadence from config.
     scan_interval_min = int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 60))
 
     async def _run_scan():
+        if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
+            return
         try:
             await scan_and_analyze(
                 limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),

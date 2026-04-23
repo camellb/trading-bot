@@ -88,6 +88,7 @@ class BotAPI:
         # PMExecutor from the X-User-Id header. No process-global executor.
         self._analyst  = analyst
         self._notifier = notifier
+        self._scheduler = None  # APScheduler set by main.py after creation
         self._secret   = os.environ.get("BOT_API_SECRET") or ""
         self._runner: Optional[web.AppRunner] = None
         self._started_at: Optional[datetime] = None
@@ -1444,7 +1445,111 @@ class BotAPI:
             "user_id": user_id,
         })
 
+    def set_scheduler(self, scheduler) -> None:
+        """main.py wires the APScheduler instance in after construction so the
+        admin scanner endpoint can reschedule the pm_scan job when the
+        interval changes without needing a process restart."""
+        self._scheduler = scheduler
+
+    async def _handle_admin_scanner_get(self,
+                                        request: web.Request) -> web.Response:
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                     status=403)
+        importlib.reload(config)
+        return web.json_response({
+            "enabled":          bool(getattr(config, "PM_SCAN_ENABLED", True)),
+            "interval_minutes": int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 5)),
+            "scan_limit":       int(getattr(config, "PM_SCAN_LIMIT", 100)),
+        })
+
+    async def _handle_admin_scanner_post(self,
+                                         request: web.Request) -> web.Response:
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                     status=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json body"}, status=400)
+
+        updates: list[tuple[str, object, object]] = []
+
+        if "enabled" in body:
+            try:
+                new_enabled = bool(body["enabled"])
+            except (TypeError, ValueError):
+                return web.json_response({"error": "enabled must be bool"},
+                                         status=400)
+            prev = bool(getattr(config, "PM_SCAN_ENABLED", True))
+            if prev != new_enabled:
+                try:
+                    persist_config_value("PM_SCAN_ENABLED", new_enabled)
+                except Exception as exc:
+                    return web.json_response(
+                        {"error": f"persist failed: {exc}"}, status=500)
+                updates.append(("PM_SCAN_ENABLED", prev, new_enabled))
+
+        if "interval_minutes" in body:
+            try:
+                new_interval = int(body["interval_minutes"])
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": "interval_minutes must be int"}, status=400)
+            if new_interval < 1 or new_interval > 60:
+                return web.json_response(
+                    {"error": "interval_minutes must be between 1 and 60"},
+                    status=400)
+            prev_int = int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 5))
+            if prev_int != new_interval:
+                try:
+                    persist_config_value("PM_SCAN_INTERVAL_MINUTES", new_interval)
+                except Exception as exc:
+                    return web.json_response(
+                        {"error": f"persist failed: {exc}"}, status=500)
+                updates.append(("PM_SCAN_INTERVAL_MINUTES", prev_int, new_interval))
+
+        if not updates:
+            return web.json_response({"status": "no_change"})
+
+        importlib.reload(config)
+
+        # Reschedule live if interval changed so the new cadence applies
+        # without a process restart.
+        if self._scheduler is not None and any(
+            k == "PM_SCAN_INTERVAL_MINUTES" for k, _, _ in updates
+        ):
+            try:
+                from apscheduler.triggers.interval import IntervalTrigger
+                self._scheduler.reschedule_job(
+                    "pm_scan",
+                    trigger=IntervalTrigger(
+                        minutes=int(config.PM_SCAN_INTERVAL_MINUTES)),
+                )
+            except Exception as exc:
+                print(f"[bot_api] scheduler reschedule failed: {exc}",
+                      file=sys.stderr)
+
+        for key, old, new in updates:
+            try:
+                _audit_config_change(key, old, new, "admin", user_id=admin_uid)
+            except Exception as exc:
+                print(f"[bot_api] scanner audit log failed: {exc}",
+                      file=sys.stderr)
+
+        return web.json_response({
+            "status":           "applied",
+            "enabled":          bool(getattr(config, "PM_SCAN_ENABLED", True)),
+            "interval_minutes": int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 5)),
+            "updated":          [k for k, _, _ in updates],
+        })
+
     async def _handle_scan_now(self, _request: web.Request) -> web.Response:
+        if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
+            return web.json_response(
+                {"status": "skipped", "reason": "scanner disabled"}, status=409)
         if self._analyst is None:
             return web.json_response({"error": "analyst not available"}, status=503)
         from polymarket_runner import scan_and_analyze
@@ -1756,6 +1861,10 @@ class BotAPI:
                             self._handle_admin_user_action)
         app.router.add_get ("/api/admin/forecaster",
                             self._handle_admin_forecaster_health)
+        app.router.add_get ("/api/admin/scanner",
+                            self._handle_admin_scanner_get)
+        app.router.add_post("/api/admin/scanner",
+                            self._handle_admin_scanner_post)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, BOT_API_HOST, BOT_API_PORT)

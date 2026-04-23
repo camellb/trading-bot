@@ -4,6 +4,20 @@ import os
 import re
 
 
+def _to_bool(v) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off", ""):
+            return False
+    raise ValueError(f"cannot coerce {v!r} to bool")
+
+
 ALLOWED_CONFIG_KEYS: dict[str, type] = {
     # Global scan and safety limits. Per-user risk configuration
     # (min_ev_threshold, stake percentages, circuit breakers) lives in
@@ -13,6 +27,8 @@ ALLOWED_CONFIG_KEYS: dict[str, type] = {
     "PM_MIN_VOLUME_24H_USD":       float,
     "PM_MAX_DAYS_TO_END":          int,
     "PM_SKIP_EXISTING_DAYS":       int,
+    "PM_SCAN_ENABLED":             _to_bool,
+    "PM_SCAN_INTERVAL_MINUTES":    int,
 }
 
 

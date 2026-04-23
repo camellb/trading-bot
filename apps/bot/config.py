@@ -44,6 +44,11 @@ PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving mar
 # once every 24h - re-scans only hit Claude for genuinely new markets.
 PM_SCAN_INTERVAL_MINUTES = 5
 
+# System-wide scanner kill-switch. Admin-controlled via /admin/scanner.
+# False halts the scheduled scan for all users; per-user bot_enabled still
+# applies on top of this.
+PM_SCAN_ENABLED = True
+
 # Position resolver: checks for settled markets and updates P&L.
 # Resolution checks are a free Polymarket REST read per open position, so we
 # can poll much more aggressively than the evaluation scan. Users expect
