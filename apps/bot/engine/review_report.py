@@ -263,7 +263,7 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     # Per-archetype breakdown from diagnostics (canonical numbers) with the
     # cycle-window PnL attribution inlined for display.
     try:
-        per_arch = _diag.archetype_pnl_attribution() or []
+        per_arch = _diag.archetype_pnl_attribution(user_id=user_id) or []
     except Exception as exc:
         print(f"[review_report] archetype_pnl failed: {exc}", file=sys.stderr)
         per_arch = []
@@ -285,7 +285,7 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
 
     # Cost validation.
     try:
-        data["cost_validation"] = _diag.cost_validation() or None
+        data["cost_validation"] = _diag.cost_validation(user_id=user_id) or None
     except Exception as exc:
         print(f"[review_report] cost_validation failed: {exc}", file=sys.stderr)
 

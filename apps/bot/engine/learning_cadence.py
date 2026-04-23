@@ -118,7 +118,7 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
         stats = _gather_stats(user_id, mode,
                               limit=LEARNING_CYCLE_TRADE_INTERVAL)
         current_cfg = get_user_config(user_id)
-        proposals = propose_suggestions(stats, current_cfg)
+        proposals = propose_suggestions(stats, current_cfg, user_id=user_id)
 
         # Enrich each with the backtester delta.
         for prop in proposals:
@@ -148,14 +148,17 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
 
 
 def propose_suggestions(stats: dict, current: UserConfig,
-                        diag: Optional[dict] = None) -> list[Proposal]:
+                        diag: Optional[dict] = None,
+                        user_id: Optional[str] = None) -> list[Proposal]:
     """
     Deterministic heuristic proposers.
 
-    `stats`  - recent-window aggregate produced by `_gather_stats`.
-    `diag`   - optional dict of diagnostic slices (see `_collect_diagnostics`).
-               Tests may pass synthetic slices; in production it is fetched
-               lazily if omitted.
+    `stats`   - recent-window aggregate produced by `_gather_stats`.
+    `diag`    - optional dict of diagnostic slices (see `_collect_diagnostics`).
+                Tests may pass synthetic slices; in production it is fetched
+                lazily if omitted.
+    `user_id` - scopes the diagnostic pull to this tenant's positions so the
+                archetype/cost proposers see only this user's trading history.
 
     No single rule emits a suggestion unless its underlying bucket meets its
     own sample-size gate.
@@ -192,7 +195,7 @@ def propose_suggestions(stats: dict, current: UserConfig,
     # ── Diagnostic-driven proposers ────────────────────────────────────────
     # Lazy-load on first access so unit tests can stub a synthetic diag.
     if diag is None:
-        diag = _collect_diagnostics()
+        diag = _collect_diagnostics(user_id=user_id)
 
     out.extend(_propose_archetype_threshold(diag, current))
     out.extend(_propose_cost_correction(diag, current))
@@ -201,15 +204,20 @@ def propose_suggestions(stats: dict, current: UserConfig,
     return out
 
 
-def _collect_diagnostics() -> dict:
+def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
     """Pull the diagnostic slices needed by the new proposers. Isolated
-    behind a helper so tests can pass a synthetic dict directly."""
+    behind a helper so tests can pass a synthetic dict directly.
+
+    `user_id` scopes sizer-level slices (cost_validation, archetype_pnl) to
+    this tenant's positions. Forecaster slices (brier_by_archetype) read from
+    the shared predictions table and remain global.
+    """
     try:
         from engine import diagnostics as D
         return {
             "brier_by_archetype":  D.brier_by_archetype("all"),
-            "cost_validation":     D.cost_validation(),
-            "archetype_pnl":       D.archetype_pnl_attribution(),
+            "cost_validation":     D.cost_validation(user_id=user_id),
+            "archetype_pnl":       D.archetype_pnl_attribution(user_id=user_id),
         }
     except Exception as exc:
         print(f"[learning_cadence] diag collection failed: {exc}",

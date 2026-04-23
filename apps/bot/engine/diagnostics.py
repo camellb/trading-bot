@@ -390,19 +390,25 @@ def _brier_by_horizon_impl(scope: str, flag_threshold: float,
 
 
 # ── Public: selection quality (traded vs skipped counterfactual) ────────────
-def selection_quality() -> dict:
+def selection_quality(user_id: Optional[str] = None) -> dict:
     """
     Compare realised ROI on traded positions against a flat $10 counterfactual
     on skipped evaluations. Tells us whether the selection gate is picking
     the right markets. Sample sizes included.
+
+    When `user_id` is provided, the traded side is scoped to that user's
+    positions. The skipped counterfactual remains global (predictions are
+    shared across tenants).
     """
-    return _selection_quality_impl(_cache_bucket())
+    return _selection_quality_impl(user_id, _cache_bucket())
 
 
-@lru_cache(maxsize=1)
-def _selection_quality_impl(_bucket: int) -> dict:
+@lru_cache(maxsize=32)
+def _selection_quality_impl(user_id: Optional[str], _bucket: int) -> dict:
     try:
         from sqlalchemy import text
+        user_clause = "  AND user_id = :uid " if user_id else ""
+        params: dict = {"uid": user_id} if user_id else {}
         with _get_engine().begin() as conn:
             traded = conn.execute(text(
                 "SELECT COUNT(*), "
@@ -410,8 +416,9 @@ def _selection_quality_impl(_bucket: int) -> dict:
                 "       COALESCE(SUM(cost_usd),0) "
                 "FROM pm_positions "
                 "WHERE status IN ('settled','invalid') "
-                "  AND realized_pnl_usd IS NOT NULL"
-            )).fetchone()
+                "  AND realized_pnl_usd IS NOT NULL "
+                f"{user_clause}"
+            ), params).fetchone()
             traded_n    = int(traded[0] or 0)
             traded_pnl  = float(traded[1] or 0.0)
             traded_cost = float(traded[2] or 0.0)
@@ -482,22 +489,25 @@ def _selection_quality_impl(_bucket: int) -> dict:
 
 
 # ── Public: ROI by EV bucket (realised) ────────────────────────────────────
-def roi_by_ev_bucket() -> list[dict]:
+def roi_by_ev_bucket(user_id: Optional[str] = None) -> list[dict]:
     """Realised ROI per EV bucket from pm_positions.ev_bps."""
-    return _roi_by_ev_bucket_impl(_cache_bucket())
+    return _roi_by_ev_bucket_impl(user_id, _cache_bucket())
 
 
-@lru_cache(maxsize=1)
-def _roi_by_ev_bucket_impl(_bucket: int) -> list[dict]:
+@lru_cache(maxsize=32)
+def _roi_by_ev_bucket_impl(user_id: Optional[str], _bucket: int) -> list[dict]:
     try:
         from sqlalchemy import text
+        user_clause = "  AND user_id = :uid " if user_id else ""
+        params: dict = {"uid": user_id} if user_id else {}
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT ev_bps, cost_usd, realized_pnl_usd, status "
                 "FROM pm_positions "
                 "WHERE ev_bps IS NOT NULL "
-                "  AND status IN ('settled','invalid')"
-            )).fetchall()
+                "  AND status IN ('settled','invalid') "
+                f"{user_clause}"
+            ), params).fetchall()
         out = []
         for label, lo, hi in EV_BUCKETS:
             in_bucket = [
@@ -525,7 +535,7 @@ def _roi_by_ev_bucket_impl(_bucket: int) -> list[dict]:
 
 
 # ── Public: cost validation (theoretical vs realised) ───────────────────────
-def cost_validation() -> dict:
+def cost_validation(user_id: Optional[str] = None) -> dict:
     """
     Compare assumed COST_ASSUMPTION (sizer) against the realised cost implied
     by the delta between theoretical (perfect-settlement-at-$1) P&L and
@@ -533,11 +543,11 @@ def cost_validation() -> dict:
 
       implied_cost = (theoretical_pnl - realised_pnl) / total_notional
     """
-    return _cost_validation_impl(_cache_bucket())
+    return _cost_validation_impl(user_id, _cache_bucket())
 
 
-@lru_cache(maxsize=1)
-def _cost_validation_impl(_bucket: int) -> dict:
+@lru_cache(maxsize=32)
+def _cost_validation_impl(user_id: Optional[str], _bucket: int) -> dict:
     try:
         # Defer import to avoid hard coupling during tests.
         try:
@@ -545,6 +555,8 @@ def _cost_validation_impl(_bucket: int) -> dict:
         except Exception:
             _ASSUMED = 0.015
         from sqlalchemy import text
+        user_clause = "  AND user_id = :uid " if user_id else ""
+        params: dict = {"uid": user_id} if user_id else {}
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT shares, entry_price, cost_usd, realized_pnl_usd, "
@@ -552,8 +564,9 @@ def _cost_validation_impl(_bucket: int) -> dict:
                 "FROM pm_positions "
                 "WHERE status IN ('settled','invalid') "
                 "  AND realized_pnl_usd IS NOT NULL "
-                "  AND shares IS NOT NULL AND entry_price IS NOT NULL"
-            )).fetchall()
+                "  AND shares IS NOT NULL AND entry_price IS NOT NULL "
+                f"{user_clause}"
+            ), params).fetchall()
         n = 0
         total_notional = 0.0
         realised_pnl = 0.0
@@ -648,19 +661,32 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
 
 
 # ── Public: theoretical optimal (best case if every call were resolved) ─────
-def theoretical_optimal_roi() -> dict:
+def theoretical_optimal_roi(user_id: Optional[str] = None) -> dict:
     """
-    If every Claude call had resolved in the claimed direction with zero
-    fees, what ROI would we have posted? Upper bound for the current
-    forecaster; gap between this and realised ROI is slippage + missed calls.
+    Upper-bound ROI if every Delfi call had resolved in the claimed direction
+    with zero fees. Gap between this and realised ROI is slippage + missed
+    calls.
+
+    When `user_id` is supplied the counterfactual is restricted to predictions
+    that this user's positions are linked to (so the per-user report stays
+    aligned with their own trade history).
     """
-    return _theoretical_optimal_roi_impl(_cache_bucket())
+    return _theoretical_optimal_roi_impl(user_id, _cache_bucket())
 
 
-@lru_cache(maxsize=1)
-def _theoretical_optimal_roi_impl(_bucket: int) -> dict:
+@lru_cache(maxsize=32)
+def _theoretical_optimal_roi_impl(user_id: Optional[str],
+                                  _bucket: int) -> dict:
     try:
         from sqlalchemy import text
+        user_clause = ""
+        params: dict = {}
+        if user_id:
+            user_clause = (
+                "  AND p.trade_id IN "
+                "(SELECT id FROM pm_positions WHERE user_id = :uid) "
+            )
+            params["uid"] = user_id
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT me.market_price_yes, p.probability, p.resolved_outcome "
@@ -668,8 +694,9 @@ def _theoretical_optimal_roi_impl(_bucket: int) -> dict:
                 "LEFT JOIN market_evaluations me ON me.prediction_id = p.id "
                 "WHERE p.resolved_outcome IN (0,1) "
                 "  AND p.probability IS NOT NULL "
-                "  AND me.market_price_yes IS NOT NULL"
-            )).fetchall()
+                "  AND me.market_price_yes IS NOT NULL "
+                f"{user_clause}"
+            ), params).fetchall()
         n = 0
         pnl = 0.0
         cost = 0.0
@@ -705,15 +732,18 @@ def _theoretical_optimal_roi_impl(_bucket: int) -> dict:
 
 
 # ── Public: archetype P&L attribution ───────────────────────────────────────
-def archetype_pnl_attribution() -> list[dict]:
+def archetype_pnl_attribution(user_id: Optional[str] = None) -> list[dict]:
     """Realised P&L and trade count per archetype (category)."""
-    return _archetype_pnl_attribution_impl(_cache_bucket())
+    return _archetype_pnl_attribution_impl(user_id, _cache_bucket())
 
 
-@lru_cache(maxsize=1)
-def _archetype_pnl_attribution_impl(_bucket: int) -> list[dict]:
+@lru_cache(maxsize=32)
+def _archetype_pnl_attribution_impl(user_id: Optional[str],
+                                    _bucket: int) -> list[dict]:
     try:
         from sqlalchemy import text
+        user_clause = "  AND user_id = :uid " if user_id else ""
+        params: dict = {"uid": user_id} if user_id else {}
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT category, "
@@ -724,8 +754,9 @@ def _archetype_pnl_attribution_impl(_bucket: int) -> list[dict]:
                 "FROM pm_positions "
                 "WHERE status IN ('settled','invalid') "
                 "  AND realized_pnl_usd IS NOT NULL "
+                f"{user_clause}"
                 "GROUP BY category ORDER BY n DESC"
-            )).fetchall()
+            ), params).fetchall()
         out = []
         for cat, n, pnl, cost, wins in rows:
             n = int(n or 0)
@@ -771,11 +802,11 @@ def full_report(scope: Scope = "all",
             "brier_by_horizon":     brier_by_horizon(scope),
         },
         "sizer": {
-            "selection_quality":    selection_quality(),
-            "roi_by_ev_bucket":     roi_by_ev_bucket(),
-            "cost_validation":      cost_validation(),
-            "theoretical_optimal":  theoretical_optimal_roi(),
-            "archetype_attribution": archetype_pnl_attribution(),
+            "selection_quality":    selection_quality(user_id=user_id),
+            "roi_by_ev_bucket":     roi_by_ev_bucket(user_id=user_id),
+            "cost_validation":      cost_validation(user_id=user_id),
+            "theoretical_optimal":  theoretical_optimal_roi(user_id=user_id),
+            "archetype_attribution": archetype_pnl_attribution(user_id=user_id),
         },
         "system": {
             "bankroll_series":      bankroll_series("daily",
