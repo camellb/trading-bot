@@ -19,7 +19,7 @@ const FAQ = [
   },
   {
     q: "Why did Delfi pass on a market I thought was a good bet?",
-    a: "Every candidate trade has to clear three gates: (1) direction — Delfi's forecast and the market must both be on the same side of 0.50; (2) minimum p_win — Delfi's probability for the chosen side has to be at least 0.65 by default; (3) minimum expected return after costs — at least 5% by default. A miss on any one gate means Delfi skips. The Activity log shows the exact gate each pass failed on.",
+    a: "Every candidate trade has to clear two gates: (1) direction, Delfi's forecast and the market must both be on the same side of 0.50; (2) minimum p_win, Delfi's probability for the chosen side has to be at least 0.65 by default. A miss on either gate means Delfi skips. Low-confidence calls that clear both gates get a smaller stake rather than a skip. The Activity log shows the exact gate each pass failed on.",
   },
   {
     q: "What happens when a risk cap triggers?",

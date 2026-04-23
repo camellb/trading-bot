@@ -227,7 +227,7 @@ function Solution() {
 function Pillars() {
   const items = [
     { n: "01", title: "Probability Engine", desc: "Delfi reads every active market and produces its own probability estimate, grounded in news, historical base rates, and structured data." },
-    { n: "02", title: "Position Sizer", desc: "Every trade is sized flat at 1-3% of bankroll, scaled by Delfi's confidence in the call. Three independent gates — direction agreement, minimum win probability, minimum expected return — must all clear before a dollar moves." },
+    { n: "02", title: "Position Sizer", desc: "Every trade is sized flat at 1-3% of bankroll, scaled by Delfi's confidence in the call. Two independent gates, direction agreement and minimum win probability, must clear before a dollar moves. Low-confidence calls get a smaller stake, not a skip." },
     { n: "03", title: "Risk Manager", desc: "Before any trade executes, Delfi checks the portfolio: daily loss caps, drawdown circuit breakers, event correlation guards. If the book is already stressed, Delfi passes." },
   ];
   const nodes = ["Scan", "Estimate", "Size", "Verify", "Execute"];
@@ -310,13 +310,13 @@ function Versus() {
 // ─── Proof ───────────────────────────────────────────────
 const TRADE_LOG = [
   { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · p_win 0.78 · conf 0.81", cls: "" },
-  { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 mkts — no forecasts cleared gates", meta: "", cls: "" },
+  { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 mkts - no forecasts cleared gates", meta: "", cls: "" },
   { ts: "14:19", type: "RESOLVE", typeCls: "resolve", mkt: "ETH > $6000?", meta: "correct · +$47", cls: "pos" },
   { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · p_win 0.77 · conf 0.74", cls: "" },
   { ts: "13:44", type: "RESOLVE", typeCls: "resolve", mkt: "NFL Week 12 MIA", meta: "incorrect · −$31", cls: "neg" },
   { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · p_win 0.72 · conf 0.68", cls: "" },
   { ts: "12:58", type: "RESOLVE", typeCls: "resolve", mkt: "Warriors beat Suns?", meta: "correct · +$22", cls: "pos" },
-  { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 mkts — 3 forecasts cleared gates", meta: "", cls: "" },
+  { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 mkts - 3 forecasts cleared gates", meta: "", cls: "" },
   { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · p_win 0.81 · conf 0.70", cls: "" },
   { ts: "11:54", type: "RESOLVE", typeCls: "resolve", mkt: "OPEC production cut?", meta: "correct · +$38", cls: "pos" },
 ];

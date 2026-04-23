@@ -133,21 +133,21 @@ export default function PerformancePage() {
         <div className="stat-cell">
           <div className="stat-cell-label">ROI</div>
           <div className="stat-cell-val">
-            {roiPct != null ? `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%` : "—"}
+            {roiPct != null ? `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%` : "-"}
           </div>
           <div className="stat-cell-delta">Net of costs</div>
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">P&amp;L</div>
           <div className="stat-cell-val">
-            {totalPnl != null ? `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}` : "—"}
+            {totalPnl != null ? `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}` : "-"}
           </div>
           <div className="stat-cell-delta">Realized + unrealized</div>
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">Win rate</div>
           <div className="stat-cell-val">
-            {winRatePct != null ? `${winRatePct.toFixed(0)}%` : "—"}
+            {winRatePct != null ? `${winRatePct.toFixed(0)}%` : "-"}
           </div>
           <div className="stat-cell-delta">
             {summary?.settled_total != null ? `${summary.settled_total} settled` : "Diagnostic"}
@@ -156,7 +156,7 @@ export default function PerformancePage() {
         <div className="stat-cell">
           <div className="stat-cell-label">Brier score</div>
           <div className="stat-cell-val">
-            {brierScore != null ? brierScore.toFixed(3) : "—"}
+            {brierScore != null ? brierScore.toFixed(3) : "-"}
           </div>
           <div className="stat-cell-delta">Lower is better</div>
         </div>
@@ -188,8 +188,10 @@ export default function PerformancePage() {
           </span>
         </div>
         <p className="panel-body" style={{ marginBottom: 12 }}>
-          Running Brier score as resolutions come in. Lower is better; 0.25 is chance-level on binary
-          markets. A trend downward means Delfi's forecasts are getting more accurate over time.
+          Brier score measures how closely Delfi's stated probabilities match what actually
+          happened on the markets you entered. Lower is better. A coin flip scores 0.25. The
+          line updates every time one of your positions settles, so a downward slope means
+          Delfi is getting sharper on the trades you took.
         </p>
         {brier && brier.points.length > 1 ? (
           <BrierChart data={brier.points} />
@@ -210,9 +212,11 @@ export default function PerformancePage() {
           </span>
         </div>
         <p className="panel-body" style={{ marginBottom: 20 }}>
-          When Delfi says 70%, does it happen 70% of the time? Each row shows its forecasts grouped into
-          probability buckets. A well-calibrated forecaster is within 5 percentage points across all buckets
-          once sample size is meaningful (n ≥ 20).
+          Do Delfi's probabilities match reality? Every settled position you've taken is sorted
+          by Delfi's stated probability at entry, then compared to how often those markets
+          actually resolved in your favor. Rows are your trades only. A well-calibrated
+          forecaster keeps Actual within about 5 points of Expected once the sample in a
+          bucket reaches 20+ resolutions.
         </p>
         {calibration && calibration.bins.length > 0 ? (
           <table className="table-simple">
@@ -234,12 +238,12 @@ export default function PerformancePage() {
                 return (
                   <tr key={i}>
                     <td>{label}</td>
-                    <td className="mono">{expected != null ? `${expected.toFixed(0)}%` : "—"}</td>
-                    <td className="mono">{actual != null ? `${actual.toFixed(0)}%` : "—"}</td>
+                    <td className="mono">{expected != null ? `${expected.toFixed(0)}%` : "-"}</td>
+                    <td className="mono">{actual != null ? `${actual.toFixed(0)}%` : "-"}</td>
                     <td className={`mono ${delta != null && Math.abs(delta) > 5 ? "cell-down" : ""}`}>
                       {delta != null
                         ? `${delta >= 0 ? "+" : ""}${delta.toFixed(0)} pts`
-                        : "—"}
+                        : "-"}
                     </td>
                     <td className="mono">{b.n}</td>
                   </tr>
@@ -250,7 +254,7 @@ export default function PerformancePage() {
         ) : (
           <div className="empty-state" style={{ padding: 32 }}>
             {loaded
-              ? "No resolved predictions yet — calibration buckets populate after markets settle."
+              ? "No resolved predictions yet - calibration buckets populate after markets settle."
               : "Loading..."}
           </div>
         )}
