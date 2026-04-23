@@ -225,8 +225,8 @@ async def main() -> None:
     _watchdog_alerted: set[str] = set()
     _WATCHDOG_THRESHOLDS = {
         "pm_scan":         timedelta(minutes=scan_interval_min * 3),
-        "pm_resolve":      timedelta(hours=resolve_interval_h * 3),
-        "pm_resolve_fast": timedelta(minutes=fast_resolve_min * 5),
+        "pm_resolve":      timedelta(minutes=resolve_interval_min * 3),
+        "pm_resolve_fast": timedelta(seconds=fast_resolve_sec * 5),
     }
 
     async def _run_watchdog():
@@ -261,7 +261,7 @@ async def main() -> None:
     print(
         f"[main] Scheduler started: "
         f"PM scan every {scan_interval_min}min, "
-        f"resolver every {resolve_interval_h}h (fast every {fast_resolve_min}min), "
+        f"resolver every {resolve_interval_min}min (fast every {fast_resolve_sec}s), "
         f"markouts every 1h, watchdog every 10min, "
         f"daily 08:30 MYT, weekly Mon 08:30 MYT, "
         f"self-improve Sun 08:30 MYT, monthly 1st 08:30 MYT.",
