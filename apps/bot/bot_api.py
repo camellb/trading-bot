@@ -311,7 +311,7 @@ class BotAPI:
             def _query():
                 with get_engine().begin() as conn:
                     return conn.execute(text(
-                        "SELECT settled_at, claude_probability, "
+                        "SELECT settled_at, claude_probability, side, "
                         "       CASE WHEN settlement_outcome = side THEN 1 "
                         "            ELSE 0 END AS correct "
                         "FROM pm_positions "
@@ -329,8 +329,11 @@ class BotAPI:
         points = []
         running_sum = 0.0
         for i, r in enumerate(rows, 1):
-            p = float(r[1])
-            o = int(r[2])
+            p_yes = float(r[1])
+            side = (r[2] or "YES").upper()
+            # Brier is computed on the chosen side: p_yes if we bet YES, else 1-p_yes.
+            p = p_yes if side == "YES" else (1.0 - p_yes)
+            o = int(r[3])
             running_sum += (p - o) ** 2
             points.append({
                 "date": r[0].isoformat() if r[0] else None,
@@ -922,6 +925,19 @@ class BotAPI:
         })
 
     async def _handle_markouts(self, request: web.Request) -> web.Response:
+        # Markouts are shared forecaster diagnostics (evaluations are shared
+        # across tenants). Admin-only: non-admins cannot inspect this stream.
+        caller_id = self._user_id_from(request)
+        if not caller_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        loop = asyncio.get_running_loop()
+        is_admin = bool(await loop.run_in_executor(
+            self._pool, _user_is_admin, caller_id,
+        ))
+        if not is_admin:
+            return web.json_response({"error": "admin only"}, status=403)
+
         limit = int(request.query.get("limit", "50"))
         try:
             def _q():
@@ -980,20 +996,45 @@ class BotAPI:
 
         return web.json_response({"markouts": markouts, "accuracy": accuracy})
 
-    async def _handle_reset_test(self, _request: web.Request) -> web.Response:
+    async def _handle_reset_test(self, request: web.Request) -> web.Response:
         current_mode = self._disk_mode or getattr(config, "PM_MODE", "simulation")
         if current_mode == "live":
             return web.json_response(
                 {"error": "reset-test is disabled in live mode"}, status=403)
+
+        caller_id = self._user_id_from(request)
+        if not caller_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        loop = asyncio.get_running_loop()
+        is_admin = bool(await loop.run_in_executor(
+            self._pool, _user_is_admin, caller_id,
+        ))
+
+        # Admins may pass ?all=1 to wipe shared evaluation/markout tables
+        # (cross-tenant reset). Non-admins always scope to their own rows -
+        # pm_positions + predictions - and never touch shared data.
+        wipe_all = is_admin and request.query.get("all") == "1"
+
         def _wipe():
             with get_engine().begin() as conn:
-                for tbl in ("markouts", "market_evaluations", "pm_positions", "predictions"):
-                    conn.execute(text(f"DELETE FROM {tbl}"))
-        await asyncio.get_running_loop().run_in_executor(self._pool, _wipe)
-        return web.json_response({
-            "status": "ok",
-            "message": "All test data cleared (predictions, positions, evaluations, markouts).",
-        })
+                # User-scoped tables: only the caller's rows.
+                conn.execute(text(
+                    "DELETE FROM pm_positions WHERE user_id = :uid"
+                ), {"uid": caller_id})
+                conn.execute(text(
+                    "DELETE FROM predictions WHERE trade_id IN "
+                    "(SELECT id FROM pm_positions WHERE user_id = :uid)"
+                ), {"uid": caller_id})
+                # Shared tables: admins with ?all=1 only.
+                if wipe_all:
+                    for tbl in ("markouts", "market_evaluations"):
+                        conn.execute(text(f"DELETE FROM {tbl}"))
+
+        await loop.run_in_executor(self._pool, _wipe)
+        msg = ("All test data cleared for this user (positions + predictions)."
+               + (" Shared evaluations + markouts also wiped." if wipe_all else ""))
+        return web.json_response({"status": "ok", "message": msg})
 
     async def _handle_switch_mode(self, request: web.Request) -> web.Response:
         data = await request.json()
@@ -1005,11 +1046,14 @@ class BotAPI:
         if mode == current:
             return web.json_response({"status": "no_change", "mode": current})
 
+        caller_id = self._user_id_from(request)
+
         # Dashboard changes apply immediately - no Telegram confirmation round-trip.
         try:
             persist_config_value("PM_MODE", mode)
             self._disk_mode = mode
-            _audit_config_change("PM_MODE", current, mode, "dashboard")
+            _audit_config_change("PM_MODE", current, mode, "dashboard",
+                                 user_id=caller_id)
         except Exception as exc:
             return web.json_response(
                 {"status": "error", "reason": str(exc)}, status=500)
@@ -1043,12 +1087,14 @@ class BotAPI:
             }, status=400)
 
         current = getattr(config, key, None)
+        caller_id = self._user_id_from(request)
 
         # Dashboard changes apply immediately - no Telegram confirmation round-trip.
         try:
             persist_config_value(key, value)
             importlib.reload(config)
-            _audit_config_change(key, current, value, "dashboard")
+            _audit_config_change(key, current, value, "dashboard",
+                                 user_id=caller_id)
         except Exception as exc:
             return web.json_response(
                 {"status": "error", "reason": str(exc)}, status=500)
@@ -1060,7 +1106,7 @@ class BotAPI:
             "value": value,
         })
 
-    def apply_pending_config(self) -> dict:
+    def apply_pending_config(self, user_id: Optional[str] = None) -> dict:
         if not self._pending_config:
             return {"status": "none", "reason": "no pending config change"}
         pc = self._pending_config
@@ -1069,7 +1115,8 @@ class BotAPI:
             persist_config_value(key, value)
             if key == "PM_MODE":
                 self._disk_mode = value
-                _audit_config_change(key, previous, value, "dashboard")
+                _audit_config_change(key, previous, value, "dashboard",
+                                     user_id=user_id)
                 self._pending_config = None
                 return {
                     "status": "applied",
@@ -1081,7 +1128,8 @@ class BotAPI:
                                f"Restart required: ./bot.sh restart",
                 }
             importlib.reload(config)
-            _audit_config_change(key, previous, value, "dashboard")
+            _audit_config_change(key, previous, value, "dashboard",
+                                 user_id=user_id)
         except Exception as exc:
             self._pending_config = None
             return {"status": "error", "reason": str(exc)}
@@ -1169,16 +1217,19 @@ class BotAPI:
 
 
 
-def _audit_config_change(key: str, old, new, source: str) -> None:
+def _audit_config_change(key: str, old, new, source: str,
+                         user_id: Optional[str] = None) -> None:
     try:
-        from engine.user_config import DEFAULT_USER_ID
+        if not user_id:
+            from engine.user_config import DEFAULT_USER_ID
+            user_id = DEFAULT_USER_ID
         with get_engine().begin() as conn:
             conn.execute(text(
                 "INSERT INTO config_change_history "
                 "(user_id, param_name, old_value, new_value, reason, suggested_by, outcome) "
                 "VALUES (:user_id, :k, :o, :n, :r, :s, 'applied')"
             ), {
-                "user_id": DEFAULT_USER_ID,
+                "user_id": user_id,
                 "k": key, "o": str(old), "n": str(new),
                 "r": "dashboard /api/update-config", "s": source,
             })

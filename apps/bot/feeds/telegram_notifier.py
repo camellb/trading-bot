@@ -500,7 +500,7 @@ class TelegramNotifier:
             await self.send(user_id, tm.nothing_pending())
             return
         try:
-            result = self._bot_api.apply_pending_config()
+            result = self._bot_api.apply_pending_config(user_id=user_id)
         except Exception as exc:
             print(f"[telegram][admin] apply failed: {exc}", file=sys.stderr)
             await self.send(user_id, tm.generic_error(
