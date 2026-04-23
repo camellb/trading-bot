@@ -276,7 +276,7 @@ export default function DashboardPage() {
         </section>
 
         <section className="dash-card card-risk">
-          <CardHead title="Risk today" meta="Delfi's guardrails" href="/dashboard/risk" />
+          <CardHead title="Risk today" meta="Delfi's guardrails" href="/dashboard/risk" linkLabel="Risk controls" />
           <RiskGauges risk={risk} />
         </section>
 
@@ -382,11 +382,13 @@ function CardHead({
   meta,
   href,
   live,
+  linkLabel,
 }: {
   title: string;
   meta?: string;
   href?: string;
   live?: boolean;
+  linkLabel?: string;
 }) {
   return (
     <div className="card-head">
@@ -401,7 +403,7 @@ function CardHead({
       </div>
       {href && (
         <Link className="card-head-link" href={href}>
-          View all →
+          {linkLabel ?? "View all"} →
         </Link>
       )}
     </div>
