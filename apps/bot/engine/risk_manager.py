@@ -51,23 +51,25 @@ def evaluate(
     bankroll:       float,
     starting_cash:  float,
     mode:           str,
+    user_id:        str,
 ) -> RiskVerdict:
     """
     Apply the user's circuit breakers and return a verdict. Reads settled
-    P&L, peak equity, and recent outcomes from pm_positions. Failures fall
-    through to a permissive verdict and log, so a DB hiccup doesn't lock
-    the bot out (the sizer still respects max_stake_pct).
+    P&L, peak equity, and recent outcomes from pm_positions filtered to
+    this user_id + mode. Failures fall through to a permissive verdict and
+    log, so a DB hiccup doesn't lock the bot out (the sizer still respects
+    max_stake_pct).
     """
     try:
-        today_pnl = _pnl_since(mode, hours=24)
-        weekly_pnl = _pnl_since(mode, hours=24 * 7)
-        peak_equity = _peak_equity(mode, starting_cash)
-        consecutive_losses = _consecutive_losses(mode)
+        today_pnl = _pnl_since(user_id, mode, hours=24)
+        weekly_pnl = _pnl_since(user_id, mode, hours=24 * 7)
+        peak_equity = _peak_equity(user_id, mode, starting_cash)
+        consecutive_losses = _consecutive_losses(user_id, mode)
     except Exception as exc:
         print(f"[risk_manager] stat load failed: {exc}", file=sys.stderr)
         return _permissive_verdict(user_config, bankroll)
 
-    current_equity = starting_cash + _realized_total(mode)
+    current_equity = starting_cash + _realized_total(user_id, mode)
 
     # Drawdown halt - manual review required.
     if peak_equity > 0:
@@ -133,7 +135,7 @@ def evaluate(
 
 
 # ── Internal stat helpers ────────────────────────────────────────────────────
-def _pnl_since(mode: str, hours: int) -> float:
+def _pnl_since(user_id: str, mode: str, hours: int) -> float:
     from sqlalchemy import text
     from db.engine import get_engine
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -141,26 +143,28 @@ def _pnl_since(mode: str, hours: int) -> float:
         val = conn.execute(text(
             "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
             "FROM pm_positions "
-            "WHERE mode = :m "
+            "WHERE user_id = :uid "
+            "  AND mode = :m "
             "  AND status IN ('settled', 'invalid') "
             "  AND settled_at >= :cutoff"
-        ), {"m": mode, "cutoff": cutoff}).scalar()
+        ), {"uid": user_id, "m": mode, "cutoff": cutoff}).scalar()
     return float(val or 0.0)
 
 
-def _realized_total(mode: str) -> float:
+def _realized_total(user_id: str, mode: str) -> float:
     from sqlalchemy import text
     from db.engine import get_engine
     with get_engine().begin() as conn:
         val = conn.execute(text(
             "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
             "FROM pm_positions "
-            "WHERE mode = :m AND status IN ('settled', 'invalid')"
-        ), {"m": mode}).scalar()
+            "WHERE user_id = :uid "
+            "  AND mode = :m AND status IN ('settled', 'invalid')"
+        ), {"uid": user_id, "m": mode}).scalar()
     return float(val or 0.0)
 
 
-def _peak_equity(mode: str, starting_cash: float) -> float:
+def _peak_equity(user_id: str, mode: str, starting_cash: float) -> float:
     """
     Peak equity = starting cash plus the maximum cumulative realised P&L
     seen at any point after a settlement. Simple running-max over the
@@ -172,9 +176,10 @@ def _peak_equity(mode: str, starting_cash: float) -> float:
         rows = conn.execute(text(
             "SELECT realized_pnl_usd "
             "FROM pm_positions "
-            "WHERE mode = :m AND status IN ('settled', 'invalid') "
+            "WHERE user_id = :uid "
+            "  AND mode = :m AND status IN ('settled', 'invalid') "
             "ORDER BY settled_at ASC"
-        ), {"m": mode}).fetchall()
+        ), {"uid": user_id, "m": mode}).fetchall()
     running = float(starting_cash)
     peak = running
     for (pnl,) in rows:
@@ -184,17 +189,18 @@ def _peak_equity(mode: str, starting_cash: float) -> float:
     return peak
 
 
-def _consecutive_losses(mode: str) -> int:
+def _consecutive_losses(user_id: str, mode: str) -> int:
     from sqlalchemy import text
     from db.engine import get_engine
     with get_engine().begin() as conn:
         rows = conn.execute(text(
             "SELECT realized_pnl_usd "
             "FROM pm_positions "
-            "WHERE mode = :m AND status = 'settled' "
+            "WHERE user_id = :uid "
+            "  AND mode = :m AND status = 'settled' "
             "ORDER BY settled_at DESC "
             "LIMIT 20"
-        ), {"m": mode}).fetchall()
+        ), {"uid": user_id, "m": mode}).fetchall()
     streak = 0
     for (pnl,) in rows:
         if pnl is None:

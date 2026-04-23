@@ -297,18 +297,23 @@ class TelegramNotifier:
                 with get_engine().begin() as conn:
                     row = conn.execute(text(
                         "SELECT "
-                        "  COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day'), "
-                        "  COUNT(*) FILTER (WHERE resolved_at >= NOW() - INTERVAL '1 day') "
-                        "FROM predictions WHERE source = 'polymarket'"
-                    )).fetchone()
+                        "  COUNT(*) FILTER (WHERE p.created_at >= NOW() - INTERVAL '1 day'), "
+                        "  COUNT(*) FILTER (WHERE p.resolved_at >= NOW() - INTERVAL '1 day') "
+                        "FROM predictions p "
+                        "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
+                        "  AND p.trade_id IN ("
+                        "    SELECT id FROM pm_positions WHERE user_id = :uid"
+                        "  )"
+                    ), {"uid": user_id}).fetchone()
                     pnl_settle = conn.execute(text(
                         "SELECT "
                         "  COALESCE(SUM(realized_pnl_usd), 0), "
                         "  COUNT(*) FILTER (WHERE status = 'settled' AND realized_pnl_usd > 0), "
                         "  COUNT(*) FILTER (WHERE status = 'settled' AND realized_pnl_usd <= 0) "
                         "FROM pm_positions "
-                        "WHERE mode = :m AND settled_at >= NOW() - INTERVAL '1 day'"
-                    ), {"m": mode}).fetchone()
+                        "WHERE user_id = :uid "
+                        "  AND mode = :m AND settled_at >= NOW() - INTERVAL '1 day'"
+                    ), {"uid": user_id, "m": mode}).fetchone()
                 return (
                     int(row[0]), int(row[1]),
                     float(pnl_settle[0] or 0.0),
@@ -358,8 +363,9 @@ class TelegramNotifier:
                         "  COUNT(*) FILTER (WHERE status = 'settled'), "
                         "  COUNT(*) FILTER (WHERE status = 'settled' AND realized_pnl_usd > 0) "
                         "FROM pm_positions "
-                        "WHERE mode = :m AND settled_at >= NOW() - INTERVAL '7 days'"
-                    ), {"m": mode}).fetchone()
+                        "WHERE user_id = :uid "
+                        "  AND mode = :m AND settled_at >= NOW() - INTERVAL '7 days'"
+                    ), {"uid": user_id, "m": mode}).fetchone()
                 return float(row[0] or 0.0), int(row[1] or 0), int(row[2] or 0)
 
             loop = asyncio.get_running_loop()

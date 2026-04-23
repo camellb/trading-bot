@@ -182,6 +182,7 @@ class PMAnalyst:
         verdict = evaluate_risk(
             user_config=user_config, bankroll=bankroll,
             starting_cash=starting_cash, mode=executor.mode,
+            user_id=user_id,
         )
         if verdict.halted:
             return AnalysisOutcome(
