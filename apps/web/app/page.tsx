@@ -104,7 +104,7 @@ function Hero() {
           The future is<br />no longer <span className="hero-accent">a guess</span>
         </h1>
         <p className="hero-sub">
-          The first autonomous and self-improving Polymarket bot<br />that trades for you 24/7.
+          The first autonomous, self-improving forecasting AI agent for Polymarket.
         </p>
         <div className="hero-ctas">
           <Link className="btn-primary" href="/auth#signup">Get Started Free</Link>
