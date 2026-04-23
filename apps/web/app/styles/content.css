@@ -782,6 +782,8 @@
 }
 .intel-card-status.pending { color: var(--gold); border-color: var(--gold-line); background: var(--gold-dim); }
 .intel-card-status.snoozed { color: var(--vellum-60); border-color: var(--vellum-20); background: transparent; }
+.intel-card-status.mode-simulation { color: var(--vellum-60); border-color: var(--vellum-20); background: transparent; }
+.intel-card-status.mode-live { color: var(--teal); border-color: var(--teal-line); background: rgba(74, 222, 222, 0.06); }
 .intel-card-param {
   font-family: var(--font-mono); font-size: 13px;
   color: var(--vellum);
