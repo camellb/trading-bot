@@ -39,10 +39,10 @@ PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving mar
 
 # ── Scheduler cadence ────────────────────────────────────────────────────────
 # Market scan: how often we look for new opportunities.
-# 30m is a good balance — PM markets move slowly, but news-driven pricing
-# shifts can move the forecasted probability into or out of the tradeable
-# band quickly.
-PM_SCAN_INTERVAL_MINUTES = 30
+# 5 min keeps the dashboard feeling live. Cost-safe because
+# PM_SKIP_EXISTING_DAYS=1 means each market is Claude-evaluated at most
+# once every 24h — re-scans only hit Claude for genuinely new markets.
+PM_SCAN_INTERVAL_MINUTES = 5
 
 # Position resolver: checks for settled markets and updates P&L.
 # Resolution checks are a free Polymarket REST read per open position, so we
