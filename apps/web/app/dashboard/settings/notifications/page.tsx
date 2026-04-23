@@ -152,13 +152,37 @@ export default function NotificationsPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Telegram</h2>
-          <span className="panel-meta">
-            {configured === null
-              ? "Checking…"
-              : configured
-              ? "Connected"
-              : "Not connected"}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+            <span className="panel-meta">
+              {configured === null
+                ? "Checking…"
+                : configured
+                ? "Connected"
+                : "Not connected"}
+            </span>
+            {configured && (
+              <button
+                type="button"
+                onClick={disconnect}
+                disabled={saving}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  cursor: saving ? "not-allowed" : "pointer",
+                  color: "var(--vellum-60)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  textDecoration: "underline",
+                  textUnderlineOffset: 3,
+                }}
+              >
+                Disconnect
+              </button>
+            )}
+          </div>
         </div>
 
         <p className="panel-body" style={{ marginTop: 0, marginBottom: 12 }}>
@@ -255,46 +279,23 @@ export default function NotificationsPage() {
               </button>
             )}
           </div>
-          {(status || error || configured) && (
-            <div
-              style={{
-                marginTop: 14,
-                paddingTop: 14,
-                borderTop: "1px solid var(--vellum-10)",
-                display: "flex",
-                gap: 12,
-                alignItems: "flex-start",
-                justifyContent: "space-between",
-                flexWrap: "wrap",
-              }}
-            >
-              <div style={{ flex: "1 1 280px", minHeight: 18 }}>
-                {status && (
-                  <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
-                    {status}
-                  </span>
-                )}
-                {error && (
-                  <span
-                    style={{
-                      color: "var(--red)",
-                      fontSize: 13,
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {error}
-                  </span>
-                )}
-              </div>
-              {configured && (
-                <button
-                  type="button"
-                  className="btn-sm danger"
-                  onClick={disconnect}
-                  disabled={saving}
+          {(status || error) && (
+            <div style={{ marginTop: 12, minHeight: 18 }}>
+              {status && (
+                <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
+                  {status}
+                </span>
+              )}
+              {error && (
+                <span
+                  style={{
+                    color: "var(--red)",
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                  }}
                 >
-                  Disconnect
-                </button>
+                  {error}
+                </span>
               )}
             </div>
           )}
