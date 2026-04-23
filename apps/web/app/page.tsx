@@ -475,7 +475,7 @@ function Simulation() {
               <div className="sim-card-top">
                 <span className={`sim-pill ${live ? "live" : "sim"}`}>
                   <span className="sim-pill-dot"></span>
-                  {live ? "LIVE · REAL CAPITAL" : "SIMULATION · PAPER CAPITAL"}
+                  {live ? "LIVE" : "SIMULATION"}
                 </span>
                 <span className="sim-card-time t-num">14:02:17 UTC</span>
               </div>
@@ -511,7 +511,7 @@ function Simulation() {
                 <div className="sim-exec-row">
                   <span className="sim-exec-label">P&amp;L impact</span>
                   <span className={`sim-exec-val ${live ? "live" : "paper"} t-num`}>
-                    {live ? "+$71.40 realized" : "+$71.40 paper"}
+                    +$71.40
                   </span>
                 </div>
               </div>
@@ -544,17 +544,12 @@ function NewHere() {
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
             <div className="edge-row">
-              <span className="edge-label">Market Price</span>
+              <span className="edge-label">Market Prediction</span>
               <span className="edge-num t-num">44%</span>
             </div>
-            <div className="edge-gap">
-              <div className="edge-gap-arrow">↓</div>
-              <div className="edge-gap-label">Delfi&apos;s read: YES</div>
-              <div className="edge-gap-arrow">↓</div>
-            </div>
             <div className="edge-row delfi">
-              <span className="edge-label">Delfi&apos;s Forecast</span>
-              <span className="edge-num t-num">78%</span>
+              <span className="edge-label">Delfi Prediction</span>
+              <span className="edge-num t-num">62%</span>
             </div>
           </div>
         </div>
