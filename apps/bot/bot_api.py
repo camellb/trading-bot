@@ -14,8 +14,6 @@ Routes:
     GET  /api/config              - current PM config values
     POST /api/scan-now            - trigger a market scan immediately
     POST /api/resolve-now         - trigger settlement sweep immediately
-    POST /api/ask-claude          - ad-hoc Claude question about a market
-    POST /api/research            - preview the research bundle for a question
     POST /api/update-config       - two-phase config change with Telegram confirm
 
 Config flow:
@@ -733,15 +731,6 @@ class BotAPI:
         ok = await loop.run_in_executor(self._pool, _user_is_admin, uid)
         return uid if ok else None
 
-    async def _handle_admin_whoami(self, request: web.Request) -> web.Response:
-        """Lightweight 'am I admin?' probe for the dashboard gate."""
-        uid = self._user_id_from(request)
-        if not uid:
-            return web.json_response({"is_admin": False}, status=200)
-        loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(self._pool, _user_is_admin, uid)
-        return web.json_response({"user_id": uid, "is_admin": bool(ok)})
-
     async def _handle_admin_users(self, request: web.Request) -> web.Response:
         """List every user with basic onboarding + activity stats. Admin only."""
         admin_uid = await self._require_admin(request)
@@ -851,78 +840,6 @@ class BotAPI:
         asyncio.create_task(_runner())
         return web.json_response({"status": "triggered",
                                    "triggered_at": datetime.now(timezone.utc).isoformat()})
-
-    async def _handle_ask_claude(self, request: web.Request) -> web.Response:
-        if self._claude is None:
-            return web.json_response({"error": "Claude client not configured"}, status=503)
-        data = await request.json()
-        question = str(data.get("question") or "").strip()
-        market_id = data.get("market_id")
-        if not question:
-            return web.json_response({"error": "question required"}, status=400)
-        if len(question) > 2000:
-            return web.json_response({"error": "question too long (2000 char max)"}, status=400)
-
-        context_block = ""
-        if market_id:
-            try:
-                def _q():
-                    with get_engine().begin() as conn:
-                        return conn.execute(text(
-                            "SELECT question, category, market_price_yes, "
-                            "       claude_probability, confidence, ev_bps, "
-                            "       recommendation, reasoning "
-                            "FROM market_evaluations "
-                            "WHERE market_id = :mid "
-                            "ORDER BY evaluated_at DESC LIMIT 1"
-                        ), {"mid": str(market_id)}).fetchone()
-                row = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
-                if row:
-                    ev_bps = float(row[5]) if row[5] is not None else 0.0
-                    context_block = (
-                        f"Market: {row[0]}\n"
-                        f"Category: {row[1]}\n"
-                        f"Market price YES: {row[2]:.3f}\n"
-                        f"Claude p(YES): {row[3]:.3f}\n"
-                        f"Confidence: {row[4]:.2f}\n"
-                        f"EV (after costs): {ev_bps/100.0:+.2f}%\n"
-                        f"Last call: {row[6]}\n"
-                        f"Reasoning: {(row[7] or '')[:800]}\n"
-                    )
-            except Exception as exc:
-                print(f"[bot_api] market context lookup failed: {exc}",
-                      file=sys.stderr)
-
-        system = (
-            "You are a calibrated forecaster answering questions about a "
-            "Polymarket prediction market. Be direct, factual, and brief. "
-            "If you don't know, say so. Under 200 words."
-        )
-        user = (f"{context_block}\n\nQuestion: {question}"
-                 if context_block else f"Question: {question}")
-        try:
-            answer = await self._call_claude(system, user, max_tokens=700)
-            return web.json_response({"answer": answer})
-        except Exception as exc:
-            return web.json_response({"error": f"Claude API error: {exc}"}, status=502)
-
-    async def _handle_research(self, request: web.Request) -> web.Response:
-        from research.fetcher import fetch_research
-        data = await request.json()
-        question = str(data.get("question") or "").strip()
-        category = data.get("category")
-        if not question:
-            return web.json_response({"error": "question required"}, status=400)
-        try:
-            bundle = await fetch_research(question, category)
-        except Exception as exc:
-            return web.json_response({"error": f"research fetch failed: {exc}"}, status=502)
-        return web.json_response({
-            "question":    bundle.question,
-            "keywords":    bundle.keywords,
-            "sources":     bundle.sources,
-            "prompt_block": bundle.to_prompt_block(),
-        })
 
     async def _handle_markouts(self, request: web.Request) -> web.Response:
         # Markouts are shared forecaster diagnostics (evaluations are shared
@@ -1193,12 +1110,9 @@ class BotAPI:
         app.router.add_get ("/api/markouts",    self._handle_markouts)
         app.router.add_post("/api/scan-now",    self._handle_scan_now)
         app.router.add_post("/api/resolve-now", self._handle_resolve_now)
-        app.router.add_post("/api/ask-claude",  self._handle_ask_claude)
-        app.router.add_post("/api/research",    self._handle_research)
         app.router.add_post("/api/reset-test",    self._handle_reset_test)
         app.router.add_post("/api/switch-mode",   self._handle_switch_mode)
         app.router.add_post("/api/update-config", self._handle_update_config)
-        app.router.add_get ("/api/admin/whoami",   self._handle_admin_whoami)
         app.router.add_get ("/api/admin/users",    self._handle_admin_users)
         app.router.add_get ("/api/admin/overview", self._handle_admin_overview)
         self._runner = web.AppRunner(app, access_log=None)
