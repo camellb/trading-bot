@@ -43,6 +43,7 @@ predictions = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("created_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
+    Column("user_id",        Text, nullable=False),
     # 'polymarket' | 'polymarket_live' | 'polymarket_simulation' | 'backtest' | …
     Column("source",         Text, nullable=False),
     # Stable key per prediction (e.g. 'polymarket:0xabc…').
@@ -79,6 +80,7 @@ pm_positions = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("created_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
+    Column("user_id",       Text, nullable=False),
     # Link back to the prediction that generated this position.
     Column("prediction_id", Integer, nullable=True),
     Column("market_id",     Text,    nullable=False),
@@ -135,6 +137,7 @@ market_evaluations = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("evaluated_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
+    Column("user_id",          Text, nullable=False),
     Column("market_id",        Text, nullable=False),
     Column("condition_id",     Text, nullable=True),
     Column("slug",             Text, nullable=True),
@@ -159,6 +162,7 @@ event_log = Table(
     "event_log",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Text, nullable=False),
     Column("timestamp", TIMESTAMP(timezone=True), nullable=False),
     Column("event_type", Text, nullable=False),
     Column("severity", Integer, nullable=True),
@@ -196,6 +200,7 @@ config_change_history = Table(
     "config_change_history",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id",    Text, nullable=False),
     Column("changed_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
     Column("param_name", Text, nullable=True),
@@ -211,6 +216,7 @@ performance_snapshots = Table(
     "performance_snapshots",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id",       Text, nullable=False),
     Column("snapshot_date", Date, nullable=False),
     Column("snapshot_type", Text, nullable=False),  # 'weekly' | 'monthly' | 'quarterly'
     Column("total_predictions", Integer, nullable=True),
@@ -227,6 +233,7 @@ news_event_log = Table(
     "news_event_log",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id",   Text, nullable=False),
     Column("logged_at", TIMESTAMP(timezone=True),
            server_default=sa_text("NOW()"), nullable=False),
     Column("headline",       Text),
@@ -241,6 +248,7 @@ markouts = Table(
     "markouts",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id",       Text, nullable=False),
     Column("evaluation_id", Integer, nullable=False),
     Column("market_id", Text, nullable=False),
     Column("checked_at", TIMESTAMP(timezone=True),

@@ -100,6 +100,8 @@ class UserConfig:
         """Bot may act for this user."""
         if not self.is_onboarded:
             return False
+        if not self.bot_enabled:
+            return False
         if self.mode == "simulation":
             return True
         return self.can_trade_live
