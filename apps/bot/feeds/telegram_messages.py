@@ -247,7 +247,8 @@ def nothing_pending() -> str:
 # ── 12. /status response ─────────────────────────────────────────────────────
 def status(
     *,
-    uptime: str,
+    paused: bool,
+    mode: str,
     bankroll: float,
     open_positions: int,
     open_cost: float,
@@ -257,8 +258,13 @@ def status(
     realized_pnl: float,
     positions_block: str,
 ) -> str:
+    status_label = "Paused" if paused else "Live"
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
-        f"📊 <b>Status</b> · up {uptime}\n"
+        f"📊 <b>Status</b>\n"
+        f"\n"
+        f"Status: {status_label}\n"
+        f"Mode: {mode_label}\n"
         f"\n"
         f"Balance: ${bankroll:.2f}\n"
         f"Open positions: {open_positions} (${open_cost:.2f} at risk)\n"

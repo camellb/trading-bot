@@ -39,6 +39,7 @@ from sqlalchemy import text
 import config
 from db.engine import get_engine
 from engine.notifier_state import (
+    is_trading_paused,
     mark_first_loss_if_unsent,
     mark_first_win_if_unsent,
     set_trading_paused,
@@ -577,12 +578,6 @@ class TelegramNotifier:
             from execution.pm_executor import PMExecutor
             executor = PMExecutor(user_id)
             stats = executor.get_portfolio_stats()
-            uptime = "n/a"
-            if self._bot_start_time:
-                secs = int((datetime.now(timezone.utc) - self._bot_start_time).total_seconds())
-                hrs, rem = divmod(secs, 3600)
-                mins, _ = divmod(rem, 60)
-                uptime = f"{hrs}h {mins}m"
 
             open_rows = executor.get_open_positions()
             pos_lines = []
@@ -600,7 +595,8 @@ class TelegramNotifier:
             win_pct = (wins / settled_total * 100.0) if settled_total else 0.0
 
             await self.send(user_id, tm.status(
-                uptime=uptime,
+                paused=is_trading_paused(),
+                mode=str(stats.get("mode", "simulation")),
                 bankroll=float(stats.get("bankroll", 0.0)),
                 open_positions=int(stats.get("open_positions", 0)),
                 open_cost=float(stats.get("open_cost", 0.0)),
