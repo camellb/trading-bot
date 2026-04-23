@@ -1,22 +1,22 @@
 """
-Lightweight HTTP API for the dashboard — Polymarket edition.
+Lightweight HTTP API for the dashboard - Polymarket edition.
 
 Bound to 127.0.0.1 only. Every request must carry an X-Bot-Secret header
 matching BOT_API_SECRET from the environment. If the env var is missing the
 server refuses to start.
 
 Routes:
-    GET  /api/health              — liveness + mode + uptime
-    GET  /api/summary             — bankroll, open count, Brier, realised P&L
-    GET  /api/positions           — open + recently settled PM positions
-    GET  /api/evaluations         — recent market evaluations (trade + skip)
-    GET  /api/calibration         — delegates to calibration.get_report
-    GET  /api/config              — current PM config values
-    POST /api/scan-now            — trigger a market scan immediately
-    POST /api/resolve-now         — trigger settlement sweep immediately
-    POST /api/ask-claude          — ad-hoc Claude question about a market
-    POST /api/research            — preview the research bundle for a question
-    POST /api/update-config       — two-phase config change with Telegram confirm
+    GET  /api/health              - liveness + mode + uptime
+    GET  /api/summary             - bankroll, open count, Brier, realised P&L
+    GET  /api/positions           - open + recently settled PM positions
+    GET  /api/evaluations         - recent market evaluations (trade + skip)
+    GET  /api/calibration         - delegates to calibration.get_report
+    GET  /api/config              - current PM config values
+    POST /api/scan-now            - trigger a market scan immediately
+    POST /api/resolve-now         - trigger settlement sweep immediately
+    POST /api/ask-claude          - ad-hoc Claude question about a market
+    POST /api/research            - preview the research bundle for a question
+    POST /api/update-config       - two-phase config change with Telegram confirm
 
 Config flow:
     PUT /api/update-config → writes _pending_config → notifier sends Telegram
@@ -109,7 +109,7 @@ class BotAPI:
             self._claude = None
 
     # ── Auth ─────────────────────────────────────────────────────────────────
-    # Paths exempt from X-Bot-Secret — platform healthchecks (Railway, k8s)
+    # Paths exempt from X-Bot-Secret - platform healthchecks (Railway, k8s)
     # cannot send a custom header, and the /api/health body carries no
     # sensitive data.
     _AUTH_EXEMPT_PATHS = frozenset({"/api/health"})
@@ -127,7 +127,7 @@ class BotAPI:
     def _user_id_from(self, request: web.Request) -> Optional[str]:
         """
         Pull the caller's user_id out of the X-User-Id header. Returns None
-        when the header is missing or blank — handlers decide whether that
+        when the header is missing or blank - handlers decide whether that
         is a 401 (user-scoped endpoint) or a legacy fallback.
         """
         uid = (request.headers.get("X-User-Id") or "").strip()
@@ -136,7 +136,7 @@ class BotAPI:
     def _user_executor(self, request: web.Request):
         """
         Construct a per-user PMExecutor from the request's X-User-Id.
-        Returns None if the header is missing — the caller is expected to
+        Returns None if the header is missing - the caller is expected to
         respond with 401 in that case.
         """
         from execution.pm_executor import PMExecutor
@@ -155,7 +155,7 @@ class BotAPI:
         degraded = feed_monitor.get_degraded_feeds()
         ph = proc_health.snapshot()
         return web.json_response({
-            # /health is process-scoped — report the configured disk mode.
+            # /health is process-scoped - report the configured disk mode.
             # Per-user mode is surfaced via /api/summary, not /api/health.
             "status":          "degraded" if degraded else "ok",
             "mode":            self._disk_mode or getattr(config, "PM_MODE", "simulation"),
@@ -172,8 +172,10 @@ class BotAPI:
             return web.json_response({"error": "X-User-Id header required"},
                                       status=401)
         stats = executor.get_portfolio_stats()
+        uid = executor.user_id
         brier_report = await asyncio.get_running_loop().run_in_executor(
-            self._pool, lambda: calibration.get_report(source="polymarket")
+            self._pool,
+            lambda: calibration.get_report(source="polymarket", user_id=uid),
         )
         return web.json_response({
             "mode":       stats.get("mode"),
@@ -254,7 +256,7 @@ class BotAPI:
             return web.json_response({"error": "X-User-Id header required"},
                                       status=401)
         # Evaluations are shared work (one Claude call per market) but users
-        # must only see rows produced after they joined — see SaaS doctrine.
+        # must only see rows produced after they joined - see SaaS doctrine.
         from engine.user_config import get_user_join_time
         loop = asyncio.get_running_loop()
         join_time = await loop.run_in_executor(self._pool, get_user_join_time, user_id)
@@ -297,20 +299,27 @@ class BotAPI:
         return web.json_response({"evaluations": evals})
 
     async def _handle_brier_trend(self, request: web.Request) -> web.Response:
-        source = request.query.get("source") or "polymarket"
+        # User-scoped running Brier on this user's settled positions. Brier is
+        # computed on the chosen side so it matches the Brier everywhere else
+        # in the app (calibration card, learning cycles).
+        user_id = self._user_id_from(request)
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         try:
             def _query():
                 with get_engine().begin() as conn:
-                    src_filter = "AND source = :src" if source != "all" else ""
-                    rows = conn.execute(text(
-                        f"SELECT resolved_at, probability, resolved_outcome "
-                        f"FROM predictions "
-                        f"WHERE resolved_at IS NOT NULL "
-                        f"  AND resolved_outcome IS NOT NULL "
-                        f"  {src_filter} "
-                        f"ORDER BY resolved_at ASC"
-                    ), {"src": source} if source != "all" else {}).fetchall()
-                return rows
+                    return conn.execute(text(
+                        "SELECT settled_at, claude_probability, "
+                        "       CASE WHEN settlement_outcome = side THEN 1 "
+                        "            ELSE 0 END AS correct "
+                        "FROM pm_positions "
+                        "WHERE user_id = :uid "
+                        "  AND settled_at IS NOT NULL "
+                        "  AND claude_probability IS NOT NULL "
+                        "  AND settlement_outcome IN ('YES', 'NO') "
+                        "ORDER BY settled_at ASC"
+                    ), {"uid": user_id}).fetchall()
             rows = await asyncio.get_running_loop().run_in_executor(self._pool, _query)
         except Exception as exc:
             print(f"[bot_api] brier-trend query failed: {exc}", file=sys.stderr)
@@ -330,6 +339,10 @@ class BotAPI:
         return web.json_response({"points": points})
 
     async def _handle_calibration(self, request: web.Request) -> web.Response:
+        user_id = self._user_id_from(request)
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         source = request.query.get("source") or "polymarket"
         since  = request.query.get("since_days")
         since_int = int(since) if since and since.isdigit() else None
@@ -337,6 +350,7 @@ class BotAPI:
             self._pool, lambda: calibration.get_report(
                 source=None if source == "all" else source,
                 since_days=since_int,
+                user_id=user_id,
             )
         )
         return web.json_response(report)
@@ -345,12 +359,22 @@ class BotAPI:
         """
         Read-only diagnostic report for the dashboard + learning cadence.
         `scope` ∈ {all, traded, skipped}. 5-min cache inside engine.diagnostics.
+
+        The dashboard caller must supply X-User-Id so the bankroll series is
+        scoped to that user. Forecaster-level metrics remain global (they are
+        admin-only) but the user-facing dashboard only consumes the
+        user-scoped slice.
         """
+        user_id = self._user_id_from(request)
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
         scope = (request.query.get("scope") or "all").lower()
         if scope not in ("all", "traded", "skipped"):
             scope = "all"
         report = await asyncio.get_running_loop().run_in_executor(
-            self._pool, lambda: diagnostics.full_report(scope)
+            self._pool,
+            lambda: diagnostics.full_report(scope, user_id=user_id),
         )
         return web.json_response(report)
 
@@ -483,7 +507,7 @@ class BotAPI:
 
     async def _handle_get_telegram_config(self, request: web.Request) -> web.Response:
         """Return whether the user has Telegram creds configured. Never echoes
-        the token or chat_id back — the dashboard only needs the boolean."""
+        the token or chat_id back - the dashboard only needs the boolean."""
         user_id = self._user_id_from(request) or request.query.get("user_id")
         if not user_id:
             return web.json_response({"error": "X-User-Id header required"},
@@ -569,7 +593,7 @@ class BotAPI:
 
     async def _handle_get_polymarket_config(self, request: web.Request) -> web.Response:
         """Return which Polymarket credential fields the user has filled.
-        Never echoes api_key/api_secret/passphrase back — the dashboard only
+        Never echoes api_key/api_secret/passphrase back - the dashboard only
         needs the boolean flags + wallet_address (non-sensitive)."""
         user_id = self._user_id_from(request) or request.query.get("user_id")
         if not user_id:
@@ -939,7 +963,7 @@ class BotAPI:
         if mode == current:
             return web.json_response({"status": "no_change", "mode": current})
 
-        # Dashboard changes apply immediately — no Telegram confirmation round-trip.
+        # Dashboard changes apply immediately - no Telegram confirmation round-trip.
         try:
             persist_config_value("PM_MODE", mode)
             self._disk_mode = mode
@@ -978,7 +1002,7 @@ class BotAPI:
 
         current = getattr(config, key, None)
 
-        # Dashboard changes apply immediately — no Telegram confirmation round-trip.
+        # Dashboard changes apply immediately - no Telegram confirmation round-trip.
         try:
             persist_config_value(key, value)
             importlib.reload(config)

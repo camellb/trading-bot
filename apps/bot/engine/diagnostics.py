@@ -1,5 +1,5 @@
 """
-Diagnostic engine — shared metrics module for forecaster, sizer,
+Diagnostic engine - shared metrics module for forecaster, sizer,
 and system health.
 
 Single source of truth for both the dashboard (read-only) and the learning
@@ -14,11 +14,11 @@ Design principles:
     is `@lru_cache`-decorated with a time-bucketed key. A manual
     `clear_cache()` hook is provided for tests and for forced refresh.
   * Scope-aware. Every forecaster metric accepts `scope ∈ {all, traded,
-    skipped}` — "traded" restricts to predictions linked to a pm_position;
+    skipped}` - "traded" restricts to predictions linked to a pm_position;
     "skipped" restricts to predictions not linked to one (bot evaluated
     but didn't take the bet in that mode).
   * Best-effort. Every public function swallows DB/computation errors and
-    returns an empty/zero shape instead of raising — diagnostics must never
+    returns an empty/zero shape instead of raising - diagnostics must never
     take the trading path down.
 """
 
@@ -29,7 +29,7 @@ import time
 from functools import lru_cache
 from typing import Iterable, Literal, Optional
 
-# COST_ASSUMPTION mirrors the sizer — imported lazily inside cost_validation
+# COST_ASSUMPTION mirrors the sizer - imported lazily inside cost_validation
 # to keep this module importable when the sizer is unavailable (tests).
 
 
@@ -37,13 +37,13 @@ from typing import Iterable, Literal, Optional
 Scope = Literal["all", "traded", "skipped"]
 
 # 10 equal-width reliability bins for the diagnostic view (finer than
-# calibration.py's 5-bin roll-up — the extra resolution is needed to spot
+# calibration.py's 5-bin roll-up - the extra resolution is needed to spot
 # overconfidence at the tails).
 CALIBRATION_BINS: list[tuple[float, float]] = [
     (i / 10.0, (i + 1) / 10.0) for i in range(10)
 ]
 
-# Horizon buckets in hours. (label, lo, hi) — hi=None means unbounded.
+# Horizon buckets in hours. (label, lo, hi) - hi=None means unbounded.
 HORIZON_BUCKETS: list[tuple[str, float, Optional[float]]] = [
     ("< 1d",  0.0,   24.0),
     ("1-7d",  24.0,  168.0),
@@ -53,7 +53,7 @@ HORIZON_BUCKETS: list[tuple[str, float, Optional[float]]] = [
 
 # EV buckets mirror backtester.forecast_backtester.EV_BUCKETS so diagnostics
 # can compare realised-vs-simulated across the same grid. Under the
-# three-gate sizer doctrine EV is no longer a fire condition — these
+# three-gate sizer doctrine EV is no longer a fire condition - these
 # buckets exist for schema continuity and historical reporting only.
 EV_BUCKETS: list[tuple[str, float, float]] = [
     ("3-5%",   0.03, 0.05),
@@ -66,13 +66,13 @@ EV_BUCKETS: list[tuple[str, float, float]] = [
 MIN_BUCKET_N = 20
 
 # Counterfactual stake used for the skipped-side selection-quality
-# calculation. Flat by design — the goal is to compare the directional
+# calculation. Flat by design - the goal is to compare the directional
 # call, not bankroll-adjusted sizing.
 _HYPOTHETICAL_STAKE_USD = 10.0
 
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 
-# Log-score floor — avoids -inf when a resolved outcome sat at p≈0 or p≈1.
+# Log-score floor - avoids -inf when a resolved outcome sat at p≈0 or p≈1.
 _LOGSCORE_EPS = 1e-9
 
 
@@ -596,17 +596,30 @@ def _cost_validation_impl(_bucket: int) -> dict:
 
 # ── Public: bankroll series ─────────────────────────────────────────────────
 def bankroll_series(resolution: str = "daily",
-                    starting_cash: Optional[float] = None) -> list[dict]:
-    """Cumulative realised P&L over time, by day or hour."""
-    return _bankroll_series_impl(resolution, starting_cash, _cache_bucket())
+                    starting_cash: Optional[float] = None,
+                    user_id: Optional[str] = None) -> list[dict]:
+    """
+    Cumulative realised P&L over time, by day or hour.
+
+    When `user_id` is provided the series is scoped to that user's settled
+    positions only. When user_id is None the series is global (admin use).
+    """
+    return _bankroll_series_impl(resolution, starting_cash, user_id,
+                                  _cache_bucket())
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=32)
 def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
+                          user_id: Optional[str],
                           _bucket: int) -> list[dict]:
     try:
         from sqlalchemy import text
         grain = "day" if resolution != "hour" else "hour"
+        params: dict = {}
+        user_clause = ""
+        if user_id:
+            user_clause = "  AND user_id = :uid "
+            params["uid"] = user_id
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 f"SELECT date_trunc('{grain}', settled_at) AS ts, "
@@ -615,8 +628,9 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
                 "WHERE status IN ('settled','invalid') "
                 "  AND settled_at IS NOT NULL "
                 "  AND realized_pnl_usd IS NOT NULL "
+                f"{user_clause}"
                 "GROUP BY ts ORDER BY ts ASC"
-            )).fetchall()
+            ), params).fetchall()
         base = float(starting_cash) if starting_cash is not None else 0.0
         cum = base
         out = []
@@ -735,8 +749,16 @@ def _archetype_pnl_attribution_impl(_bucket: int) -> list[dict]:
 
 
 # ── Public: full report (packaged for the dashboard + learning cadence) ─────
-def full_report(scope: Scope = "all") -> dict:
-    """Bundle every metric into one dict. Used by /api/diagnostics."""
+def full_report(scope: Scope = "all",
+                user_id: Optional[str] = None) -> dict:
+    """
+    Bundle every metric into one dict. Used by /api/diagnostics.
+
+    When `user_id` is provided, metrics that can be user-scoped are filtered
+    to that user. Forecaster-level metrics (calibration, brier) read from the
+    shared `predictions` table and remain global - they are admin-only and the
+    user-facing dashboard should route around them.
+    """
     return {
         "scope":           scope,
         "generated_at":    time.time(),
@@ -756,6 +778,7 @@ def full_report(scope: Scope = "all") -> dict:
             "archetype_attribution": archetype_pnl_attribution(),
         },
         "system": {
-            "bankroll_series":      bankroll_series("daily"),
+            "bankroll_series":      bankroll_series("daily",
+                                                    user_id=user_id),
         },
     }
