@@ -893,12 +893,125 @@ html, body { scroll-behavior: smooth; }
 }
 @media (max-width: 640px) {
   .nav-login { display: none; }
-  .section { padding: 72px 0; }
-  .hero-head { font-size: 40px; }
-  .hero-sub { font-size: 15px; }
-  .final-cta { padding: 96px 0; }
-  .foot-meta { grid-template-columns: 1fr; gap: 32px; }
-  .proof-stats { grid-template-columns: 1fr; }
-  .problem-num, .ribbon-num { font-size: 36px; }
+  .nav-inner { padding: 14px 20px; }
+  .container { padding: 0 20px; }
+
+  .section { padding: 64px 0; }
+  .sec-head { margin-bottom: 40px; }
+  .sec-head p { font-size: 15px; }
+
+  /* Hero */
+  .hero { padding: 112px 20px 72px; min-height: 80vh; }
+  .hero-head { font-size: 38px; line-height: 1.06; max-width: none; margin: 20px 0 22px; }
+  .hero-sub { font-size: 15px; margin-bottom: 28px; }
+  .hero-ctas { gap: 10px; flex-direction: column; width: 100%; max-width: 320px; }
+  .hero-ctas .btn-primary,
+  .hero-ctas .btn-ghost { width: 100%; justify-content: center; }
+  .hero-note { font-size: 11.5px; margin-top: 22px; }
+  .hero-press { margin-top: 48px; padding-top: 24px; gap: 16px; }
+  .hero-press-row {
+    flex-wrap: wrap; white-space: normal;
+    row-gap: 10px; column-gap: 20px;
+  }
+  .hero-press-item { font-size: 11.5px; letter-spacing: 0.04em; }
+  .hero-scroll { display: none; }
+
+  /* Ribbon */
+  .ribbon { padding: 24px 0; }
+  .ribbon-inner { gap: 20px; padding: 0 20px; }
+  .press-row { gap: 18px; justify-content: center; }
+  .press-item { font-size: 13px; letter-spacing: 0.14em; }
+
+  /* Problem */
+  .problem-body { font-size: 15.5px; margin-bottom: 48px; line-height: 1.65; }
+  .problem-stats { gap: 14px; margin-bottom: 48px; }
+  .problem-stat { padding: 24px 14px; }
+  .problem-num, .ribbon-num { font-size: 34px; margin-bottom: 12px; }
+  .problem-label { font-size: 13px; max-width: 28ch; }
+  .problem-close { font-size: 17px; line-height: 1.5; }
+
+  /* Solution */
+  .solution-grid { gap: 14px; }
+  .sol-card { padding: 22px; }
+  .sol-icon { width: 36px; height: 36px; margin-bottom: 16px; }
+  .sol-title { font-size: 19px; margin-bottom: 10px; }
+  .sol-desc { font-size: 13.5px; }
+
+  /* Pillars */
+  .pillars-grid { gap: 32px; }
+  .pillar-title { font-size: 21px; margin-bottom: 12px; }
+  .pillar-desc { font-size: 13.5px; }
+
+  /* Proof */
+  .proof-stats { grid-template-columns: 1fr; gap: 20px; }
+  .proof-stat { padding: 16px 8px; }
   .proof-num { font-size: 36px; }
+  .proof-label { font-size: 12px; }
+
+  /* Simulation section */
+  .sim-grid { gap: 32px; }
+  .sim-bullets { gap: 16px; }
+  .sim-bullet-title { font-size: 15px; }
+  .sim-bullet-desc { font-size: 13.5px; }
+  .sim-mock { max-width: 480px; margin: 0 auto; }
+  .sim-card { padding: 22px 20px 18px; gap: 18px; }
+  .sim-card-q { font-size: 17px; line-height: 1.35; }
+  .sim-card-row { padding: 12px 0; }
+  .sim-card-cell { padding: 0 6px; }
+  .sim-cell-val { font-size: 18px; }
+  .sim-cell-label { font-size: 9.5px; letter-spacing: 0.14em; }
+  .sim-exec-val { font-size: 13px; }
+  .sim-exec-val.t-num { font-size: 14px; }
+  .sim-card-foot { grid-template-columns: 1fr; gap: 8px; }
+  .sim-foot-text { font-size: 12.5px; }
+
+  /* New here */
+  .newhere-grid { gap: 40px; }
+  .newhere-head { font-size: 32px; margin: 14px 0 18px; }
+  .newhere-body { font-size: 15px; }
+  .edge-viz { padding: 22px; gap: 18px; }
+  .edge-row { padding: 14px 16px; }
+  .edge-num { font-size: 22px; }
+  .edge-q { font-size: 14px; }
+
+  /* Testimonials */
+  .test-grid { gap: 16px; }
+  .test-card { padding: 28px 22px; }
+  .test-quote-mark { font-size: 42px; top: 16px; left: 22px; }
+  .test-body { font-size: 15px; margin: 32px 0 22px; line-height: 1.6; }
+
+  /* FAQ */
+  .faq-q { font-size: 16px; padding: 22px 0; }
+  .faq-icon { font-size: 16px; margin-left: 18px; }
+  .faq-a-inner { font-size: 14px; padding-bottom: 22px; line-height: 1.65; }
+
+  /* Final CTA */
+  .final-cta { padding: 80px 0 88px; }
+  .final-meridian { height: 160px; }
+  .final-sub { font-size: 16px; margin-bottom: 28px; }
+  .final-note { font-size: 11.5px; }
+
+  /* Footer */
+  .site-footer { padding: 64px 0 32px; }
+  .foot-main { gap: 40px; }
+  .foot-meta { grid-template-columns: 1fr; gap: 32px; }
+  .foot-tag { font-size: 13px; }
+  .foot-contact,
+  .foot-legal a { font-size: 13px; }
+  .foot-divider { margin: 48px 0 20px; }
+  .foot-risk { font-size: 10.5px; }
+}
+
+@media (max-width: 420px) {
+  .hero { padding: 96px 18px 64px; }
+  .hero-head { font-size: 34px; }
+  .hero-sub { font-size: 14.5px; }
+  .problem-num, .ribbon-num { font-size: 30px; }
+  .proof-num { font-size: 32px; }
+  .newhere-head { font-size: 28px; }
+  .sol-card { padding: 20px; }
+  .test-card { padding: 24px 20px; }
+  .sim-card-row { grid-template-columns: 1fr 1fr; row-gap: 14px; }
+  .sim-card-cell:nth-child(2) { border-right: none; }
+  .sim-card-cell:nth-child(3) { grid-column: 1 / -1; border-right: none; padding-top: 10px; border-top: 1px solid var(--vellum-10); }
 }
