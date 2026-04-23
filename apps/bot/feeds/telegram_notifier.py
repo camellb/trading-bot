@@ -465,13 +465,16 @@ class TelegramNotifier:
                       file=sys.stderr)
 
             handlers = {
-                "/start":  lambda: self._handle_start(user_id),
-                "/status": lambda: self._send_status(user_id),
-                "/pause":  lambda: self._handle_pause(user_id),
-                "/resume": lambda: self._handle_resume(user_id),
-                "/apply":  lambda: self._handle_apply(user_id),
-                "/reject": lambda: self._handle_reject(user_id),
-                "/help":   lambda: self._handle_help(user_id),
+                "/status": lambda _msg: self._send_status(user_id),
+                "/pause":  lambda _msg: self._handle_pause(user_id),
+                "/resume": lambda _msg: self._handle_resume(user_id),
+                "/apply":  lambda _msg: self._handle_apply(user_id),
+                "/reject": lambda _msg: self._handle_reject(user_id),
+                "/help":   lambda _msg: self._handle_help(user_id),
+                "/start":  lambda m: self._handle_start(
+                    user_id,
+                    name=(m.get("from", {}) or {}).get("first_name", "") or "",
+                ),
             }
 
             while True:
@@ -496,7 +499,7 @@ class TelegramNotifier:
                                 continue
                             fn = handlers.get(msg_text)
                             if fn is not None:
-                                asyncio.run_coroutine_threadsafe(fn(), loop)
+                                asyncio.run_coroutine_threadsafe(fn(msg), loop)
                         except Exception as exc:
                             print(f"[telegram] command dispatch error (user={user_id}): "
                                   f"{exc}", file=sys.stderr)
@@ -511,8 +514,8 @@ class TelegramNotifier:
         ).start()
 
     # ── Command handlers ─────────────────────────────────────────────────────
-    async def _handle_start(self, user_id: str) -> None:
-        await self.send(user_id, tm.welcome())
+    async def _handle_start(self, user_id: str, name: str = "") -> None:
+        await self.send(user_id, tm.welcome(name=name.strip()))
 
     async def _handle_help(self, user_id: str) -> None:
         await self.send(user_id, tm.help_text())

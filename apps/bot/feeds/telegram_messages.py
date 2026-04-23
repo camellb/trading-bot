@@ -305,22 +305,24 @@ def help_text() -> str:
 
 
 # ── 15a. /start welcome ──────────────────────────────────────────────────────
-def welcome() -> str:
+def welcome(name: str = "") -> str:
+    greeting = f"Hi {name}," if name else "Hi,"
     return (
-        f"👋 <b>Welcome to Delfi</b>\n"
+        f"✅ <b>Connected</b>\n"
         f"\n"
-        f"Delfi is an autonomous prediction market trader. It watches "
-        f"Polymarket, forecasts outcomes, and backs every forecast with a "
-        f"small, confidence-scaled stake.\n"
+        f"{greeting}\n"
         f"\n"
-        f"You will get a message for:\n"
-        f"• every new position opened\n"
-        f"• every resolution, with P&amp;L\n"
-        f"• daily and weekly summaries\n"
-        f"• any risk event (loss cap, drawdown halt, cooldown)\n"
+        f"Delfi will send you notifications about every new position, every "
+        f"resolved position, and a daily and weekly summary in this Telegram "
+        f"chat.\n"
         f"\n"
-        f"Send /status any time for balance, open positions, and win rate. "
-        f"Send /help for the full command list."
+        f"<b>Commands</b>\n"
+        f"/status — balance, open positions, win rate\n"
+        f"/pause — stop placing new positions\n"
+        f"/resume — start placing new positions\n"
+        f"/apply — accept a proposed calibration change\n"
+        f"/reject — decline a proposed calibration change\n"
+        f"/help — show this list"
     )
 
 
