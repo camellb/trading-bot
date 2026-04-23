@@ -74,6 +74,7 @@ export default function AdminLearningPage() {
   useEffect(() => {
     if (!activeUid) {
       setData(null);
+      setLoading(false);
       return;
     }
     let cancelled = false;
