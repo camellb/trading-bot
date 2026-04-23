@@ -82,11 +82,47 @@ function formatDate(iso: string | null): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function formatDateTime(iso: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${date} · ${time}`;
+}
+
+function shortReason(full: string | null, max = 80): string {
+  if (!full) return "-";
+  const clean = full.trim().replace(/\s+/g, " ");
+  if (clean.length <= max) return clean;
+  const cut = clean.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  const base = lastSpace > max * 0.5 ? cut.slice(0, lastSpace) : cut;
+  return base + "…";
+}
+
+function normalizeDecision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
+  const up = (raw ?? "").toUpperCase();
+  if (up === "BUY_YES" || up === "YES") return "BUY YES";
+  if (up === "BUY_NO" || up === "NO") return "BUY NO";
+  return "SKIP";
+}
+
 export default function PositionsPage() {
   const [filter, setFilter] = useState<Filter>("all");
   const [positions, setPositions] = useState<PositionsPayload | null>(null);
   const [evaluations, setEvals] = useState<EvalsPayload | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [expandedEvals, setExpandedEvals] = useState<Set<number>>(new Set());
+
+  const toggleEval = (id: number) => {
+    setExpandedEvals(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -202,9 +238,6 @@ export default function PositionsPage() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Recent evaluations</h2>
-            <span className="panel-meta">
-              {evals.length} markets analyzed - most recent first
-            </span>
           </div>
 
           {evals.length === 0 ? (
@@ -215,57 +248,116 @@ export default function PositionsPage() {
             </div>
           ) : (
             evals.map((s) => {
-              const rec = (s.recommendation ?? "").toUpperCase();
-              const traded = rec === "YES" || rec === "NO" || rec === "BUY";
+              const decision = normalizeDecision(s.recommendation);
               const marketPct =
                 s.market_price_yes != null ? Math.round(s.market_price_yes * 100) : null;
               const delfiPct =
                 s.claude_probability != null ? Math.round(s.claude_probability * 100) : null;
-              const pWin =
-                s.claude_probability != null
-                  ? rec === "NO"
-                    ? 1 - s.claude_probability
-                    : s.claude_probability
+              const pWinPct =
+                marketPct != null && delfiPct != null
+                  ? Math.round((marketPct + delfiPct) / 2)
                   : null;
+              const reasonFull = (s.reasoning ?? "").trim();
+              const reasonShort = shortReason(reasonFull, 80);
+              const hasMore = reasonFull.length > 0 && reasonShort.endsWith("…");
+              const isExpanded = expandedEvals.has(s.id);
+              const decisionColor =
+                decision === "SKIP" ? "var(--vellum-60)" : "var(--gold)";
               return (
-                <div className="split-row" key={s.id}>
-                  <div className="split-body">
-                    <div className="split-title">{s.question}</div>
-                    <div className="split-desc">
-                      {s.reasoning ?? "No reasoning recorded."}
+                <div
+                  className="split-row"
+                  key={s.id}
+                  style={{ flexDirection: "column", alignItems: "stretch" }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "flex-start",
+                      gap: 20,
+                      width: "100%",
+                    }}
+                  >
+                    <div className="split-title" style={{ flex: 1 }}>
+                      {s.question}
                     </div>
-                  </div>
-                  <div className="split-right">
-                    <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 22,
+                        alignItems: "flex-start",
+                        flexShrink: 0,
+                      }}
+                    >
                       <div>
                         <div className="kv-label">Market</div>
                         <div className="mono" style={{ fontSize: 13 }}>
-                          {marketPct != null ? `${marketPct}¢` : "-"}
+                          {marketPct != null ? `${marketPct}%` : "-"}
                         </div>
                       </div>
                       <div>
                         <div className="kv-label">Delfi</div>
                         <div className="mono" style={{ fontSize: 13, color: "var(--gold)" }}>
-                          {delfiPct != null ? `${delfiPct}¢` : "-"}
+                          {delfiPct != null ? `${delfiPct}%` : "-"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="kv-label">p_win</div>
+                        <div className="mono" style={{ fontSize: 13 }}>
+                          {pWinPct != null ? `${pWinPct}%` : "-"}
                         </div>
                       </div>
                       <div>
                         <div className="kv-label">Decision</div>
                         <div
-                          className={`mono ${traded ? "cell-up" : ""}`}
-                          style={{ fontSize: 13 }}
+                          className="mono"
+                          style={{ fontSize: 13, color: decisionColor, whiteSpace: "nowrap" }}
                         >
-                          {rec || "-"}
-                          {pWin != null ? ` · ${pWin.toFixed(2)}` : ""}
+                          {decision}
                         </div>
                       </div>
                       <div>
-                        <div className="kv-label">Evaluated</div>
-                        <div className="mono" style={{ fontSize: 13 }}>
-                          {formatDate(s.evaluated_at)}
+                        <div className="kv-label">When</div>
+                        <div className="mono" style={{ fontSize: 13, whiteSpace: "nowrap" }}>
+                          {formatDateTime(s.evaluated_at)}
                         </div>
                       </div>
                     </div>
+                  </div>
+                  <div
+                    onClick={hasMore ? () => toggleEval(s.id) : undefined}
+                    style={{
+                      marginTop: 10,
+                      color: "var(--vellum-60)",
+                      lineHeight: 1.55,
+                      cursor: hasMore ? "pointer" : "default",
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 10,
+                      fontSize: 13,
+                    }}
+                  >
+                    <div className="kv-label" style={{ flexShrink: 0, paddingTop: 2 }}>Reason</div>
+                    <span style={{ flex: 1 }}>
+                      {reasonFull
+                        ? isExpanded
+                          ? reasonFull
+                          : reasonShort
+                        : "No reasoning recorded."}
+                    </span>
+                    {hasMore && (
+                      <span
+                        className="mono"
+                        style={{
+                          color: "var(--vellum-40)",
+                          fontSize: 12,
+                          flexShrink: 0,
+                          paddingTop: 2,
+                        }}
+                      >
+                        {isExpanded ? "▲ collapse" : "▼ show more"}
+                      </span>
+                    )}
                   </div>
                 </div>
               );
