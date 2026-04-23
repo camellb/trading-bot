@@ -343,10 +343,10 @@ function OpenRows({
                 <td className="px-3 py-2 text-right font-body text-white hidden md:table-cell">{sharePrice(r.entry_price)}</td>
                 <td className="px-3 py-2 text-right font-body text-white hidden md:table-cell">{prob(r.claude_probability)}</td>
                 <td className="px-3 py-2 text-right font-body text-white hidden lg:table-cell">
-                  {r.ev_bps != null ? r.ev_bps.toFixed(0) : "—"}
+                  {r.ev_bps != null ? r.ev_bps.toFixed(0) : "-"}
                 </td>
                 <td className="px-3 py-2 text-right font-body text-white hidden lg:table-cell">
-                  {r.confidence != null ? r.confidence.toFixed(2) : "—"}
+                  {r.confidence != null ? r.confidence.toFixed(2) : "-"}
                 </td>
                 <td className="px-3 py-2 text-right font-body text-[#a0a0a0]">{timeUntil(r.expected_resolution_at)}</td>
               </tr>
@@ -359,8 +359,8 @@ function OpenRows({
                       <Detail label="entry price" value={sharePrice(r.entry_price)} />
                       <Detail label="bot estimate" value={prob(r.claude_probability)} />
                       <Detail label="crowd price" value={prob(crowdPriceYes(r))} />
-                      <Detail label="EV" value={r.ev_bps != null ? `${r.ev_bps.toFixed(0)} bps` : "—"} />
-                      <Detail label="confidence" value={r.confidence?.toFixed(2) ?? "—"} />
+                      <Detail label="EV" value={r.ev_bps != null ? `${r.ev_bps.toFixed(0)} bps` : "-"} />
+                      <Detail label="confidence" value={r.confidence?.toFixed(2) ?? "-"} />
                       <Detail label="opened" value={timeAgo(r.created_at)} />
                       <Detail label="resolves in" value={timeUntil(r.expected_resolution_at)} />
                     </div>
@@ -448,7 +448,7 @@ function SettledRows({
             </td>
             <td className="px-3 py-2"><Side side={r.side} /></td>
             <td className={`px-3 py-2 font-body ${sideColorClass(r.settlement_outcome)}`}>
-              {r.settlement_outcome ?? "—"}
+              {r.settlement_outcome ?? "-"}
             </td>
             <td className={`px-3 py-2 text-right font-body ${pnlColorClass(r.realized_pnl_usd)}`}>
               {usd(r.realized_pnl_usd, { sign: true, clampZero: true })}

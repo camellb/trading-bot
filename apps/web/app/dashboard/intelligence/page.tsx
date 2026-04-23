@@ -30,19 +30,19 @@ async function getJSON<T>(path: string): Promise<T | null> {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "-";
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
 function fmtNum(n: number | null, digits = 3): string {
-  if (n == null) return "—";
+  if (n == null) return "-";
   return n.toFixed(digits);
 }
 
 function fmtDelta(n: number | null): string {
-  if (n == null) return "—";
+  if (n == null) return "-";
   const sign = n >= 0 ? "+" : "";
   return `${sign}${(n * 100).toFixed(2)}%`;
 }
@@ -84,8 +84,8 @@ export default function IntelligencePage() {
           <div>
             <h1 className="page-h1">Intelligence</h1>
             <p className="page-sub">
-              Delfi runs a full strategy review every 50 closed trades — category ROI,
-              calibration, skip-list candidates — and proposes changes with evidence.
+              Delfi runs a full strategy review every 50 closed trades - category ROI,
+              calibration, skip-list candidates - and proposes changes with evidence.
               Each review is dated and shows the data behind the recommendation.
             </p>
           </div>
@@ -158,11 +158,11 @@ function SuggestionCard({ s }: { s: Suggestion }) {
         </div>
         <div className="intel-card-stat">
           <dt>Backtest trades</dt>
-          <dd>{s.backtest_trades ?? "—"}</dd>
+          <dd>{s.backtest_trades ?? "-"}</dd>
         </div>
         <div className="intel-card-stat">
           <dt>Settled at review</dt>
-          <dd>{s.settled_count ?? "—"}</dd>
+          <dd>{s.settled_count ?? "-"}</dd>
         </div>
       </dl>
 

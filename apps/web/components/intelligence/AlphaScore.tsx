@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * ProfitScore — radial gauge hero metric.
+ * ProfitScore - radial gauge hero metric.
  *
- * Weights ROI (60) > Brier (25) > win rate (15) — the bot's job is
+ * Weights ROI (60) > Brier (25) > win rate (15) - the bot's job is
  * to make money, not maximize accuracy. Displayed as a circular SVG
  * gauge; this is the north-star metric users check first.
  */
@@ -87,19 +87,19 @@ export function ProfitScore({
         <div className="flex-1 space-y-2">
           <BreakdownRow
             label="Calibration"
-            value={brier != null ? brier.toFixed(3) : "—"}
+            value={brier != null ? brier.toFixed(3) : "-"}
             desc="Brier score"
             good={brier != null && brier < 0.22}
           />
           <BreakdownRow
             label="Win Rate"
-            value={winRate != null ? `${(winRate * 100).toFixed(0)}%` : "—"}
+            value={winRate != null ? `${(winRate * 100).toFixed(0)}%` : "-"}
             desc="Settled positions"
             good={winRate != null && winRate > 0.5}
           />
           <BreakdownRow
             label="ROI"
-            value={roi != null ? `${(roi * 100).toFixed(1)}%` : "—"}
+            value={roi != null ? `${(roi * 100).toFixed(1)}%` : "-"}
             desc="Return on capital"
             good={roi != null && roi > 0}
           />

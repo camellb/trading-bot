@@ -6,13 +6,13 @@ geopolitics / ...). That granularity is too broad for the sizer's skip
 list: skipping "sports" kills NBA playoffs to exclude tennis qualifiers.
 
 This module produces a finer label from the question text, the event
-slug, and (optionally) the coarse category. It is a pure function — no
-I/O, no model calls — so it is cheap to run on every evaluation and
+slug, and (optionally) the coarse category. It is a pure function - no
+I/O, no model calls - so it is cheap to run on every evaluation and
 deterministic in tests.
 
 Downstream uses:
   1. `execution/pm_sizer.size_position` reads the archetype against
-     `user_config.archetype_skip_list` — a user can add 'tennis_qualifier'
+     `user_config.archetype_skip_list` - a user can add 'tennis_qualifier'
      without muting all sports.
   2. `execution/pm_executor._open_simulation` persists it on
      `pm_positions.market_archetype` for post-hoc analytics.
@@ -20,7 +20,7 @@ Downstream uses:
      `market_evaluations.market_archetype` so skipped trades are also
      tagged (useful for "what did we turn down?" queries).
 
-The taxonomy is deliberately flat — seventeen labels. If a branch of the
+The taxonomy is deliberately flat - seventeen labels. If a branch of the
 taxonomy grows we split; we do not nest.
 """
 
@@ -38,7 +38,7 @@ _TENNIS_QUALIFIER_RE = re.compile(r"qualif(?:y|ication|ier|ying)", re.IGNORECASE
 _ATP_RE = re.compile(r"\batp\b", re.IGNORECASE)
 _WTA_RE = re.compile(r"\bwta\b", re.IGNORECASE)
 
-# Named tennis tournaments — main draws we want to keep distinct from
+# Named tennis tournaments - main draws we want to keep distinct from
 # challenger / ITF / qualifier tiers. Matched case-insensitively.
 _TENNIS_MAIN_DRAW_TOURNAMENTS = (
     "roland garros", "french open", "wimbledon",
@@ -51,7 +51,7 @@ _TENNIS_MAIN_DRAW_TOURNAMENTS = (
 )
 
 # Low-tier venue prefixes we've seen in event slugs (e.g. "atp-rybakov-…").
-# Questions for these read like "Savannah: X vs Y" — the tournament
+# Questions for these read like "Savannah: X vs Y" - the tournament
 # city is the prefix before the colon.
 _TENNIS_LOWER_TIER_CITY_HINTS = (
     "savannah", "abidjan", "oeiras", "shymkent",
@@ -165,7 +165,7 @@ def classify_archetype(
     Return a fine-grained archetype label for a prediction market.
 
     Pure function. Falls through to 'binary_event' when nothing else
-    matches — so the skip list can include that label to exclude
+    matches - so the skip list can include that label to exclude
     the long tail if desired.
     """
     q = (question or "").strip()
@@ -175,7 +175,7 @@ def classify_archetype(
     es = (event_slug or "").lower()
     cat = (category or "").lower()
 
-    # Tennis first — the taxonomy the user asked for.
+    # Tennis first - the taxonomy the user asked for.
     if _TENNIS_QUALIFIER_RE.search(q):
         return "tennis_qualifier"
 
@@ -193,7 +193,7 @@ def classify_archetype(
     if is_tennis_by_lower_city:
         return "tennis_lower_tier"
     if is_tennis_by_brand:
-        # ATP/WTA branded but no tournament match — challenger / low-tier.
+        # ATP/WTA branded but no tournament match - challenger / low-tier.
         return "tennis_lower_tier"
 
     # Team sports.
@@ -216,7 +216,7 @@ def classify_archetype(
     if _SOCCER_RE.search(q):
         return "soccer_match"
 
-    # Sports catch-all — the evaluator tagged it as sports but no
+    # Sports catch-all - the evaluator tagged it as sports but no
     # specific pattern matched.
     if cat == "sports":
         return "sports_other"

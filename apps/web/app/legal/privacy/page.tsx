@@ -1,4 +1,4 @@
-export const metadata = { title: "Privacy Policy — Delfi" };
+export const metadata = { title: "Privacy Policy - Delfi" };
 
 export default function PrivacyPage() {
   return (

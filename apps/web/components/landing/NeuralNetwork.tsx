@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * NeuralNetwork — 3D particle network shaped as a Nefertiti bust.
+ * NeuralNetwork - 3D particle network shaped as a Nefertiti bust.
  *
  * Loads farthest-point-sampled vertices from a real 3D model,
  * renders them as glowing neural-network nodes with flowing
@@ -256,7 +256,7 @@ export function NeuralNetwork({ className = "" }: { className?: string }) {
   useEffect(() => {
     const elOrNull = containerRef.current;
     if (!elOrNull) return;
-    // Non-null from here — captured for async closure
+    // Non-null from here - captured for async closure
     const el: HTMLDivElement = elOrNull;
 
     let cancelled = false;
@@ -290,7 +290,7 @@ export function NeuralNetwork({ className = "" }: { className?: string }) {
       const camera = new THREE.PerspectiveCamera(
         50, el.clientWidth / el.clientHeight, 0.1, 500
       );
-      // 3/4 profile — reveals nose, brow, crown
+      // 3/4 profile - reveals nose, brow, crown
       camera.position.set(22, 4, 36);
       camera.lookAt(0, -1, -2);
 

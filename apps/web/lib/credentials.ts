@@ -103,7 +103,7 @@ export function usePolymarketCredentials() {
         });
         if (!r.ok) {
           const payload = await r.json().catch(() => ({}));
-          setError(payload?.error ?? "Couldn't save — try again.");
+          setError(payload?.error ?? "Couldn't save - try again.");
           return false;
         }
         const raw = (await r.json()) as RawGet;
@@ -176,7 +176,7 @@ export function useTelegramCredentials() {
       });
       if (!r.ok) {
         const payload = await r.json().catch(() => ({}));
-        setError(payload?.error ?? "Couldn't save — try again.");
+        setError(payload?.error ?? "Couldn't save - try again.");
         return false;
       }
       const j = (await r.json()) as { configured?: boolean };

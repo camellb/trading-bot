@@ -1,5 +1,5 @@
 """
-Macro Calendar — manages the scheduled macro event calendar.
+Macro Calendar - manages the scheduled macro event calendar.
 
 Scrapes FOMC meeting dates and BLS CPI/PPI release dates from official sources.
 Stores events locally in data/macro_calendar.json. Refreshes weekly.
@@ -61,7 +61,7 @@ class MacroCalendar:
         """Load local calendar, then schedule weekly refresh via APScheduler."""
         loaded = self._load_local()
         if not loaded or self._is_stale():
-            print("[macro_calendar] No valid local calendar — fetching now...")
+            print("[macro_calendar] No valid local calendar - fetching now...")
             await self.refresh()
         else:
             print(
@@ -153,7 +153,7 @@ class MacroCalendar:
             events.sort(key=lambda e: e["date"])
 
             if not events:
-                raise ValueError("No events scraped — all sources returned empty")
+                raise ValueError("No events scraped - all sources returned empty")
 
             self._events = events
             self._save_local()
@@ -168,7 +168,7 @@ class MacroCalendar:
             print(f"[macro_calendar] WARNING: {msg}", file=sys.stderr)
             if self._events:
                 print(
-                    "[macro_calendar] Keeping stale data — EVENT_RISK active for "
+                    "[macro_calendar] Keeping stale data - EVENT_RISK active for "
                     "all scheduled windows until calendar refreshes successfully",
                     file=sys.stderr,
                 )
@@ -189,7 +189,7 @@ class MacroCalendar:
               <div class="fomc-meeting__month ..."><strong>January</strong></div>
               <div class="fomc-meeting__date ...">27-28</div>
           - NOTE: The page also contains minutes release dates in the format
-            "(Released Month Day, Year)" — these must be excluded. The div-based
+            "(Released Month Day, Year)" - these must be excluded. The div-based
             parsing correctly avoids them.
         """
         events = []
@@ -276,7 +276,7 @@ class MacroCalendar:
 
         if not events:
             print(
-                "[macro_calendar] FOMC scrape returned 0 events — "
+                "[macro_calendar] FOMC scrape returned 0 events - "
                 "using hardcoded fallback",
                 file=sys.stderr,
             )
@@ -337,7 +337,7 @@ class MacroCalendar:
                 url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
             ) as resp:
                 if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status} — bls.gov may be blocking automated access")
+                    raise RuntimeError(f"HTTP {resp.status} - bls.gov may be blocking automated access")
                 html = await resp.text()
 
             pattern = re.compile(
@@ -374,7 +374,7 @@ class MacroCalendar:
 
         except Exception as exc:
             print(
-                f"[macro_calendar] {release_type} scrape failed: {exc} — "
+                f"[macro_calendar] {release_type} scrape failed: {exc} - "
                 f"using hardcoded fallback dates for {current_year}",
                 file=sys.stderr,
             )
@@ -418,7 +418,7 @@ class MacroCalendar:
         schedule = _SCHEDULE.get(year, {})
         if not schedule:
             print(
-                f"[macro_calendar] No hardcoded {release_type} dates for {year} — "
+                f"[macro_calendar] No hardcoded {release_type} dates for {year} - "
                 "add to _hardcoded_bls_dates()",
                 file=sys.stderr,
             )
@@ -438,7 +438,7 @@ class MacroCalendar:
                     "type": release_type,
                     "description": (
                         f"BLS {release_type} Release {month_name} {day}, {year} "
-                        f"(hardcoded fallback — verify at bls.gov)"
+                        f"(hardcoded fallback - verify at bls.gov)"
                     ),
                 })
             except ValueError:

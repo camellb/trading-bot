@@ -10,7 +10,7 @@ export function HeaderBar({
   summary:      SummaryData | null;
   lastUpdated:  Date | null;
 }) {
-  const mode = summary?.mode ?? health?.mode ?? "—";
+  const mode = summary?.mode ?? health?.mode ?? "-";
   const modeColor = mode === "live" ? "text-red-400" : "text-amber-400";
 
   return (
@@ -32,7 +32,7 @@ export function HeaderBar({
         <div className="flex items-center gap-5 sm:gap-6 sm:ml-auto">
           <Stat label="uptime" value={formatUptime(health?.started_at ?? null)} />
           <div className="text-[10px] text-neutral-600">
-            updated {lastUpdated ? lastUpdated.toLocaleTimeString() : "—"}
+            updated {lastUpdated ? lastUpdated.toLocaleTimeString() : "-"}
           </div>
         </div>
       </div>

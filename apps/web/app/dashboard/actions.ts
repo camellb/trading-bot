@@ -35,7 +35,7 @@ export async function completeTour(): Promise<ActionResult> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return { ok: false, error: "Not signed in." };
 
-  // Upsert so a missing user_config row self-heals — otherwise .update()
+  // Upsert so a missing user_config row self-heals - otherwise .update()
   // silently affects 0 rows and the tour replays on every refresh.
   const { error } = await supabase
     .from("user_config")

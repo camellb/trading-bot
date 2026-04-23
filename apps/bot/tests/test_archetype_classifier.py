@@ -51,7 +51,7 @@ class TennisClassificationTests(unittest.TestCase):
         )
 
     def test_lower_tier_challenger_by_city_prefix(self):
-        # "Savannah: X vs Y" — ATP Challenger-tier event.
+        # "Savannah: X vs Y" - ATP Challenger-tier event.
         self.assertEqual(
             classify_archetype(
                 "Savannah: Alex Rybakov vs Kilian Feldbausch",
@@ -73,7 +73,7 @@ class TennisClassificationTests(unittest.TestCase):
 
     def test_atp_branded_without_tournament_name_is_lower_tier(self):
         # Fallthrough for ATP-flagged matches we don't have a tournament
-        # match for — treated as lower tier by default.
+        # match for - treated as lower tier by default.
         self.assertEqual(
             classify_archetype(
                 "ATP event: Doe vs Roe",
@@ -139,7 +139,7 @@ class TeamSportsTests(unittest.TestCase):
     def test_esports_lol_qualifier_is_tennis_qualifier_by_rule(self):
         # The word "Qualifier" in the question triggers the qualifier
         # branch regardless of sport. The user's explicit ask is to skip
-        # *qualifier-tier* trades across the board — treating esports
+        # *qualifier-tier* trades across the board - treating esports
         # qualifiers the same as tennis qualifiers is consistent with that.
         self.assertEqual(
             classify_archetype(

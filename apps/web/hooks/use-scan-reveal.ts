@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * useScanReveal — real-data scan progress, polled from /api/scan-status.
+ * useScanReveal - real-data scan progress, polled from /api/scan-status.
  *
  * Backend phases: idle → fetching → analyzing → complete | error.
  * While a scan is active, this hook polls every ~1s so the UI shows
@@ -100,7 +100,7 @@ export function useScanReveal() {
   }, [clearTimer, poll]);
 
   const markDataReady = useCallback(() => {
-    // Kept for API compatibility — completion is driven by the
+    // Kept for API compatibility - completion is driven by the
     // backend status file, so this is a no-op.
   }, []);
 

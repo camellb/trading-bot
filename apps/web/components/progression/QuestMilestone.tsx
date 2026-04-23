@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * QuestMilestone — single milestone within the Go-Live Quest.
+ * QuestMilestone - single milestone within the Go-Live Quest.
  *
  * Shows a circular progress arc, label, current/target values,
  * and a celebration burst when the gate is unlocked.

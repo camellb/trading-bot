@@ -19,7 +19,7 @@ export function usd(
   n: number | null | undefined,
   opts: { sign?: boolean; clampZero?: boolean } = {},
 ): string {
-  if (n == null) return "—";
+  if (n == null) return "-";
   if (opts.clampZero && Math.abs(n) < 0.005) return "$0.00";
   const abs = _fmtUsd.format(Math.abs(n));
   if (n < 0) return `-$${abs}`;
@@ -28,22 +28,22 @@ export function usd(
 }
 
 export function prob(n: number | null | undefined): string {
-  if (n == null) return "—";
+  if (n == null) return "-";
   return `${(n * 100).toFixed(1)}%`;
 }
 
 export function sharePrice(price: number | null | undefined): string {
-  if (price == null) return "—";
+  if (price == null) return "-";
   return `$${price.toFixed(3)}`;
 }
 
 export function pct(n: number | null | undefined, digits = 1): string {
-  if (n == null) return "—";
+  if (n == null) return "-";
   return `${(n * 100).toFixed(digits)}%`;
 }
 
 export function timeAgo(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const ms = Date.now() - new Date(iso).getTime();
   if (ms < 60_000) return "just now";
   const m = Math.floor(ms / 60_000);
@@ -54,7 +54,7 @@ export function timeAgo(iso: string | null): string {
 }
 
 export function timeUntil(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const ms = new Date(iso).getTime() - Date.now();
   if (ms <= 0) return "awaiting result";
   const m = Math.floor(ms / 60_000);
@@ -68,9 +68,9 @@ export function timeUntil(iso: string | null): string {
 }
 
 export function formatUptime(startedAt: string | null): string {
-  if (!startedAt) return "—";
+  if (!startedAt) return "-";
   const ms = Date.now() - new Date(startedAt).getTime();
-  if (ms < 0) return "—";
+  if (ms < 0) return "-";
   const s = Math.floor(ms / 1000);
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -83,7 +83,7 @@ export function formatUptime(startedAt: string | null): string {
 }
 
 export function formatTimestamp(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const d = new Date(iso);
   return d.toLocaleString(undefined, {
     month: "short", day: "numeric",
@@ -117,7 +117,7 @@ export function humanizeIdentifier(raw: string): string {
     simulation: "Simulation",
   };
 
-  // Strip leading "PM_" prefix — it adds no information in the UI.
+  // Strip leading "PM_" prefix - it adds no information in the UI.
   const stripped = raw.replace(/^PM_/, "");
 
   return stripped

@@ -1,5 +1,5 @@
 """
-News Feed — multi-source RSS + Nitter + CryptoPanic aggregator with Gemini pre-filtering.
+News Feed - multi-source RSS + Nitter + CryptoPanic aggregator with Gemini pre-filtering.
 
 TWO-MODEL ARCHITECTURE:
   Gemini Flash (config.GEMINI_MODEL): fetches RSS + Nitter + CryptoPanic, filters and
@@ -13,7 +13,7 @@ Sources:
   Nitter: 12 crypto + 11 macro/finance (see config.NITTER_ACCOUNTS)
   CryptoPanic: crypto-specific aggregator via REST API (CRYPTOPANIC_API_KEY)
 
-Nitter failures are expected and handled gracefully — many instances block
+Nitter failures are expected and handled gracefully - many instances block
 automated access. They log at DEBUG level only.
 
 CryptoPanic items use a 2× longer deduplication window (60 min vs 30 min)
@@ -104,7 +104,7 @@ class NewsFeed:
         self._gemini_client = None
         if not gemini_key:
             print(
-                "[news_feed] GEMINI_API_KEY not set — "
+                "[news_feed] GEMINI_API_KEY not set - "
                 "using raw RSS titles as fallback (no Gemini filtering)",
                 file=sys.stderr,
             )
@@ -118,7 +118,7 @@ class NewsFeed:
                 )
             except Exception as exc:
                 print(
-                    f"[news_feed] Gemini init failed: {exc} — falling back to raw titles",
+                    f"[news_feed] Gemini init failed: {exc} - falling back to raw titles",
                     file=sys.stderr,
                 )
 
@@ -200,7 +200,7 @@ class NewsFeed:
         cutoff_age = now - timedelta(minutes=config.NEWS_MAX_AGE_MIN)
         new_items: list[dict] = []
 
-        # Process CryptoPanic first — higher quality, longer dedup window
+        # Process CryptoPanic first - higher quality, longer dedup window
         for item in raw_items_cp:
             h = _md5(item["title"])
             if h in self._seen_hashes_cp or h in self._seen_hashes:
@@ -211,7 +211,7 @@ class NewsFeed:
             self._seen_hashes_cp[h] = now
             new_items.append(item)
 
-        # Then standard sources — skip anything already covered by CP
+        # Then standard sources - skip anything already covered by CP
         for item in raw_items_std:
             h = _md5(item["title"])
             if h in self._seen_hashes or h in self._seen_hashes_cp:
@@ -235,7 +235,7 @@ class NewsFeed:
                 flush=True,
             )
 
-        # ── Health reporting (news feed — standard sources only) ──────────────
+        # ── Health reporting (news feed - standard sources only) ──────────────
         if any_success_std:
             self._consecutive_failures = 0
             self._monitor.report_healthy("news")
@@ -250,7 +250,7 @@ class NewsFeed:
                 self._monitor.report_degraded(
                     "news",
                     f"All RSS and Nitter sources failed after "
-                    f"{self._consecutive_failures} consecutive polls — "
+                    f"{self._consecutive_failures} consecutive polls - "
                     "50% size mode active (per feed integrity policy)",
                 )
 
@@ -285,7 +285,7 @@ class NewsFeed:
         """
         Fetch a Nitter RSS feed for the given Twitter username.
         Tries primary URL, then fallback URL.
-        Failures logged at DEBUG level only — Nitter failures are expected.
+        Failures logged at DEBUG level only - Nitter failures are expected.
         Returns [] on any error.
         """
         try:
@@ -442,7 +442,7 @@ class NewsFeed:
                 return [str(h) for h in parsed[:10] if h]
             return [item["title"] for item in raw_items[:10]]
         except json.JSONDecodeError:
-            print("[news_feed] Gemini returned non-JSON — using raw titles", file=sys.stderr)
+            print("[news_feed] Gemini returned non-JSON - using raw titles", file=sys.stderr)
             return [item["title"] for item in raw_items[:10]]
         except Exception as exc:
             print(f"[news_feed] Gemini summarisation error: {exc}", file=sys.stderr)

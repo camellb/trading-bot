@@ -1,5 +1,5 @@
 """
-Process-level health tracking — singleton shared by main.py and bot_api.
+Process-level health tracking - singleton shared by main.py and bot_api.
 
 Records timestamps for scheduled job completions and error counts so the
 /api/health endpoint can report operational state.

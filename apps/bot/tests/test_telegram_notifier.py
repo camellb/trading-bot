@@ -1,5 +1,5 @@
 """
-Multi-tenant Telegram notifier — per-user credential lookup and opt-in no-op.
+Multi-tenant Telegram notifier - per-user credential lookup and opt-in no-op.
 
 These tests stub the DB credential lookup and the aiohttp session so the
 notifier can be exercised without a database, network, or real bot token.

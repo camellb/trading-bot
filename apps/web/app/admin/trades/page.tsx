@@ -23,7 +23,7 @@ const TRADES: Trade[] = [
   { id: "trd_9a1a", user: "u_1e8f", market: "UK election called before July",    side: "YES", entry: 0.18, mark: 0.22, size: 220, pnl: +8.80,  status: "won",     when: "2026-04-21 09:04" },
   { id: "trd_9a12", user: "u_5c12", market: "ETH ETF approved in April",         side: "NO",  entry: 0.68, mark: 0.55, size: 310, pnl: -40.30, status: "lost",    when: "2026-04-20 22:48" },
   { id: "trd_9a0b", user: "u_41a0", market: "Oil above $95 by month end",        side: "YES", entry: 0.47, mark: 0.47, size: 200, pnl: 0.00,   status: "skipped", when: "2026-04-20 17:22" },
-  { id: "trd_9a03", user: "u_72ed", market: "Taiwan election outcome — DPP win", side: "YES", entry: 0.60, mark: 0.74, size: 820, pnl: +114.80, status: "won",    when: "2026-04-20 10:33" },
+  { id: "trd_9a03", user: "u_72ed", market: "Taiwan election outcome - DPP win", side: "YES", entry: 0.60, mark: 0.74, size: 820, pnl: +114.80, status: "won",    when: "2026-04-20 10:33" },
 ];
 
 const STATUS_CLASS: Record<Status, string> = {

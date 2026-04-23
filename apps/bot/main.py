@@ -3,34 +3,34 @@ Entry point for the Polymarket prediction-market bot.
 
 Architecture at a glance:
 
-    PolymarketFeed   — Gamma API client, pulls candidate markets
+    PolymarketFeed   - Gamma API client, pulls candidate markets
             │
             ▼
-    PMAnalyst        — skips stale markets, fetches research, asks Claude
+    PMAnalyst        - skips stale markets, fetches research, asks Claude
             │           for a calibrated probability, runs the risk manager,
             │           then sizes via positive-EV with flat stakes.
             │
             ▼
-    PMExecutor       — opens simulation (or live) positions, settles them
+    PMExecutor       - opens simulation (or live) positions, settles them
                         after resolution, feeds the calibration ledger,
                         and triggers the learning cadence every 50 trades.
 
 Scheduled jobs (APScheduler):
-    PM scan          — every PM_SCAN_INTERVAL_MINUTES
-    PM resolve       — every PM_RESOLVE_INTERVAL_MINUTES (fast path: PM_RESOLVE_FAST_INTERVAL_SECONDS)
-    Daily summary    — 08:30 MYT
-    Weekly summary   — Monday 08:30 MYT
+    PM scan          - every PM_SCAN_INTERVAL_MINUTES
+    PM resolve       - every PM_RESOLVE_INTERVAL_MINUTES (fast path: PM_RESOLVE_FAST_INTERVAL_SECONDS)
+    Daily summary    - 08:30 MYT
+    Weekly summary   - Monday 08:30 MYT
 
 Learning cadence is trade-volume-gated (not calendar-gated) and runs in
-the settle path — see engine.learning_cadence.
+the settle path - see engine.learning_cadence.
 
 Side services:
-    bot_api.BotAPI  — localhost HTTP API for the dashboard
+    bot_api.BotAPI  - localhost HTTP API for the dashboard
     TelegramNotifier poll thread for /status /scan /resolve /confirm-config
 
 Fatal-at-import-time: .env must provide DATABASE_URL, ANTHROPIC_API_KEY,
 BOT_API_SECRET. Telegram credentials are per-user (user_config table),
-configured from the dashboard — no process-global env vars required.
+configured from the dashboard - no process-global env vars required.
 """
 
 # load_dotenv() must run before any module that reads os.getenv() at import.
@@ -43,7 +43,7 @@ import signal
 import sys
 import traceback
 
-# Dump all thread stacks on SIGUSR1 — invaluable for diagnosing hangs.
+# Dump all thread stacks on SIGUSR1 - invaluable for diagnosing hangs.
 faulthandler.enable()
 faulthandler.register(signal.SIGUSR1)
 from datetime import datetime, timezone, timedelta
@@ -68,7 +68,7 @@ from process_health            import health as proc_health
 
 
 async def main() -> None:
-    # Increase the default thread pool — the default (5 workers) gets
+    # Increase the default thread pool - the default (5 workers) gets
     # saturated by research/Claude/feedparser calls during scans, blocking
     # the event loop from processing API requests.
     from concurrent.futures import ThreadPoolExecutor
@@ -95,7 +95,7 @@ async def main() -> None:
     ensure_default_user_config()
     print("Default user_config row ensured.", flush=True)
 
-    # ── Overlay feeds (advisory only — do not gate trading) ──────────────────
+    # ── Overlay feeds (advisory only - do not gate trading) ──────────────────
     news_feed      = NewsFeed(monitor)
     macro_calendar = MacroCalendar(monitor)
     await macro_calendar.start()
@@ -122,7 +122,7 @@ async def main() -> None:
     # ── Scheduler ───────────────────────────────────────────────────────────
     scheduler = AsyncIOScheduler()
 
-    # PM scan — cadence from config.
+    # PM scan - cadence from config.
     scan_interval_min = int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 60))
 
     async def _run_scan():
@@ -147,7 +147,7 @@ async def main() -> None:
         coalesce=True,
     )
 
-    # PM resolver — checks for settled markets and finalises P&L.
+    # PM resolver - checks for settled markets and finalises P&L.
     # Resolution checks are free Polymarket REST reads, so we poll aggressively.
     resolve_interval_min = int(getattr(config, "PM_RESOLVE_INTERVAL_MINUTES", 15))
 
@@ -188,7 +188,7 @@ async def main() -> None:
         coalesce=True,
     )
 
-    # Markout tracker — check T+1h / T+6h / T+24h price moves.
+    # Markout tracker - check T+1h / T+6h / T+24h price moves.
     async def _run_markouts():
         try:
             await check_markouts()
@@ -218,10 +218,10 @@ async def main() -> None:
                     timezone="Asia/Kuala_Lumpur"),
         id="weekly_summary",
     )
-    # Learning cadence is trade-volume-gated, not calendar-gated — see
+    # Learning cadence is trade-volume-gated, not calendar-gated - see
     # engine.learning_cadence.maybe_run_learning_cycle (hooked into settlement).
 
-    # ── Watchdog — alert if core jobs stop running ────────────────────────
+    # ── Watchdog - alert if core jobs stop running ────────────────────────
     _watchdog_alerted: set[str] = set()
     _WATCHDOG_THRESHOLDS = {
         "pm_scan":         timedelta(minutes=scan_interval_min * 3),
@@ -271,14 +271,14 @@ async def main() -> None:
     # ── Signal handling ────────────────────────────────────────────────────
     shutdown_event = asyncio.Event()
 
-    # Ignore SIGHUP — we're a launchd daemon, not a terminal app.
+    # Ignore SIGHUP - we're a launchd daemon, not a terminal app.
     # Without this, closing Claude Code (or any controlling terminal)
     # sends SIGHUP which kills the bot unnecessarily.
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     def _handle_signal(sig, _frame):
         sig_name = signal.Signals(sig).name
-        print(f"[main] Received {sig_name} — shutting down gracefully", flush=True)
+        print(f"[main] Received {sig_name} - shutting down gracefully", flush=True)
         notifier.broadcast_restart_sync(tm.restart_planned())
         shutdown_event.set()
 
@@ -293,7 +293,7 @@ async def main() -> None:
 
     async def _shutdown_waiter() -> None:
         await shutdown_event.wait()
-        print("[main] Shutdown event received — stopping scheduler", flush=True)
+        print("[main] Shutdown event received - stopping scheduler", flush=True)
         scheduler.shutdown(wait=False)
         if bot_api._runner:
             await bot_api._runner.cleanup()
@@ -331,7 +331,7 @@ if __name__ == "__main__":
     except SystemExit:
         pass
     except KeyboardInterrupt:
-        print("[main] KeyboardInterrupt — exiting", flush=True)
+        print("[main] KeyboardInterrupt - exiting", flush=True)
     except Exception:
         tb = traceback.format_exc()
         print(f"[main] FATAL CRASH:\n{tb}", file=sys.stderr, flush=True)

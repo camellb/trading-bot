@@ -1,5 +1,5 @@
 """
-Phase 3 tests — trade-volume learning cadence (pure-function proposer).
+Phase 3 tests - trade-volume learning cadence (pure-function proposer).
 
 The cadence is trade-volume-gated and reads DB state to decide whether
 to run. Tests here focus on the proposer itself: given a stats bundle
@@ -179,7 +179,7 @@ class CostCorrectionProposerTests(unittest.TestCase):
 
 class AdvisoryProposalsHaveNoBacktestTests(unittest.TestCase):
     """Advisory proposals skip the backtest delta. After the doctrine change
-    the only advisory target is `archetype_skip_list` — cost overrides are
+    the only advisory target is `archetype_skip_list` - cost overrides are
     now scalar-valued and do get a backtest delta."""
 
     def test_advisory_params_is_list_targets_only(self):
@@ -197,7 +197,7 @@ class AdvisoryProposalsHaveNoBacktestTests(unittest.TestCase):
                 "items":        ["politics"],
             },
         )
-        # Should be a no-op even without DB / backtester available —
+        # Should be a no-op even without DB / backtester available -
         # exception swallowed by the try/except in _attach_backtest_delta.
         _attach_backtest_delta(prop, UserConfig())
         self.assertIsNone(prop.backtest_delta)

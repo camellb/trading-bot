@@ -1,11 +1,11 @@
 "use client";
 
 /**
- * IntelligenceView — dedicated view for the bot's reasoning telemetry.
+ * IntelligenceView - dedicated view for the bot's reasoning telemetry.
  *
  * Shows the full intelligence feed, Profit Score breakdown,
  * and accuracy streaks in one place.
- * This is the "magic" view — making the automation visible.
+ * This is the "magic" view - making the automation visible.
  */
 
 import type { DashboardSnapshot } from "@/hooks/use-dashboard-data";

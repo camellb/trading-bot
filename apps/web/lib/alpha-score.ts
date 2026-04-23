@@ -1,14 +1,14 @@
 /**
- * Profit Score — composite metric (0–100), weighted toward profitability.
+ * Profit Score - composite metric (0–100), weighted toward profitability.
  *
  * The user's #1 goal is making money, not being "accurate". Weight the
  * components accordingly: ROI dominates, calibration is a smaller sanity
  * check, win rate is a minor contributor (a bot can win 80% of the time
  * and still lose money if winners are much smaller than losers).
  *
- *   ROI         (60 points)  — realized P&L / starting capital
- *   Brier       (25 points)  — lower is better (0.00 → 25, 0.25 → 0)
- *   Win rate    (15 points)  — directional tie-breaker
+ *   ROI         (60 points)  - realized P&L / starting capital
+ *   Brier       (25 points)  - lower is better (0.00 → 25, 0.25 → 0)
+ *   Win rate    (15 points)  - directional tie-breaker
  *
  * Final score clamped [0, 100].
  */

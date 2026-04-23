@@ -52,7 +52,7 @@ export function Tour() {
           <p className="tour-body">
             Delfi has circuit breakers that cap daily and weekly losses, halt
             trading on drawdown, cool off after a losing streak, and reserve dry
-            powder — and more. You can tune every parameter now, or adjust as you
+            powder - and more. You can tune every parameter now, or adjust as you
             go.
           </p>
           <p className="tour-body">

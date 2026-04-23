@@ -3,7 +3,7 @@ Forecast-backtester analytics tests.
 
 The real 90-day pass needs a live database. These tests drive the
 pure-function simulator with synthetic evaluations so the distribution
-roll-ups (EV buckets — retained for schema continuity, not as a gate —
+roll-ups (EV buckets - retained for schema continuity, not as a gate -
 and archetype breakdown) and core totals are exercised deterministically.
 """
 
@@ -81,7 +81,7 @@ class BucketDistributionTests(unittest.TestCase):
     def test_bucket_totals_are_empty_under_doctrine(self):
         # Under the back-the-forecast doctrine, SizingDecision.ev is always
         # 0.0, so every simulated trade falls below the first bucket's 3%
-        # floor. Bucket n should be zero while trades_taken is positive —
+        # floor. Bucket n should be zero while trades_taken is positive -
         # the buckets are retained for schema continuity, not reporting.
         evals = [
             e("m1", 0.55, 0.80, 0.80, "sports", outcome=1),

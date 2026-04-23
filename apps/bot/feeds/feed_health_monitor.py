@@ -1,13 +1,13 @@
 """
-Feed Health Monitor — tracks state of the PM data feeds.
+Feed Health Monitor - tracks state of the PM data feeds.
 
 Feeds that flow through this module:
-    polymarket — Gamma API scan, refreshed hourly.
-    news       — RSS + Nitter + CryptoPanic poll, refreshed every NEWS_POLL_INTERVAL_MIN.
-    macro      — macro calendar scraper, refreshed weekly.
+    polymarket - Gamma API scan, refreshed hourly.
+    news       - RSS + Nitter + CryptoPanic poll, refreshed every NEWS_POLL_INTERVAL_MIN.
+    macro      - macro calendar scraper, refreshed weekly.
 
 Overlay feeds (news, macro) do not gate anything; they only surface as
-warnings in Telegram. `polymarket` is the only core feed — if it fails
+warnings in Telegram. `polymarket` is the only core feed - if it fails
 for an extended period we still don't halt trading (simulation mode has no
 stop loss to protect), but we do raise a critical alert so the operator
 can investigate.
@@ -57,7 +57,7 @@ class FeedHealthMonitor:
         self._state[feed_name] = {
             "last_update": None,
             "state":       "degraded",
-            "detail":      "registered — awaiting first healthy report",
+            "detail":      "registered - awaiting first healthy report",
         }
 
     # ── Reporting ────────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ class FeedHealthMonitor:
         prev = self._state[feed_name]["state"]
         self._state[feed_name]["state"]  = "degraded"
         self._state[feed_name]["detail"] = detail
-        print(f"[feed_health] DEGRADED: {feed_name} — {detail}", file=sys.stderr)
+        print(f"[feed_health] DEGRADED: {feed_name} - {detail}", file=sys.stderr)
         if prev != "degraded":
             db_logger.log_feed_health(feed_name, "degraded", detail)
 
@@ -123,7 +123,7 @@ class FeedHealthMonitor:
 
     @staticmethod
     async def _notify_degraded(feed_name: str, detail: str) -> None:
-        print(f"[feed_health][admin] degraded: {feed_name} — {detail}",
+        print(f"[feed_health][admin] degraded: {feed_name} - {detail}",
               file=sys.stderr)
 
     # ── Queries ──────────────────────────────────────────────────────────────

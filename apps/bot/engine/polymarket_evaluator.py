@@ -1,5 +1,5 @@
 """
-Polymarket evaluator — wraps Claude to produce a calibrated probability for
+Polymarket evaluator - wraps Claude to produce a calibrated probability for
 a single binary prediction market.
 
 Design goals:
@@ -43,7 +43,7 @@ def _system_prompt() -> str:
         f"true, based on the evidence available to you. "
         f"Today is {today}. "
         f"CRITICAL: Your training data is OUTDATED. Do NOT use your memory for "
-        f"current prices, scores, standings, poll numbers, or recent events — "
+        f"current prices, scores, standings, poll numbers, or recent events - "
         f"they WILL be wrong. Use ONLY the research context provided below. "
         f"If the research does not contain a key fact you need, say so in your "
         f"reasoning and set confidence LOW. "
@@ -54,13 +54,13 @@ def _system_prompt() -> str:
         f"If the evidence strongly points to YES, output a high probability "
         f"(e.g. 0.80, 0.90). If it strongly points to NO, output a low "
         f"probability (e.g. 0.15, 0.05). If the evidence is mixed or "
-        f"inconclusive, your probability should reflect that — and your "
+        f"inconclusive, your probability should reflect that - and your "
         f"confidence should drop accordingly. "
         f"The market price is shown to you as context so you know what the bot "
         f"is trading against. It is NOT a prior. It does NOT constrain your "
         f"estimate. You may ignore it entirely when forecasting. If your "
         f"estimate happens to match the market, fine. If it differs "
-        f"substantially, also fine — report what the evidence says. "
+        f"substantially, also fine - report what the evidence says. "
         f"Do not hedge toward the market price to avoid looking wrong. Do not "
         f"invent contrarian estimates to look smart. Forecast what you "
         f"actually believe the probability is. "
@@ -75,21 +75,21 @@ def _system_prompt() -> str:
         f"If resolution criteria are ambiguous or could be interpreted "
         f"multiple ways, say so in reasoning and cap confidence at 0.4. "
         f"A confident forecaster who is wrong half the time loses money. Be "
-        f"honest about uncertainty — low confidence translates into a smaller "
+        f"honest about uncertainty - low confidence translates into a smaller "
         f"stake downstream. That is the correct way to handle thin evidence, "
         f"not by copying the market. "
         f"LIVE MARKET DATA: If the research context contains a section "
         f"labelled 'LIVE MARKET DATA (REAL-TIME)', that block is evidence for "
-        f"short-horizon price-direction markets — current spot, recent "
+        f"short-horizon price-direction markets - current spot, recent "
         f"changes (15m/1h/24h), order-book imbalance, spread, funding rate, "
-        f"recent candles — fetched seconds ago from OKX (crypto) or Yahoo "
+        f"recent candles - fetched seconds ago from OKX (crypto) or Yahoo "
         f"Finance (equities). Use it to ground your probability in actual "
         f"price dynamics. "
         f"If the LIVE MARKET DATA block is missing, stale (>60s for crypto / "
         f">120s for equity), or shows a zero/bad price, TREAT THIS AS MISSING "
         f"EVIDENCE and LOWER CONFIDENCE. Do not fabricate price levels from "
         f"memory. "
-        f"Output STRICT JSON only — no markdown fence, no prose before/after. "
+        f"Output STRICT JSON only - no markdown fence, no prose before/after. "
         f"Schema: {{\"probability_yes\":0..1, \"confidence\":0..1, "
         f"\"category\":\"macro|geopolitics|politics|crypto|tech|sports|entertainment|science|other\", "
         f"\"key_factors\":[\"short factor\",...], "
@@ -146,7 +146,7 @@ def _clamp01(x, default=0.5):
 
 class PolymarketEvaluator:
     """
-    Thin Claude wrapper — the bot already imports anthropic elsewhere,
+    Thin Claude wrapper - the bot already imports anthropic elsewhere,
     so we reuse the env-configured client (ANTHROPIC_API_KEY).
     """
 
@@ -229,17 +229,17 @@ class PolymarketEvaluator:
         if getattr(market, "neg_risk", False) and getattr(market, "group_item_title", None):
             context_lines.append(
                 f"NOTE: This is ONE option in a multi-outcome group. "
-                f"YES means specifically \"{market.group_item_title}\" — "
+                f"YES means specifically \"{market.group_item_title}\" - "
                 f"not any other option. Estimate accordingly."
             )
         context_section = "\n".join(context_lines)
 
         no_price = 1.0 - market.yes_price
         market_price_section = (
-            f"\n\nFor context — current market price: YES = {market.yes_price:.2f}, "
+            f"\n\nFor context - current market price: YES = {market.yes_price:.2f}, "
             f"NO = {no_price:.2f}. "
             f"This is what the crowd thinks. It is shown so you know what the "
-            f"bot is trading against. It is context only — do NOT anchor your "
+            f"bot is trading against. It is context only - do NOT anchor your "
             f"probability estimate to it.\n"
         )
 

@@ -101,17 +101,17 @@ type DiagnosticsReport = {
 const SCOPES: Scope[] = ["all", "traded", "skipped"];
 
 function pct(x: number | null | undefined, digits = 1): string {
-  if (x === null || x === undefined) return "—";
+  if (x === null || x === undefined) return "-";
   return `${(x * 100).toFixed(digits)}%`;
 }
 
 function num(x: number | null | undefined, digits = 3): string {
-  if (x === null || x === undefined) return "—";
+  if (x === null || x === undefined) return "-";
   return x.toFixed(digits);
 }
 
 function usd(x: number | null | undefined, digits = 2): string {
-  if (x === null || x === undefined) return "—";
+  if (x === null || x === undefined) return "-";
   const sign = x >= 0 ? "+" : "−";
   return `${sign}$${Math.abs(x).toFixed(digits)}`;
 }
@@ -157,7 +157,7 @@ export default function DiagnosticsPage() {
           <div>
             <h1 className="text-2xl font-semibold">Diagnostics</h1>
             <p className="mt-1 text-sm text-neutral-400">
-              Forecaster, sizer, and system-health metrics — read-only. Feeds
+              Forecaster, sizer, and system-health metrics - read-only. Feeds
               the learning cadence. 5-minute cache.
             </p>
           </div>
@@ -532,7 +532,7 @@ function SystemSection({ data }: { data: DiagnosticsReport["system"] }) {
             <tbody>
               {series.map((r, i) => (
                 <tr key={i} className="border-t border-neutral-800">
-                  <td className="py-1">{r.ts?.slice(0, 10) ?? "—"}</td>
+                  <td className="py-1">{r.ts?.slice(0, 10) ?? "-"}</td>
                   <td className="py-1 text-right">{usd(r.pnl)}</td>
                   <td className="py-1 text-right">{usd(r.bankroll)}</td>
                 </tr>

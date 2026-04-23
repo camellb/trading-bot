@@ -148,7 +148,7 @@ class ScrubberPatternsExposed(unittest.TestCase):
 
 
 class ScrapeBlocklistExcludesCoinGecko(unittest.TestCase):
-    """CoinGecko embeds Polymarket price widgets on asset pages — the full-
+    """CoinGecko embeds Polymarket price widgets on asset pages - the full-
     page scrape must not pull coingecko.com even if DDG surfaces it."""
 
     def test_coingecko_in_blocklist(self):
@@ -269,7 +269,7 @@ class SnippetLevelEchoScrub(unittest.TestCase):
 
     def test_polyfire_snippet_scrubbed(self):
         ddg_results = [
-            {"title": "BTC April — PolyFire",
+            {"title": "BTC April - PolyFire",
              "body": "Polymarket has Bitcoin at 12% to reach $80k.",
              "href": "https://polyfire.co/some-market"},
         ]

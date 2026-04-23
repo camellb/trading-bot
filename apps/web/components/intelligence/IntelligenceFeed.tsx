@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * IntelligenceFeed — live telemetry-style reasoning stream.
+ * IntelligenceFeed - live telemetry-style reasoning stream.
  *
  * Shows the bot's recent evaluations as a scrolling terminal feed.
  * Each line shows the analysis flow: market → probability → decision.

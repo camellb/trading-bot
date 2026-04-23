@@ -111,7 +111,7 @@ function toAttributionRows(
 }
 
 /**
- * Best/worst trades API returns `realized_pnl` — map to the `pnl`
+ * Best/worst trades API returns `realized_pnl` - map to the `pnl`
  * field the TradeRow type (and table component) expects.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -166,7 +166,7 @@ export function AnalyticsView() {
 
       setSummary(sum);
 
-      // Transform raw attribution rows — API field names differ per tab
+      // Transform raw attribution rows - API field names differ per tab
       setAttribution(rawAttr ? {
         by_archetype: toAttributionRows(rawAttr.by_archetype ?? [], "archetype"),
         by_side: toAttributionRows(rawAttr.by_side ?? [], "side"),

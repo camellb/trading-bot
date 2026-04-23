@@ -6,7 +6,7 @@ import { usd } from "@/lib/format";
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
-/** Raw shape from /api/risk — matches risk_manager.get_risk_state() */
+/** Raw shape from /api/risk - matches risk_manager.get_risk_state() */
 type RawRiskState = {
   mode: string;
   starting_cash: number;
@@ -135,7 +135,7 @@ export function RiskView({ toast }: { toast: ToastFn }) {
         if (data.status === "applied") {
           toast(isDisabled ? "Control re-enabled" : "Control disabled");
         } else if (data.status === "pending") {
-          toast("Change pending — confirm via Telegram");
+          toast("Change pending - confirm via Telegram");
         }
         fetchData();
       } else {
@@ -167,7 +167,7 @@ export function RiskView({ toast }: { toast: ToastFn }) {
       {risk?.drawdown_halted && (
         <AlertBanner
           level="red"
-          message={`DRAWDOWN HALT TRIGGERED — Portfolio drawdown at ${pctStr(risk.drawdown_pct)} (limit: ${pctStr(risk.drawdown_halt_pct)}). All trading is suspended.`}
+          message={`DRAWDOWN HALT TRIGGERED - Portfolio drawdown at ${pctStr(risk.drawdown_pct)} (limit: ${pctStr(risk.drawdown_halt_pct)}). All trading is suspended.`}
         />
       )}
       {risk?.daily_limit_breached && (

@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * PendingSuggestionsPanel — learning-cadence proposals awaiting the user's
+ * PendingSuggestionsPanel - learning-cadence proposals awaiting the user's
  * decision.
  *
  * The bot's learning cadence proposes config changes every 50 settled
@@ -43,7 +43,7 @@ function isListAppend(s: Suggestion): boolean {
 }
 
 function formatPct(v: number | null): string {
-  if (v == null || !Number.isFinite(v)) return "—";
+  if (v == null || !Number.isFinite(v)) return "-";
   return `${(v * 100).toFixed(2)}%`;
 }
 
@@ -79,7 +79,7 @@ export function PendingSuggestionsPanel() {
         });
       }
     } catch {
-      // Swallow — panel shows "no suggestions" fallback.
+      // Swallow - panel shows "no suggestions" fallback.
     } finally {
       setLoading(false);
     }

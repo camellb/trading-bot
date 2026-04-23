@@ -1,14 +1,14 @@
 """
-Research fetcher — multi-source context for Polymarket markets.
+Research fetcher - multi-source context for Polymarket markets.
 
 Sources (in priority order):
-    1. DuckDuckGo web search — category-specific queries, full page extraction
+    1. DuckDuckGo web search - category-specific queries, full page extraction
        via trafilatura for top results.
-    2. Wikipedia — entity-anchored lead sections via public API.
-    3. ESPN / CoinGecko — structured data for sports and crypto markets.
-    4. RSS headlines — keyword-matched from cached news_event_log.
-    5. NewsAPI — optional, if NEWSAPI_KEY is set.
-    6. Historical base rates — past resolution rates by category from DB.
+    2. Wikipedia - entity-anchored lead sections via public API.
+    3. ESPN / CoinGecko - structured data for sports and crypto markets.
+    4. RSS headlines - keyword-matched from cached news_event_log.
+    5. NewsAPI - optional, if NEWSAPI_KEY is set.
+    6. Historical base rates - past resolution rates by category from DB.
 
 Keyword extraction uses Gemini Flash (preferred) or Claude (fallback),
 with regex heuristics as a last resort.
@@ -88,7 +88,7 @@ class ResearchBundle:
         if self.web_search:
             web = "\n".join(f"• {s}" for s in self.web_search[:8])
             parts.append(f"-- Web search results (current) --\n{web}")
-        # CoinGecko spot fallback — only if live_market_data did not fire.
+        # CoinGecko spot fallback - only if live_market_data did not fire.
         if self.crypto_prices and not self.live_market_data:
             parts.append(f"-- Spot price (CoinGecko) --\n{self.crypto_prices.strip()}")
         if self.sports_context:
@@ -446,10 +446,10 @@ async def _extract_keywords_llm(
         obj = _tolerant_json_object(raw)
         if isinstance(obj, dict) and "search_terms" in obj:
             return obj
-        print(f"[research] {label} keyword parse miss — raw[:200]={raw[:200]!r}",
+        print(f"[research] {label} keyword parse miss - raw[:200]={raw[:200]!r}",
               file=sys.stderr)
     except Exception as exc:
-        print(f"[research] {label} keyword extraction failed: {exc} — "
+        print(f"[research] {label} keyword extraction failed: {exc} - "
               f"raw[:200]={raw[:200]!r}", file=sys.stderr)
     return None
 
@@ -554,7 +554,7 @@ async def _fetch_espn_scoreboard(
         comp_lines = []
         for c in competitors:
             rec = f" ({c['record']})" if c["record"] else ""
-            score = f" — score: {c['score']}" if c["score"] and c["score"] != "0" else ""
+            score = f" - score: {c['score']}" if c["score"] and c["score"] != "0" else ""
             comp_lines.append(f"  {c['name']}{rec}{score}")
         lines.append(f"- {name} [{date_str}, {status}]\n" + "\n".join(comp_lines))
 
@@ -834,19 +834,19 @@ _SKIP_DOMAINS = {"youtube.com", "twitter.com", "x.com", "reddit.com",
 # prediction-market odds (its own or someone else's), so scraping the page
 # body reintroduces the same market-price anchor we already show Claude in
 # the explicit context block. Independent expert forecasts (FiveThirtyEight
-# models, Nate Silver, sportsbook odds, polls) are NOT blocklisted — they
+# models, Nate Silver, sportsbook odds, polls) are NOT blocklisted - they
 # are independent evidence, not echoes.
 #
-#   * coingecko.com — embeds live Polymarket price-ladder widgets on asset
+#   * coingecko.com - embeds live Polymarket price-ladder widgets on asset
 #     pages. CoinGecko's /simple/price API (_fetch_crypto_prices) still
 #     contributes a structured spot number; OKX live_crypto provides
 #     superior short-horizon data.
-#   * predictit.org — competitor prediction market. Its prices are
+#   * predictit.org - competitor prediction market. Its prices are
 #     heavily correlated with Polymarket on overlapping markets, so
 #     scraping PredictIt is effectively re-showing Polymarket in disguise.
-#   * polyfire.co — Polymarket-aggregator site; pages explicitly quote
+#   * polyfire.co - Polymarket-aggregator site; pages explicitly quote
 #     live Polymarket odds as their primary content.
-#   * metaculus.com — community forecast aggregator. Borderline
+#   * metaculus.com - community forecast aggregator. Borderline
 #     (sometimes independent signal), but on politics markets that also
 #     trade on Polymarket the community number is highly correlated. Out
 #     for now; revisit if we find markets where Metaculus is uniquely
@@ -964,7 +964,7 @@ def _extract_text_from_html(html: str, max_chars: int = 3000) -> str:
     return t[:max_chars]
 
 
-# Polymarket pages leak the crowd's price into the research bundle — both as
+# Polymarket pages leak the crowd's price into the research bundle - both as
 # explicit percentage ladders and as narrative "trader consensus" phrases. The
 # evaluator prompt explicitly tells Claude not to anchor on the market price,
 # so we strip price-like tokens from polymarket.com scrapes before they enter
@@ -994,9 +994,9 @@ _REDACTED = "[redacted]"
 # the DDG snippet surface, etc.) that embed or narrate Polymarket / PredictIt
 # numbers. Replaced with a VISIBLE marker rather than silently deleted so
 # Claude can interpret "there used to be a market-price citation here" as
-# information rather than as an unexplained gap. Independent forecasts —
+# information rather than as an unexplained gap. Independent forecasts -
 # "538's model gives 62%", "Nate Silver's projection", "a Siena poll shows
-# Trump +3 (47-44)" — are deliberately NOT matched.
+# Trump +3 (47-44)" - are deliberately NOT matched.
 _PREDICTION_MARKET_ECHO_PATTERNS: list[re.Pattern] = [
     re.compile(r"Polymarket (?:gives|prices|has|shows) .{0,30}? \d{1,3}%",
                re.IGNORECASE),
@@ -1016,7 +1016,7 @@ def _scrub_prediction_market_echoes(text: str) -> str:
     """Replace prediction-market price citations with a visible marker.
 
     Applied to every non-blocklisted page body and to every DDG snippet
-    before it enters the research bundle. Does NOT drop paragraphs — just
+    before it enters the research bundle. Does NOT drop paragraphs - just
     rewrites the offending span so surrounding narrative (which may be
     independent evidence) is preserved.
     """
@@ -1082,7 +1082,7 @@ async def _fetch_page_text(
         text = _scrub_polymarket_text(text)
         if len(text) < 100:
             return None
-    # Every page goes through the echo scrub — even third-party news and
+    # Every page goes through the echo scrub - even third-party news and
     # aggregator sites may embed "Polymarket has this at 65%" widgets.
     text = _scrub_prediction_market_echoes(text)
     return f"[{domain}]\n{text}"
@@ -1118,7 +1118,7 @@ async def fetch_research(
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
-    path — network errors are swallowed and the bundle degrades gracefully.
+    path - network errors are swallowed and the bundle degrades gracefully.
     """
     bundle = ResearchBundle(question=question)
 
@@ -1155,7 +1155,7 @@ async def fetch_research(
 
     loop = asyncio.get_running_loop()
 
-    # DB lookups — run off event loop to avoid blocking.
+    # DB lookups - run off event loop to avoid blocking.
     base_rate_fut = loop.run_in_executor(
         None, _fetch_base_rate, category or detected_category)
     rss_fut = loop.run_in_executor(None, _fetch_rss_matches, bundle.keywords)

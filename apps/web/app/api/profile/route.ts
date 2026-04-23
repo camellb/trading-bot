@@ -48,7 +48,7 @@ export async function PUT(req: Request) {
       code: error.code,
       message: error.message,
     });
-    return NextResponse.json({ error: "Couldn't save — try again." }, { status: 500 });
+    return NextResponse.json({ error: "Couldn't save - try again." }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true, displayName });

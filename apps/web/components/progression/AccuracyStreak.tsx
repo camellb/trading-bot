@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * AccuracyStreak — win streak counter card.
+ * AccuracyStreak - win streak counter card.
  *
  * Shows the current consecutive-win streak with escalating
  * visual intensity (fire, bolt) and the all-time best streak.

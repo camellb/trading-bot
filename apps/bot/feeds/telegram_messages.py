@@ -1,9 +1,9 @@
 """
-Delfi — Telegram Messages Spec v1 (locked copy).
+Delfi - Telegram Messages Spec v1 (locked copy).
 
 Single source of truth for every user-facing Telegram message. Every function
 returns a formatted HTML string ready to hand to notifier.send(). Edit the
-copy here — nothing in the call-sites should embed user-facing strings
+copy here - nothing in the call-sites should embed user-facing strings
 directly.
 
 Voice rules (Oracle's Codex v1.1):
@@ -16,7 +16,7 @@ Voice rules (Oracle's Codex v1.1):
     <a> <code> <pre> <blockquote> <tg-spoiler>.
 
 All callers import from this module. Admin-only output (feed health, wiring
-errors, tracebacks) does not live here — it is logged to stderr.
+errors, tracebacks) does not live here - it is logged to stderr.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def new_position(
     )
 
 
-# ── 2. Position settled — WIN ────────────────────────────────────────────────
+# ── 2. Position settled - WIN ────────────────────────────────────────────────
 def settled_win(
     *,
     question: str,
@@ -82,7 +82,7 @@ def settled_win(
     )
 
 
-# ── 3. Position settled — LOSS ───────────────────────────────────────────────
+# ── 3. Position settled - LOSS ───────────────────────────────────────────────
 def settled_loss(
     *,
     question: str,
@@ -296,11 +296,11 @@ def help_text() -> str:
     return (
         f"<b>Commands</b>\n"
         f"\n"
-        f"/status — balance, open positions, win rate\n"
-        f"/pause — stop placing new positions\n"
-        f"/resume — start placing new positions again\n"
-        f"/apply — accept a proposed calibration change\n"
-        f"/reject — decline a proposed calibration change"
+        f"/status - balance, open positions, win rate\n"
+        f"/pause - stop placing new positions\n"
+        f"/resume - start placing new positions again\n"
+        f"/apply - accept a proposed calibration change\n"
+        f"/reject - decline a proposed calibration change"
     )
 
 

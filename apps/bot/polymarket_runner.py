@@ -1,5 +1,5 @@
 """
-Polymarket runner — the two scheduled entrypoints wired into main.py.
+Polymarket runner - the two scheduled entrypoints wired into main.py.
 
 scan_and_analyze(limit):
     Fetch candidate markets → research → Claude evaluation → sizing →
@@ -65,10 +65,10 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
     """
     Two-phase settlement:
 
-        Phase A — for each onboarded user, settle every open pm_positions row
+        Phase A - for each onboarded user, settle every open pm_positions row
                   against the resolved Polymarket market state using a
                   PMExecutor bound to that user.
-        Phase B — resolve legacy `predictions` rows from the simulation-only
+        Phase B - resolve legacy `predictions` rows from the simulation-only
                   era that lack a pm_positions partner.
 
     Returns: {"positions_checked", "positions_settled",
@@ -91,7 +91,7 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
     async with PolymarketFeed() as feed:
         rows = await feed.fetch_many(market_ids)
 
-    # Per-user executor cache — one PMExecutor per distinct user_id.
+    # Per-user executor cache - one PMExecutor per distinct user_id.
     executors: dict[str, PMExecutor] = {}
 
     def _executor_for(user_id: str) -> PMExecutor | None:
@@ -106,7 +106,7 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
         executors[user_id] = ex
         return ex
 
-    # Phase A — pm_positions (fan out by row.user_id).
+    # Phase A - pm_positions (fan out by row.user_id).
     for p in open_rows:
         result["positions_checked"] += 1
         raw = rows.get(p["market_id"])
@@ -118,7 +118,7 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
 
         user_id = p.get("user_id")
         if not user_id:
-            print(f"[resolve] skipping position #{p['id']} — no user_id",
+            print(f"[resolve] skipping position #{p['id']} - no user_id",
                   file=sys.stderr)
             result["errors"] += 1
             continue
@@ -155,7 +155,7 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
         else:
             result["errors"] += 1
 
-    # Phase B — legacy predictions without a pm_positions row.
+    # Phase B - legacy predictions without a pm_positions row.
     for p in legacy_rows:
         result["predictions_checked"] += 1
         raw = rows.get(p["market_id"])

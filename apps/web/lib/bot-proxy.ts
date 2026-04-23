@@ -11,7 +11,7 @@ export type BotFetchResult<T> =
   | { ok: false; status: number; error: string };
 
 // Resolve the caller's Supabase user ID once per proxy call. The bot API
-// reads this from X-User-Id and scopes all user-scoped queries by it —
+// reads this from X-User-Id and scopes all user-scoped queries by it -
 // summary/positions/evaluations will 401 if the header is missing.
 async function _currentUserId(): Promise<string | null> {
   try {

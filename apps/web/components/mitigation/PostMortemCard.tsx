@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * PostMortemCard — recalibration event display for losing trades.
+ * PostMortemCard - recalibration event display for losing trades.
  *
  * Frames each loss as a learning opportunity rather than a failure.
  * Shows what the bot predicted, what happened, and what was learned.
@@ -47,8 +47,8 @@ export function PostMortemCard({
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-3">
           <MiniStat label="Position" value={position.side} valueClass={position.side === "YES" ? "text-accent" : "text-red-400"} />
           <MiniStat label="Bot P(YES)" value={prob(position.claude_probability)} />
-          <MiniStat label="Confidence" value={position.confidence != null ? `${(position.confidence * 100).toFixed(0)}%` : "—"} />
-          <MiniStat label="Outcome" value={position.settlement_outcome ?? "—"} valueClass="text-red-400" />
+          <MiniStat label="Confidence" value={position.confidence != null ? `${(position.confidence * 100).toFixed(0)}%` : "-"} />
+          <MiniStat label="Outcome" value={position.settlement_outcome ?? "-"} valueClass="text-red-400" />
           <MiniStat label="Impact" value={usd(position.realized_pnl_usd, { sign: true })} valueClass="text-red-400" />
         </div>
 
@@ -69,7 +69,7 @@ export function PostMortemCard({
         {/* Narrative */}
         <div className="text-xs text-[#a0a0a0] leading-relaxed mb-2">{pm.narrative}</div>
 
-        {/* Lesson — only shown when a concrete diagnostic fired. No
+        {/* Lesson - only shown when a concrete diagnostic fired. No
             catch-all reassurance: unexplained losses stay unexplained. */}
         {pm.lesson && (
           <div className="mt-3 pt-3 border-t border-[#1a1a1a]/50">

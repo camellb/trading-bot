@@ -36,7 +36,7 @@ export function OverviewView({
           <div className="flex items-center gap-2 mt-1">
             <LivePulse active size="xs" />
             <span className="text-xs text-[#666]">
-              Live sync active. Last update: {lastUpdated ? timeAgo(lastUpdated.toISOString()) : "—"}
+              Live sync active. Last update: {lastUpdated ? timeAgo(lastUpdated.toISOString()) : "-"}
             </span>
           </div>
         </div>

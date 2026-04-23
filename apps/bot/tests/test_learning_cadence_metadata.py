@@ -3,7 +3,7 @@ Round-trip tests for `proposal_metadata` on the pending_suggestions row.
 
 The metadata column carries list-append payloads (target_field + items) so
 `apply_suggestion` can dispatch correctly across process restarts. These
-tests exercise the serialization boundary only — the actual INSERT /
+tests exercise the serialization boundary only - the actual INSERT /
 SELECT path needs a live PostgreSQL and is covered by the end-to-end
 verification step.
 """
@@ -84,7 +84,7 @@ class ProposalMetadataShapeTests(unittest.TestCase):
 class ApplyListAppendDispatchTests(unittest.TestCase):
     """`_apply_list_append` must merge items into the existing tuple without
     duplicates, preserving order. It reads via `get_user_config` and writes
-    via `update_user_config` — both monkeypatched here to isolate from the DB."""
+    via `update_user_config` - both monkeypatched here to isolate from the DB."""
 
     def setUp(self):
         from engine import learning_cadence as lc

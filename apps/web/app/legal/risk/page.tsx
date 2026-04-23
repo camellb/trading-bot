@@ -1,4 +1,4 @@
-export const metadata = { title: "Risk Disclosure — Delfi" };
+export const metadata = { title: "Risk Disclosure - Delfi" };
 
 export default function RiskPage() {
   return (

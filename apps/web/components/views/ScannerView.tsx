@@ -174,7 +174,7 @@ export function ScannerView({
               {rows.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-12 text-center text-sm text-[#444]">
-                    No evaluations yet — run a scan
+                    No evaluations yet - run a scan
                   </td>
                 </tr>
               ) : (
@@ -218,10 +218,10 @@ export function ScannerView({
                           {prob(r.market_price_yes)}
                         </td>
                         <td className="px-3 py-3 text-right font-body text-[#ccc] hidden sm:table-cell">
-                          {r.ev_bps != null ? r.ev_bps.toFixed(0) : "—"}
+                          {r.ev_bps != null ? r.ev_bps.toFixed(0) : "-"}
                         </td>
                         <td className="px-3 py-3 text-right font-body text-[#ccc] hidden lg:table-cell">
-                          {r.confidence != null ? r.confidence.toFixed(2) : "—"}
+                          {r.confidence != null ? r.confidence.toFixed(2) : "-"}
                         </td>
                         <td className="px-3 py-3 text-right text-[#666] whitespace-nowrap">
                           {timeAgo(r.evaluated_at)}
@@ -233,8 +233,8 @@ export function ScannerView({
                             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px] mb-3">
                               <DetailField label="Bot estimate" value={prob(r.claude_probability)} />
                               <DetailField label="Crowd price" value={prob(r.market_price_yes)} />
-                              <DetailField label="EV" value={r.ev_bps != null ? `${r.ev_bps.toFixed(0)} bps` : "—"} />
-                              <DetailField label="Confidence" value={r.confidence?.toFixed(2) ?? "—"} />
+                              <DetailField label="EV" value={r.ev_bps != null ? `${r.ev_bps.toFixed(0)} bps` : "-"} />
+                              <DetailField label="Confidence" value={r.confidence?.toFixed(2) ?? "-"} />
                               <DetailField label="Evaluated" value={formatTimestamp(r.evaluated_at)} />
                               <DetailField label="Sources" value={r.research_sources?.length ? `${r.research_sources.length} sources` : "none"} />
                             </div>

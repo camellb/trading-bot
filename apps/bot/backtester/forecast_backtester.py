@@ -4,7 +4,7 @@ backtest validation pass.
 
 Replays historical market evaluations through the real three-gate sizer
 with a caller-supplied UserConfig, then measures the hypothetical
-outcomes against the resolved predictions. This does not call Claude —
+outcomes against the resolved predictions. This does not call Claude -
 the language-model forecast happened at evaluation time and is stored.
 
 Sizing uses the sizer's cost model (spread + fees + slippage) so every
@@ -70,7 +70,7 @@ def simulate_with_config(
         evaluated_unique += 1
         # Approximate ask_no from ask_yes since historical evaluations only
         # persist yes_price. The doctrine's EV formula doesn't require a
-        # separate NO ask beyond this — over-approximating slightly narrows
+        # separate NO ask beyond this - over-approximating slightly narrows
         # NO-side EV which is the conservative choice.
         ask_no = max(1e-6, 1.0 - ev.market_price_yes)
         decision = size_position(
@@ -99,7 +99,7 @@ def simulate_with_config(
             )
             # Settlement at $1.00 × shares for winners, $0 for losers.
             proceeds = decision.shares * (1.0 if won else 0.0)
-            # Apply the exit-side cost too — the sizer's COST_ASSUMPTION is
+            # Apply the exit-side cost too - the sizer's COST_ASSUMPTION is
             # already a round-trip estimate, so only the one side is counted
             # here; subtracting it twice would double-count. Use the same
             # cost model the sizer used at entry.
@@ -247,7 +247,7 @@ def format_phase5_report(result: dict, old_trade_count: int = 35) -> str:
     """
     lines = []
     lines.append("=" * 70)
-    lines.append("  Phase 5 — EV backtester validation (90 days, default UserConfig)")
+    lines.append("  Phase 5 - EV backtester validation (90 days, default UserConfig)")
     lines.append("=" * 70)
 
     trades_taken = result.get("trades_taken", 0)
@@ -276,8 +276,8 @@ def format_phase5_report(result: dict, old_trade_count: int = 35) -> str:
     lines.append(f"  {'Bucket':<8} {'N':>5} {'Res':>5} {'Wins':>5} "
                  f"{'WinRt':>7} {'P&L':>10} {'ROI':>8}")
     for b in result.get("ev_buckets", []):
-        wr = f"{b['win_rate']*100:.0f}%" if b["win_rate"] is not None else "—"
-        br = f"{b['roi']*100:+.1f}%" if b["roi"] is not None else "—"
+        wr = f"{b['win_rate']*100:.0f}%" if b["win_rate"] is not None else "-"
+        br = f"{b['roi']*100:+.1f}%" if b["roi"] is not None else "-"
         lines.append(
             f"  {b['bucket']:<8} {b['n']:>5} {b['resolved']:>5} "
             f"{b['wins']:>5} {wr:>7} ${b['pnl']:>+8.2f} {br:>8}"
@@ -289,8 +289,8 @@ def format_phase5_report(result: dict, old_trade_count: int = 35) -> str:
     lines.append(f"  {'Category':<20} {'N':>5} {'Res':>5} {'Wins':>5} "
                  f"{'WinRt':>7} {'P&L':>10} {'ROI':>8}")
     for b in result.get("by_archetype", []):
-        wr = f"{b['win_rate']*100:.0f}%" if b["win_rate"] is not None else "—"
-        br = f"{b['roi']*100:+.1f}%" if b["roi"] is not None else "—"
+        wr = f"{b['win_rate']*100:.0f}%" if b["win_rate"] is not None else "-"
+        br = f"{b['roi']*100:+.1f}%" if b["roi"] is not None else "-"
         lines.append(
             f"  {b['category'][:20]:<20} {b['n']:>5} {b['resolved']:>5} "
             f"{b['wins']:>5} {wr:>7} ${b['pnl']:>+8.2f} {br:>8}"
@@ -387,7 +387,7 @@ def _main() -> None:
     from engine.user_config import get_user_config, DEFAULT_USER_ID
 
     parser = argparse.ArgumentParser(
-        description="Phase 5 — run the EV backtester over recent evaluations.")
+        description="Phase 5 - run the EV backtester over recent evaluations.")
     parser.add_argument("--days", type=int, default=90,
                         help="How many days of history to replay (default: 90)")
     parser.add_argument("--starting-cash", type=float, default=1000.0,

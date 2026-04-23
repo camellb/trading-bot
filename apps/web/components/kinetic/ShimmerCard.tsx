@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * ShimmerCard — loading overlay for cards.
+ * ShimmerCard - loading overlay for cards.
  *
  * Wraps any card content. When `loading` is true, overlays a
  * sweeping gradient shimmer effect to signal data refresh.

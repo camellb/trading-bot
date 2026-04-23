@@ -1,7 +1,7 @@
 """
-Polymarket position sizer — two gates plus a confidence softener.
+Polymarket position sizer - two gates plus a confidence softener.
 
-Gate 1 — side selection (never skips)
+Gate 1 - side selection (never skips)
     Two modes based on confidence.
 
     High-confidence override (confidence >= confidence_override_threshold,
@@ -13,12 +13,12 @@ Gate 1 — side selection (never skips)
     side toward whichever one is further from 0.50. Gate 2 then decides
     whether Claude's probability on that side is strong enough to fire.
 
-Gate 2 — minimum p_win
+Gate 2 - minimum p_win
     p_win = claude_p on YES, 1 - claude_p on NO. Must be >= min_p_win
     (default 0.50). Implicitly rejects trades where the mean rule picked
     a side Claude doesn't believe in.
 
-Confidence softener (size only — never skips)
+Confidence softener (size only - never skips)
     multiplier = min(1.0, 0.01 + (confidence / confidence_full_stake) * 0.99)
     At confidence 0 the stake is 1% of base; at confidence_full_stake (default
     0.70) the stake is full; above that the multiplier is capped at 1.0.
@@ -27,7 +27,7 @@ Final stake = bankroll * base_stake_pct * multiplier, capped at
 bankroll * max_stake_pct, with an absolute $2 minimum.
 
 Why there is no Gate 3. A prior version of this sizer gated on minimum
-expected return — (1/ask) - 1 - cost >= min_expected_return. It was removed
+expected return - (1/ask) - 1 - cost >= min_expected_return. It was removed
 because it skipped heavy favourites where the math still favoured taking
 the bet: if Claude's calibrated p_win is 0.95 and the market prices YES at
 0.94, the EV is positive and we should trade it. Gate 3 muted exactly
@@ -44,7 +44,7 @@ from typing import Optional
 _MIN_ABSOLUTE_STAKE_USD = 2.0
 
 # Cost assumption: spread + fees + slippage, as a fraction of the payoff.
-# Currently unused — retained for future P&L modelling and for call sites
+# Currently unused - retained for future P&L modelling and for call sites
 # that pass a `cost_assumption_override` for forward-looking analyses.
 COST_ASSUMPTION = 0.015
 
@@ -121,7 +121,7 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
-    # Entry-price sanity — can't compute shares without a positive ask.
+    # Entry-price sanity - can't compute shares without a positive ask.
     if entry <= 0:
         return _skip(
             cp, cf, f"non-positive entry price ({entry})",

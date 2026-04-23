@@ -1,10 +1,10 @@
 """
-Telegram Notifier — multi-tenant.
+Telegram Notifier - multi-tenant.
 
 Every user brings their own Telegram bot (via @BotFather) and their own
 chat_id. Both are stored on `user_config` (columns `telegram_bot_token`
 and `telegram_chat_id`). If either is missing for a given user, every
-notifier call for that user silently no-ops — Telegram delivery is
+notifier call for that user silently no-ops - Telegram delivery is
 opt-in.
 
 Credentials are looked up per-user with a 60-second in-memory TTL cache
@@ -17,7 +17,7 @@ commands (per Delfi Messages Spec v1): /status, /pause, /resume, /apply,
 /reject, /help.
 
 Operator-facing output (feed health warnings, wiring errors, tracebacks)
-is logged to stderr only — it is not sent to any user channel.
+is logged to stderr only - it is not sent to any user channel.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ class TelegramNotifier:
             return creds
 
     def invalidate_creds(self, user_id: str) -> None:
-        """Drop the cached entry for a user — call after a dashboard update."""
+        """Drop the cached entry for a user - call after a dashboard update."""
         with self._creds_lock:
             self._creds_cache.pop(user_id, None)
 
@@ -194,7 +194,7 @@ class TelegramNotifier:
     # ── Feed health (admin log only) ─────────────────────────────────────────
     async def notify_feed_degraded(self, feed_name: str, detail: str) -> None:
         # Spec v1: feed health is operator-only. Stderr, not user channel.
-        print(f"[telegram][admin] feed degraded: {feed_name} — {detail}",
+        print(f"[telegram][admin] feed degraded: {feed_name} - {detail}",
               file=sys.stderr)
 
     async def notify_feed_recovered(self, feed_name: str) -> None:
@@ -394,7 +394,7 @@ class TelegramNotifier:
         """
         Spawn one daemon polling thread per configured user.
 
-        Each thread is bound to (user_id, bot_token, chat_id) — that user's
+        Each thread is bound to (user_id, bot_token, chat_id) - that user's
         own Telegram bot handle. If a user adds creds later via the dashboard,
         the poller won't see them until the next bot restart; non-polling
         sends are picked up on the next cache TTL refresh.
@@ -547,7 +547,7 @@ class TelegramNotifier:
             pos_lines = []
             for p in open_rows[:10]:
                 pos_lines.append(
-                    f"• {p['side']} ${p['cost_usd']:.2f} — {p['question'][:60]}"
+                    f"• {p['side']} ${p['cost_usd']:.2f} - {p['question'][:60]}"
                 )
             if len(open_rows) > 10:
                 pos_lines.append(f"…and {len(open_rows) - 10} more.")
@@ -575,5 +575,5 @@ class TelegramNotifier:
             await self.send(user_id, tm.generic_error(context="Status", detail=str(exc)))
 
 
-# Module-level singleton — every other module imports this directly.
+# Module-level singleton - every other module imports this directly.
 notifier = TelegramNotifier()

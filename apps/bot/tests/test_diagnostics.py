@@ -1,5 +1,5 @@
 """
-Unit tests for engine.diagnostics — pure helpers, cache behaviour, and
+Unit tests for engine.diagnostics - pure helpers, cache behaviour, and
 in-memory stub-engine tests for the sides of the module that exercise SQL
 shapes. The full Postgres-specific SQL is not exercised here (would require
 a live DB); the tests focus on correctness of helpers, scope filter wiring,

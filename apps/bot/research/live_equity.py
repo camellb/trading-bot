@@ -1,5 +1,5 @@
 """
-Live equity market data adapter — yfinance (Yahoo Finance).
+Live equity market data adapter - yfinance (Yahoo Finance).
 
 Used by research.fetcher to inject real-time index/ETF prices into
 short-horizon equity-direction markets. yfinance is synchronous, so
@@ -68,7 +68,7 @@ class LiveEquityContext:
         if self.change_today_pct is not None and self.previous_close is not None:
             lines.append(f"Change today: {self.change_today_pct:+.2f}% (prev close {self.previous_close:,.2f})")
         if self.day_low is not None and self.day_high is not None:
-            lines.append(f"Day range: {self.day_low:,.2f} — {self.day_high:,.2f}")
+            lines.append(f"Day range: {self.day_low:,.2f} - {self.day_high:,.2f}")
         if self.intraday_range_pct is not None:
             lines.append(f"Intraday range: {self.intraday_range_pct:.2f}%")
         if self.market_state:
@@ -129,7 +129,7 @@ def _safe_float(v) -> Optional[float]:
 
 
 def _fetch_sync(ticker: str) -> Optional[LiveEquityContext]:
-    """Blocking yfinance call — run under asyncio.to_thread."""
+    """Blocking yfinance call - run under asyncio.to_thread."""
     try:
         t = yf.Ticker(ticker)
         info = t.fast_info  # much faster than .info

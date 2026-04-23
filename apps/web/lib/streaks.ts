@@ -53,10 +53,10 @@ export function computeBestStreak(settled: SettledPosition[]): number {
   return best;
 }
 
-/** Icon for streak display — escalates with streak length. */
+/** Icon for streak display - escalates with streak length. */
 export function streakIcon(count: number): string {
   if (count >= 10) return "⚡";
   if (count >= 5) return "🔥";
   if (count >= 3) return "✨";
-  return "—";
+  return "-";
 }

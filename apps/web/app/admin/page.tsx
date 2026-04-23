@@ -9,14 +9,14 @@ const STATS = [
 
 const ALERTS = [
   { level: "warn", title: "Polymarket rate limit proximity", detail: "Hitting 82% of our REST budget peak. Consider backoff or extra key." },
-  { level: "info", title: "Calibration drift — geopolitical tag", detail: "Bucket 60-70% running 4 pts hot across 42-user sample. Suggest cohort review." },
+  { level: "info", title: "Calibration drift - geopolitical tag", detail: "Bucket 60-70% running 4 pts hot across 42-user sample. Suggest cohort review." },
 ];
 
 const FEED = [
-  { t: "14:12", text: "User u_41a0 enabled live trading — $5k bankroll" },
+  { t: "14:12", text: "User u_41a0 enabled live trading - $5k bankroll" },
   { t: "13:58", text: "Daily cap triggered for user u_1e8f" },
-  { t: "13:42", text: "New signup — u_88ac · source: organic" },
-  { t: "13:21", text: "Calibration pass completed — 47 suggestions queued" },
+  { t: "13:42", text: "New signup - u_88ac · source: organic" },
+  { t: "13:21", text: "Calibration pass completed - 47 suggestions queued" },
   { t: "12:55", text: "Polymarket WS reconnected after 11s drop" },
 ];
 

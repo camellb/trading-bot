@@ -135,8 +135,8 @@ export default function ActivityPage() {
       const d = new Date(p.created_at);
       if (Number.isNaN(d.getTime())) continue;
       const entryCents = Math.round(p.entry_price * 100);
-      const pWin = p.claude_probability != null ? p.claude_probability.toFixed(2) : "—";
-      const conf = p.confidence != null ? p.confidence.toFixed(2) : "—";
+      const pWin = p.claude_probability != null ? p.claude_probability.toFixed(2) : "-";
+      const conf = p.confidence != null ? p.confidence.toFixed(2) : "-";
       out.push({
         id: `open-${p.id}`,
         ts: d.getTime(),
@@ -164,7 +164,7 @@ export default function ActivityPage() {
         timeLabel: timeLabel(d),
         kind: "resolve",
         title: `${win ? "Won" : "Lost"} ${s.side} · ${s.question}`,
-        meta: `${outcome || "—"} · ${pnlStr}`,
+        meta: `${outcome || "-"} · ${pnlStr}`,
       });
     }
 
@@ -184,7 +184,7 @@ export default function ActivityPage() {
         timeLabel: timeLabel(d),
         kind: "pass",
         title: `Passed · ${e.question}`,
-        meta: `Delfi ${delfi != null ? `${delfi}¢` : "—"} · market ${market != null ? `${market}¢` : "—"} · ${rec || "SKIP"}`,
+        meta: `Delfi ${delfi != null ? `${delfi}¢` : "-"} · market ${market != null ? `${market}¢` : "-"} · ${rec || "SKIP"}`,
         detail: e.reasoning ?? undefined,
       });
     }
@@ -193,8 +193,8 @@ export default function ActivityPage() {
       if (!s.created_at) continue;
       const d = new Date(s.created_at);
       if (Number.isNaN(d.getTime())) continue;
-      const cur = s.current_value != null ? s.current_value.toString() : "—";
-      const prop = s.proposed_value != null ? s.proposed_value.toString() : "—";
+      const cur = s.current_value != null ? s.current_value.toString() : "-";
+      const prop = s.proposed_value != null ? s.proposed_value.toString() : "-";
       out.push({
         id: `sugg-${s.id}`,
         ts: d.getTime(),

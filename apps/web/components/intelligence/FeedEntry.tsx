@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * FeedEntry — single intelligence feed line.
+ * FeedEntry - single intelligence feed line.
  *
  * Renders like a telemetry terminal line: timestamp, category tag,
  * market question, probability comparison, and recommendation.

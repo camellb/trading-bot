@@ -1,5 +1,5 @@
 """
-Phase 2 tests — risk manager circuit breakers.
+Phase 2 tests - risk manager circuit breakers.
 
 The manager reads settled P&L / peak equity / streak counts from the DB.
 We mock those helpers and exercise the pure verdict logic: breakers halt,
@@ -114,7 +114,7 @@ class DrawdownHaltTests(unittest.TestCase):
 
     def test_does_not_halt_below_threshold(self):
         cfg = UserConfig(drawdown_halt_pct=0.40)
-        # Peak 1100, current 1000: 9% drawdown — well under 40%.
+        # Peak 1100, current 1000: 9% drawdown - well under 40%.
         with stub_stats(peak_equity=1100.0, realized_total=0.0):
             v = rm.evaluate(user_config=cfg, bankroll=1000.0,
                             starting_cash=1000.0, mode="simulation")

@@ -51,8 +51,8 @@ export default function NotificationsPage() {
       setChatId("");
       setStatus(
         data?.configured
-          ? "Saved — Telegram alerts are on."
-          : "Cleared — Telegram alerts are off.",
+          ? "Saved - Telegram alerts are on."
+          : "Cleared - Telegram alerts are off.",
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -90,7 +90,7 @@ export default function NotificationsPage() {
       const res = await fetch("/api/config/telegram/test", { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
-      setStatus("Test message sent — check your Telegram.");
+      setStatus("Test message sent - check your Telegram.");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -167,7 +167,7 @@ export default function NotificationsPage() {
               }}
             />
             <div className="form-hint">
-              Personal chat or a group — the bot must be a member.
+              Personal chat or a group - the bot must be a member.
             </div>
           </div>
 
@@ -234,11 +234,11 @@ export default function NotificationsPage() {
           <span className="panel-meta">Automatic</span>
         </div>
         <ul className="panel-body" style={{ margin: 0, paddingLeft: 18 }}>
-          <li>Every new position opened — market, side, stake, estimated probability.</li>
-          <li>Every resolution — P&amp;L, win/loss, running bankroll.</li>
-          <li>Daily summary at end of day — trades, P&amp;L, calibration.</li>
-          <li>Weekly review — performance, Brier score, any proposed strategy changes.</li>
-          <li>Risk events — daily loss cap, drawdown halt, or streak cooldown triggered.</li>
+          <li>Every new position opened - market, side, stake, estimated probability.</li>
+          <li>Every resolution - P&amp;L, win/loss, running bankroll.</li>
+          <li>Daily summary at end of day - trades, P&amp;L, calibration.</li>
+          <li>Weekly review - performance, Brier score, any proposed strategy changes.</li>
+          <li>Risk events - daily loss cap, drawdown halt, or streak cooldown triggered.</li>
         </ul>
       </div>
     </>

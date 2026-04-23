@@ -50,7 +50,7 @@ export default function AdminHealthPage() {
           <div>
             <h1 className="page-h1">System health</h1>
             <p className="page-sub">
-              {degraded === 0 ? "All services operating normally." : `${degraded} service${degraded === 1 ? "" : "s"} degraded — see below.`}
+              {degraded === 0 ? "All services operating normally." : `${degraded} service${degraded === 1 ? "" : "s"} degraded - see below.`}
             </p>
           </div>
           <div className="page-head-right">

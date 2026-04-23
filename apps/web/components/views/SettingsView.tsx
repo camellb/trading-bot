@@ -24,8 +24,8 @@ const SCAN_KEYS = [
 ];
 
 const CONFIG_HELP: Record<string, string> = {
-  PM_SIMULATION_MIN_CONFIDENCE: "Minimum Claude confidence to trade in simulation",
-  PM_LIVE_MIN_CONFIDENCE: "Minimum Claude confidence to trade in live mode",
+  PM_SIMULATION_MIN_CONFIDENCE: "Minimum Delfi confidence to trade in simulation",
+  PM_LIVE_MIN_CONFIDENCE: "Minimum Delfi confidence to trade in live mode",
   PM_MAX_POSITION_PCT: "Maximum % of bankroll per position",
   PM_MIN_TRADE_USD: "Minimum trade size in USD",
   PM_MAX_TRADE_USD: "Maximum trade size in USD",
@@ -139,7 +139,7 @@ export function SettingsView({
         <div className="bg-danger-dim border border-red-500/20 px-4 py-3">
           <div className="text-xs uppercase tracking-widest text-red-400 font-medium">Restart Required</div>
           <div className="text-sm text-[#ccc] mt-1">
-            Mode changed to <span className="font-body text-red-300">{config.configured_mode}</span> on disk — run <code className="text-[#a0a0a0] bg-surface-3 px-1.5 py-0.5 text-xs">./bot.sh restart</code> to apply.
+            Mode changed to <span className="font-body text-red-300">{config.configured_mode}</span> on disk - run <code className="text-[#a0a0a0] bg-surface-3 px-1.5 py-0.5 text-xs">./bot.sh restart</code> to apply.
           </div>
         </div>
       )}
@@ -219,7 +219,7 @@ export function SettingsView({
               />
               <ToggleRow
                 label="Simulation Mode"
-                desc={mode === "live" ? "Off — real execution active" : "On — simulated fills"}
+                desc={mode === "live" ? "Off - real execution active" : "On - simulated fills"}
                 checked={mode !== "live"}
                 onClick={handleModeSwitch}
                 disabled={switching}

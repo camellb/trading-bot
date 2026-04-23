@@ -39,14 +39,14 @@ export function ConfigPanel({
       <header className="flex items-center justify-between px-3 py-2 border-b border-[#1a1a1a]">
         <h2 className="text-xs uppercase tracking-widest text-[#a0a0a0]">config</h2>
         <span className="text-[10px] text-[#666]">
-          mode: <span className="text-[#a0a0a0]">{data.active_mode ?? String(data.config.PM_MODE ?? "—")}</span>
+          mode: <span className="text-[#a0a0a0]">{data.active_mode ?? String(data.config.PM_MODE ?? "-")}</span>
         </span>
       </header>
       {data.restart_pending && (
         <div className="px-3 py-2 border-b border-[#1a1a1a] bg-red-950/30">
           <div className="text-[10px] uppercase tracking-widest text-red-400">restart required</div>
           <div className="text-xs text-[#ccc]">
-            Mode changed to <span className="font-body text-red-300">{data.configured_mode}</span> on disk — run <code className="text-[#a0a0a0]">./bot.sh restart</code> to apply
+            Mode changed to <span className="font-body text-red-300">{data.configured_mode}</span> on disk - run <code className="text-[#a0a0a0]">./bot.sh restart</code> to apply
           </div>
         </div>
       )}

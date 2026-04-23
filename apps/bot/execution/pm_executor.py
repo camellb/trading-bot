@@ -1,9 +1,9 @@
 """
-Polymarket executor — per-user (SaaS multi-tenancy).
+Polymarket executor - per-user (SaaS multi-tenancy).
 
 Every executor instance is bound to a specific user_id and reads that
 user's mode (simulation|live) and starting_cash from user_config. A user
-with no mode or no starting_cash is `not ready` — the executor exposes
+with no mode or no starting_cash is `not ready` - the executor exposes
 zero state and refuses all writes for that user. Brand-new accounts see
 nothing until they complete onboarding.
 
@@ -69,7 +69,7 @@ class PMExecutor:
     def get_starting_cash(self) -> float:
         """
         This user's starting bankroll in USD. Returns 0.0 if the user hasn't
-        finished onboarding — callers treat that as "no bankroll, don't trade".
+        finished onboarding - callers treat that as "no bankroll, don't trade".
         """
         if self._user_config.starting_cash is None:
             return 0.0
@@ -109,7 +109,7 @@ class PMExecutor:
         """
         Dashboard-friendly summary for this user in their current mode.
 
-        Not-ready users (no onboarding) see all zeros — never data that
+        Not-ready users (no onboarding) see all zeros - never data that
         leaked from another tenant.
         """
         if not self.ready:
@@ -343,7 +343,7 @@ class PMExecutor:
                 flush=True,
             )
 
-            # Trade-volume learning cadence — cheap no-op until the
+            # Trade-volume learning cadence - cheap no-op until the
             # 50-settled-trade gate is crossed for this user.
             try:
                 from engine.learning_cadence import maybe_run_learning_cycle
@@ -411,7 +411,7 @@ class PMExecutor:
                 return row is not None
         except Exception as exc:
             print(f"[pm_executor] has_open_position failed: {exc}", file=sys.stderr)
-            return True  # fail closed — assume position exists to prevent duplicates
+            return True  # fail closed - assume position exists to prevent duplicates
 
     def open_position_count(self) -> int:
         if not self.ready:
@@ -424,7 +424,7 @@ class PMExecutor:
                 ), {"uid": self.user_id, "m": self.mode}).scalar() or 0)
         except Exception as exc:
             print(f"[pm_executor] open_position_count failed: {exc}", file=sys.stderr)
-            return 999  # fail closed — prevent opening new positions on DB error
+            return 999  # fail closed - prevent opening new positions on DB error
 
     def count_positions_for_event(self, event_slug: str) -> int:
         """Count this user's open positions belonging to the same event group."""

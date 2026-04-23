@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * PostMortemList — collapsible container for loss post-mortems.
+ * PostMortemList - collapsible container for loss post-mortems.
  *
  * Shows recent losses framed as "Recalibration Events" with
  * expandable analysis. Keeps users engaged through loss periods

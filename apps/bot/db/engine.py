@@ -1,4 +1,4 @@
-"""Shared SQLAlchemy engine singleton — every module that needs DB access imports from here."""
+"""Shared SQLAlchemy engine singleton - every module that needs DB access imports from here."""
 
 import os
 from sqlalchemy import create_engine as _sa_create_engine

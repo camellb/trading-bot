@@ -69,7 +69,7 @@ export default function AccountPage() {
       });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
-        setNameError(body?.error ?? "Couldn't save — try again.");
+        setNameError(body?.error ?? "Couldn't save - try again.");
         return;
       }
       setProfile((p) => (p ? { ...p, displayName: trimmed } : p));
@@ -82,7 +82,7 @@ export default function AccountPage() {
   const savePoly = async () => {
     const ok = await poly.save(polyDraft);
     if (ok) {
-      // Secret fields are never echoed back from the server — clear the
+      // Secret fields are never echoed back from the server - clear the
       // local draft after a successful save so the form doesn't keep them
       // in component state. Wallet stays (it's non-sensitive).
       setPolyDraft((d) => ({
@@ -101,13 +101,13 @@ export default function AccountPage() {
     return (
       <div className="panel" style={{ borderColor: "var(--gold-60)" }}>
         <div className="panel-head">
-          <h2 className="panel-title">One more step — add your Polymarket keys</h2>
+          <h2 className="panel-title">One more step - add your Polymarket keys</h2>
           <span className="panel-meta">Live mode blocked until set</span>
         </div>
         <p className="panel-body">
           You picked live trading during onboarding. Delfi needs a Polymarket API
           key, API secret, and wallet address before it can place real trades.
-          Add them below — they are stored encrypted in your account and never
+          Add them below - they are stored encrypted in your account and never
           shared.
         </p>
       </div>
@@ -181,7 +181,7 @@ export default function AccountPage() {
         <p className="panel-body" style={{ marginTop: 0, marginBottom: 18 }}>
           Delfi needs a Polymarket API key, secret, and wallet address to place real trades.
           Keys are stored encrypted in your Delfi account and are only decrypted by the trading
-          engine when sizing or settling a trade. We never show secrets back — leave a field
+          engine when sizing or settling a trade. We never show secrets back - leave a field
           blank to keep the value we already have on file; type a new value to replace it; type
           a single space to clear it.
         </p>

@@ -103,16 +103,16 @@ const ACT_ICON: Record<ActivityItem["kind"], string> = {
 };
 
 function fmtTime(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "-";
   return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function daysFromNow(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const d = new Date(iso).getTime();
-  if (Number.isNaN(d)) return "—";
+  if (Number.isNaN(d)) return "-";
   const ms = d - Date.now();
   if (ms <= 0) return "now";
   const days = Math.round(ms / 86_400_000);
@@ -128,8 +128,8 @@ function evaluationsToActivity(evals: Evaluation[], settled: SettledPosition[]):
     const rec = (e.recommendation ?? "").toUpperCase();
     const traded = rec === "YES" || rec === "NO" || rec === "BUY";
     const kind: ActivityItem["kind"] = traded ? "execute" : "pass";
-    const pWin = e.claude_probability != null ? e.claude_probability.toFixed(2) : "—";
-    const conf = e.confidence != null ? e.confidence.toFixed(2) : "—";
+    const pWin = e.claude_probability != null ? e.claude_probability.toFixed(2) : "-";
+    const conf = e.confidence != null ? e.confidence.toFixed(2) : "-";
     const pre = traded ? `Opened ${rec} · ` : "Passed · ";
     return {
       t: fmtTime(e.evaluated_at),
@@ -279,7 +279,7 @@ export default function DashboardPage() {
         <section className="dash-card card-activity">
           <CardHead title="Today" meta="Live feed" href="/dashboard/activity" live />
           {activity.length === 0 ? (
-            <Empty label={loaded ? "No activity yet — Delfi is scanning." : "Loading..."} />
+            <Empty label={loaded ? "No activity yet - Delfi is scanning." : "Loading..."} />
           ) : (
             <ActivityFeed items={activity} />
           )}
@@ -345,7 +345,7 @@ function DashHero({
               {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </>
           ) : (
-            <span className="hero-balance-loading">—</span>
+            <span className="hero-balance-loading">-</span>
           )}
         </div>
         <div className="hero-deltas">
@@ -360,7 +360,7 @@ function DashHero({
                   </span>
                 </>
               ) : (
-                "—"
+                "-"
               )}
             </div>
           </div>
@@ -368,7 +368,7 @@ function DashHero({
           <div className="hero-delta">
             <div className="hero-delta-label">Started at</div>
             <div className="hero-delta-val t-num">
-              {loaded ? `$${starting.toLocaleString("en-US", { minimumFractionDigits: 0 })}` : "—"}
+              {loaded ? `$${starting.toLocaleString("en-US", { minimumFractionDigits: 0 })}` : "-"}
             </div>
           </div>
         </div>
@@ -382,7 +382,7 @@ function DashHero({
           </div>
         </div>
         <div className="hero-chart-placeholder">
-          Equity time series wiring pending — daily snapshots will appear here
+          Equity time series wiring pending - daily snapshots will appear here
           as the bot records performance_snapshots.
         </div>
       </div>
@@ -484,7 +484,7 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
               <span className="pos-entry">{entryCents}¢</span>
             </div>
             <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
-            <div className="pos-num t-num">{pWin != null ? `${pWin}%` : "—"}</div>
+            <div className="pos-num t-num">{pWin != null ? `${pWin}%` : "-"}</div>
             <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>
           </div>
         );
@@ -598,12 +598,12 @@ function SummaryCard({
       <p className="sum-body">{body}</p>
       <div className="sum-stats">
         <div className="sum-stat">
-          <div className="sum-stat-num t-num">{brier != null ? brier.toFixed(3) : "—"}</div>
+          <div className="sum-stat-num t-num">{brier != null ? brier.toFixed(3) : "-"}</div>
           <div className="sum-stat-label">Brier score</div>
         </div>
         <div className="sum-stat">
           <div className="sum-stat-num t-num">
-            {winRate != null ? `${Math.round(winRate * 100)}%` : "—"}
+            {winRate != null ? `${Math.round(winRate * 100)}%` : "-"}
           </div>
           <div className="sum-stat-label">Win rate</div>
         </div>

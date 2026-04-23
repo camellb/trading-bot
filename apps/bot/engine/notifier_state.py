@@ -2,12 +2,12 @@
 Tiny per-deploy state used by the Telegram notifier.
 
 Tracks three booleans that must persist across restarts:
-  * first_win_sent   — has the one-shot "First win" message been delivered?
-  * first_loss_sent  — has the one-shot "First loss" message been delivered?
-  * trading_paused   — is /pause currently in effect?
+  * first_win_sent   - has the one-shot "First win" message been delivered?
+  * first_loss_sent  - has the one-shot "First loss" message been delivered?
+  * trading_paused   - is /pause currently in effect?
 
 Stored as JSON at data/notifier_state.json. Single-user deployment, so a
-file is plenty — we do not need a DB table. Writes are atomic via
+file is plenty - we do not need a DB table. Writes are atomic via
 os.replace(); a missing or malformed file reads back as all-False.
 """
 

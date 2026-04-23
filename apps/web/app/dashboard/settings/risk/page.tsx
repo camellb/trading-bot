@@ -38,18 +38,18 @@ type Diagnostics = {
 };
 
 const ALL_ARCHETYPES: { id: string; label: string; group: string }[] = [
-  { id: "tennis_qualifier",    label: "Tennis — qualifier",     group: "Sports" },
-  { id: "tennis_main_draw",    label: "Tennis — main draw",     group: "Sports" },
-  { id: "tennis_lower_tier",   label: "Tennis — lower tier",    group: "Sports" },
-  { id: "basketball_game",     label: "Basketball — game",      group: "Sports" },
-  { id: "basketball_prop",     label: "Basketball — prop",      group: "Sports" },
-  { id: "baseball_game",       label: "Baseball — game",        group: "Sports" },
-  { id: "football_game",       label: "Football — game",        group: "Sports" },
-  { id: "hockey_game",         label: "Hockey — game",          group: "Sports" },
-  { id: "cricket_match",       label: "Cricket — match",        group: "Sports" },
-  { id: "esports_match",       label: "Esports — match",        group: "Sports" },
-  { id: "soccer_match",        label: "Soccer — match",         group: "Sports" },
-  { id: "sports_other",        label: "Sports — other",         group: "Sports" },
+  { id: "tennis_qualifier",    label: "Tennis - qualifier",     group: "Sports" },
+  { id: "tennis_main_draw",    label: "Tennis - main draw",     group: "Sports" },
+  { id: "tennis_lower_tier",   label: "Tennis - lower tier",    group: "Sports" },
+  { id: "basketball_game",     label: "Basketball - game",      group: "Sports" },
+  { id: "basketball_prop",     label: "Basketball - prop",      group: "Sports" },
+  { id: "baseball_game",       label: "Baseball - game",        group: "Sports" },
+  { id: "football_game",       label: "Football - game",        group: "Sports" },
+  { id: "hockey_game",         label: "Hockey - game",          group: "Sports" },
+  { id: "cricket_match",       label: "Cricket - match",        group: "Sports" },
+  { id: "esports_match",       label: "Esports - match",        group: "Sports" },
+  { id: "soccer_match",        label: "Soccer - match",         group: "Sports" },
+  { id: "sports_other",        label: "Sports - other",         group: "Sports" },
   { id: "price_threshold",     label: "Price threshold",        group: "Markets" },
   { id: "activity_count",      label: "Activity count",         group: "Markets" },
   { id: "geopolitical_event",  label: "Geopolitical event",     group: "Markets" },
@@ -500,7 +500,7 @@ function ArchetypeMatrix({
                     key={i.id}
                     type="button"
                     onClick={() => onToggle(i.id)}
-                    title={disallowed ? "Disallowed — click to allow" : "Allowed — click to disallow"}
+                    title={disallowed ? "Disallowed - click to allow" : "Allowed - click to disallow"}
                     style={{
                       padding: "6px 12px",
                       fontSize: 13,

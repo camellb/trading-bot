@@ -26,7 +26,7 @@ DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 @dataclass
 class UserConfig:
-    # Sizer thresholds — two gates + confidence softener.
+    # Sizer thresholds - two gates + confidence softener.
     # Gate 1: direction / side selection (never skips).
     # Gate 2: minimum p_win on the chosen side.
     # The prior Gate 3 (minimum expected return) was removed as a doctrine
@@ -49,7 +49,7 @@ class UserConfig:
     # Diagnostic-driven overrides (populated by learning cadence proposals).
     # None means "use the sizer default".
     cost_assumption_override: Optional[float]   = None
-    # No archetypes blocked by default — the learning cadence populates
+    # No archetypes blocked by default - the learning cadence populates
     # this list per-user based on resolved-trade evidence. Users can also
     # edit it manually via the Risk-controls UI.
     archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
@@ -99,7 +99,7 @@ class UserConfig:
         return self.can_trade_live
 
 
-# (min_inclusive, max_inclusive) — enforced on every write via the dashboard.
+# (min_inclusive, max_inclusive) - enforced on every write via the dashboard.
 # Diagnostic-driven overrides use None to mean "unset"; bounds only apply
 # when a concrete value is supplied.
 USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
@@ -140,7 +140,7 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Confidence at which the sizer applies the full configured stake. "
         "At confidence 0 the multiplier is 1%; it scales linearly to 100% "
         "at this threshold, then holds at 100% above. The softener never "
-        "skips — only shrinks size when confidence is low.",
+        "skips - only shrinks size when confidence is low.",
     "confidence_override_threshold":
         "Confidence at or above which the sizer ignores the market and "
         "follows Claude's forecast directly. Below this value the side is "
@@ -178,7 +178,7 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-# Type caster per field — applied when accepting updates from the dashboard.
+# Type caster per field - applied when accepting updates from the dashboard.
 _CASTERS: dict[str, type] = {
     "min_p_win":                     float,
     "confidence_full_stake":         float,
@@ -283,7 +283,7 @@ def validated_update_payload(payload: dict) -> dict:
 def ensure_default_user_config() -> None:
     """
     Create the default user_config row if it doesn't already exist.
-    Idempotent — safe to call on every startup.
+    Idempotent - safe to call on every startup.
     """
     try:
         from sqlalchemy import text
@@ -305,7 +305,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
 
     For a brand-new user with no row, returns a UserConfig where the
     per-user execution fields (mode, starting_cash, polymarket_*,
-    wallet_address) are all None — callers must treat such a config as
+    wallet_address) are all None - callers must treat such a config as
     "not ready to trade" (see UserConfig.ready_to_trade).
     """
     try:
@@ -375,13 +375,13 @@ def _encode_csv(value) -> Optional[str]:
 
 def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
     """
-    Validate and apply field updates for a user. Atomic on the DB side —
+    Validate and apply field updates for a user. Atomic on the DB side -
     either every change lands or none do.
     """
     if not changes:
         return get_user_config(user_id)
 
-    # Validate upfront (cast + bounds) — fail before touching the DB.
+    # Validate upfront (cast + bounds) - fail before touching the DB.
     clean: dict = {}
     for key, raw in changes.items():
         value = cast_value(key, raw)
@@ -413,7 +413,7 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
 
 
 # ── Telegram creds ──────────────────────────────────────────────────────────
-# Opt-in, per-user Telegram delivery. Both columns nullable — either unset
+# Opt-in, per-user Telegram delivery. Both columns nullable - either unset
 # means the notifier silently no-ops for that user. Stored on user_config
 # rather than a sidecar table so the dashboard can write with the same
 # RLS policies already in place.
@@ -448,7 +448,7 @@ def set_user_telegram_creds(user_id: str,
                              chat_id:   Optional[str]) -> None:
     """
     Write telegram credentials for a user. Pass None (or empty) for either
-    value to clear it — the getter requires both to be non-empty.
+    value to clear it - the getter requires both to be non-empty.
     Auto-creates the user_config row if it doesn't exist.
     """
     tok = (bot_token or "").strip() or None
@@ -496,7 +496,7 @@ def list_users_with_telegram() -> list[str]:
 # to be non-empty; passphrase is optional (only some keys carry one).
 def get_user_polymarket_creds(user_id: str) -> dict:
     """
-    Return {'api_key', 'api_secret', 'passphrase', 'wallet_address'} —
+    Return {'api_key', 'api_secret', 'passphrase', 'wallet_address'} -
     any missing value is None. Dashboard and bot both call this; the bot
     refuses live trades if any required field is empty.
     """

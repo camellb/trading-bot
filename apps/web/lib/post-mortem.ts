@@ -19,7 +19,7 @@ export type PostMortemData = {
 export function buildPostMortem(p: SettledPosition): PostMortemData {
   const won = p.settlement_outcome === p.side;
   // claude_probability is always P(YES). Compare against the actual
-  // outcome (1.0 for YES, 0.0 for NO) — NOT settlement_price, which
+  // outcome (1.0 for YES, 0.0 for NO) - NOT settlement_price, which
   // is the token payout (0/1 depending on which side the bot held).
   const actualOutcome =
     p.settlement_outcome === "YES" ? 1.0 : p.settlement_outcome === "NO" ? 0.0 : null;
@@ -52,7 +52,7 @@ export function buildPostMortem(p: SettledPosition): PostMortemData {
     narrative = `Bought NO at $${p.entry_price.toFixed(3)} (market ${marketYesPct}% YES), estimating only ${probStr} YES probability. Market resolved ${outcome}.`;
   }
 
-  // Build lesson — only fires when a specific diagnostic pattern matches.
+  // Build lesson - only fires when a specific diagnostic pattern matches.
   // We deliberately do NOT emit a catch-all "just variance" reassurance
   // for losses that don't trigger any of these: losing money should not
   // read like a feature, and stringing together enough "standard variance"
@@ -63,7 +63,7 @@ export function buildPostMortem(p: SettledPosition): PostMortemData {
   } else if (overconfident) {
     lesson = `High-confidence loss (${((p.confidence ?? 0) * 100).toFixed(0)}% confidence, wrong side). Watch for similar ${p.category ?? "market"} calls.`;
   } else if (p.ev_bps != null && p.ev_bps < 800) {
-    lesson = `Thin-EV entry (${p.ev_bps.toFixed(0)}bps) — higher variance by design. Not necessarily wrong, but worth reviewing if several stack up.`;
+    lesson = `Thin-EV entry (${p.ev_bps.toFixed(0)}bps) - higher variance by design. Not necessarily wrong, but worth reviewing if several stack up.`;
   }
 
   return {

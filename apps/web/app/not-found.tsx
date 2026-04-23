@@ -1,7 +1,7 @@
 import Link from "next/link";
 import "./styles/content.css";
 
-export const metadata = { title: "Not found — Delfi" };
+export const metadata = { title: "Not found - Delfi" };
 
 export default function NotFound() {
   return (

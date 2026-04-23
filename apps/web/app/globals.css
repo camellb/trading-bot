@@ -22,12 +22,12 @@
   --color-border: rgba(232, 228, 216, 0.10);
   --color-border-bright: rgba(232, 228, 216, 0.30);
 
-  /* ── Oracle Gold — primary accent, reserved ~3% ───────────────── */
+  /* ── Oracle Gold - primary accent, reserved ~3% ───────────────── */
   --color-gold: #d4af37;
   --color-gold-dim: rgba(212, 175, 55, 0.12);
   --color-gold-line: rgba(212, 175, 55, 0.35);
 
-  /* ── Neon Teal — working state ~10% ───────────────────────────── */
+  /* ── Neon Teal - working state ~10% ───────────────────────────── */
   --color-accent: #00ffff;
   --color-accent-dim: rgba(0, 255, 255, 0.08);
   --color-accent-bright: #66ffff;
@@ -36,7 +36,7 @@
   --color-teal-line: rgba(0, 255, 255, 0.30);
   --color-teal-glow: rgba(0, 255, 255, 0.45);
 
-  /* ── Vellum — warm off-white body text ────────────────────────── */
+  /* ── Vellum - warm off-white body text ────────────────────────── */
   --color-vellum: #e8e4d8;
   --color-vellum-60: rgba(232, 228, 216, 0.60);
   --color-vellum-40: rgba(232, 228, 216, 0.40);
@@ -44,13 +44,13 @@
   --color-vellum-10: rgba(232, 228, 216, 0.10);
   --color-vellum-05: rgba(232, 228, 216, 0.05);
 
-  /* ── Ember — losses / warnings (<1%) ──────────────────────────── */
+  /* ── Ember - losses / warnings (<1%) ──────────────────────────── */
   --color-ember: #ff4d3d;
   --color-ember-dim: rgba(255, 77, 61, 0.10);
   --color-danger: #ff4d3d;
   --color-danger-dim: rgba(255, 77, 61, 0.10);
 
-  /* Neon Green — P&L positive (carried for existing widgets) */
+  /* Neon Green - P&L positive (carried for existing widgets) */
   --color-profit: #4bffa1;
   --color-profit-dim: rgba(75, 255, 161, 0.10);
 
@@ -91,7 +91,7 @@
   --ember: #ff4d3d;
   --ember-dim: rgba(255, 77, 61, 0.10);
 
-  /* Profit / positive P&L — Neon Green */
+  /* Profit / positive P&L - Neon Green */
   --profit: #4bffa1;
   --profit-dim: rgba(75, 255, 161, 0.10);
   --profit-line: rgba(75, 255, 161, 0.35);
@@ -408,7 +408,7 @@ body::before, body::after {
   font-feature-settings: "tnum", "zero";
 }
 
-/* ── Live dot — the single canonical "it is working" indicator ──── */
+/* ── Live dot - the single canonical "it is working" indicator ──── */
 @keyframes breath-ds {
   0%, 100% { opacity: 0.55; transform: scale(1); }
   50%      { opacity: 1;    transform: scale(1.18); }

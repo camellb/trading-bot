@@ -66,7 +66,7 @@ export function EvaluationsTable({ evaluations }: { evaluations: EvaluationRow[]
           <h2 className="text-xs uppercase tracking-widest text-[#a0a0a0]">evaluations</h2>
         </header>
         <div className="px-3 py-6 text-center text-xs text-[#666]">
-          no evaluations yet — run a scan
+          no evaluations yet - run a scan
         </div>
       </section>
     );
@@ -118,10 +118,10 @@ export function EvaluationsTable({ evaluations }: { evaluations: EvaluationRow[]
                     <td className="px-3 py-2 text-right font-body text-white hidden sm:table-cell">{prob(r.claude_probability)}</td>
                     <td className="px-3 py-2 text-right font-body text-[#666] hidden md:table-cell">{prob(r.market_price_yes)}</td>
                     <td className="px-3 py-2 text-right font-body text-white hidden sm:table-cell">
-                      {r.ev_bps != null ? r.ev_bps.toFixed(0) : "—"}
+                      {r.ev_bps != null ? r.ev_bps.toFixed(0) : "-"}
                     </td>
                     <td className="px-3 py-2 text-right font-body text-white hidden lg:table-cell">
-                      {r.confidence != null ? r.confidence.toFixed(2) : "—"}
+                      {r.confidence != null ? r.confidence.toFixed(2) : "-"}
                     </td>
                     <td className="px-3 py-2 text-right font-body text-[#a0a0a0] whitespace-nowrap">{timeAgo(r.evaluated_at)}</td>
                   </tr>
@@ -131,8 +131,8 @@ export function EvaluationsTable({ evaluations }: { evaluations: EvaluationRow[]
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] mb-3">
                           <Detail label="bot estimate" value={prob(r.claude_probability)} />
                           <Detail label="crowd price" value={prob(r.market_price_yes)} />
-                          <Detail label="EV" value={r.ev_bps != null ? `${r.ev_bps.toFixed(0)} bps` : "—"} />
-                          <Detail label="confidence" value={r.confidence?.toFixed(2) ?? "—"} />
+                          <Detail label="EV" value={r.ev_bps != null ? `${r.ev_bps.toFixed(0)} bps` : "-"} />
+                          <Detail label="confidence" value={r.confidence?.toFixed(2) ?? "-"} />
                           <Detail label="evaluated" value={formatTimestamp(r.evaluated_at)} />
                           <Detail label="sources" value={r.research_sources?.length ? `${r.research_sources.length} sources` : "none"} />
                         </div>

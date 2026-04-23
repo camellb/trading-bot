@@ -10,7 +10,7 @@ Calendar-based tuning (weekly / monthly) proposes changes on whatever
 sample happens to have accumulated in that window, which is too often
 too small and noisy. Trade-volume gating guarantees every suggestion is
 backed by a meaningful sample. An active bot might hit 50 trades in days;
-a quiet one might take weeks — either way, suggestions arrive when the
+a quiet one might take weeks - either way, suggestions arrive when the
 data justifies them.
 
 Proposers are deterministic heuristics for now. Each proposer follows the
@@ -123,8 +123,8 @@ def propose_suggestions(stats: dict, current: UserConfig,
     """
     Deterministic heuristic proposers.
 
-    `stats`  — recent-window aggregate produced by `_gather_stats`.
-    `diag`   — optional dict of diagnostic slices (see `_collect_diagnostics`).
+    `stats`  - recent-window aggregate produced by `_gather_stats`.
+    `diag`   - optional dict of diagnostic slices (see `_collect_diagnostics`).
                Tests may pass synthetic slices; in production it is fetched
                lazily if omitted.
 
@@ -321,7 +321,7 @@ def _gather_stats(mode: str, limit: int) -> dict:
     roi = total_pnl / total_cost
     win_rate = wins / n if n else 0.0
 
-    # Peak drawdown over the window — running max vs current equity.
+    # Peak drawdown over the window - running max vs current equity.
     equity = 0.0
     peak = 0.0
     peak_dd = 0.0

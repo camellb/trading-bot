@@ -1,4 +1,4 @@
-export const metadata = { title: "Terms of Service — Delfi" };
+export const metadata = { title: "Terms of Service - Delfi" };
 
 export default function TermsPage() {
   return (

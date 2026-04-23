@@ -1,5 +1,5 @@
 """
-Live crypto market data adapter — OKX via CCXT async.
+Live crypto market data adapter - OKX via CCXT async.
 
 Public endpoints only. Used by research.fetcher to inject real-time
 price/order-flow context into short-horizon crypto markets so the
@@ -37,7 +37,7 @@ SYMBOL_MAP: dict[str, str] = {
     "SOL":      "SOL/USDT",
 }
 
-# Cache TTL — short so context stays fresh for direction calls.
+# Cache TTL - short so context stays fresh for direction calls.
 _CACHE_TTL_SECONDS = 15.0
 
 

@@ -1,9 +1,9 @@
 """
-DB Logger — thin write helpers for the Polymarket bot.
+DB Logger - thin write helpers for the Polymarket bot.
 
 Only two tables flow through this module: `event_log` and `feed_health_log`.
 All other tables (pm_positions, predictions, market_evaluations) are written
-directly by the modules that own them — keeping this file small so mass
+directly by the modules that own them - keeping this file small so mass
 imports stay cheap.
 
 Every function swallows exceptions and logs to stderr; the caller should

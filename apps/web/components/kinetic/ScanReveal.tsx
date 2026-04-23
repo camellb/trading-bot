@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * ScanReveal — staged execution visualization.
+ * ScanReveal - staged execution visualization.
  *
  * Shows a phased progress bar when a scan is running,
  * building anticipation before results appear.

@@ -24,7 +24,9 @@ type SettledPosition = {
   question: string;
   side: "YES" | "NO";
   cost_usd: number;
+  entry_price: number;
   claude_probability: number | null;
+  confidence: number | null;
   settlement_outcome: string | null;
   realized_pnl_usd: number | null;
   settled_at: string | null;
@@ -60,9 +62,9 @@ async function getJSON<T>(path: string): Promise<T | null> {
 }
 
 function daysFromNow(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const d = new Date(iso).getTime();
-  if (Number.isNaN(d)) return "—";
+  if (Number.isNaN(d)) return "-";
   const ms = d - Date.now();
   if (ms <= 0) return "now";
   const days = Math.round(ms / 86_400_000);
@@ -74,9 +76,9 @@ function daysFromNow(iso: string | null): string {
 }
 
 function formatDate(iso: string | null): string {
-  if (!iso) return "—";
+  if (!iso) return "-";
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "-";
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
@@ -151,7 +153,7 @@ export default function PositionsPage() {
           {open.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No open positions yet. Delfi is evaluating markets — positions will appear once a trade clears all gates."
+                ? "No open positions yet. Delfi is evaluating markets - positions will appear once a trade clears all gates."
                 : "Loading..."}
             </div>
           ) : (
@@ -176,7 +178,7 @@ export default function PositionsPage() {
                   return (
                     <tr key={p.id}>
                       <td>{p.question}</td>
-                      <td>{p.category ?? "—"}</td>
+                      <td>{p.category ?? "-"}</td>
                       <td>
                         <span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>
                           {p.side}
@@ -184,8 +186,8 @@ export default function PositionsPage() {
                       </td>
                       <td className="mono">{entryCents}¢</td>
                       <td className="mono">${p.cost_usd.toFixed(0)}</td>
-                      <td className="mono">{pWin != null ? pWin.toFixed(2) : "—"}</td>
-                      <td className="mono">{conf != null ? conf.toFixed(2) : "—"}</td>
+                      <td className="mono">{pWin != null ? pWin.toFixed(2) : "-"}</td>
+                      <td className="mono">{conf != null ? conf.toFixed(2) : "-"}</td>
                       <td className="mono">{daysFromNow(p.expected_resolution_at)}</td>
                     </tr>
                   );
@@ -201,14 +203,14 @@ export default function PositionsPage() {
           <div className="panel-head">
             <h2 className="panel-title">Recent evaluations</h2>
             <span className="panel-meta">
-              {evals.length} markets analyzed — most recent first
+              {evals.length} markets analyzed - most recent first
             </span>
           </div>
 
           {evals.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No recent evaluations. The bot scans Polymarket periodically — check back shortly."
+                ? "No recent evaluations. The bot scans Polymarket periodically - check back shortly."
                 : "Loading..."}
             </div>
           ) : (
@@ -238,13 +240,13 @@ export default function PositionsPage() {
                       <div>
                         <div className="kv-label">Market</div>
                         <div className="mono" style={{ fontSize: 13 }}>
-                          {marketPct != null ? `${marketPct}¢` : "—"}
+                          {marketPct != null ? `${marketPct}¢` : "-"}
                         </div>
                       </div>
                       <div>
                         <div className="kv-label">Delfi</div>
                         <div className="mono" style={{ fontSize: 13, color: "var(--gold)" }}>
-                          {delfiPct != null ? `${delfiPct}¢` : "—"}
+                          {delfiPct != null ? `${delfiPct}¢` : "-"}
                         </div>
                       </div>
                       <div>
@@ -253,7 +255,7 @@ export default function PositionsPage() {
                           className={`mono ${traded ? "cell-up" : ""}`}
                           style={{ fontSize: 13 }}
                         >
-                          {rec || "—"}
+                          {rec || "-"}
                           {pWin != null ? ` · ${pWin.toFixed(2)}` : ""}
                         </div>
                       </div>
@@ -292,13 +294,22 @@ export default function PositionsPage() {
                   <th>Outcome</th>
                   <th>Size</th>
                   <th>P&amp;L</th>
-                  <th>p_win</th>
+                  <th>D YES %</th>
+                  <th>M YES %</th>
+                  <th>D CONF</th>
                   <th>Settled</th>
                 </tr>
               </thead>
               <tbody>
                 {settled.map((s) => {
                   const pnl = s.realized_pnl_usd ?? 0;
+                  const delfiYes = s.claude_probability;
+                  const marketYes =
+                    s.entry_price != null
+                      ? s.side === "YES"
+                        ? s.entry_price
+                        : 1 - s.entry_price
+                      : null;
                   return (
                     <tr key={s.id}>
                       <td>{s.question}</td>
@@ -307,13 +318,19 @@ export default function PositionsPage() {
                           {s.side}
                         </span>
                       </td>
-                      <td className="mono">{s.settlement_outcome ?? "—"}</td>
+                      <td className="mono">{s.settlement_outcome ?? "-"}</td>
                       <td className="mono">${s.cost_usd.toFixed(0)}</td>
                       <td className={`mono ${pnl >= 0 ? "cell-up" : "cell-down"}`}>
                         {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
                       </td>
                       <td className="mono">
-                        {s.claude_probability != null ? s.claude_probability.toFixed(2) : "—"}
+                        {delfiYes != null ? `${Math.round(delfiYes * 100)}%` : "-"}
+                      </td>
+                      <td className="mono">
+                        {marketYes != null ? `${Math.round(marketYes * 100)}%` : "-"}
+                      </td>
+                      <td className="mono">
+                        {s.confidence != null ? s.confidence.toFixed(2) : "-"}
                       </td>
                       <td className="mono">{formatDate(s.settled_at)}</td>
                     </tr>

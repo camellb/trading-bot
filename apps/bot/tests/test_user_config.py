@@ -1,5 +1,5 @@
 """
-Phase 2 tests — per-user risk configuration.
+Phase 2 tests - per-user risk configuration.
 
 DB round-trips need a live PostgreSQL; these tests stay in pure-function
 territory (cast + bounds validation + the UserConfig dataclass itself).
@@ -82,7 +82,7 @@ class BoundsValidationTests(unittest.TestCase):
         u = UserConfig()
         for k, (lo, hi) in USER_CONFIG_BOUNDS.items():
             v = getattr(u, k)
-            # Nullable diagnostic overrides default to None — not subject to
+            # Nullable diagnostic overrides default to None - not subject to
             # bounds until a concrete value is supplied.
             if k in USER_CONFIG_NULLABLE_FIELDS and v is None:
                 continue

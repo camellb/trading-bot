@@ -135,7 +135,7 @@ export function GoLiveGate({
         </div>
         {countdown && (
           <div className="text-[10px] text-amber-400/80 border-t border-[#1a1a1a] pt-3 mt-3 uppercase tracking-widest">
-            simulation test — {countdown}
+            simulation test - {countdown}
           </div>
         )}
         {showReady && (

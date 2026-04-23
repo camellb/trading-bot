@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * GoLiveQuest — gamified progression system for the Go-Live gates.
+ * GoLiveQuest - gamified progression system for the Go-Live gates.
  *
  * Transforms the 3 gates (Brier, resolved count, P&L) into
  * a quest/leveling UI with circular progress milestones.
@@ -28,7 +28,7 @@ function buildMilestones(
   return [
     {
       label: "Calibration",
-      current: brier != null ? brier.toFixed(3) : "—",
+      current: brier != null ? brier.toFixed(3) : "-",
       target: "< 0.220",
       progress: brier != null ? clamp01(1 - ((brier - 0.22) / 0.22)) : 0,
       pass: brier != null && brier < 0.22,
@@ -54,7 +54,7 @@ function buildMilestones(
     },
     {
       label: "Profitability",
-      current: pnl != null ? usd(pnl, { sign: true }) : "—",
+      current: pnl != null ? usd(pnl, { sign: true }) : "-",
       target: "> $0.00",
       progress: pnl != null ? (pnl >= 0 ? 1 : clamp01(1 - (Math.abs(pnl) / pnlScale))) : 0,
       pass: pnl != null && pnl > 0,
@@ -146,7 +146,7 @@ export function GoLiveQuest({
           <div className="flex items-center gap-2">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-breathe" />
             <span className="text-[10px] text-amber-400/80 uppercase tracking-widest">
-              Simulation test — {countdown}
+              Simulation test - {countdown}
             </span>
           </div>
           {!testStillRunning && countdown === "test complete" && !allPass && (

@@ -226,10 +226,10 @@ export function PositionsView({
                         <td className="px-3 py-3 text-right font-body text-[#ccc]">${p.entry_price.toFixed(2)}</td>
                         <td className="px-3 py-3 text-right font-body text-[#ccc] hidden md:table-cell">{prob(p.claude_probability)}</td>
                         <td className="px-3 py-3 text-right font-body text-[#a0a0a0] hidden lg:table-cell">
-                          {p.ev_bps != null ? p.ev_bps.toFixed(0) : "—"}
+                          {p.ev_bps != null ? p.ev_bps.toFixed(0) : "-"}
                         </td>
                         <td className="px-3 py-3 text-right font-body text-[#a0a0a0] hidden lg:table-cell">
-                          {p.confidence != null ? p.confidence.toFixed(2) : "—"}
+                          {p.confidence != null ? p.confidence.toFixed(2) : "-"}
                         </td>
                         <td className="px-3 py-3 text-right text-[#666] whitespace-nowrap">{timeUntil(p.expected_resolution_at)}</td>
                       </tr>
@@ -242,8 +242,8 @@ export function PositionsView({
                               <DetailField label="Entry price" value={`$${p.entry_price.toFixed(3)}`} />
                               <DetailField label="Bot estimate" value={prob(p.claude_probability)} />
                               <DetailField label="Crowd price" value={prob(crowdPriceYes(p))} />
-                              <DetailField label="EV" value={p.ev_bps != null ? `${p.ev_bps.toFixed(0)} bps` : "—"} />
-                              <DetailField label="Confidence" value={p.confidence?.toFixed(2) ?? "—"} />
+                              <DetailField label="EV" value={p.ev_bps != null ? `${p.ev_bps.toFixed(0)} bps` : "-"} />
+                              <DetailField label="Confidence" value={p.confidence?.toFixed(2) ?? "-"} />
                               <DetailField label="Opened" value={timeAgo(p.created_at)} />
                               <DetailField label="Resolves in" value={timeUntil(p.expected_resolution_at)} />
                             </div>
@@ -319,7 +319,7 @@ export function PositionsView({
                         ${p.entry_price.toFixed(3)}
                       </td>
                       <td className="px-3 py-3 text-right font-body text-[#ccc] hidden md:table-cell">
-                        {p.settlement_price != null ? `$${p.settlement_price.toFixed(3)}` : "—"}
+                        {p.settlement_price != null ? `$${p.settlement_price.toFixed(3)}` : "-"}
                       </td>
                       <td className="px-3 py-3 text-right text-[#666]">{timeAgo(p.settled_at)}</td>
                     </tr>

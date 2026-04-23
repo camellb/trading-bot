@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * LivePulse — breathing heartbeat indicator.
+ * LivePulse - breathing heartbeat indicator.
  *
  * Replaces static dots with a richer "alive" animation
  * that subtly pulses to signal active processing.

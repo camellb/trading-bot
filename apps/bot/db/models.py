@@ -1,11 +1,11 @@
 """
-PostgreSQL schema — Polymarket prediction-market bot.
+PostgreSQL schema - Polymarket prediction-market bot.
 
 Reads DATABASE_URL from environment. Call create_all_tables() to create all
 tables if they do not already exist. Safe to call on every startup.
 
 Legacy crypto tables (trades, positions, ticks, daily_pnl, backtest_*) are
-intentionally no longer declared here — they remain in the database from
+intentionally no longer declared here - they remain in the database from
 prior runs but are orphaned from the application. Drop them manually once
 you're sure you no longer want the history:
 
@@ -34,7 +34,7 @@ metadata = MetaData()
 
 
 # ── Calibration ──────────────────────────────────────────────────────────────
-# Every prediction Claude makes — Polymarket evaluations, future Kalshi/Manifold
+# Every prediction Claude makes - Polymarket evaluations, future Kalshi/Manifold
 # evaluations, backtest decisions. Scored against resolved outcomes to produce
 # Brier score, reliability diagrams, per-category attribution.
 predictions = Table(
@@ -49,7 +49,7 @@ predictions = Table(
     Column("subject_key",    Text, nullable=False),
     # Market category (politics, macro, sports, crypto, etc.).
     Column("category",       Text, nullable=True),
-    # Probability YES resolves true (0..1) — the calibrated probability.
+    # Probability YES resolves true (0..1) - the calibrated probability.
     Column("probability",    Float, nullable=False),
     # Claude's self-stated confidence in the estimate.
     Column("confidence",     Float, nullable=True),
@@ -86,7 +86,7 @@ pm_positions = Table(
     Column("slug",          Text,    nullable=True),
     Column("question",      Text,    nullable=False),
     Column("category",      Text,    nullable=True),
-    # 'YES' or 'NO' — which side we bought.
+    # 'YES' or 'NO' - which side we bought.
     Column("side",          String(3), nullable=False),
     # Shares purchased (Polymarket shares pay $1 if winning, $0 if losing).
     Column("shares",        Float,   nullable=False),
@@ -271,7 +271,7 @@ sentiment_scores = Table(
 # Every 50 settled trades the learning cadence proposes user_config tweaks.
 # Each suggestion includes the evidence and the backtester's hypothetical
 # ROI delta. The dashboard surfaces these with Apply/Skip/Snooze buttons.
-# No suggestion ever modifies runtime state on its own — a user Apply must
+# No suggestion ever modifies runtime state on its own - a user Apply must
 # flow through the user_config update path.
 pending_suggestions = Table(
     "pending_suggestions",
@@ -289,7 +289,7 @@ pending_suggestions = Table(
     # (expressed as a fraction, e.g. 0.02 = +2 pp ROI).
     Column("backtest_delta", Float, nullable=True),
     Column("backtest_trades", Integer, nullable=True),
-    # settled_trade_count at the time of creation — used by the learning
+    # settled_trade_count at the time of creation - used by the learning
     # cadence to decide whether enough new trades have accumulated.
     Column("settled_count_at_creation", Integer, nullable=True),
     # 'pending' | 'applied' | 'skipped' | 'snoozed'
@@ -408,7 +408,7 @@ def create_all_tables() -> None:
         # Migration: historical rename edge_bps → ev_bps. The column stores
         # expected return × 10000 at entry, kept for diagnostic attribution.
         # Under the three-gate doctrine expected return is one gate, not
-        # the primary signal. Idempotent — runs once on legacy databases.
+        # the primary signal. Idempotent - runs once on legacy databases.
         for tbl in ("pm_positions", "market_evaluations"):
             conn.execute(sa_text(
                 f"DO $$ BEGIN "
@@ -437,7 +437,7 @@ def create_all_tables() -> None:
             "CREATE INDEX IF NOT EXISTS idx_market_evaluations_market "
             "ON market_evaluations(market_id, evaluated_at DESC)"
         ))
-        # Markout indexes — fast lookups for pending checks and stats.
+        # Markout indexes - fast lookups for pending checks and stats.
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_markouts_evaluation "
             "ON markouts(evaluation_id, hours_after)"
@@ -446,13 +446,13 @@ def create_all_tables() -> None:
             "CREATE INDEX IF NOT EXISTS idx_markouts_checked "
             "ON markouts(checked_at DESC)"
         ))
-        # User config — unique user_id for multi-user support.
+        # User config - unique user_id for multi-user support.
         conn.execute(sa_text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
             "ON user_config(user_id)"
         ))
         # Migration: three-gate doctrine columns + cleanup of deprecated
-        # fields from the prior EV-as-primary-gate paradigm. Idempotent —
+        # fields from the prior EV-as-primary-gate paradigm. Idempotent -
         # ADD ... IF NOT EXISTS and DROP ... IF EXISTS.
         for col_sql in (
             "ADD COLUMN IF NOT EXISTS cost_assumption_override DOUBLE PRECISION",
@@ -478,7 +478,7 @@ def create_all_tables() -> None:
         # Supabase's PostgREST caches the schema and won't surface newly added
         # columns until reloaded. Without this, server actions hitting the new
         # columns fail with `Could not find the '<col>' column ... in the
-        # schema cache`. Safe to emit even off Supabase — any Postgres without
+        # schema cache`. Safe to emit even off Supabase - any Postgres without
         # a pgrst listener treats the NOTIFY as a no-op.
         try:
             conn.execute(sa_text("NOTIFY pgrst, 'reload schema'"))
@@ -486,7 +486,7 @@ def create_all_tables() -> None:
             print(f"[db.models] NOTIFY pgrst failed (ignored): {exc}",
                   file=sys.stderr)
         # Backfill default skip list for rows that pre-date the default.
-        # Only touches NULL — an explicit empty string means the user
+        # Only touches NULL - an explicit empty string means the user
         # deliberately cleared the list and is respected as-is.
         conn.execute(sa_text(
             "UPDATE user_config "
@@ -499,7 +499,7 @@ def create_all_tables() -> None:
             "ALTER TABLE pending_suggestions "
             "ADD COLUMN IF NOT EXISTS metadata JSONB"
         ))
-        # Pending suggestions — fast filter on status for the dashboard.
+        # Pending suggestions - fast filter on status for the dashboard.
         conn.execute(sa_text(
             "CREATE INDEX IF NOT EXISTS idx_pending_suggestions_status "
             "ON pending_suggestions(status, created_at DESC)"

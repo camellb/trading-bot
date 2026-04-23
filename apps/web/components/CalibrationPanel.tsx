@@ -82,16 +82,16 @@ export function CalibrationPanel({
           ) : (
             <div className="h-full flex items-center justify-center text-xs text-[#666]">
               {bins.length === 0
-                ? "no resolved predictions yet — diagonal = perfect calibration"
+                ? "no resolved predictions yet - diagonal = perfect calibration"
                 : "measuring…"}
             </div>
           )}
         </div>
         <div className="flex flex-col gap-3 text-xs">
-          <Metric label="brier score" value={data?.brier != null ? data.brier.toFixed(3) : "—"} />
-          <Metric label="avg bot estimate" value={data?.mean_prob != null ? data.mean_prob.toFixed(3) : "—"} />
-          <Metric label="actual YES rate" value={data?.mean_outcome != null ? data.mean_outcome.toFixed(3) : "—"} />
-          <Metric label="still open" value={data?.unresolved?.toString() ?? "—"} />
+          <Metric label="brier score" value={data?.brier != null ? data.brier.toFixed(3) : "-"} />
+          <Metric label="avg bot estimate" value={data?.mean_prob != null ? data.mean_prob.toFixed(3) : "-"} />
+          <Metric label="actual YES rate" value={data?.mean_outcome != null ? data.mean_outcome.toFixed(3) : "-"} />
+          <Metric label="still open" value={data?.unresolved?.toString() ?? "-"} />
           {data?.by_category && data.by_category.length > 0 && (
             <div className="pt-2 border-t border-[#1a1a1a]">
               <div className="text-[10px] uppercase tracking-widest text-[#666] mb-1">
@@ -101,7 +101,7 @@ export function CalibrationPanel({
                 <div key={c.category} className="flex justify-between font-body text-[11px] text-[#ccc] py-0.5">
                   <span>{c.category}</span>
                   <span className="text-[#666]">
-                    {c.n} · B={c.brier != null ? c.brier.toFixed(3) : "—"}
+                    {c.n} · B={c.brier != null ? c.brier.toFixed(3) : "-"}
                   </span>
                 </div>
               ))}

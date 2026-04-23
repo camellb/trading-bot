@@ -1,5 +1,5 @@
 """
-Polymarket Gamma API client — simulation mode.
+Polymarket Gamma API client - simulation mode.
 
 Read-only. Purpose is to surface a curated candidate list of binary markets
 where an LLM could plausibly add value (genuine uncertainty, liquid, resolvable
@@ -9,10 +9,10 @@ calibration loop can score past predictions.
 No trading.  No authentication.  All endpoints public.
 
 Selection heuristic for candidates:
-  * price of YES in [0.08, 0.92]  — genuine uncertainty
-  * accepting orders                — market is live, not settling
-  * 0 <= days_to_end <= 180         — resolves in a usable horizon
-  * volume24hrClob >= min_volume_24h — enough informed flow
+  * price of YES in [0.08, 0.92]  - genuine uncertainty
+  * accepting orders                - market is live, not settling
+  * 0 <= days_to_end <= 180         - resolves in a usable horizon
+  * volume24hrClob >= min_volume_24h - enough informed flow
 
 The heuristic deliberately excludes the ~70% of markets that trade at
 <5% or >95%; those are either decided or meme-priced longshots where a
@@ -90,7 +90,7 @@ def _parse_iso(raw: str | None) -> Optional[datetime]:
         return None
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        # Gamma sometimes returns naive ISO strings — force UTC so arithmetic
+        # Gamma sometimes returns naive ISO strings - force UTC so arithmetic
         # with tz-aware now() doesn't raise.
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)

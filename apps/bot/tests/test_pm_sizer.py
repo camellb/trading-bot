@@ -1,15 +1,15 @@
 """
 Regression tests for the sizer.
 
-Gate 1 — side selection (never skips):
+Gate 1 - side selection (never skips):
     - confidence >= confidence_override_threshold (default 0.75):
       ignore the market, side = YES if claude_p >= 0.50 else NO.
     - confidence <  confidence_override_threshold:
       mean = (claude_p + ask_yes) / 2, side = YES if mean >= 0.50 else NO.
 
-Gate 2 — minimum p_win (default 0.50).
+Gate 2 - minimum p_win (default 0.50).
 
-Confidence softener (size only — never skip):
+Confidence softener (size only - never skip):
     multiplier = min(1.0, 0.01 + (confidence / confidence_full_stake) * 0.99)
 """
 
@@ -163,7 +163,7 @@ class Gate2MinPwinTests(unittest.TestCase):
 # A prior version of this sizer rejected trades whose expected return
 # (1/ask - 1 - cost) fell below `min_expected_return`. It was scrapped
 # because it muted heavy favourites where the math still favoured the
-# bet — e.g. Claude 0.95 on a market pricing YES at 0.94. Side selection
+# bet - e.g. Claude 0.95 on a market pricing YES at 0.94. Side selection
 # + the p_win floor is the full skip logic.
 
 
@@ -206,7 +206,7 @@ class ConfidenceSoftenerTests(unittest.TestCase):
 
     def test_monotonic_in_confidence(self):
         stakes = [self._stake_at(c) for c in (0.0, 0.1, 0.3, 0.5, 0.7, 0.9)]
-        # Non-decreasing — the softener never drops with more confidence.
+        # Non-decreasing - the softener never drops with more confidence.
         for a, b in zip(stakes, stakes[1:]):
             self.assertLessEqual(a, b + 1e-9)
 
@@ -235,7 +235,7 @@ class InvariantTests(unittest.TestCase):
         self.assertAlmostEqual(d.stake_usd, 300.0, delta=0.5)
 
     def test_min_absolute_stake_two_dollars(self):
-        # Tiny bankroll — the $2 floor still applies.
+        # Tiny bankroll - the $2 floor still applies.
         d = call(claude_p=0.85, confidence=0.80, ask_yes=0.50, ask_no=0.50,
                  bankroll=1.0)
         # Absolute floor overrides bankroll percentage.
@@ -282,7 +282,7 @@ class Row20ScenarioTests(unittest.TestCase):
         mean = (0.25 + 0.855) / 2 = 0.5525 → side YES
         p_win on YES = 0.25 → Gate 2 blocks (0.25 < 0.50).
 
-    This is the spec's documented expected behaviour — SKIP via Gate 2,
+    This is the spec's documented expected behaviour - SKIP via Gate 2,
     not via Gate 1.
     """
 
@@ -295,7 +295,7 @@ class Row20ScenarioTests(unittest.TestCase):
         self.assertIn("p_win", d.skip_reason)
 
     def test_would_fire_under_confidence_override(self):
-        # Same market but with confidence 0.80 — override follows Claude,
+        # Same market but with confidence 0.80 - override follows Claude,
         # side NO, p_win 0.75 passes Gate 2.
         d = call(claude_p=0.25, confidence=0.80,
                  ask_yes=0.855, ask_no=0.145)

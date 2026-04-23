@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * CelebrationBurst — sparkle animation for unlocked milestones.
+ * CelebrationBurst - sparkle animation for unlocked milestones.
  *
  * CSS-only confetti burst. Renders absolutely positioned particles
  * that expand outward and fade over 1.5s.

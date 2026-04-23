@@ -1,10 +1,10 @@
 """
-Polymarket Analyst — the decision engine.
+Polymarket Analyst - the decision engine.
 
 Pipeline per market:
     1. Skip if we already have an open position on this market.
     2. Skip if we've already evaluated this market in the last N days
-       (cost control — Claude calls aren't free).
+       (cost control - Claude calls aren't free).
     3. Fetch research bundle (Wikipedia, recent news, base rates).
     4. Ask Claude for probability + confidence + category via the
        PolymarketEvaluator (now research-aware).
@@ -134,7 +134,7 @@ class PMAnalyst:
             metadata      = pred_meta,
         )
         if prediction_id is None or prediction_id <= 0:
-            print(f"[pm_analyst] prediction log failed for {market.id} — "
+            print(f"[pm_analyst] prediction log failed for {market.id} - "
                   f"skipping trade (no calibration link)", file=sys.stderr)
             return None
 
@@ -155,7 +155,7 @@ class PMAnalyst:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_USER_NOT_READY",
-                detail=f"user {user_id} not onboarded — no mode or starting_cash",
+                detail=f"user {user_id} not onboarded - no mode or starting_cash",
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
@@ -211,7 +211,7 @@ class PMAnalyst:
             if decision.stake_usd < 2.0:
                 decision.skip_reason = (
                     f"streak cooldown ({verdict.notes}) halved stake below "
-                    f"$2.00 minimum — skipping"
+                    f"$2.00 minimum - skipping"
                 )
                 decision.stake_usd = 0.0
                 decision.shares    = 0.0
@@ -324,7 +324,7 @@ class PMAnalyst:
         }
 
         if is_trading_paused():
-            print("[pm_analyst] trading paused — skipping scan", flush=True)
+            print("[pm_analyst] trading paused - skipping scan", flush=True)
             summary["outcomes"].append({
                 "market_id": "*", "question": "*",
                 "status": "SKIP_PAUSED", "detail": "trading paused via /pause",
@@ -334,7 +334,7 @@ class PMAnalyst:
         user_ids = list_onboarded_user_ids()
         summary["users"] = len(user_ids)
         if not user_ids:
-            print("[pm_analyst] no onboarded users — skipping scan", flush=True)
+            print("[pm_analyst] no onboarded users - skipping scan", flush=True)
             return summary
 
         async with PolymarketFeed() as feed:

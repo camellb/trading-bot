@@ -1,4 +1,4 @@
-/* Delfi homepage — extends colors_and_type.css */
+/* Delfi homepage - extends colors_and_type.css */
 
 html, body { scroll-behavior: smooth; }
 
@@ -256,7 +256,7 @@ html, body { scroll-behavior: smooth; }
   line-height: 1.45; letter-spacing: -0.005em;
 }
 
-/* ─── Solution — 4 cards ─── */
+/* ─── Solution - 4 cards ─── */
 .solution { border-top: 1px solid var(--vellum-10); }
 .solution-grid {
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px;

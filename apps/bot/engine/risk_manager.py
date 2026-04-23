@@ -1,5 +1,5 @@
 """
-Risk manager — pre-trade circuit breakers.
+Risk manager - pre-trade circuit breakers.
 
 Runs identically in simulation and live modes so simulation simulates live. Reads
 every parameter from UserConfig at decision time; no globals, no caches.
@@ -12,7 +12,7 @@ The manager answers two questions before the sizer runs:
        back permanently; the loss-streak cooldown halves the effective
        bankroll for the duration of the cooldown window.
 
-This module does not apply the max_stake_pct cap — that stays inside the
+This module does not apply the max_stake_pct cap - that stays inside the
 sizer where it composes with confidence tiers.
 """
 
@@ -69,7 +69,7 @@ def evaluate(
 
     current_equity = starting_cash + _realized_total(mode)
 
-    # Drawdown halt — manual review required.
+    # Drawdown halt - manual review required.
     if peak_equity > 0:
         drawdown = max(0.0, 1.0 - (current_equity / peak_equity))
         if drawdown >= user_config.drawdown_halt_pct:
@@ -81,7 +81,7 @@ def evaluate(
                 ),
                 effective_bankroll=0.0,
                 stake_multiplier=0.0,
-                notes="drawdown halt engaged — manual review required",
+                notes="drawdown halt engaged - manual review required",
             )
 
     # Daily loss limit.
@@ -110,13 +110,13 @@ def evaluate(
             notes="weekly loss limit breached",
         )
 
-    # Streak cooldown — halve stakes, don't halt.
+    # Streak cooldown - halve stakes, don't halt.
     stake_multiplier = 1.0
     cooldown_note = ""
     if consecutive_losses >= user_config.streak_cooldown_losses:
         stake_multiplier = 0.5
         cooldown_note = (
-            f"streak cooldown: {consecutive_losses} consecutive losses — "
+            f"streak cooldown: {consecutive_losses} consecutive losses - "
             f"halving next {STREAK_COOLDOWN_WINDOW} stakes"
         )
 
@@ -164,7 +164,7 @@ def _peak_equity(mode: str, starting_cash: float) -> float:
     """
     Peak equity = starting cash plus the maximum cumulative realised P&L
     seen at any point after a settlement. Simple running-max over the
-    settlement ledger — good enough for drawdown computation.
+    settlement ledger - good enough for drawdown computation.
     """
     from sqlalchemy import text
     from db.engine import get_engine
@@ -207,11 +207,11 @@ def _consecutive_losses(mode: str) -> int:
 
 
 def _permissive_verdict(user_config: UserConfig, bankroll: float) -> RiskVerdict:
-    """Fallback when DB stats can't be loaded — let the sizer decide."""
+    """Fallback when DB stats can't be loaded - let the sizer decide."""
     effective = max(0.0, bankroll * (1.0 - user_config.dry_powder_reserve_pct))
     return RiskVerdict(
         halt_reason=None,
         effective_bankroll=effective,
         stake_multiplier=1.0,
-        notes="risk stats unavailable — dry powder reserve applied, no breakers evaluated",
+        notes="risk stats unavailable - dry powder reserve applied, no breakers evaluated",
     )
