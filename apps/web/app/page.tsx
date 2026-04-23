@@ -536,9 +536,9 @@ function NewHere() {
         <div className="newhere-grid">
           <div>
             <h2 className="newhere-head balanced">New to Polymarket?</h2>
-            <p className="newhere-body">Polymarket is a live market on real-world questions. Will the Fed cut rates in December? Will a party win an election? Will Bitcoin hit a price? Prices are probabilities. If a question trades at 44%, the market thinks there&apos;s a 44% chance.</p>
-            <p className="newhere-body muted">The market is often wrong. Emotions move prices. News moves slower than sentiment. A patient reader can forecast outcomes more accurately than the crowd. The problem is doing it consistently, sizing the trade properly, and having the discipline to walk away when the read isn&apos;t strong enough.</p>
-            <p className="newhere-body muted">Delfi does all of it for you. It reads the markets, builds its own forecasts, sizes the trades, and only acts when its forecast clears every gate. You don&apos;t need to become a prediction market expert. You just need an account.</p>
+            <p className="newhere-body">Polymarket is a marketplace for real-world questions. Will the Fed cut rates in December? Will a party win an election? Will Bitcoin hit a price? Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question trading at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
+            <p className="newhere-body muted">Markets are often wrong. Sentiment overshoots news. Prices drift on emotion. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
+            <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade to its confidence, and only acts when the forecast clears every gate. You don&apos;t need to be a prediction market expert. You just need an account.</p>
             <Link className="newhere-cta" href="/auth#signup">Start for free today →</Link>
           </div>
           <div className="edge-viz">
@@ -549,7 +549,7 @@ function NewHere() {
             </div>
             <div className="edge-gap">
               <div className="edge-gap-arrow">↓</div>
-              <div className="edge-gap-label">Delfi forecasts YES · p_win 0.78</div>
+              <div className="edge-gap-label">Delfi&apos;s read: YES</div>
               <div className="edge-gap-arrow">↓</div>
             </div>
             <div className="edge-row delfi">
