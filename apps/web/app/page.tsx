@@ -658,7 +658,7 @@ function Footer() {
               <span className="wordmark-text">DELFI</span>
             </Link>
             <p className="foot-tag">Autonomous AI agent for Polymarket. Deep reasoning meets institutional risk math.</p>
-            <span className="foot-contact">support@delfibot.com</span>
+            <span className="foot-contact">info@delfibot.com</span>
           </div>
           <div className="foot-meta">
             <div className="foot-legal-block">

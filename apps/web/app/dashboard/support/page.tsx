@@ -1,8 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import "../../styles/content.css";
+
+import { sendSupportMessage, type SupportState } from "./actions";
+
+const INITIAL: SupportState = {};
 
 const FAQ = [
   {
@@ -43,6 +47,16 @@ export default function SupportPage() {
   const [open, setOpen] = useState<number | null>(0);
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
+  const [state, action, pending] = useActionState(sendSupportMessage, INITIAL);
+
+  useEffect(() => {
+    if (state.ok) {
+      setSubject("");
+      setMessage("");
+    }
+  }, [state.ok]);
+
+  const canSubmit = subject.trim().length > 0 && message.trim().length > 0 && !pending;
 
   return (
     <div className="page-wrap">
@@ -79,23 +93,46 @@ export default function SupportPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Send us a message</h2>
-          <span className="panel-meta">support@delfi.app</span>
+          <span className="panel-meta">info@delfibot.com</span>
         </div>
 
-        <div className="form-row">
+        <form action={action} className="form-row">
           <div className="form-field">
             <label>Subject</label>
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="What's on your mind?" />
+            <input
+              name="subject"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="What's on your mind?"
+              required
+            />
           </div>
           <div className="form-field">
             <label>Message</label>
-            <textarea rows={6} value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Tell us what's happening. Include specifics if you can." />
+            <textarea
+              name="message"
+              rows={6}
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              placeholder="Tell us what's happening. Include specifics if you can."
+              required
+            />
             <div className="form-hint">We'll reply to the email on your account within one business day.</div>
           </div>
+          {state.error && (
+            <div className="form-error" role="alert">{state.error}</div>
+          )}
+          {state.ok && (
+            <div className="form-notice" role="status">
+              Message sent. We'll reply to the email on your account within one business day.
+            </div>
+          )}
           <div>
-            <button className="btn-sm gold">Send message</button>
+            <button type="submit" className="btn-sm gold" disabled={!canSubmit}>
+              {pending ? "Sending…" : "Send message"}
+            </button>
           </div>
-        </div>
+        </form>
       </div>
 
       <div className="panel">

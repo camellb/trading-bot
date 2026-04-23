@@ -73,7 +73,7 @@ export default function PrivacyPage() {
           <li>Object to certain processing</li>
         </ul>
         <p>
-          Send requests to <a href="mailto:privacy@delfi.app">privacy@delfi.app</a>. We respond within 30 days.
+          Send requests to <a href="mailto:info@delfibot.com">info@delfibot.com</a>. We respond within 30 days.
         </p>
 
         <h2>8. Security</h2>
@@ -91,7 +91,7 @@ export default function PrivacyPage() {
 
         <h2>10. Contact</h2>
         <p>
-          Questions can be sent to <a href="mailto:privacy@delfi.app">privacy@delfi.app</a>.
+          Questions can be sent to <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
         </p>
       </div>
     </main>

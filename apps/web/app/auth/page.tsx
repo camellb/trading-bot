@@ -217,7 +217,7 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
               <ul className="auth-help-list">
                 <li>Links can take up to a minute to arrive.</li>
                 <li>Check your spam or promotions folder.</li>
-                <li>Still stuck? <a href="mailto:support@delfibot.com">support@delfibot.com</a></li>
+                <li>Still stuck? <a href="mailto:info@delfibot.com">info@delfibot.com</a></li>
               </ul>
             </div>
           ) : (

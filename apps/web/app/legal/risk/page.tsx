@@ -73,7 +73,7 @@ export default function RiskPage() {
         <p>
           By enabling live trading, you acknowledge that you have read this disclosure and that you
           understand the risks involved. If you have questions, contact{" "}
-          <a href="mailto:support@delfi.app">support@delfi.app</a> before enabling live mode.
+          <a href="mailto:info@delfibot.com">info@delfibot.com</a> before enabling live mode.
         </p>
       </div>
     </main>

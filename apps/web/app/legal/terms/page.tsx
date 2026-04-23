@@ -99,7 +99,7 @@ export default function TermsPage() {
 
         <h2>11. Contact</h2>
         <p>
-          Questions about these terms can be sent to <a href="mailto:legal@delfi.app">legal@delfi.app</a>.
+          Questions about these terms can be sent to <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
         </p>
       </div>
     </main>
