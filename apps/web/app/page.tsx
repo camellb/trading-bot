@@ -47,11 +47,20 @@ function CountUp({ target, duration = 2200, className = "" }: { target: number; 
 // ─── Top nav ─────────────────────────────────────────────
 function TopNav() {
   const [scrolled, setScrolled] = useState(false);
+  const [pastHero, setPastHero] = useState(false);
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   useEffect(() => {
-    const on = () => setScrolled(window.scrollY > 20);
-    window.addEventListener("scroll", on);
-    return () => window.removeEventListener("scroll", on);
+    const on = () => {
+      setScrolled(window.scrollY > 20);
+      setPastHero(window.scrollY > window.innerHeight * 0.85);
+    };
+    on();
+    window.addEventListener("scroll", on, { passive: true });
+    window.addEventListener("resize", on);
+    return () => {
+      window.removeEventListener("scroll", on);
+      window.removeEventListener("resize", on);
+    };
   }, []);
   useEffect(() => {
     const supabase = createClient();
@@ -62,7 +71,7 @@ function TopNav() {
     return () => sub.subscription.unsubscribe();
   }, []);
   return (
-    <nav className={`top-nav ${scrolled ? "scrolled" : ""}`}>
+    <nav className={`top-nav ${scrolled ? "scrolled" : ""} ${pastHero ? "past-hero" : ""}`}>
       <div className="nav-inner">
         <div className="nav-left">
           <Link href="/" className="wordmark">
@@ -101,7 +110,7 @@ function Hero() {
       <div className="hero-vignette" />
       <div className="hero-inner">
         <h1 className="t-display-xl hero-head">
-          The future is<br />no longer <span className="hero-accent">a guess</span>
+          The future is <br />no longer <span className="hero-accent">a guess</span>
         </h1>
         <p className="hero-sub">
           The first autonomous, self-improving forecasting AI agent for Polymarket.
@@ -118,13 +127,19 @@ function Hero() {
 
 // ─── Hero press strip ───────────────────────────────────
 function HeroPress() {
+  const names = ["Bloomberg", "TechCrunch", "CoinDesk", "The Block", "Decrypt", "Wired"];
   return (
     <div className="hero-press">
       <div className="hero-press-label">As Seen In</div>
       <div className="hero-press-row">
-        {["Bloomberg", "TechCrunch", "CoinDesk", "The Block", "Decrypt", "Wired"].map((n) => (
-          <span className="hero-press-item" key={n}>{n}</span>
-        ))}
+        <div className="hero-press-track">
+          {names.map((n) => (
+            <span className="hero-press-item" key={`a-${n}`}>{n}</span>
+          ))}
+          {names.map((n) => (
+            <span className="hero-press-item" aria-hidden="true" key={`b-${n}`}>{n}</span>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -138,11 +153,11 @@ function Ribbon() {
         <div className="ribbon-stats">
           <div className="ribbon-stat">
             <div className="ribbon-num gold t-num">11,500+</div>
-            <div className="ribbon-sub">active traders</div>
+            <div className="ribbon-sub">active users</div>
           </div>
           <div className="ribbon-stat">
             <div className="ribbon-num vellum t-num">$50M+</div>
-            <div className="ribbon-sub">bankroll under management</div>
+            <div className="ribbon-sub">in trades</div>
           </div>
           <div className="ribbon-stat">
             <div className="ribbon-num teal t-num">99.2%</div>
@@ -160,7 +175,7 @@ function Problem() {
     <section className="section problem" data-screen-label="04 Problem">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">You&apos;re not losing to the market.<br />You&apos;re losing to the machines.</h2>
+          <h2 className="t-display-l balanced problem-head">You&apos;re not losing to the market. <br />You&apos;re losing to the machines.</h2>
         </div>
         <p className="problem-body">
           Polymarket has become an algorithmic battleground. Machines read faster, trade faster, and never sleep. Every forecast you build has probably already been priced in by a bot ... before you finished reading the question.
@@ -180,7 +195,8 @@ function Problem() {
           </div>
         </div>
         <p className="problem-close">
-          The problem isn&apos;t what you know. It&apos;s how fast you can act on it.
+          The problem isn&apos;t what you know.<br className="br-keep" />
+          <span>It&apos;s how fast you can act on it.</span>
         </p>
       </div>
     </section>
@@ -234,7 +250,7 @@ function Pillars() {
     <section className="section pillars" id="how" data-screen-label="06 How It Works">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">Every trade passes through<br />three independent systems</h2>
+          <h2 className="t-display-l balanced pillars-head">Every trade passes through <br />three independent systems</h2>
         </div>
         <div className="pillars-grid">
           {items.map((p) => (
@@ -273,7 +289,7 @@ function Versus() {
     <section className="section versus" id="versus" data-screen-label="07 Us vs Them">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">There are three kinds of Polymarket bots ... and then there&apos;s Delfi</h2>
+          <h2 className="t-display-l balanced versus-head">There are three kinds of Polymarket bots ... and then there&apos;s Delfi</h2>
           <p>Arbitrage bots compete on speed. Copy-trading tools compete on who to follow. Delfi competes on accuracy, discipline, and transparency, all at once.</p>
         </div>
         <div className="vs-table-wrap">
@@ -358,7 +374,7 @@ function Proof() {
     <section className="section proof" id="proof" data-screen-label="08 Proof">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">Sharper than the crowd. Measurably.</h2>
+          <h2 className="t-display-l balanced proof-head">Sharper than the crowd.<br className="br-keep" /> Measurably.</h2>
         </div>
 
         <div className="proof-stats">
@@ -570,7 +586,7 @@ function Testimonials() {
     <section className="section testimonials" data-screen-label="10 Testimonials">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">Traders who stopped<br />trading by hand</h2>
+          <h2 className="t-display-l balanced">Traders who stopped <br />trading by hand</h2>
         </div>
         <div className="test-grid">
           {quotes.map((q) => (

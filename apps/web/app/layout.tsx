@@ -3,8 +3,15 @@ import { SpeedInsights } from "@vercel/speed-insights/next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Delfi - See the Market Before it Settles",
-  description: "AI-powered prediction market intelligence. Calibrated probability estimates with autonomous execution.",
+  title: "Delfi - The future is no longer a guess",
+  description: "The first autonomous, self-improving forecasting AI agent for Polymarket.",
+  icons: {
+    icon: [
+      { url: "/brand/mark.svg", type: "image/svg+xml" },
+    ],
+    shortcut: "/brand/mark.svg",
+    apple: "/brand/mark.svg",
+  },
 };
 
 export default function RootLayout({

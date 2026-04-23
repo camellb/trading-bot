@@ -39,6 +39,15 @@ html, body { scroll-behavior: smooth; }
   background: rgba(10,10,15,0.85); backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px); border-bottom-color: var(--vellum-10);
 }
+/* CTA in nav is invisible while hero is on screen, fades in past the fold */
+.top-nav .nav-right .btn-primary {
+  transition: opacity 300ms var(--ease), transform 300ms var(--ease);
+}
+.top-nav:not(.past-hero) .nav-right .btn-primary {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(6px);
+}
 .nav-inner { max-width: 1280px; margin: 0 auto; display:flex; justify-content:space-between; align-items:center; padding: 18px 32px; }
 .nav-left { display:flex; gap: 48px; align-items: center; }
 .wordmark {
@@ -151,10 +160,23 @@ html, body { scroll-behavior: smooth; }
   color: var(--vellum-40);
 }
 .hero-press-row {
-  display: flex; gap: clamp(20px, 4vw, 48px); flex-wrap: nowrap;
-  align-items: center; justify-content: center;
-  width: 100%;
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; overflow: hidden;
+  mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+}
+.hero-press-track {
+  display: flex; gap: clamp(20px, 4vw, 48px);
+  width: max-content; flex-wrap: nowrap;
   white-space: nowrap;
+  animation: press-marquee 30s linear infinite;
+}
+@keyframes press-marquee {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-50%, 0, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-press-track { animation: none; }
 }
 .hero-press-item {
   font-family: var(--font-display);
@@ -231,6 +253,7 @@ html, body { scroll-behavior: smooth; }
 .balanced { text-wrap: balance; line-height: 1.1; }
 @media (max-width: 720px) {
   .balanced br { display: none; }
+  .balanced br.br-keep { display: inline; }
 }
 
 /* ─── Problem section ─── */
@@ -883,8 +906,9 @@ html, body { scroll-behavior: smooth; }
   .sim-grid { grid-template-columns: 1fr; gap: 48px; }
   .test-grid { grid-template-columns: 1fr; }
   .ribbon-inner { gap: 20px; }
-  .ribbon-stats { grid-template-columns: 1fr; gap: 20px; }
-  .ribbon-stat + .ribbon-stat { border-left: none; border-top: 1px solid var(--vellum-10); padding-top: 20px; }
+  /* keep the three stats on one row on tablet/mobile */
+  .ribbon-stats { grid-template-columns: repeat(3, 1fr); gap: 0; }
+  .ribbon-stat + .ribbon-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
   .press-row { justify-content: center; gap: 24px; }
   .foot-main { grid-template-columns: 1fr; gap: 48px; }
   .foot-bottom { flex-direction: column; align-items: flex-start; }
@@ -900,47 +924,70 @@ html, body { scroll-behavior: smooth; }
   .sec-head { margin-bottom: 40px; }
   .sec-head p { font-size: 15px; }
 
-  /* Hero */
-  .hero { padding: 112px 20px 72px; min-height: 80vh; }
-  .hero-head { font-size: 38px; line-height: 1.06; max-width: none; margin: 20px 0 22px; }
+  /* Smaller CTA buttons on mobile */
+  .btn-primary { padding: 12px 20px; font-size: 12px; letter-spacing: 0.08em; }
+  .btn-ghost { padding: 12px 20px; font-size: 12px; letter-spacing: 0.08em; }
+  .btn-primary.large { padding: 16px 30px; font-size: 13px; }
+
+  /* Hero: taller (+~10%) and bigger headline */
+  .hero { padding: 120px 20px 88px; min-height: 88vh; }
+  .hero-head { font-size: 48px; line-height: 1.04; max-width: none; margin: 20px 0 22px; letter-spacing: -0.025em; }
   .hero-sub { font-size: 15px; margin-bottom: 28px; }
-  .hero-ctas { gap: 10px; flex-direction: column; width: 100%; max-width: 320px; }
+  .hero-ctas { gap: 10px; flex-direction: column; width: 100%; max-width: 300px; }
   .hero-ctas .btn-primary,
   .hero-ctas .btn-ghost { width: 100%; justify-content: center; }
   .hero-note { font-size: 11.5px; margin-top: 22px; }
   .hero-press { margin-top: 48px; padding-top: 24px; gap: 16px; }
-  .hero-press-row {
-    flex-wrap: wrap; white-space: normal;
-    row-gap: 10px; column-gap: 20px;
-  }
-  .hero-press-item { font-size: 11.5px; letter-spacing: 0.04em; }
+  .hero-press-item { font-size: 12px; letter-spacing: 0.04em; }
+  .hero-press-track { gap: 28px; animation-duration: 24s; }
   .hero-scroll { display: none; }
 
-  /* Ribbon */
-  .ribbon { padding: 24px 0; }
-  .ribbon-inner { gap: 20px; padding: 0 20px; }
+  /* Ribbon — three stats on one row */
+  .ribbon { padding: 22px 0; }
+  .ribbon-inner { gap: 18px; padding: 0 16px; }
+  .ribbon-stats { grid-template-columns: repeat(3, 1fr); gap: 0; }
+  .ribbon-stat { padding: 0 8px; }
+  .ribbon-stat + .ribbon-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
+  .ribbon-num { font-size: 22px !important; margin-bottom: 6px; letter-spacing: -0.015em; }
+  .ribbon-sub { font-size: 10px; letter-spacing: 0.02em; line-height: 1.3; }
   .press-row { gap: 18px; justify-content: center; }
   .press-item { font-size: 13px; letter-spacing: 0.14em; }
 
   /* Problem */
+  .problem-head { font-size: 28px !important; line-height: 1.18; letter-spacing: -0.02em; }
   .problem-body { font-size: 15.5px; margin-bottom: 48px; line-height: 1.65; }
   .problem-stats { gap: 14px; margin-bottom: 48px; }
   .problem-stat { padding: 24px 14px; }
-  .problem-num, .ribbon-num { font-size: 34px; margin-bottom: 12px; }
+  .problem-num { font-size: 34px; margin-bottom: 12px; }
   .problem-label { font-size: 13px; max-width: 28ch; }
-  .problem-close { font-size: 17px; line-height: 1.5; }
+  .problem-close { font-size: 16px; line-height: 1.5; }
 
-  /* Solution */
+  /* Solution — icon, title and copy horizontally centered on mobile */
   .solution-grid { gap: 14px; }
-  .sol-card { padding: 22px; }
-  .sol-icon { width: 36px; height: 36px; margin-bottom: 16px; }
+  .sol-card { padding: 24px; text-align: center; }
+  .sol-icon { width: 36px; height: 36px; margin: 0 auto 16px; }
   .sol-title { font-size: 19px; margin-bottom: 10px; }
   .sol-desc { font-size: 13.5px; }
 
   /* Pillars */
+  .pillars-head { font-size: 28px !important; line-height: 1.18; letter-spacing: -0.02em; }
   .pillars-grid { gap: 32px; }
   .pillar-title { font-size: 21px; margin-bottom: 12px; }
   .pillar-desc { font-size: 13.5px; }
+
+  /* Versus — shrink head, shrink table, hide Manual Trading column */
+  .versus-head { font-size: 24px !important; line-height: 1.2; letter-spacing: -0.02em; }
+  .vs-table-wrap { overflow-x: visible; }
+  .vs-table { min-width: 0; }
+  .vs-table th, .vs-table td { padding: 12px 6px; font-size: 11.5px; }
+  .vs-table th.criteria-col, .vs-table td.criteria-col { font-size: 12px; padding-left: 4px; }
+  .vs-table th:nth-child(2), .vs-table td:nth-child(2) { display: none; } /* Manual Trading */
+  .vs-check, .vs-cross { font-size: 14px; }
+  .vs-partial { font-size: 10.5px; }
+  .vs-foot { font-size: 14px; margin-top: 32px; }
+
+  /* Proof — enforce break after 'crowd.' on mobile */
+  .proof-head { font-size: 30px !important; line-height: 1.16; letter-spacing: -0.02em; }
 
   /* Proof */
   .proof-stats { grid-template-columns: 1fr; gap: 20px; }
@@ -953,6 +1000,8 @@ html, body { scroll-behavior: smooth; }
   .sim-bullets { gap: 16px; }
   .sim-bullet-title { font-size: 15px; }
   .sim-bullet-desc { font-size: 13.5px; }
+  /* Align 'Try it now →' with bullet copy (20px dot col + 18px grid gap) */
+  .sim-cta { margin-left: 38px; }
   .sim-mock { max-width: 480px; margin: 0 auto; }
   .sim-card { padding: 22px 20px 18px; gap: 18px; }
   .sim-card-q { font-size: 17px; line-height: 1.35; }
@@ -1003,10 +1052,13 @@ html, body { scroll-behavior: smooth; }
 }
 
 @media (max-width: 420px) {
-  .hero { padding: 96px 18px 64px; }
-  .hero-head { font-size: 34px; }
+  .hero { padding: 110px 18px 72px; min-height: 88vh; }
+  .hero-head { font-size: 42px; letter-spacing: -0.025em; }
   .hero-sub { font-size: 14.5px; }
-  .problem-num, .ribbon-num { font-size: 30px; }
+  .problem-num { font-size: 30px; }
+  .ribbon-num { font-size: 19px !important; }
+  .ribbon-sub { font-size: 9.5px; letter-spacing: 0; }
+  .ribbon-stat { padding: 0 4px; }
   .proof-num { font-size: 32px; }
   .newhere-head { font-size: 28px; }
   .sol-card { padding: 20px; }
@@ -1014,4 +1066,11 @@ html, body { scroll-behavior: smooth; }
   .sim-card-row { grid-template-columns: 1fr 1fr; row-gap: 14px; }
   .sim-card-cell:nth-child(2) { border-right: none; }
   .sim-card-cell:nth-child(3) { grid-column: 1 / -1; border-right: none; padding-top: 10px; border-top: 1px solid var(--vellum-10); }
+  /* Versus table: shrink further on very small screens */
+  .vs-table th, .vs-table td { padding: 10px 4px; font-size: 10.5px; }
+  .vs-table th.criteria-col, .vs-table td.criteria-col { font-size: 11px; }
+  .problem-head { font-size: 26px !important; }
+  .pillars-head { font-size: 26px !important; }
+  .versus-head { font-size: 22px !important; }
+  .proof-head { font-size: 28px !important; }
 }
