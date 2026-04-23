@@ -300,7 +300,7 @@ class TelegramNotifier:
         try:
             from execution.pm_executor import PMExecutor
             stats = PMExecutor(user_id).get_portfolio_stats()
-            simulated = stats.get("mode", "simulation") != "live"
+            mode = str(stats.get("mode", "simulation"))
             balance = float(stats.get("bankroll", 0.0))
             open_n = int(stats.get("open_positions", 0))
             at_risk = float(stats.get("open_cost", 0.0))
@@ -309,7 +309,7 @@ class TelegramNotifier:
             win_pct = (wins / resolved * 100.0) if resolved else 0.0
             await self.send(user_id, tm.startup_full(
                 balance=balance, open_n=open_n, at_risk=at_risk,
-                win_pct=win_pct, resolved=resolved, simulated=simulated,
+                win_pct=win_pct, resolved=resolved, mode=mode,
             ))
         except Exception as exc:
             print(f"[telegram] notify_startup failed: {exc}", file=sys.stderr)

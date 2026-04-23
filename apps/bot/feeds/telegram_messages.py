@@ -46,9 +46,9 @@ def new_position(
     resolve_date: str,
     mode: str,
 ) -> str:
-    mode_suffix = "" if mode == "live" else " · simulation"
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
-        f"🎯 <b>New position</b>{mode_suffix}\n"
+        f"🎯 <b>New position</b>\n"
         f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
         f"\n"
         f"Delfi forecasts: {side} ({forecast_pct:.0f}% probability)\n"
@@ -57,7 +57,8 @@ def new_position(
         f"Buying {side} at {entry_cents:.1f}¢\n"
         f"Stake: ${stake_usd:.2f} ({shares:.1f} shares)\n"
         f"Balance: ${bankroll_after:.2f}\n"
-        f"Resolves: {resolve_date}"
+        f"Resolves: {resolve_date}\n"
+        f"Mode: {mode_label}"
     )
 
 
@@ -340,12 +341,13 @@ def startup_full(
     at_risk: float,
     win_pct: float,
     resolved: int,
-    simulated: bool,
+    mode: str,
 ) -> str:
-    sim = " (simulated)" if simulated else ""
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
-        f"✅ <b>Delfi is online</b>{sim}\n"
+        f"✅ <b>Delfi is online</b>\n"
         f"\n"
+        f"Mode: {mode_label}\n"
         f"Balance: ${balance:.2f}\n"
         f"Open positions: {open_n} (${at_risk:.2f} at risk)\n"
         f"Win rate: {win_pct:.0f}% across {resolved} resolved positions"
