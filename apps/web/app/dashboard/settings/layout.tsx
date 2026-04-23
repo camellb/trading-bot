@@ -6,6 +6,7 @@ import "../../styles/content.css";
 
 const TABS = [
   { id: "account", label: "Account", href: "/dashboard/settings/account" },
+  { id: "risk", label: "Risk controls", href: "/dashboard/settings/risk" },
   { id: "notifications", label: "Notifications", href: "/dashboard/settings/notifications" },
 ];
 
