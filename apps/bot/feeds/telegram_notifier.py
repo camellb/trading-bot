@@ -314,8 +314,10 @@ class TelegramNotifier:
                         "WHERE user_id = :uid "
                         "  AND mode = :m AND settled_at >= NOW() - INTERVAL '1 day'"
                     ), {"uid": user_id, "m": mode}).fetchone()
+                row = row or (0, 0)
+                pnl_settle = pnl_settle or (0.0, 0, 0)
                 return (
-                    int(row[0]), int(row[1]),
+                    int(row[0] or 0), int(row[1] or 0),
                     float(pnl_settle[0] or 0.0),
                     int(pnl_settle[1] or 0), int(pnl_settle[2] or 0),
                 )

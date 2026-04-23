@@ -44,9 +44,14 @@ function AccountPageInner() {
 
   useEffect(() => {
     let cancelled = false;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 10_000);
     (async () => {
       try {
-        const r = await fetch("/api/profile", { cache: "no-store" });
+        const r = await fetch("/api/profile", {
+          cache: "no-store",
+          signal: ctl.signal,
+        });
         if (!r.ok) return;
         const j = (await r.json()) as Profile;
         if (cancelled) return;
@@ -54,16 +59,22 @@ function AccountPageInner() {
         setNameDraft(j.displayName ?? "");
       } catch {
         /* ignore */
+      } finally {
+        clearTimeout(timer);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
+      ctl.abort();
     };
   }, []);
 
   const saveName = async () => {
     setNameError(null);
     setNameSaving(true);
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 10_000);
     try {
       const trimmed = nameDraft.trim();
       if (trimmed.length < 2) {
@@ -74,6 +85,7 @@ function AccountPageInner() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ displayName: trimmed }),
+        signal: ctl.signal,
       });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
@@ -82,7 +94,14 @@ function AccountPageInner() {
       }
       setProfile((p) => (p ? { ...p, displayName: trimmed } : p));
       setNameSavedAt(Date.now());
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") {
+        setNameError("Save timed out - try again.");
+      } else {
+        setNameError("Couldn't save - try again.");
+      }
     } finally {
+      clearTimeout(timer);
       setNameSaving(false);
     }
   };

@@ -159,13 +159,16 @@ class NewsFeed:
         """
         now = datetime.now(timezone.utc)
 
-        # Build coroutine list: RSS + Nitter + CryptoPanic (CP is always last)
-        rss_coros    = [self._fetch_rss(url)         for url  in config.RSS_FEEDS]
-        nitter_coros = [self._fetch_nitter(acct)     for acct in config.NITTER_ACCOUNTS]
+        # Build coroutine list: RSS + Nitter + CryptoPanic (CP is always last).
+        # Each source is capped at 15s so one slow feed can't stall the batch.
+        def _t(coro):
+            return asyncio.wait_for(coro, timeout=15)
+        rss_coros    = [_t(self._fetch_rss(url))     for url  in config.RSS_FEEDS]
+        nitter_coros = [_t(self._fetch_nitter(acct)) for acct in config.NITTER_ACCOUNTS]
         n_std = len(rss_coros) + len(nitter_coros)
 
         all_results = await asyncio.gather(
-            *(rss_coros + nitter_coros + [self._fetch_cryptopanic()]),
+            *(rss_coros + nitter_coros + [_t(self._fetch_cryptopanic())]),
             return_exceptions=True,
         )
 

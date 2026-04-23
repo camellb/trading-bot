@@ -700,7 +700,8 @@ async def _fetch_live_market_data(
         symbols = _detect_crypto_symbols(question)
         if symbols:
             results = await asyncio.gather(
-                *(live_crypto.get_context(s) for s in symbols),
+                *(asyncio.wait_for(live_crypto.get_context(s), timeout=10)
+                  for s in symbols),
                 return_exceptions=True,
             )
             for sym, ctx in zip(symbols, results):
@@ -712,7 +713,8 @@ async def _fetch_live_market_data(
         tickers = _detect_equity_tickers(question)
         if tickers:
             results = await asyncio.gather(
-                *(live_equity.get_context(t) for t in tickers),
+                *(asyncio.wait_for(live_equity.get_context(t), timeout=10)
+                  for t in tickers),
                 return_exceptions=True,
             )
             for tk, ctx in zip(tickers, results):
@@ -1099,7 +1101,10 @@ async def _fetch_top_pages(
     if not urls:
         return []
 
-    tasks = [_fetch_page_text(session, url) for url in urls]
+    tasks = [
+        asyncio.wait_for(_fetch_page_text(session, url), timeout=12)
+        for url in urls
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     pages: list[str] = []

@@ -241,6 +241,12 @@ class PolymarketFeed:
         sem = asyncio.Semaphore(4)
         async def one(mid: str):
             async with sem:
-                return mid, await self.fetch_market(mid)
+                try:
+                    row = await asyncio.wait_for(
+                        self.fetch_market(mid), timeout=15,
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    return mid, None
+                return mid, row
         pairs = await asyncio.gather(*(one(m) for m in market_ids))
         return {mid: row for mid, row in pairs if row is not None}

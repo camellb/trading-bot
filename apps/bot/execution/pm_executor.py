@@ -101,8 +101,12 @@ class PMExecutor:
                 ), {"uid": self.user_id, "m": self.mode}).scalar() or 0.0
             return float(starting) + float(realized) - float(open_cost)
         except Exception as exc:
-            print(f"[pm_executor] get_bankroll({self.user_id}) failed: {exc}",
-                  file=sys.stderr)
+            print(
+                f"[pm_executor] get_bankroll({self.user_id}) db query failed: "
+                f"{exc} - falling back to starting_cash=${starting:.2f} "
+                f"(realized PnL and open positions NOT included)",
+                file=sys.stderr,
+            )
             return float(starting)
 
     def get_portfolio_stats(self) -> dict:
