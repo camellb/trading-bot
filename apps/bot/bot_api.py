@@ -1081,6 +1081,325 @@ class BotAPI:
             "offset": offset,
         })
 
+    async def _handle_admin_user_detail(self, request: web.Request) -> web.Response:
+        """Detail view for a single user (admin only)."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+        target_uid = request.match_info.get("user_id", "").strip()
+        if not target_uid:
+            return web.json_response({"error": "user_id required"}, status=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            def _q():
+                with get_engine().begin() as conn:
+                    user_row = conn.execute(text(
+                        "SELECT uc.user_id, uc.display_name, uc.mode, "
+                        "       uc.starting_cash, uc.onboarded_at, uc.is_admin, "
+                        "       uc.bot_enabled, "
+                        "       uc.subscription_status, uc.subscription_plan, "
+                        "       uc.subscription_started_at, "
+                        "       au.email, au.created_at, "
+                        "       uc.telegram_chat_id, "
+                        "       uc.polymarket_wallet_address "
+                        "FROM user_config uc "
+                        "LEFT JOIN auth.users au ON au.id::text = uc.user_id "
+                        "WHERE uc.user_id = :uid"
+                    ), {"uid": target_uid}).fetchone()
+
+                    summary = conn.execute(text(
+                        "SELECT "
+                        "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
+                        "  COUNT(*) FILTER (WHERE status = 'settled') AS settled_n, "
+                        "  COUNT(*) FILTER (WHERE status = 'settled' "
+                        "                    AND COALESCE(realized_pnl_usd, 0) > 0) "
+                        "    AS wins, "
+                        "  COUNT(*) FILTER (WHERE status = 'settled' "
+                        "                    AND COALESCE(realized_pnl_usd, 0) < 0) "
+                        "    AS losses, "
+                        "  COALESCE(SUM(realized_pnl_usd) "
+                        "           FILTER (WHERE status = 'settled'), 0) "
+                        "    AS realized_pnl, "
+                        "  COALESCE(SUM(cost_usd) "
+                        "           FILTER (WHERE status = 'open'), 0) "
+                        "    AS open_cost "
+                        "FROM pm_positions WHERE user_id = :uid"
+                    ), {"uid": target_uid}).fetchone()
+
+                    position_rows = conn.execute(text(
+                        "SELECT id, created_at, market_id, slug, question, "
+                        "       category, market_archetype, side, cost_usd, "
+                        "       entry_price, claude_probability, status, "
+                        "       realized_pnl_usd, settled_at "
+                        "FROM pm_positions "
+                        "WHERE user_id = :uid "
+                        "ORDER BY created_at DESC "
+                        "LIMIT 25"
+                    ), {"uid": target_uid}).fetchall()
+
+                    event_rows = conn.execute(text(
+                        "SELECT timestamp, event_type, description, "
+                        "       severity, source "
+                        "FROM event_log "
+                        "WHERE user_id = :uid "
+                        "  AND timestamp >= NOW() - INTERVAL '7 days' "
+                        "ORDER BY timestamp DESC "
+                        "LIMIT 25"
+                    ), {"uid": target_uid}).fetchall()
+
+                    return user_row, summary, position_rows, event_rows
+            user_row, summary, position_rows, event_rows = (
+                await loop.run_in_executor(self._pool, _q)
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        if not user_row:
+            return web.json_response({"error": "user not found"}, status=404)
+
+        settled = int(summary[1] or 0)
+        wins = int(summary[2] or 0)
+        losses = int(summary[3] or 0)
+        denom = wins + losses
+        win_rate = (wins / denom) if denom > 0 else 0.0
+
+        return web.json_response({
+            "user": {
+                "user_id":                 str(user_row[0]),
+                "display_name":            user_row[1],
+                "mode":                    user_row[2],
+                "starting_cash":           float(user_row[3]) if user_row[3] is not None else None,
+                "onboarded_at":            user_row[4].isoformat() if user_row[4] else None,
+                "is_admin":                bool(user_row[5]),
+                "bot_enabled":             bool(user_row[6]),
+                "subscription_status":     user_row[7],
+                "subscription_plan":       user_row[8],
+                "subscription_started_at": user_row[9].isoformat() if user_row[9] else None,
+                "email":                   user_row[10],
+                "created_at":              user_row[11].isoformat() if user_row[11] else None,
+                "has_telegram":            bool(user_row[12]),
+                "has_polymarket":          bool(user_row[13]),
+            },
+            "summary": {
+                "open_positions": int(summary[0] or 0),
+                "settled":        settled,
+                "wins":           wins,
+                "losses":         losses,
+                "win_rate":       round(win_rate, 4),
+                "realized_pnl":   float(summary[4] or 0.0),
+                "open_cost":      float(summary[5] or 0.0),
+            },
+            "positions": [
+                {
+                    "id":                 int(r[0]),
+                    "created_at":         r[1].isoformat() if r[1] else None,
+                    "market_id":          r[2],
+                    "slug":               r[3],
+                    "question":           r[4],
+                    "category":           r[5],
+                    "market_archetype":   r[6],
+                    "side":               r[7],
+                    "cost_usd":           float(r[8]) if r[8] is not None else None,
+                    "entry_price":        float(r[9]) if r[9] is not None else None,
+                    "claude_probability": float(r[10]) if r[10] is not None else None,
+                    "status":             r[11],
+                    "realized_pnl_usd":   float(r[12]) if r[12] is not None else None,
+                    "settled_at":         r[13].isoformat() if r[13] else None,
+                }
+                for r in position_rows
+            ],
+            "events": [
+                {
+                    "timestamp":   r[0].isoformat() if r[0] else None,
+                    "event_type":  r[1],
+                    "description": r[2],
+                    "severity":    int(r[3] or 0),
+                    "source":      r[4],
+                }
+                for r in event_rows
+            ],
+        })
+
+    async def _handle_admin_user_action(self, request: web.Request) -> web.Response:
+        """Admin write: pause/resume a user's bot, grant/revoke admin."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+        target_uid = request.match_info.get("user_id", "").strip()
+        if not target_uid:
+            return web.json_response({"error": "user_id required"}, status=400)
+        if target_uid == admin_uid:
+            return web.json_response(
+                {"error": "cannot modify your own account via admin action"},
+                status=400,
+            )
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json body"}, status=400)
+        action = (body.get("action") or "").strip()
+        if action not in {"pause_bot", "resume_bot",
+                          "grant_admin", "revoke_admin"}:
+            return web.json_response(
+                {"error": f"unknown action: {action!r}"},
+                status=400,
+            )
+
+        loop = asyncio.get_running_loop()
+        try:
+            def _q():
+                with get_engine().begin() as conn:
+                    exists = conn.execute(text(
+                        "SELECT 1 FROM user_config WHERE user_id = :uid"
+                    ), {"uid": target_uid}).scalar()
+                    if not exists:
+                        return False, None
+
+                    if action == "pause_bot":
+                        conn.execute(text(
+                            "UPDATE user_config SET bot_enabled = FALSE "
+                            "WHERE user_id = :uid"
+                        ), {"uid": target_uid})
+                        new_state = {"bot_enabled": False}
+                    elif action == "resume_bot":
+                        conn.execute(text(
+                            "UPDATE user_config SET bot_enabled = TRUE "
+                            "WHERE user_id = :uid"
+                        ), {"uid": target_uid})
+                        new_state = {"bot_enabled": True}
+                    elif action == "grant_admin":
+                        conn.execute(text(
+                            "UPDATE user_config SET is_admin = TRUE "
+                            "WHERE user_id = :uid"
+                        ), {"uid": target_uid})
+                        new_state = {"is_admin": True}
+                    else:  # revoke_admin
+                        conn.execute(text(
+                            "UPDATE user_config SET is_admin = FALSE "
+                            "WHERE user_id = :uid"
+                        ), {"uid": target_uid})
+                        new_state = {"is_admin": False}
+
+                    conn.execute(text(
+                        "INSERT INTO event_log "
+                        "  (user_id, timestamp, event_type, severity, "
+                        "   description, source) "
+                        "VALUES (:uid, NOW(), :etype, 2, :desc, :src)"
+                    ), {
+                        "uid":   target_uid,
+                        "etype": "admin_action",
+                        "desc":  f"admin {admin_uid} performed {action} "
+                                 f"on {target_uid}",
+                        "src":   "admin_api",
+                    })
+                    return True, new_state
+            found, new_state = await loop.run_in_executor(self._pool, _q)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        if not found:
+            return web.json_response({"error": "user not found"}, status=404)
+
+        return web.json_response({
+            "status":    "applied",
+            "action":    action,
+            "user_id":   target_uid,
+            "new_state": new_state,
+        })
+
+    async def _handle_admin_forecaster_health(self,
+                                              request: web.Request) -> web.Response:
+        """Forecaster health: skip rate, ROI by category, feed status."""
+        admin_uid = await self._require_admin(request)
+        if not admin_uid:
+            return web.json_response({"error": "admin access required"},
+                                      status=403)
+        try:
+            days = max(1, min(90, int(request.query.get("days") or "7")))
+        except ValueError:
+            return web.json_response({"error": "invalid days"}, status=400)
+
+        loop = asyncio.get_running_loop()
+        try:
+            def _q():
+                with get_engine().begin() as conn:
+                    totals = conn.execute(text(
+                        f"SELECT "
+                        f"  COUNT(*) AS evaluated, "
+                        f"  COUNT(*) FILTER (WHERE skipped IS TRUE) AS skipped "
+                        f"FROM market_evaluations "
+                        f"WHERE created_at >= NOW() - INTERVAL '{days} days'"
+                    )).fetchone()
+
+                    by_cat = conn.execute(text(
+                        f"SELECT "
+                        f"  COALESCE(category, 'uncategorized') AS cat, "
+                        f"  COUNT(*) FILTER (WHERE status = 'settled') AS settled, "
+                        f"  COUNT(*) FILTER (WHERE status = 'settled' "
+                        f"    AND COALESCE(realized_pnl_usd, 0) > 0) AS wins, "
+                        f"  COALESCE(SUM(realized_pnl_usd) "
+                        f"    FILTER (WHERE status = 'settled'), 0) AS realized "
+                        f"FROM pm_positions "
+                        f"WHERE created_at >= NOW() - INTERVAL '{days} days' "
+                        f"GROUP BY cat "
+                        f"ORDER BY settled DESC "
+                        f"LIMIT 20"
+                    )).fetchall()
+
+                    feeds = conn.execute(text(
+                        "SELECT feed_name, state, detail, timestamp "
+                        "FROM feed_health_log "
+                        "WHERE timestamp >= NOW() - INTERVAL '1 hour' "
+                        "ORDER BY timestamp DESC "
+                        "LIMIT 40"
+                    )).fetchall()
+                    return totals, by_cat, feeds
+            totals, by_cat, feeds = (
+                await loop.run_in_executor(self._pool, _q)
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        evaluated = int(totals[0] or 0)
+        skipped = int(totals[1] or 0)
+        skip_rate = (skipped / evaluated) if evaluated > 0 else 0.0
+
+        seen: dict[str, dict] = {}
+        for r in feeds:
+            name = r[0]
+            if name in seen:
+                continue
+            seen[name] = {
+                "feed_name": name,
+                "state":     r[1],
+                "detail":    r[2] or "",
+                "timestamp": r[3].isoformat() if r[3] else None,
+            }
+
+        return web.json_response({
+            "window_days": days,
+            "totals": {
+                "evaluated": evaluated,
+                "skipped":   skipped,
+                "skip_rate": round(skip_rate, 4),
+            },
+            "by_category": [
+                {
+                    "category": r[0],
+                    "settled":  int(r[1] or 0),
+                    "wins":     int(r[2] or 0),
+                    "win_rate": round((int(r[2] or 0) / int(r[1] or 1)), 4)
+                                if int(r[1] or 0) > 0 else 0.0,
+                    "realized": float(r[3] or 0.0),
+                }
+                for r in by_cat
+            ],
+            "feeds": sorted(seen.values(), key=lambda x: x["feed_name"]),
+        })
+
     # ── Action handlers ──────────────────────────────────────────────────────
     async def _handle_scan_now(self, _request: web.Request) -> web.Response:
         if self._analyst is None:
@@ -1387,6 +1706,12 @@ class BotAPI:
         app.router.add_get ("/api/admin/users",    self._handle_admin_users)
         app.router.add_get ("/api/admin/overview", self._handle_admin_overview)
         app.router.add_get ("/api/admin/trades",   self._handle_admin_trades)
+        app.router.add_get ("/api/admin/users/{user_id}",
+                            self._handle_admin_user_detail)
+        app.router.add_post("/api/admin/users/{user_id}/action",
+                            self._handle_admin_user_action)
+        app.router.add_get ("/api/admin/forecaster",
+                            self._handle_admin_forecaster_health)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         site = web.TCPSite(self._runner, BOT_API_HOST, BOT_API_PORT)

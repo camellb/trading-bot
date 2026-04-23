@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
 
@@ -226,10 +227,15 @@ export default function AdminUsersPage() {
                 return (
                   <tr key={u.user_id}>
                     <td>
-                      <div>{name}</div>
-                      {u.email && u.display_name ? (
-                        <div className="split-desc">{u.email}</div>
-                      ) : null}
+                      <Link
+                        href={`/admin/users/${encodeURIComponent(u.user_id)}`}
+                        className="row-link"
+                      >
+                        <div>{name}</div>
+                        {u.email && u.display_name ? (
+                          <div className="split-desc">{u.email}</div>
+                        ) : null}
+                      </Link>
                     </td>
                     <td>{planLabel(u.subscription_plan)}</td>
                     <td>

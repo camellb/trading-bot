@@ -8,6 +8,7 @@ const ADMIN_NAV = [
   { id: "overview", label: "Overview", href: "/admin", match: /^\/admin\/?$/ },
   { id: "users", label: "Users", href: "/admin/users", match: /^\/admin\/users/ },
   { id: "trades", label: "Trades", href: "/admin/trades", match: /^\/admin\/trades/ },
+  { id: "forecaster", label: "Forecaster", href: "/admin/forecaster", match: /^\/admin\/forecaster/ },
   { id: "learning", label: "Learning", href: "/admin/learning", match: /^\/admin\/learning/ },
 ];
 
