@@ -110,8 +110,6 @@ export default function SupportPage() {
           <div className="kv-val"><Link href="/legal/privacy" className="mono" style={{ color: "var(--teal)" }}>/legal/privacy</Link></div>
           <div className="kv-label">Risk disclosure</div>
           <div className="kv-val"><Link href="/legal/risk" className="mono" style={{ color: "var(--teal)" }}>/legal/risk</Link></div>
-          <div className="kv-label">Status page</div>
-          <div className="kv-val mono" style={{ color: "var(--vellum-60)" }}>status.delfi.app</div>
         </div>
       </div>
     </div>
