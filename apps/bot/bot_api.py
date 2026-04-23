@@ -421,6 +421,39 @@ class BotAPI:
             "descriptions": USER_CONFIG_DESCRIPTIONS,
         })
 
+    async def _handle_archetypes(self, request: web.Request) -> web.Response:
+        """Return canonical archetypes + any discovered in live DB rows.
+
+        The Python classifier has a fixed taxonomy (ARCHETYPES tuple).
+        Older data, manual inserts, or future classifier expansions may
+        introduce labels outside that set. The dashboard renders this
+        combined list so users can still skip unfamiliar archetypes.
+        """
+        from engine.archetype_classifier import ARCHETYPES as _CANON
+        loop = asyncio.get_running_loop()
+
+        def _discover() -> list[str]:
+            try:
+                with get_engine().begin() as conn:
+                    rows = conn.execute(text(
+                        "SELECT DISTINCT market_archetype FROM pm_positions "
+                        "WHERE market_archetype IS NOT NULL "
+                        "UNION "
+                        "SELECT DISTINCT market_archetype FROM market_evaluations "
+                        "WHERE market_archetype IS NOT NULL"
+                    )).fetchall()
+                return [r[0] for r in rows if r[0]]
+            except Exception:
+                return []
+
+        discovered = await loop.run_in_executor(self._pool, _discover)
+        canon_set = set(_CANON)
+        extras = sorted(set(discovered) - canon_set)
+        return web.json_response({
+            "canonical": list(_CANON),
+            "discovered": extras,
+        })
+
     async def _handle_list_suggestions(self, request: web.Request) -> web.Response:
         user_id = self._user_id_from(request) or request.query.get("user_id")
         if not user_id:
@@ -1830,6 +1863,7 @@ class BotAPI:
         app.router.add_get ("/api/config",      self._handle_config)
         app.router.add_get ("/api/user-config", self._handle_get_user_config)
         app.router.add_put ("/api/user-config", self._handle_update_user_config)
+        app.router.add_get ("/api/archetypes", self._handle_archetypes)
         app.router.add_get ("/api/config/telegram", self._handle_get_telegram_config)
         app.router.add_put ("/api/config/telegram", self._handle_put_telegram_config)
         app.router.add_get ("/api/config/telegram/reveal", self._handle_reveal_telegram_config)

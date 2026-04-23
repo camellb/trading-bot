@@ -42,7 +42,9 @@ type Diagnostics = {
   system?: { bankroll_series?: BankrollPoint[] };
 };
 
-const ALL_ARCHETYPES: { id: string; label: string; group: string }[] = [
+type ArchetypeItem = { id: string; label: string; group: string };
+
+const BUILTIN_ARCHETYPES: ArchetypeItem[] = [
   { id: "tennis_qualifier",    label: "Tennis - qualifier",     group: "Sports" },
   { id: "tennis_main_draw",    label: "Tennis - main draw",     group: "Sports" },
   { id: "tennis_lower_tier",   label: "Tennis - lower tier",    group: "Sports" },
@@ -61,6 +63,42 @@ const ALL_ARCHETYPES: { id: string; label: string; group: string }[] = [
   { id: "binary_event",        label: "Binary event",           group: "Markets" },
 ];
 
+type ArchetypesPayload = { canonical: string[]; discovered: string[] };
+
+function humanizeArchetypeId(id: string): string {
+  return id
+    .split("_")
+    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
+}
+
+function mergeArchetypes(
+  builtin: ArchetypeItem[],
+  payload: ArchetypesPayload | null,
+  skipList: string[],
+  multipliers: Record<string, number> | undefined,
+): ArchetypeItem[] {
+  const seen = new Set<string>();
+  const out: ArchetypeItem[] = [];
+  for (const item of builtin) {
+    seen.add(item.id);
+    out.push(item);
+  }
+  const extras: string[] = [];
+  if (payload) {
+    for (const id of payload.canonical) if (!seen.has(id)) extras.push(id);
+    for (const id of payload.discovered) if (!seen.has(id)) extras.push(id);
+  }
+  for (const id of skipList) if (!seen.has(id)) extras.push(id);
+  for (const id of Object.keys(multipliers ?? {})) if (!seen.has(id)) extras.push(id);
+  const uniqExtras = Array.from(new Set(extras));
+  for (const id of uniqExtras) {
+    seen.add(id);
+    out.push({ id, label: humanizeArchetypeId(id), group: "Other" });
+  }
+  return out;
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -75,6 +113,7 @@ export default function RiskPage() {
   const [draft, setDraft] = useState<BotConfig | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
+  const [archetypes, setArchetypes] = useState<ArchetypesPayload | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -82,10 +121,11 @@ export default function RiskPage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const [cfg, sum, d] = await Promise.all([
+      const [cfg, sum, d, arch] = await Promise.all([
         getJSON<UserConfigPayload>("/api/user-config"),
         getJSON<Summary>("/api/summary"),
         getJSON<Diagnostics>("/api/diagnostics?scope=all"),
+        getJSON<ArchetypesPayload>("/api/archetypes").catch(() => null),
       ]);
       if (cancelled) return;
       if (cfg) {
@@ -94,6 +134,7 @@ export default function RiskPage() {
       }
       if (sum) setSummary(sum);
       if (d) setDiag(d);
+      if (arch) setArchetypes(arch);
       setLoaded(true);
     };
     load();
@@ -133,6 +174,16 @@ export default function RiskPage() {
       return a !== b;
     });
   }, [payload, draft]);
+
+  const archetypeItems = useMemo(
+    () => mergeArchetypes(
+      BUILTIN_ARCHETYPES,
+      archetypes,
+      draft?.archetype_skip_list ?? [],
+      draft?.archetype_stake_multipliers,
+    ),
+    [archetypes, draft?.archetype_skip_list, draft?.archetype_stake_multipliers],
+  );
 
   const save = async () => {
     if (!payload || !draft || saving) return;
@@ -343,7 +394,7 @@ export default function RiskPage() {
           lose money at Delfi&apos;s current calibration.
         </p>
         <ArchetypeMatrix
-          items={ALL_ARCHETYPES}
+          items={archetypeItems}
           skipList={draft.archetype_skip_list}
           onToggle={(id) =>
             setDraft((prev) => {
@@ -369,7 +420,7 @@ export default function RiskPage() {
           every 25 settled trades in a category; you can also adjust directly.
         </p>
         <ArchetypeMultipliersPanel
-          items={ALL_ARCHETYPES}
+          items={archetypeItems}
           multipliers={draft.archetype_stake_multipliers ?? {}}
           skipList={draft.archetype_skip_list}
           onChange={(id, value) =>
