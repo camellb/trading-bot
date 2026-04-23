@@ -46,20 +46,20 @@ export default function SubscribePage() {
         </Link>
       </header>
 
-      <main className="ob-main">
+      <main className="ob-main sub-main">
         <Suspense fallback={null}>
           <SubscribeErrorBanner />
         </Suspense>
 
         <div className="ob-eyebrow">Subscribe</div>
-        <h1 className="ob-title">Pick your plan</h1>
-        <p className="ob-sub">
+        <h1 className="ob-title sub-title">Pick your plan</h1>
+        <p className="ob-sub sub-sub">
           Delfi forecasts every tradeable Polymarket market, sizes positions with risk brakes, and
           narrates every decision on your dashboard. One plan, billed monthly or yearly. Cancel any
           time.
         </p>
 
-        <div className="ob-choices">
+        <div className="ob-choices sub-grid">
           <button
             type="button"
             className={`ob-choice sub-plan ${plan === "annual" ? "selected" : ""}`}
@@ -74,7 +74,7 @@ export default function SubscribePage() {
               <span className="sub-price-num t-num">$52.50</span>
               <span className="sub-price-unit">/ month</span>
             </div>
-            <div className="sub-price-meta">Billed $630 yearly. Equivalent to $52.50 / month.</div>
+            <div className="sub-price-meta">Billed $630 yearly.</div>
             <div className="ob-choice-body">
               Best value. Locks in the discount for a full year of Delfi.
             </div>
