@@ -102,46 +102,65 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
     """
     Called after every settlement. Runs the pipeline iff the trade-volume
     gate has been crossed since the last cycle. Returns a status dict.
+
+    Per-user advisory lock (`pg_advisory_xact_lock(hashtext(user_id))`)
+    serialises concurrent cycles for the same user so two settlements
+    landing near-simultaneously cannot both pass the gate and emit duplicate
+    proposals. Cycles for different users stay fully parallel.
     """
     try:
-        settled_now = _count_settled_trades(user_id, mode)
-        last_cycle = _last_cycle_settled_count(user_id)
-        delta = settled_now - last_cycle
-        if delta < LEARNING_CYCLE_TRADE_INTERVAL:
+        from sqlalchemy import text
+        from db.engine import get_engine
+
+        # Hold a dedicated transaction only to own the advisory lock. All
+        # sub-helpers (_count_settled_trades, _store_pending_suggestion, ...)
+        # open their own short-lived connections, so this lock-holding
+        # transaction never touches application tables.
+        with get_engine().begin() as lock_conn:
+            lock_conn.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:uid))"),
+                {"uid": user_id},
+            )
+
+            settled_now = _count_settled_trades(user_id, mode)
+            last_cycle = _last_cycle_settled_count(user_id)
+            delta = settled_now - last_cycle
+            if delta < LEARNING_CYCLE_TRADE_INTERVAL:
+                return {
+                    "status":      "gate_not_crossed",
+                    "settled_now": settled_now,
+                    "since_last":  delta,
+                    "threshold":   LEARNING_CYCLE_TRADE_INTERVAL,
+                }
+
+            stats = _gather_stats(user_id, mode,
+                                  limit=LEARNING_CYCLE_TRADE_INTERVAL)
+            current_cfg = get_user_config(user_id)
+            proposals = propose_suggestions(stats, current_cfg, user_id=user_id)
+
+            # Enrich each with the backtester delta.
+            for prop in proposals:
+                _attach_backtest_delta(prop, current_cfg)
+
+            stored = 0
+            for prop in proposals:
+                if _store_pending_suggestion(prop, user_id=user_id,
+                                              settled_count=settled_now):
+                    stored += 1
+
+            report_id = _compose_and_deliver_report(
+                user_id=user_id, mode=mode,
+                cycle_size=LEARNING_CYCLE_TRADE_INTERVAL,
+            )
+
             return {
-                "status":      "gate_not_crossed",
-                "settled_now": settled_now,
-                "since_last":  delta,
-                "threshold":   LEARNING_CYCLE_TRADE_INTERVAL,
+                "status":       "ran",
+                "settled_now":  settled_now,
+                "since_last":   delta,
+                "proposals":    len(proposals),
+                "stored":       stored,
+                "report_id":    report_id,
             }
-
-        stats = _gather_stats(user_id, mode,
-                              limit=LEARNING_CYCLE_TRADE_INTERVAL)
-        current_cfg = get_user_config(user_id)
-        proposals = propose_suggestions(stats, current_cfg, user_id=user_id)
-
-        # Enrich each with the backtester delta.
-        for prop in proposals:
-            _attach_backtest_delta(prop, current_cfg)
-
-        stored = 0
-        for prop in proposals:
-            if _store_pending_suggestion(prop, user_id=user_id,
-                                          settled_count=settled_now):
-                stored += 1
-
-        report_id = _compose_and_deliver_report(
-            user_id=user_id, mode=mode, cycle_size=LEARNING_CYCLE_TRADE_INTERVAL,
-        )
-
-        return {
-            "status":       "ran",
-            "settled_now":  settled_now,
-            "since_last":   delta,
-            "proposals":    len(proposals),
-            "stored":       stored,
-            "report_id":    report_id,
-        }
     except Exception as exc:
         print(f"[learning_cadence] maybe_run failed: {exc}", file=sys.stderr)
         return {"status": "error", "error": str(exc)}

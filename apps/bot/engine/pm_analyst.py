@@ -159,8 +159,8 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        _uc_early = get_user_config(user_id)
-        if not _uc_early.bot_enabled:
+        user_config = get_user_config(user_id)
+        if not user_config.bot_enabled:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_BOT_DISABLED",
@@ -176,7 +176,6 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        user_config = get_user_config(user_id)
         bankroll = executor.get_bankroll()
         starting_cash = executor.get_starting_cash()
         verdict = evaluate_risk(
