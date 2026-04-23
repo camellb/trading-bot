@@ -536,9 +536,10 @@ function NewHere() {
         <div className="newhere-grid">
           <div>
             <h2 className="newhere-head balanced">New to Polymarket?</h2>
-            <p className="newhere-body">Polymarket is a marketplace for real-world questions. Will the Fed cut rates in December? Will a party win an election? Will Bitcoin hit a price? Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question trading at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
-            <p className="newhere-body muted">Markets are often wrong. Sentiment overshoots news. Prices drift on emotion. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
-            <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade to its confidence, and only acts when the forecast clears every gate. You don&apos;t need to be a prediction market expert. You just need an account.</p>
+            <p className="newhere-body">Polymarket is a marketplace for real-world questions. Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question trading at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
+            <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
+            <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade to its confidence, and acts when the forecast clears every gate.</p>
+            <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need an account with Delfi.</p>
             <Link className="newhere-cta" href="/auth#signup">Start for free today →</Link>
           </div>
           <div className="edge-viz">
