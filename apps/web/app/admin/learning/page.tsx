@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getJSON } from "@/lib/fetch-json";
 
 type AdminUser = {
   user_id:         string;
@@ -30,16 +31,6 @@ type ReportsPayload = {
   include_admin: boolean;
   reports:       Report[];
 };
-
-async function getJSON<T>(path: string): Promise<T | null> {
-  try {
-    const r = await fetch(path, { cache: "no-store" });
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return "-";

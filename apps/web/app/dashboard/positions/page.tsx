@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getJSON } from "@/lib/fetch-json";
 import "../../styles/content.css";
 
 type Filter = "all" | "open" | "closed" | "skipped";
@@ -51,16 +52,6 @@ type Evaluation = {
 };
 
 type EvalsPayload = { evaluations: Evaluation[] };
-
-async function getJSON<T>(path: string): Promise<T | null> {
-  try {
-    const r = await fetch(path, { cache: "no-store" });
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 function daysFromNow(iso: string | null): string {
   if (!iso) return "-";

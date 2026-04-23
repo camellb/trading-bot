@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { getJSON } from "@/lib/fetch-json";
 
 // ---- Shapes coming off the bot API (see apps/bot/bot_api.py) -----------
 
@@ -66,18 +67,6 @@ type Evaluation = {
 };
 
 type EvaluationsPayload = { evaluations: Evaluation[] };
-
-// ---- Fetch helper ------------------------------------------------------
-
-async function getJSON<T>(path: string): Promise<T | null> {
-  try {
-    const r = await fetch(path, { cache: "no-store" });
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 // ---- UI shape adapters --------------------------------------------------
 

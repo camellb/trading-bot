@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { getJSON } from "@/lib/fetch-json";
 import "../../styles/content.css";
 
 type Range = "7d" | "30d" | "90d" | "all";
@@ -43,16 +44,6 @@ type BankrollPoint = { date: string; bankroll: number };
 type Diagnostics = {
   system?: { bankroll_series?: BankrollPoint[] };
 };
-
-async function getJSON<T>(path: string): Promise<T | null> {
-  try {
-    const r = await fetch(path, { cache: "no-store" });
-    if (!r.ok) return null;
-    return (await r.json()) as T;
-  } catch {
-    return null;
-  }
-}
 
 function sliceRange(series: BankrollPoint[], range: Range): BankrollPoint[] {
   if (!series.length) return [];
