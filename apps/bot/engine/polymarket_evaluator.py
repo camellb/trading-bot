@@ -89,10 +89,30 @@ def _system_prompt() -> str:
         f">120s for equity), or shows a zero/bad price, TREAT THIS AS MISSING "
         f"EVIDENCE and LOWER CONFIDENCE. Do not fabricate price levels from "
         f"memory. "
+        f"VOICE: Your reasoning is read by a paying customer on a product "
+        f"surface, not by another model and not in a lab notebook. Write like "
+        f"a senior analyst briefing a principal. Concrete nouns, short "
+        f"sentences, active voice. No hedging filler ('it seems', 'it "
+        f"appears', 'arguably'). No meta commentary about the research "
+        f"process ('the research shows', 'based on the context', 'according "
+        f"to the data provided'). No apologies for uncertainty: state what "
+        f"you know, state what you don't, state the forecast. Never mention "
+        f"the model, the prompt, the research pipeline, or internal tooling. "
+        f"Name the concrete facts driving the estimate. If a number matters, "
+        f"cite it (e.g. 'trailing 30-day hashrate up 12%', not 'hashrate "
+        f"trending up'). The reader should come away knowing exactly what "
+        f"evidence drove the call. "
+        f"REASONING_SHORT: In addition to the full reasoning, write a "
+        f"standalone one-sentence summary of the call (max 140 characters). "
+        f"It must stand on its own as a product caption: no ellipses, no "
+        f"'because of the above', no references to the long reasoning. Lead "
+        f"with the driver, then the direction. Example: 'Incumbent polls +6 "
+        f"nationally with 3 weeks left and no debate scheduled; YES favored.' "
         f"Output STRICT JSON only - no markdown fence, no prose before/after. "
         f"Schema: {{\"probability_yes\":0..1, \"confidence\":0..1, "
         f"\"category\":\"macro|geopolitics|politics|crypto|tech|sports|entertainment|science|other\", "
         f"\"key_factors\":[\"short factor\",...], "
+        f"\"reasoning_short\":\"<=140 char one-sentence summary\", "
         f"\"reasoning\":\"<=200 words prose\"}}"
     )
 
@@ -106,6 +126,7 @@ class MarketEvaluation:
     key_factors:      list[str]
     reasoning:        str
     raw:              str   # the raw model output for auditing
+    reasoning_short:  str = ""
 
 
 def _parse_json(raw: str) -> Optional[dict]:
@@ -200,6 +221,9 @@ class PolymarketEvaluator:
                   file=sys.stderr)
             return None
 
+        reasoning_short_raw = str(obj.get("reasoning_short") or "").strip()
+        if len(reasoning_short_raw) > 140:
+            reasoning_short_raw = reasoning_short_raw[:137].rstrip() + "..."
         return MarketEvaluation(
             market_id       = market.id,
             probability_yes = _clamp01(obj.get("probability_yes"), 0.5),
@@ -208,6 +232,7 @@ class PolymarketEvaluator:
             key_factors     = [str(x)[:200] for x in (obj.get("key_factors") or [])][:6],
             reasoning       = str(obj.get("reasoning") or "")[:4000],
             raw             = raw,
+            reasoning_short = reasoning_short_raw,
         )
 
     @staticmethod

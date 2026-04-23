@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import "../../styles/content.css";
 
-type Filter = "all" | "open" | "scanning" | "recent";
+type Filter = "all" | "open" | "closed" | "skipped";
 
 type OpenPosition = {
   id: number;
@@ -46,6 +46,7 @@ type Evaluation = {
   ev_bps: number | null;
   recommendation: string | null;
   reasoning: string | null;
+  reasoning_short: string | null;
   slug: string | null;
 };
 
@@ -147,6 +148,7 @@ export default function PositionsPage() {
   const open    = positions?.open ?? [];
   const settled = positions?.settled ?? [];
   const evals   = evaluations?.evaluations ?? [];
+  const skippedEvals = evals.filter((e) => normalizeDecision(e.recommendation) === "SKIP");
   const deployed = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
 
   return (
@@ -168,11 +170,11 @@ export default function PositionsPage() {
           <button className={`chip ${filter === "open" ? "on" : ""}`} onClick={() => setFilter("open")}>
             Open ({open.length})
           </button>
-          <button className={`chip ${filter === "scanning" ? "on" : ""}`} onClick={() => setFilter("scanning")}>
-            Scanning ({evals.length})
+          <button className={`chip ${filter === "closed" ? "on" : ""}`} onClick={() => setFilter("closed")}>
+            Closed ({settled.length})
           </button>
-          <button className={`chip ${filter === "recent" ? "on" : ""}`} onClick={() => setFilter("recent")}>
-            Recently resolved ({settled.length})
+          <button className={`chip ${filter === "skipped" ? "on" : ""}`} onClick={() => setFilter("skipped")}>
+            Skipped ({skippedEvals.length})
           </button>
         </div>
       </div>
@@ -234,20 +236,21 @@ export default function PositionsPage() {
         </div>
       )}
 
-      {(filter === "all" || filter === "scanning") && (
+      {(filter === "all" || filter === "skipped") && (
         <div className="panel">
           <div className="panel-head">
-            <h2 className="panel-title">Recent evaluations</h2>
+            <h2 className="panel-title">Skipped</h2>
+            <span className="panel-meta">{skippedEvals.length} passed</span>
           </div>
 
-          {evals.length === 0 ? (
+          {skippedEvals.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No recent evaluations. The bot scans Polymarket periodically - check back shortly."
+                ? "No skipped markets in the recent window."
                 : "Loading..."}
             </div>
           ) : (
-            evals.map((s) => {
+            skippedEvals.map((s) => {
               const decision = normalizeDecision(s.recommendation);
               const marketPct =
                 s.market_price_yes != null ? Math.round(s.market_price_yes * 100) : null;
@@ -258,8 +261,10 @@ export default function PositionsPage() {
                   ? Math.round((marketPct + delfiPct) / 2)
                   : null;
               const reasonFull = (s.reasoning ?? "").trim();
-              const reasonShort = shortReason(reasonFull, 80);
-              const hasMore = reasonFull.length > 0 && reasonShort.endsWith("…");
+              const shortFromModel = (s.reasoning_short ?? "").trim();
+              const reasonShort = shortFromModel || shortReason(reasonFull, 80);
+              const hasMore =
+                reasonFull.length > 0 && reasonFull.length > reasonShort.length;
               const isExpanded = expandedEvals.has(s.id);
               const decisionColor =
                 decision === "SKIP" ? "var(--vellum-60)" : "var(--gold)";
@@ -366,16 +371,16 @@ export default function PositionsPage() {
         </div>
       )}
 
-      {(filter === "all" || filter === "recent") && (
+      {(filter === "all" || filter === "closed") && (
         <div className="panel">
           <div className="panel-head">
-            <h2 className="panel-title">Recently resolved</h2>
+            <h2 className="panel-title">Closed</h2>
             <span className="panel-meta">{settled.length} settled</span>
           </div>
 
           {settled.length === 0 ? (
             <div className="empty-state">
-              Recently resolved positions will appear here once markets settle.
+              Closed positions will appear here once markets settle.
             </div>
           ) : (
             <table className="table-simple">

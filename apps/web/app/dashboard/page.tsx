@@ -205,7 +205,6 @@ export default function DashboardPage() {
   const [positions, setPositions]   = useState<PositionsPayload | null>(null);
   const [evaluations, setEvals]     = useState<EvaluationsPayload | null>(null);
   const [loaded, setLoaded]         = useState(false);
-  const [error, setError]           = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -220,8 +219,6 @@ export default function DashboardPage() {
       setPositions(p);
       setEvals(e);
       setLoaded(true);
-      if (!s && !p && !e) setError("Bot API unreachable");
-      else setError(null);
     };
     load();
     const id = setInterval(load, 30_000);
@@ -252,13 +249,6 @@ export default function DashboardPage() {
         starting={starting}
         realizedPnl={pnl}
         realizedPct={pnlPct}
-        loaded={loaded}
-      />
-      <DashStatus
-        openCount={summary?.open_positions ?? open.length}
-        settled={summary?.settled_total ?? 0}
-        brier={summary?.brier ?? null}
-        error={error}
         loaded={loaded}
       />
 
@@ -385,47 +375,6 @@ function DashHero({
           Equity time series wiring pending - daily snapshots will appear here
           as the bot records performance_snapshots.
         </div>
-      </div>
-    </section>
-  );
-}
-
-function DashStatus({
-  openCount,
-  settled,
-  brier,
-  error,
-  loaded,
-}: {
-  openCount: number;
-  settled: number;
-  brier: number | null;
-  error: string | null;
-  loaded: boolean;
-}) {
-  const sub = error
-    ? error
-    : !loaded
-    ? "Connecting to bot..."
-    : `${openCount} open · ${settled} settled${brier != null ? ` · Brier ${brier.toFixed(3)}` : ""}`;
-  return (
-    <section className="dash-status">
-      <div className="status-left">
-        <div className="status-icon">
-          <span className="status-ping"></span>
-          <span className="status-ping-core"></span>
-        </div>
-        <div className="status-body">
-          <div className="status-title">
-            {error ? "Delfi is offline" : "Delfi is trading"}
-          </div>
-          <div className="status-sub">{sub}</div>
-        </div>
-      </div>
-      <div className="status-actions">
-        <Link className="btn-ghost sm" href="/dashboard/risk">
-          Adjust risk →
-        </Link>
       </div>
     </section>
   );

@@ -485,13 +485,13 @@ def _log_market_evaluation(
                 "INSERT INTO market_evaluations ("
                 "  user_id, market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
-                "  ev_bps, recommendation, reasoning, research_sources, "
-                "  prediction_id, market_archetype, event_slug"
+                "  ev_bps, recommendation, reasoning, reasoning_short, "
+                "  research_sources, prediction_id, market_archetype, event_slug"
                 ") VALUES ("
                 "  :user_id, :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
-                "  :ev_bps, :rec, :reason, :srcs, "
-                "  :pid, :arch, :event_slug"
+                "  :ev_bps, :rec, :reason, :reason_short, "
+                "  :srcs, :pid, :arch, :event_slug"
                 ") RETURNING id"
             ), {
                 "user_id": user_id,
@@ -506,6 +506,7 @@ def _log_market_evaluation(
                 "ev_bps": decision.ev * 10_000.0,
                 "rec":  recommendation,
                 "reason": evaluation.reasoning,
+                "reason_short": (getattr(evaluation, "reasoning_short", "") or None),
                 "srcs": json.dumps(research_sources),
                 "pid":  prediction_id,
                 "arch": market_archetype,

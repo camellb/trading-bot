@@ -267,7 +267,7 @@ class BotAPI:
                         "SELECT id, evaluated_at, market_id, question, category, "
                         "       market_price_yes, claude_probability, confidence, "
                         "       ev_bps, recommendation, reasoning, pm_position_id, "
-                        "       slug, research_sources "
+                        "       slug, research_sources, reasoning_short "
                         "FROM market_evaluations "
                         "WHERE (:since IS NULL OR evaluated_at >= :since) "
                         "ORDER BY evaluated_at DESC "
@@ -293,6 +293,7 @@ class BotAPI:
                 "pm_position_id": r[11],
                 "slug":           r[12],
                 "research_sources": _parse_json_field(r[13]),
+                "reasoning_short": r[14],
             }
             for r in rows
         ]

@@ -405,6 +405,9 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS event_slug TEXT"
         ))
+        conn.execute(sa_text(
+            "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS reasoning_short TEXT"
+        ))
         # Migration: historical rename edge_bps → ev_bps. The column stores
         # expected return × 10000 at entry, kept for diagnostic attribution.
         # Under the three-gate doctrine expected return is one gate, not
