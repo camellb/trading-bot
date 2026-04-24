@@ -613,45 +613,79 @@ def create_all_tables() -> None:
             ))
         except Exception as exc:
             print(f"[db] skipping authenticated grants (non-Supabase?): {exc}", file=sys.stderr)
-        # Migration 014: RLS policies use auth.uid() (UUID) against user_id
-        # (TEXT). Postgres has no text=uuid operator, so the policies either
-        # error or silently deny. Cast to ::text so the predicate actually
-        # evaluates. Drop-and-recreate is idempotent and cheap.
+        # RLS policy refresh. Owner-scoped predicate is
+        # `user_id = auth.uid()`, but the cast depends on the column's type
+        # in the live DB (verified 2026-04-24 via information_schema):
+        #   UUID tables (most of them): compare directly, `auth.uid()` is
+        #       already UUID so no cast is needed. Casting to ::text here
+        #       would produce a `text = uuid` operator error and poison
+        #       the whole create_all_tables() transaction, silently
+        #       rolling back every migration above.
+        #   TEXT tables (currently only learning_reports): compare with
+        #       `auth.uid()::text` so the predicate is text=text.
+        # If you add a new per-user table, put it in the list whose type
+        # matches its user_id column - do NOT unify them; the live schema
+        # is genuinely mixed.
+        # Wrapped in a SAVEPOINT so a stray failure can't abort the outer
+        # transaction.
+        uuid_tables = (
+            "pm_positions",
+            "predictions",
+            "market_evaluations",
+            "markouts",
+            "performance_snapshots",
+            "config_change_history",
+            "event_log",
+            "news_event_log",
+            "user_config",
+            "pending_suggestions",
+        )
+        text_tables = (
+            "learning_reports",
+        )
         try:
-            per_user_tables = (
-                "pm_positions",
-                "predictions",
-                "market_evaluations",
-                "markouts",
-                "performance_snapshots",
-                "config_change_history",
-                "event_log",
-                "news_event_log",
-                "user_config",
-                "pending_suggestions",
-                "learning_reports",
-            )
-            for tbl in per_user_tables:
-                for cmd in ("select", "insert", "update", "delete"):
+            with conn.begin_nested():  # SAVEPOINT
+                for tbl in uuid_tables + text_tables:
+                    for cmd in ("select", "insert", "update", "delete"):
+                        conn.execute(sa_text(
+                            f"DROP POLICY IF EXISTS {tbl}_{cmd} ON {tbl}"
+                        ))
+                for tbl in uuid_tables:
                     conn.execute(sa_text(
-                        f"DROP POLICY IF EXISTS {tbl}_{cmd} ON {tbl}"
+                        f"CREATE POLICY {tbl}_select ON {tbl} "
+                        f"FOR SELECT USING (user_id = auth.uid())"
                     ))
-                conn.execute(sa_text(
-                    f"CREATE POLICY {tbl}_select ON {tbl} "
-                    f"FOR SELECT USING (user_id = auth.uid()::text)"
-                ))
-                conn.execute(sa_text(
-                    f"CREATE POLICY {tbl}_insert ON {tbl} "
-                    f"FOR INSERT WITH CHECK (user_id = auth.uid()::text)"
-                ))
-                conn.execute(sa_text(
-                    f"CREATE POLICY {tbl}_update ON {tbl} "
-                    f"FOR UPDATE USING (user_id = auth.uid()::text) "
-                    f"WITH CHECK (user_id = auth.uid()::text)"
-                ))
-                conn.execute(sa_text(
-                    f"CREATE POLICY {tbl}_delete ON {tbl} "
-                    f"FOR DELETE USING (user_id = auth.uid()::text)"
-                ))
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_insert ON {tbl} "
+                        f"FOR INSERT WITH CHECK (user_id = auth.uid())"
+                    ))
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_update ON {tbl} "
+                        f"FOR UPDATE USING (user_id = auth.uid()) "
+                        f"WITH CHECK (user_id = auth.uid())"
+                    ))
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_delete ON {tbl} "
+                        f"FOR DELETE USING (user_id = auth.uid())"
+                    ))
+                for tbl in text_tables:
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_select ON {tbl} "
+                        f"FOR SELECT USING (user_id = auth.uid()::text)"
+                    ))
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_insert ON {tbl} "
+                        f"FOR INSERT WITH CHECK (user_id = auth.uid()::text)"
+                    ))
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_update ON {tbl} "
+                        f"FOR UPDATE USING (user_id = auth.uid()::text) "
+                        f"WITH CHECK (user_id = auth.uid()::text)"
+                    ))
+                    conn.execute(sa_text(
+                        f"CREATE POLICY {tbl}_delete ON {tbl} "
+                        f"FOR DELETE USING (user_id = auth.uid()::text)"
+                    ))
         except Exception as exc:
-            print(f"[db] skipping RLS text-cast refresh (non-Supabase?): {exc}", file=sys.stderr)
+            print(f"[db] skipping RLS refresh (non-Supabase or permissions?): {exc}",
+                  file=sys.stderr)
