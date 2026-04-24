@@ -12,6 +12,7 @@ const ADMIN_NAV = [
   { id: "scanner", label: "Scanner", href: "/admin/scanner", match: /^\/admin\/scanner/ },
   { id: "learning", label: "Learning", href: "/admin/learning", match: /^\/admin\/learning/ },
   { id: "audit-log", label: "Audit log", href: "/admin/audit-log", match: /^\/admin\/audit-log/ },
+  { id: "geoblock", label: "Geoblock", href: "/admin/geoblock", match: /^\/admin\/geoblock/ },
 ];
 
 export default function AdminNav({ children }: { children: React.ReactNode }) {
