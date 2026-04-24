@@ -352,8 +352,23 @@ function DashHero({
   closedTrades: number;
   loaded: boolean;
 }) {
-  const isSim   = mode === "simulation";
-  const pnlSign = realizedPnl >= 0 ? "+" : "";
+  const isSim = mode === "simulation";
+  // Render the sign explicitly so a loss never displays as a positive
+  // number. The prior version used Math.abs(realizedPnl) + a conditional
+  // "+" prefix, which stripped the sign on losses (e.g. -$12.17 rendered
+  // as "$12.17"). Now: "-" for negative, "+" for positive, no sign for
+  // exactly zero. Same rule applied to the percent.
+  const pnlSign =
+    realizedPnl > 0 ? "+" : realizedPnl < 0 ? "-" : "";
+  const pctSign =
+    realizedPct > 0 ? "+" : realizedPct < 0 ? "-" : "";
+  const pnlTone = !loaded
+    ? ""
+    : realizedPnl > 0
+      ? "profit"
+      : realizedPnl < 0
+        ? "loss"
+        : "";
   return (
     <section className="dash-hero">
       <div className="hero-balance">
@@ -376,12 +391,12 @@ function DashHero({
         <div className="hero-deltas">
           <div className="hero-delta">
             <div className="hero-delta-label">Realized P&amp;L</div>
-            <div className={`hero-delta-val t-num ${loaded && realizedPnl >= 0 ? "profit" : ""}`}>
+            <div className={`hero-delta-val t-num ${pnlTone}`}>
               {loaded ? (
                 <>
                   {pnlSign}${Math.abs(realizedPnl).toFixed(2)}{" "}
                   <span className="hero-delta-pct">
-                    {pnlSign}{realizedPct.toFixed(2)}%
+                    {pctSign}{Math.abs(realizedPct).toFixed(2)}%
                   </span>
                 </>
               ) : (
