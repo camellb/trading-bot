@@ -115,3 +115,29 @@ If the answers are yes, yes, and clear, ship the small version. Measure. Expand 
 Delfi exists to make money for its users. It does that by forecasting outcomes as accurately as possible and backing those forecasts with small, confidence-scaled stakes. Everything else is a safety gate, a risk brake, or an optimization of the forecaster itself.
 
 Forecast the outcome. Back the forecast. Measure the result. Improve.
+
+## Anti-Compression Memory
+
+### The problem you must solve
+
+As this conversation grows, older context gets compressed and you lose details. Counteract this by externalising everything important to Obsidian so you can re-read it whenever you feel uncertain about context.
+
+### WRITE to Obsidian when
+
+- You make a decision (any decision).
+- You discover something about the codebase.
+- The user tells you something about their preferences, constraints, or goals.
+- Something doesn't work and you figure out why.
+- You complete a task.
+- You learn what files do what.
+
+### READ from Obsidian when
+
+- You're about to ask the user something (check if you already know).
+- You feel uncertain about context ("wait, why are we doing this?").
+- Starting a new task.
+- Something feels like it might conflict with an earlier decision.
+
+### The rule
+
+If losing a piece of information mid-conversation would cause you to do something wrong or redundant, write it to Obsidian now, before it gets compressed out.
