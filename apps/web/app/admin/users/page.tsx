@@ -13,7 +13,6 @@ type AdminUser = {
   // 'polymarket_us'). Pre-migration-024 rows will come back null; the
   // UI treats null as offshore Polymarket to match the DB default.
   venue:               string | null;
-  starting_cash:       number | null;
   onboarded_at:        string | null;
   created_at:          string | null;
   is_admin:            boolean;
@@ -224,7 +223,6 @@ export default function AdminUsersPage() {
                 <th>Subscription</th>
                 <th>Mode</th>
                 <th>Venue</th>
-                <th>Bankroll</th>
                 <th>P&amp;L</th>
                 <th>Trades</th>
                 <th>Joined</th>
@@ -264,11 +262,6 @@ export default function AdminUsersPage() {
                         const v = venuePill(u.venue);
                         return <span className={`pill ${v.klass}`}>{v.label}</span>;
                       })()}
-                    </td>
-                    <td className="mono">
-                      {u.starting_cash !== null && u.starting_cash !== undefined
-                        ? `$${u.starting_cash.toLocaleString()}`
-                        : "-"}
                     </td>
                     <td className={`mono ${
                       (u.realized_pnl ?? 0) > 0 ? "cell-up"
