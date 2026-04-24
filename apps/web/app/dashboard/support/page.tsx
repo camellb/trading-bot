@@ -23,7 +23,7 @@ const FAQ = [
   },
   {
     q: "Why did Delfi pass on a market I thought was a good bet?",
-    a: "Every candidate trade has to clear two gates: (1) direction, Delfi's forecast and the market must both be on the same side of 0.50; (2) minimum chosen-side probability, Delfi's probability for the chosen side has to clear the threshold set in your Risk Controls (default 0.50). A miss on either gate means Delfi skips. Low-confidence calls that clear both gates get a smaller stake rather than a skip. The Activity log shows the exact gate each pass failed on.",
+    a: "Every candidate trade has to clear two gates: (1) direction, Delfi's forecast and the market must both be on the same side of 0.50; (2) minimum chosen-side probability, Delfi's probability for the chosen side has to clear the threshold set in your Risk Controls (default 0.50). A miss on either gate means Delfi skips. Low-confidence calls that clear both gates get a smaller stake rather than a skip.",
   },
   {
     q: "What happens when a risk cap triggers?",

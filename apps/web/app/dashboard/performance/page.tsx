@@ -2,9 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
+import { createClient } from "@/lib/supabase/client";
 import "../../styles/content.css";
 
-type Range = "7d" | "30d" | "90d" | "all";
+type Range = "7d" | "30d" | "90d" | "365d" | "all";
+
+const RANGES: { key: Range; label: string }[] = [
+  { key: "7d", label: "7 DAYS" },
+  { key: "30d", label: "30 DAYS" },
+  { key: "90d", label: "90 DAYS" },
+  { key: "365d", label: "365 DAYS" },
+  { key: "all", label: "ALL TIME" },
+];
 
 type Summary = {
   bankroll: number | null;
@@ -42,11 +51,62 @@ type Diagnostics = {
   system?: { bankroll_series?: BankrollPoint[] };
 };
 
+const RANGE_DAYS: Record<Exclude<Range, "all">, number> = {
+  "7d": 7,
+  "30d": 30,
+  "90d": 90,
+  "365d": 365,
+};
+
 function sliceRange(series: BankrollPoint[], range: Range): BankrollPoint[] {
   if (!series.length) return [];
   if (range === "all") return series;
-  const days = range === "7d" ? 7 : range === "30d" ? 30 : 90;
+  const days = RANGE_DAYS[range];
+  const cutoffMs = Date.now() - days * 86_400_000;
+  // Prefer filtering by actual timestamp when points have valid dates.
+  const filtered = series.filter((p) => {
+    const t = new Date(p.date).getTime();
+    return Number.isFinite(t) && t >= cutoffMs;
+  });
+  if (filtered.length >= 2) return filtered;
+  // Fallback: keep the tail if timestamp filtering yields too little.
   return series.slice(-Math.max(2, days));
+}
+
+/**
+ * Prepend the user's join date as a zero-baseline point so the curve starts
+ * at $0 on the day they joined. Also appends today's cumulative value so the
+ * X-axis always runs user-join → today.
+ */
+function withBaseline(
+  series: BankrollPoint[],
+  joinedAt: Date | null,
+): BankrollPoint[] {
+  if (!series.length) {
+    if (joinedAt) {
+      const today = new Date().toISOString();
+      return [
+        { date: joinedAt.toISOString(), bankroll: 0 },
+        { date: today, bankroll: 0 },
+      ];
+    }
+    return [];
+  }
+  const out = series.slice();
+  if (joinedAt) {
+    const firstDate = new Date(out[0].date).getTime();
+    if (!Number.isFinite(firstDate) || joinedAt.getTime() < firstDate - 60_000) {
+      out.unshift({ date: joinedAt.toISOString(), bankroll: 0 });
+    }
+  }
+  const last = out[out.length - 1];
+  const lastDate = new Date(last.date).getTime();
+  const now = Date.now();
+  // Extend to today when the last settled point is older than ~6 hours.
+  if (!Number.isFinite(lastDate) || now - lastDate > 6 * 3600 * 1000) {
+    out.push({ date: new Date(now).toISOString(), bankroll: last.bankroll });
+  }
+  return out;
 }
 
 function formatShortDate(s: string): string {
@@ -70,6 +130,23 @@ export default function PerformancePage() {
   const [calibration, setCalibration] = useState<CalibrationPayload | null>(null);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [joinedAt, setJoinedAt] = useState<Date | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data }) => {
+      if (cancelled) return;
+      const iso = data.user?.created_at;
+      if (iso) {
+        const d = new Date(iso);
+        if (!Number.isNaN(d.getTime())) setJoinedAt(d);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,7 +171,14 @@ export default function PerformancePage() {
   }, []);
 
   const bankrollSeries = diag?.system?.bankroll_series ?? [];
-  const sliced = useMemo(() => sliceRange(bankrollSeries, range), [bankrollSeries, range]);
+  const baselined = useMemo(
+    () => withBaseline(bankrollSeries, joinedAt),
+    [bankrollSeries, joinedAt],
+  );
+  const sliced = useMemo(
+    () => sliceRange(baselined, range),
+    [baselined, range],
+  );
 
   const startingCash = summary?.starting_cash ?? null;
   const equity = summary?.equity ?? summary?.bankroll ?? null;
@@ -126,9 +210,9 @@ export default function PerformancePage() {
 
       <div className="page-toolbar">
         <div className="page-toolbar-left">
-          {(["7d", "30d", "90d", "all"] as Range[]).map((r) => (
-            <button key={r} className={`chip ${range === r ? "on" : ""}`} onClick={() => setRange(r)}>
-              {r === "all" ? "Since start" : r.toUpperCase()}
+          {RANGES.map((r) => (
+            <button key={r.key} className={`chip ${range === r.key ? "on" : ""}`} onClick={() => setRange(r.key)}>
+              {r.label}
             </button>
           ))}
         </div>
@@ -165,7 +249,12 @@ export default function PerformancePage() {
         <div className="panel-head">
           <h2 className="panel-title">Equity curve</h2>
           <span className="panel-meta">
-            {sliced.length > 0 ? `${sliced.length} days` : "No data"}
+            {sliced.length > 1 ? (() => {
+              const first = new Date(sliced[0].date).getTime();
+              const last = new Date(sliced[sliced.length - 1].date).getTime();
+              const days = Math.max(1, Math.round((last - first) / 86_400_000));
+              return `${days} ${days === 1 ? "day" : "days"}`;
+            })() : "No data"}
           </span>
         </div>
         {sliced.length > 1 ? (
@@ -273,14 +362,27 @@ function EquityChart({ points }: { points: BankrollPoint[] }) {
   const padT = 16;
   const padB = 36;
   const values = points.map((p) => p.bankroll);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  // Floor at $0 so the baseline always reads "zero". If the curve dips below
+  // zero, extend the floor down to accommodate the loss; otherwise the floor
+  // stays at $0 and the curve rises from there.
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const min = Math.min(0, rawMin);
+  const max = Math.max(0, rawMax);
   const range = max - min || 1;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
-  const step = plotW / Math.max(1, points.length - 1);
+  // X-axis is time-based so equal days produce equal horizontal spacing even
+  // when the underlying series has sparse settlement points.
+  const xTimes = points.map((p) => {
+    const t = new Date(p.date).getTime();
+    return Number.isFinite(t) ? t : 0;
+  });
+  const tMin = Math.min(...xTimes);
+  const tMax = Math.max(...xTimes);
+  const tSpan = tMax - tMin || 1;
   const coords = points.map((p, i) => {
-    const x = padL + i * step;
+    const x = padL + plotW * ((xTimes[i] - tMin) / tSpan);
     const y = padT + plotH * (1 - (p.bankroll - min) / range);
     return [x, y] as const;
   });
@@ -297,6 +399,8 @@ function EquityChart({ points }: { points: BankrollPoint[] }) {
     { v: mid, y: padT + plotH / 2 },
     { v: min, y: padT + plotH },
   ];
+  // If the floor is exactly 0 we still want a visible "$0" label; mid will
+  // be non-zero unless the series is flat at 0.
 
   const lastIdx = points.length - 1;
   const midIdx = Math.floor(lastIdx / 2);

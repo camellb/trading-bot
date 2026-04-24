@@ -34,7 +34,6 @@ const NAV: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "grid", href: "/dashboard", match: /^\/dashboard\/?$/ },
   { id: "positions", label: "Positions", icon: "layers", href: "/dashboard/positions", match: /^\/dashboard\/positions/ },
   { id: "performance", label: "Performance", icon: "trend", href: "/dashboard/performance", match: /^\/dashboard\/performance/ },
-  { id: "activity", label: "Activity log", icon: "list", href: "/dashboard/activity", match: /^\/dashboard\/activity/ },
   { id: "intelligence", label: "Intelligence", icon: "bolt", href: "/dashboard/intelligence", match: /^\/dashboard\/intelligence/ },
   {
     id: "settings",
