@@ -524,6 +524,16 @@ export default function PositionsPage() {
                         ? s.entry_price
                         : 1 - s.entry_price
                       : null;
+                  // Show WIN/LOSS from the trader's perspective - the raw
+                  // YES/NO resolution is meaningless without knowing which
+                  // side the bot took. If the market went void (no
+                  // settlement_outcome) we render "-" rather than guessing.
+                  const outcomeLabel = s.settlement_outcome == null
+                    ? null
+                    : s.side === s.settlement_outcome ? "WIN" : "LOSS";
+                  const outcomeClass = outcomeLabel === "WIN"
+                    ? "cell-up"
+                    : outcomeLabel === "LOSS" ? "cell-down" : "";
                   return (
                     <tr key={s.id}>
                       <td>{s.question}</td>
@@ -532,7 +542,7 @@ export default function PositionsPage() {
                           {s.side}
                         </span>
                       </td>
-                      <td className="mono">{s.settlement_outcome ?? "-"}</td>
+                      <td className={`mono ${outcomeClass}`}>{outcomeLabel ?? "-"}</td>
                       <td className="mono">${s.cost_usd.toFixed(0)}</td>
                       <td className={`mono ${pnl >= 0 ? "cell-up" : "cell-down"}`}>
                         {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
