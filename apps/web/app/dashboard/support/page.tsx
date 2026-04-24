@@ -138,7 +138,6 @@ export default function SupportPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Other resources</h2>
-          <span className="panel-meta">Policies and docs</span>
         </div>
         <div className="kv-grid">
           <div className="kv-label">Terms of service</div>

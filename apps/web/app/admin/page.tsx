@@ -156,7 +156,6 @@ export default function AdminOverviewPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Finance</h2>
-          <span className="panel-meta">Subscriptions and recurring revenue</span>
         </div>
         <div className="stat-row" style={{ padding: "0 0 8px 0" }}>
           {financeStats.map((c, i) => (
@@ -171,7 +170,6 @@ export default function AdminOverviewPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Trading</h2>
-          <span className="panel-meta">Activity across all users</span>
         </div>
         <div className="stat-row" style={{ padding: "0 0 8px 0" }}>
           {tradingStats.map((c, i) => (

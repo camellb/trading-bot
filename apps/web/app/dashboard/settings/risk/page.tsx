@@ -319,7 +319,6 @@ export default function RiskPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Loss caps</h2>
-          <span className="panel-meta">Stop trading when losses hit a ceiling</span>
         </div>
 
         <PctSlider
@@ -351,7 +350,6 @@ export default function RiskPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Position sizing</h2>
-          <span className="panel-meta">How big each trade can be</span>
         </div>
 
         <PctSlider
@@ -386,7 +384,6 @@ export default function RiskPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Trade selection</h2>
-          <span className="panel-meta">What Delfi considers worth betting</span>
         </div>
 
         <PctSlider
@@ -410,13 +407,10 @@ export default function RiskPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Market categories</h2>
-          <span className="panel-meta">What Delfi is allowed to forecast</span>
         </div>
         <p className="slider-desc" style={{ marginBottom: 16 }}>
           Delfi classifies every market into one of these archetypes.
-          Disallowed archetypes are skipped before sizing. Short-horizon
-          tennis categories default off because resolution data shows they
-          lose money at Delfi&apos;s current calibration.
+          Disallowed archetypes are skipped before sizing.
         </p>
         <ArchetypeMatrix
           items={archetypeItems}
@@ -436,7 +430,6 @@ export default function RiskPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Category stake multipliers</h2>
-          <span className="panel-meta">Per-category sizing overrides</span>
         </div>
         <p className="slider-desc" style={{ marginBottom: 16 }}>
           1.0x means Delfi uses its default stake for that category. Go above 1x
