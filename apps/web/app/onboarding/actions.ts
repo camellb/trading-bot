@@ -4,6 +4,43 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 
+// Onboarding risk presets. These get written straight into user_config on
+// completion so the picker actually does something. All values live inside
+// USER_CONFIG_BOUNDS (apps/bot/engine/user_config.py) - the bot would reject
+// anything outside the envelope. Users can still edit individual fields
+// later from the Risk controls page.
+const RISK_PRESETS = {
+  cautious: {
+    daily_loss_limit_pct: 0.05,
+    weekly_loss_limit_pct: 0.10,
+    drawdown_halt_pct: 0.25,
+    streak_cooldown_losses: 2,
+    base_stake_pct: 0.01,
+    max_stake_pct: 0.02,
+    dry_powder_reserve_pct: 0.30,
+  },
+  balanced: {
+    daily_loss_limit_pct: 0.10,
+    weekly_loss_limit_pct: 0.20,
+    drawdown_halt_pct: 0.40,
+    streak_cooldown_losses: 3,
+    base_stake_pct: 0.02,
+    max_stake_pct: 0.03,
+    dry_powder_reserve_pct: 0.20,
+  },
+  aggressive: {
+    daily_loss_limit_pct: 0.20,
+    weekly_loss_limit_pct: 0.40,
+    drawdown_halt_pct: 0.50,
+    streak_cooldown_losses: 5,
+    base_stake_pct: 0.03,
+    max_stake_pct: 0.05,
+    dry_powder_reserve_pct: 0.10,
+  },
+} as const;
+
+type RiskProfile = keyof typeof RISK_PRESETS;
+
 export async function completeOnboarding(formData: FormData) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -15,6 +52,13 @@ export async function completeOnboarding(formData: FormData) {
   const rawMode = String(formData.get("mode") ?? "").trim();
   const mode: "simulation" | "live" =
     rawMode === "live" ? "live" : "simulation";
+
+  const rawRiskProfile = String(formData.get("risk_profile") ?? "").trim();
+  const riskProfile: RiskProfile =
+    rawRiskProfile === "cautious" || rawRiskProfile === "aggressive"
+      ? rawRiskProfile
+      : "balanced";
+  const riskValues = RISK_PRESETS[riskProfile];
 
   // Simulation bankroll is fixed at $1,000 for every new user. Live mode
   // uses the real wallet balance once CLOB is wired, so we persist 0 as a
@@ -30,6 +74,7 @@ export async function completeOnboarding(formData: FormData) {
         mode,
         starting_cash: startingCash,
         onboarded_at: new Date().toISOString(),
+        ...riskValues,
       },
       { onConflict: "user_id" },
     );

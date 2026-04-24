@@ -659,6 +659,61 @@ class BotAPI:
             "configured": creds is not None,
         })
 
+    async def _handle_get_notification_prefs(self, request: web.Request) -> web.Response:
+        """Return the user's per-category notification preferences. Missing
+        keys default to True on the client; we echo the raw map plus the
+        canonical category list so the UI can render toggles for every
+        category even if the user has never touched prefs."""
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        from engine.user_config import NOTIFICATION_CATEGORIES
+        loop = asyncio.get_running_loop()
+        cfg = await loop.run_in_executor(self._pool, get_user_config, user_id)
+        return web.json_response({
+            "user_id":    user_id,
+            "categories": list(NOTIFICATION_CATEGORIES),
+            "prefs":      dict(cfg.notification_prefs or {}),
+        })
+
+    async def _handle_put_notification_prefs(self, request: web.Request) -> web.Response:
+        """Persist per-category notification prefs. Accepts a dict map of
+        {category: bool}; unknown keys are dropped silently by the caster."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "body must be an object"}, status=400)
+        user_id = self._user_id_from(request) or str(data.get("user_id") or "")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        prefs = data.get("prefs", data)
+        if not isinstance(prefs, dict):
+            return web.json_response({"error": "prefs must be an object"},
+                                      status=400)
+        prefs = {k: v for k, v in prefs.items() if k != "user_id"}
+
+        loop = asyncio.get_running_loop()
+        try:
+            cfg = await loop.run_in_executor(
+                self._pool,
+                lambda: update_user_config(user_id, notification_prefs=prefs),
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        from engine.user_config import NOTIFICATION_CATEGORIES
+        return web.json_response({
+            "status":     "applied",
+            "user_id":    user_id,
+            "categories": list(NOTIFICATION_CATEGORIES),
+            "prefs":      dict(cfg.notification_prefs or {}),
+        })
+
     async def _handle_reveal_telegram_config(self, request: web.Request) -> web.Response:
         """Return the user's saved bot_token and chat_id so the settings page can
         prefill the inputs when the user clicks 'Reveal'. Gated by the same
@@ -2075,6 +2130,10 @@ class BotAPI:
         app.router.add_get ("/api/archetypes", self._handle_archetypes)
         app.router.add_get ("/api/config/telegram", self._handle_get_telegram_config)
         app.router.add_put ("/api/config/telegram", self._handle_put_telegram_config)
+        app.router.add_get ("/api/config/notifications",
+                            self._handle_get_notification_prefs)
+        app.router.add_put ("/api/config/notifications",
+                            self._handle_put_notification_prefs)
         app.router.add_get ("/api/config/telegram/reveal", self._handle_reveal_telegram_config)
         app.router.add_post("/api/config/telegram/test", self._handle_telegram_test)
         app.router.add_get ("/api/config/polymarket", self._handle_get_polymarket_config)

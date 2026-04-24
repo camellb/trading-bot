@@ -76,6 +76,12 @@ class UserConfig:
     # to flip this to True.
     bot_enabled:           bool            = False
 
+    # Per-category Telegram notification preferences. Missing keys default
+    # to True (send it). Users opt out of individual categories via the
+    # notifications settings page; everything they haven't touched keeps
+    # the previous always-on behaviour.
+    notification_prefs:    Dict[str, bool] = field(default_factory=dict)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -141,6 +147,24 @@ USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = (
     "archetype_stake_multipliers",
 )
 
+# Fields whose concrete values are dicts (category → bool). Missing keys
+# default to True on read (send the notification) so the pre-migration
+# behaviour is preserved for rows without an override.
+USER_CONFIG_BOOL_DICT_FIELDS: Tuple[str, ...] = (
+    "notification_prefs",
+)
+
+# Allowed keys inside notification_prefs. Writes outside this set are
+# silently dropped so a stale dashboard can't scribble arbitrary keys.
+NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
+    "position_opened",
+    "position_settled",
+    "daily_summary",
+    "weekly_summary",
+    "calibration",
+    "risk_event",
+)
+
 # Per-entry bounds for every key inside USER_CONFIG_DICT_FIELDS.
 ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)
 
@@ -202,6 +226,10 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Populated by the learning cadence once an archetype has at least "
         "25 settled trades. Users can override directly from the Risk "
         "controls page. Each entry is clamped to [0.1, 10.0].",
+    "notification_prefs":
+        "Per-category Telegram notification preferences. Missing keys "
+        "default to on. Users toggle individual categories from the "
+        "notifications settings page.",
 }
 
 
@@ -247,6 +275,8 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None]:
     """
     if key in USER_CONFIG_DICT_FIELDS:
         return _cast_archetype_multipliers(raw)
+    if key in USER_CONFIG_BOOL_DICT_FIELDS:
+        return _cast_notification_prefs(raw)
     if key in USER_CONFIG_LIST_FIELDS:
         return _cast_list(raw)
     if key in USER_CONFIG_NULLABLE_FIELDS and _is_unset(raw):
@@ -271,6 +301,43 @@ def _cast_list(raw) -> Tuple[str, ...]:
     if isinstance(raw, str):
         return tuple(s.strip() for s in raw.split(",") if s.strip())
     raise ValueError(f"list field must be tuple/list/str, got {type(raw).__name__}")
+
+
+def _cast_notification_prefs(raw) -> Dict[str, bool]:
+    """Accept dict | JSON-string | None. Keys outside NOTIFICATION_CATEGORIES
+    are dropped. Values are coerced to bool (truthy). Returns an empty dict
+    for None/empty so 'no overrides' is an unambiguous state."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "notification_prefs must be a JSON object"
+            ) from exc
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"notification_prefs must be a dict, got {type(raw).__name__}"
+        )
+    allowed = set(NOTIFICATION_CATEGORIES)
+    clean: Dict[str, bool] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key or key not in allowed:
+            continue
+        # Accept bools, 0/1, and common string variants from form posts.
+        if isinstance(v, bool):
+            clean[key] = v
+        elif isinstance(v, (int, float)):
+            clean[key] = bool(v)
+        elif isinstance(v, str):
+            clean[key] = v.strip().lower() in ("1", "true", "yes", "on")
+        else:
+            raise ValueError(
+                f"notification_prefs[{key!r}] must be boolean"
+            )
+    return clean
 
 
 def _cast_archetype_multipliers(raw) -> Dict[str, float]:
@@ -325,6 +392,15 @@ def validate_user_config_value(key: str, value) -> None:
                 raise ValueError(
                     f"{key}[{k!r}]={v} outside bounds [{lo}, {hi}]"
                 )
+        return
+    if key in USER_CONFIG_BOOL_DICT_FIELDS:
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be a dict")
+        for k, v in value.items():
+            if not isinstance(k, str) or not k:
+                raise ValueError(f"{key} keys must be non-empty strings")
+            if not isinstance(v, bool):
+                raise ValueError(f"{key}[{k!r}] must be a boolean")
         return
     if key in USER_CONFIG_LIST_FIELDS:
         if not isinstance(value, tuple):
@@ -389,23 +465,50 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
     try:
         from sqlalchemy import text
         from db.engine import get_engine
+        # notification_prefs ships in migration 019. When the bot is running
+        # against a DB that hasn't been migrated yet, the SELECT falls back
+        # to '{}'::jsonb via COALESCE on a non-existent column - so we do
+        # the fallback ourselves at the row level.
+        select_sql = (
+            "SELECT base_stake_pct, max_stake_pct, "
+            "       daily_loss_limit_pct, weekly_loss_limit_pct, "
+            "       drawdown_halt_pct, streak_cooldown_losses, "
+            "       dry_powder_reserve_pct, "
+            "       cost_assumption_override, archetype_skip_list, "
+            "       min_p_win, "
+            "       confidence_full_stake, confidence_override_threshold, "
+            "       mode, starting_cash, "
+            "       polymarket_api_key, polymarket_api_secret, "
+            "       polymarket_passphrase, wallet_address, "
+            "       bot_enabled, archetype_stake_multipliers, "
+            "       notification_prefs "
+            "FROM user_config WHERE user_id = :uid"
+        )
         with get_engine().begin() as conn:
-            row = conn.execute(text(
-                "SELECT base_stake_pct, max_stake_pct, "
-                "       daily_loss_limit_pct, weekly_loss_limit_pct, "
-                "       drawdown_halt_pct, streak_cooldown_losses, "
-                "       dry_powder_reserve_pct, "
-                "       cost_assumption_override, archetype_skip_list, "
-                "       min_p_win, "
-                "       confidence_full_stake, confidence_override_threshold, "
-                "       mode, starting_cash, "
-                "       polymarket_api_key, polymarket_api_secret, "
-                "       polymarket_passphrase, wallet_address, "
-                "       bot_enabled, archetype_stake_multipliers "
-                "FROM user_config WHERE user_id = :uid"
-            ), {"uid": user_id}).fetchone()
+            try:
+                row = conn.execute(text(select_sql),
+                                    {"uid": user_id}).fetchone()
+                prefs_idx = 20
+            except Exception:
+                # Column doesn't exist yet - fall back to the legacy SELECT.
+                row = conn.execute(text(
+                    "SELECT base_stake_pct, max_stake_pct, "
+                    "       daily_loss_limit_pct, weekly_loss_limit_pct, "
+                    "       drawdown_halt_pct, streak_cooldown_losses, "
+                    "       dry_powder_reserve_pct, "
+                    "       cost_assumption_override, archetype_skip_list, "
+                    "       min_p_win, "
+                    "       confidence_full_stake, confidence_override_threshold, "
+                    "       mode, starting_cash, "
+                    "       polymarket_api_key, polymarket_api_secret, "
+                    "       polymarket_passphrase, wallet_address, "
+                    "       bot_enabled, archetype_stake_multipliers "
+                    "FROM user_config WHERE user_id = :uid"
+                ), {"uid": user_id}).fetchone()
+                prefs_idx = None
             if row is None:
                 return UserConfig()
+            prefs_raw = row[prefs_idx] if prefs_idx is not None else None
             return UserConfig(
                 base_stake_pct                = float(row[0]),
                 max_stake_pct                 = float(row[1]),
@@ -427,6 +530,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 wallet_address                = (str(row[17]) if row[17] is not None else None),
                 bot_enabled                   = bool(row[18]) if row[18] is not None else False,
                 archetype_stake_multipliers   = _decode_archetype_multipliers(row[19]),
+                notification_prefs            = _decode_notification_prefs(prefs_raw),
             )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",
@@ -440,6 +544,47 @@ def _decode_csv(raw) -> Tuple[str, ...]:
     if isinstance(raw, (list, tuple)):
         return tuple(str(x).strip() for x in raw if str(x).strip())
     return tuple(s.strip() for s in str(raw).split(",") if s.strip())
+
+
+def _decode_notification_prefs(raw) -> Dict[str, bool]:
+    """JSONB arrives as dict; defensively accept str. Drop unknown keys so a
+    stale write can't poison the read path. Empty dict == 'use defaults' which
+    the should_notify() helper interprets as 'send everything'."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    allowed = set(NOTIFICATION_CATEGORIES)
+    out: Dict[str, bool] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key or key not in allowed:
+            continue
+        out[key] = bool(v)
+    return out
+
+
+def should_notify(user_id: str, category: str) -> bool:
+    """Return True if the user wants this category delivered.
+
+    Missing rows, missing column, DB errors, and unknown keys all return
+    True - notifications default to 'on' so a broken pref layer never
+    silently mutes the user.
+    """
+    if category not in NOTIFICATION_CATEGORIES:
+        return True
+    try:
+        cfg = get_user_config(user_id)
+    except Exception:
+        return True
+    prefs = cfg.notification_prefs or {}
+    # Missing key == on. Explicit False == off.
+    return bool(prefs.get(category, True))
 
 
 def _decode_archetype_multipliers(raw) -> Dict[str, float]:
@@ -497,8 +642,9 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
     # Dict-typed fields cast with an explicit `::jsonb` so the driver sends
     # the payload as a JSON string; without the cast Postgres treats it as
     # plain TEXT and the INSERT fails on JSONB columns.
+    jsonb_fields = set(USER_CONFIG_DICT_FIELDS) | set(USER_CONFIG_BOOL_DICT_FIELDS)
     set_parts = ", ".join(
-        (f"{k} = CAST(:{k} AS JSONB)" if k in USER_CONFIG_DICT_FIELDS
+        (f"{k} = CAST(:{k} AS JSONB)" if k in jsonb_fields
          else f"{k} = :{k}")
         for k in clean
     )
@@ -508,7 +654,7 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
             # List-typed fields persist as CSV TEXT columns; tuples must be
             # flattened before hitting SQLAlchemy's text() parameter binding.
             params[k] = _encode_csv(v)
-        elif k in USER_CONFIG_DICT_FIELDS:
+        elif k in jsonb_fields:
             params[k] = json.dumps(v or {})
         else:
             params[k] = v

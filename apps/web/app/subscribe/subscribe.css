@@ -20,9 +20,31 @@
 @media (min-width: 720px) {
   .sub-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 14px;
   }
+}
+
+.sub-plan-legacy {
+  position: relative;
+  border-color: var(--gold);
+  background: linear-gradient(
+    180deg,
+    rgba(212, 175, 55, 0.08) 0%,
+    rgba(212, 175, 55, 0.02) 100%
+  );
+}
+
+.sub-plan-legacy.selected,
+.sub-plan-legacy:hover {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold);
+}
+
+.sub-badge-legacy {
+  color: var(--gold);
+  border-color: var(--gold);
+  background: rgba(212, 175, 55, 0.16);
 }
 
 .sub-plan {

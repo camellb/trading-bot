@@ -420,6 +420,14 @@ class PMAnalyst:
                             user_id: str) -> None:
         if self.notifier is None or not hasattr(self.notifier, "send"):
             return
+        # Respect the user's per-category notification preferences. Default
+        # is on; explicit False on 'position_opened' skips the send.
+        try:
+            from engine.user_config import should_notify
+            if not should_notify(user_id, "position_opened"):
+                return
+        except Exception:
+            pass
         bankroll_after = 0.0
         try:
             bankroll_after = float(executor.get_bankroll())

@@ -4,6 +4,42 @@ import { useEffect, useState } from "react";
 
 type TelegramStatus = { configured: boolean };
 
+type NotificationPrefsResponse = {
+  categories: string[];
+  prefs: Record<string, boolean>;
+};
+
+const CATEGORY_LABELS: Record<string, { title: string; description: string }> = {
+  position_opened: {
+    title: "New positions",
+    description:
+      "Every time Delfi opens a position: market, side, stake, and forecast.",
+  },
+  position_settled: {
+    title: "Position resolutions",
+    description:
+      "Every win or loss when a market resolves, with P&L and running bankroll.",
+  },
+  daily_summary: {
+    title: "Daily summary",
+    description: "End-of-day recap with trades, P&L, and record.",
+  },
+  weekly_summary: {
+    title: "Weekly summary",
+    description: "Weekly performance review with win rate and P&L.",
+  },
+  calibration: {
+    title: "Calibration proposals",
+    description:
+      "When Delfi proposes a strategy change, with /apply and /reject controls.",
+  },
+  risk_event: {
+    title: "Risk events",
+    description:
+      "Circuit breaker trips: daily loss cap, drawdown halt, or streak cooldown.",
+  },
+};
+
 export default function NotificationsPage() {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [botToken, setBotToken] = useState("");
@@ -14,6 +50,12 @@ export default function NotificationsPage() {
   const [testing, setTesting] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Per-category notification toggles. Missing keys default to on.
+  const [prefCategories, setPrefCategories] = useState<string[]>([]);
+  const [prefState, setPrefState] = useState<Record<string, boolean>>({});
+  const [prefSavingKey, setPrefSavingKey] = useState<string | null>(null);
+  const [prefError, setPrefError] = useState<string | null>(null);
 
   const toggleReveal = async () => {
     if (reveal) {
@@ -64,6 +106,64 @@ export default function NotificationsPage() {
       cancelled = true;
     };
   }, []);
+
+  // Load notification prefs once on mount. Falls back silently: if the endpoint
+  // isn't up yet (or the migration hasn't run) we render the default-all-on
+  // state without an error splash.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/config/notifications", { cache: "no-store" })
+      .then(async (r) => {
+        if (!r.ok) return null;
+        return (await r.json()) as NotificationPrefsResponse;
+      })
+      .then((d) => {
+        if (cancelled || !d) return;
+        setPrefCategories(Array.isArray(d.categories) ? d.categories : []);
+        setPrefState(d.prefs && typeof d.prefs === "object" ? d.prefs : {});
+      })
+      .catch(() => {
+        /* leave as defaults */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const isPrefOn = (key: string): boolean => {
+    // Missing key == on. Explicit `false` == off.
+    const v = prefState[key];
+    return v === undefined ? true : Boolean(v);
+  };
+
+  const togglePref = async (key: string) => {
+    const next = !isPrefOn(key);
+    const previous = { ...prefState };
+    // Optimistic update so the switch feels instant.
+    setPrefState((s) => ({ ...s, [key]: next }));
+    setPrefSavingKey(key);
+    setPrefError(null);
+    try {
+      const res = await fetch("/api/config/notifications", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prefs: { ...prefState, [key]: next } }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
+      if (data?.prefs && typeof data.prefs === "object") {
+        setPrefState(data.prefs);
+      }
+    } catch (err) {
+      // Revert on failure.
+      setPrefState(previous);
+      setPrefError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPrefSavingKey(null);
+    }
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -305,15 +405,92 @@ export default function NotificationsPage() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">What Delfi will send</h2>
-          <span className="panel-meta">Automatic</span>
+          <span className="panel-meta">
+            {prefCategories.length > 0 ? "Per-category" : "All on"}
+          </span>
         </div>
-        <ul className="panel-body" style={{ margin: 0, paddingLeft: 18 }}>
-          <li>Every new position opened - market, side, stake, estimated probability.</li>
-          <li>Every resolution - P&amp;L, win/loss, running bankroll.</li>
-          <li>Daily summary at end of day - trades, P&amp;L, calibration.</li>
-          <li>Weekly review - performance, Brier score, any proposed strategy changes.</li>
-          <li>Risk events - daily loss cap, drawdown halt, or streak cooldown triggered.</li>
-        </ul>
+        <p
+          className="panel-body"
+          style={{ margin: 0, marginBottom: 12, color: "var(--vellum-60)" }}
+        >
+          Toggle individual categories on or off. Changes apply immediately.
+        </p>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          {(prefCategories.length > 0
+            ? prefCategories
+            : Object.keys(CATEGORY_LABELS)
+          ).map((key) => {
+            const label = CATEGORY_LABELS[key] ?? {
+              title: key,
+              description: "",
+            };
+            const on = isPrefOn(key);
+            const saving = prefSavingKey === key;
+            return (
+              <label
+                key={key}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  justifyContent: "space-between",
+                  gap: 16,
+                  padding: "12px 14px",
+                  border: "1px solid var(--vellum-20)",
+                  borderRadius: 6,
+                  cursor: saving ? "wait" : "pointer",
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontWeight: 600, fontSize: 14 }}>
+                    {label.title}
+                  </span>
+                  <span
+                    style={{
+                      color: "var(--vellum-60)",
+                      fontSize: 13,
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {label.description}
+                  </span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() => togglePref(key)}
+                  disabled={saving}
+                  role="switch"
+                  aria-checked={on}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    marginTop: 2,
+                    cursor: saving ? "wait" : "pointer",
+                    accentColor: "var(--gold, #c9a24b)",
+                  }}
+                />
+              </label>
+            );
+          })}
+        </div>
+        {prefError && (
+          <div
+            style={{
+              marginTop: 10,
+              color: "var(--red)",
+              fontSize: 13,
+            }}
+          >
+            {prefError}
+          </div>
+        )}
       </div>
     </>
   );

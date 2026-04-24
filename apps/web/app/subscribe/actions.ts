@@ -4,10 +4,10 @@ import { redirect } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/server";
 
-export type SubscriptionPlan = "monthly" | "annual";
+export type SubscriptionPlan = "monthly" | "annual" | "legacy";
 
 function isPlan(value: unknown): value is SubscriptionPlan {
-  return value === "monthly" || value === "annual";
+  return value === "monthly" || value === "annual" || value === "legacy";
 }
 
 // Paper-pay checkout. Marks the user's subscription as active without any

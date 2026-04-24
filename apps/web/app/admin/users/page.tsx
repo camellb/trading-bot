@@ -42,6 +42,7 @@ function fmtMoney(v: number | null): string {
 function planLabel(plan: string | null): string {
   if (plan === "monthly") return "Monthly";
   if (plan === "annual") return "Annual";
+  if (plan === "legacy") return "Legacy";
   return "-";
 }
 

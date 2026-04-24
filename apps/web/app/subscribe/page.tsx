@@ -35,7 +35,7 @@ function SubscribeErrorBanner() {
 }
 
 export default function SubscribePage() {
-  const [plan, setPlan] = useState<SubscriptionPlan>("annual");
+  const [plan, setPlan] = useState<SubscriptionPlan>("legacy");
 
   return (
     <div className="ob-page">
@@ -62,6 +62,27 @@ export default function SubscribePage() {
         <div className="ob-choices sub-grid">
           <button
             type="button"
+            className={`ob-choice sub-plan sub-plan-legacy ${plan === "legacy" ? "selected" : ""}`}
+            onClick={() => setPlan("legacy")}
+            aria-pressed={plan === "legacy"}
+          >
+            <div className="ob-choice-head">
+              <div className="ob-choice-title">Legacy</div>
+              <div className="sub-badge sub-badge-legacy">Founding · limited</div>
+            </div>
+            <div className="sub-price">
+              <span className="sub-price-num t-num">$999</span>
+              <span className="sub-price-unit">one-time</span>
+            </div>
+            <div className="sub-price-meta">Pay once. Keep Delfi forever.</div>
+            <div className="ob-choice-body">
+              Lifetime access at founding-member pricing. Available while
+              the first 100 seats remain open, then retired permanently.
+            </div>
+          </button>
+
+          <button
+            type="button"
             className={`ob-choice sub-plan ${plan === "annual" ? "selected" : ""}`}
             onClick={() => setPlan("annual")}
             aria-pressed={plan === "annual"}
@@ -76,7 +97,7 @@ export default function SubscribePage() {
             </div>
             <div className="sub-price-meta">Billed $630 yearly.</div>
             <div className="ob-choice-body">
-              Best value. Locks in the discount for a full year of Delfi.
+              Best recurring value. Locks in the discount for a full year.
             </div>
           </button>
 

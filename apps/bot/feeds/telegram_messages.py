@@ -300,6 +300,24 @@ def resumed() -> str:
     )
 
 
+# ── 14b. /pause when already paused ──────────────────────────────────────────
+def already_paused() -> str:
+    return (
+        f"⏸ <b>Already paused</b>\n"
+        f"\n"
+        f"Delfi is not trading. /resume when ready."
+    )
+
+
+# ── 14c. /resume when not paused ─────────────────────────────────────────────
+def already_running() -> str:
+    return (
+        f"▶️ <b>Already running</b>\n"
+        f"\n"
+        f"Delfi is already scanning for new positions."
+    )
+
+
 # ── 15. /help response ───────────────────────────────────────────────────────
 def help_text() -> str:
     return (

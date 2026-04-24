@@ -49,6 +49,7 @@ from engine.user_config import (
     get_user_telegram_creds,
     list_admin_users_with_telegram,
     list_users_with_telegram,
+    should_notify,
 )
 from feeds import telegram_messages as tm
 
@@ -244,6 +245,8 @@ class TelegramNotifier:
                                  pnl: float, cost: float) -> None:
         if self._get_creds(user_id) is None:
             return
+        if not should_notify(user_id, "position_settled"):
+            return
         # Spec v1 drops the INVALID settlement variant from the user channel.
         if outcome == "INVALID":
             print(
@@ -334,6 +337,8 @@ class TelegramNotifier:
     async def _send_daily_summary_for(self, user_id: str) -> None:
         if self._get_creds(user_id) is None:
             return
+        if not should_notify(user_id, "daily_summary"):
+            return
         try:
             from execution.pm_executor import PMExecutor
             stats = PMExecutor(user_id).get_portfolio_stats()
@@ -397,6 +402,8 @@ class TelegramNotifier:
 
     async def _send_weekly_summary_for(self, user_id: str) -> None:
         if self._get_creds(user_id) is None:
+            return
+        if not should_notify(user_id, "weekly_summary"):
             return
         try:
             from execution.pm_executor import PMExecutor
@@ -543,10 +550,19 @@ class TelegramNotifier:
         await self.send(user_id, tm.help_text())
 
     async def _handle_pause(self, user_id: str) -> None:
+        # Idempotent: tell the user the bot was already paused instead of
+        # pretending we just did something.
+        if is_trading_paused():
+            await self.send(user_id, tm.already_paused())
+            return
         set_trading_paused(True)
         await self.send(user_id, tm.paused())
 
     async def _handle_resume(self, user_id: str) -> None:
+        # Same idempotency as /pause - no-op with an accurate message.
+        if not is_trading_paused():
+            await self.send(user_id, tm.already_running())
+            return
         set_trading_paused(False)
         await self.send(user_id, tm.resumed())
 
