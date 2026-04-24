@@ -53,31 +53,24 @@ export default function SubscribePage() {
 
         <div className="ob-eyebrow">Subscribe</div>
         <h1 className="ob-title sub-title">Pick your plan</h1>
-        <p className="ob-sub sub-sub">
-          Delfi forecasts every tradeable Polymarket market, sizes positions with risk brakes, and
-          narrates every decision on your dashboard. One plan, billed monthly or yearly. Cancel any
-          time.
-        </p>
 
         <div className="ob-choices sub-grid">
           <button
             type="button"
-            className={`ob-choice sub-plan sub-plan-legacy ${plan === "legacy" ? "selected" : ""}`}
-            onClick={() => setPlan("legacy")}
-            aria-pressed={plan === "legacy"}
+            className={`ob-choice sub-plan ${plan === "monthly" ? "selected" : ""}`}
+            onClick={() => setPlan("monthly")}
+            aria-pressed={plan === "monthly"}
           >
             <div className="ob-choice-head">
-              <div className="ob-choice-title">Legacy</div>
-              <div className="sub-badge sub-badge-legacy">Founding · limited</div>
+              <div className="ob-choice-title">Monthly</div>
             </div>
             <div className="sub-price">
-              <span className="sub-price-num t-num">$999</span>
-              <span className="sub-price-unit">one-time</span>
+              <span className="sub-price-num t-num">$69.99</span>
+              <span className="sub-price-unit">/ month</span>
             </div>
-            <div className="sub-price-meta">Pay once. Keep Delfi forever.</div>
+            <div className="sub-price-meta">Billed monthly. Cancel any time.</div>
             <div className="ob-choice-body">
-              Lifetime access at founding-member pricing. Available while
-              the first 100 seats remain open, then retired permanently.
+              Month to month. No commitment beyond the current cycle.
             </div>
           </button>
 
@@ -103,32 +96,29 @@ export default function SubscribePage() {
 
           <button
             type="button"
-            className={`ob-choice sub-plan ${plan === "monthly" ? "selected" : ""}`}
-            onClick={() => setPlan("monthly")}
-            aria-pressed={plan === "monthly"}
+            className={`ob-choice sub-plan sub-plan-legacy ${plan === "legacy" ? "selected" : ""}`}
+            onClick={() => setPlan("legacy")}
+            aria-pressed={plan === "legacy"}
           >
             <div className="ob-choice-head">
-              <div className="ob-choice-title">Monthly</div>
+              <div className="ob-choice-title">Lifetime</div>
+              <div className="sub-badge sub-badge-legacy">Limited</div>
             </div>
             <div className="sub-price">
-              <span className="sub-price-num t-num">$69.99</span>
-              <span className="sub-price-unit">/ month</span>
+              <span className="sub-price-num t-num">$999</span>
+              <span className="sub-price-unit">one-time</span>
             </div>
-            <div className="sub-price-meta">Billed monthly. Cancel any time.</div>
+            <div className="sub-price-meta">Pay once. Keep forever.</div>
             <div className="ob-choice-body">
-              Month to month. No commitment beyond the current cycle.
+              Limited lifetime access. Only 300 seats available.
             </div>
           </button>
         </div>
 
         <div className="sub-includes">
-          <div className="sub-includes-label">Every plan includes</div>
-          <ul className="sub-includes-list">
-            <li>Autonomous forecasting on every tradeable Polymarket market.</li>
-            <li>Full reasoning visible on every trade, live on the dashboard.</li>
-            <li>Simulation and live modes, with identical risk brakes.</li>
-            <li>Telegram summaries and weekly performance review.</li>
-          </ul>
+          <p className="sub-includes-line">
+            Every plan is a full plan with all features unlocked. Cancel any time.
+          </p>
         </div>
 
         <div className="ob-actions">

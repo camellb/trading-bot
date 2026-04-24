@@ -1155,9 +1155,29 @@ class BotAPI:
                         "  (SELECT COUNT(*) FROM user_config) AS total, "
                         "  (SELECT COUNT(*) FROM user_config "
                         "     WHERE subscription_status = 'active') AS active_subs, "
+                        # "Bankroll under management" is deliberately scoped to
+                        # users who have an actual wallet / exchange account
+                        # connected for their active venue. Simulation users
+                        # hold paper money, not a real bankroll, so summing
+                        # starting_cash across simulation rows contaminates
+                        # the metric. The predicate below mirrors
+                        # UserConfig.can_trade_live (engine/user_config.py):
+                        # live mode + venue-specific creds present. When a
+                        # live-balance poller ships we can replace the
+                        # starting_cash proxy with the on-chain / exchange
+                        # balance without changing the set of rows counted.
                         "  (SELECT COALESCE(SUM(starting_cash), 0) FROM user_config "
-                        "     WHERE subscription_status = 'active' "
-                        "       AND bot_enabled = TRUE) AS bankroll_um, "
+                        "     WHERE mode = 'live' "
+                        "       AND ( "
+                        "         (venue = 'polymarket' "
+                        "            AND COALESCE(polymarket_api_key, '') <> '' "
+                        "            AND COALESCE(polymarket_api_secret, '') <> '' "
+                        "            AND COALESCE(wallet_address, '') <> '') "
+                        "         OR "
+                        "         (venue = 'polymarket_us' "
+                        "            AND COALESCE(polymarket_us_api_key, '') <> '' "
+                        "            AND COALESCE(polymarket_us_api_secret, '') <> '') "
+                        "       )) AS bankroll_um, "
                         "  (SELECT COUNT(*) FROM pm_positions "
                         "     WHERE status = 'open' "
                         "       AND mode = 'live') AS open_positions, "

@@ -54,6 +54,11 @@
   padding: 18px 22px;
 }
 
+.sub-plan .ob-choice-head {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .sub-price {
   display: flex;
   align-items: baseline;
@@ -110,48 +115,13 @@
   background: rgba(232, 228, 216, 0.02);
 }
 
-.sub-includes-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--teal);
-  margin-bottom: 8px;
-}
-
-.sub-includes-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 4px 18px;
-}
-
-@media (min-width: 720px) {
-  .sub-includes-list {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-.sub-includes-list li {
+.sub-includes-line {
   font-family: var(--font-body);
   font-size: 13px;
   color: var(--vellum-60);
   line-height: 1.45;
-  padding-left: 16px;
-  position: relative;
-}
-
-.sub-includes-list li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--teal);
+  margin: 0;
+  text-align: center;
 }
 
 .sub-legal {
