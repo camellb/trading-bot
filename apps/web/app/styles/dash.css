@@ -775,6 +775,12 @@ body.app {
   color: var(--vellum);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.pos-row.expanded .pos-q {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+}
 .pos-side {
   font-family: var(--font-mono); font-size: 11px;
   letter-spacing: 0.12em;

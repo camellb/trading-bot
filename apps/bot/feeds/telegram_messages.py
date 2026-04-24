@@ -37,13 +37,10 @@ def new_position(
     *,
     question: str,
     side: str,
-    entry_cents: float,
     stake_usd: float,
-    shares: float,
     forecast_pct: float,
     confidence: float,
     bankroll_after: float,
-    resolve_date: str,
     mode: str,
 ) -> str:
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
@@ -54,10 +51,8 @@ def new_position(
         f"Delfi forecasts: {side} ({forecast_pct:.0f}% probability)\n"
         f"Confidence: {confidence:.2f}\n"
         f"\n"
-        f"Buying {side} at {entry_cents:.1f}¢\n"
-        f"Stake: ${stake_usd:.2f} ({shares:.1f} shares)\n"
+        f"Stake: ${stake_usd:.2f}\n"
         f"Balance: ${bankroll_after:.2f}\n"
-        f"Resolves: {resolve_date}\n"
         f"Mode: {mode_label}"
     )
 
@@ -67,19 +62,20 @@ def settled_win(
     *,
     question: str,
     side: str,
-    outcome: str,
+    outcome: str,  # kept for call-site stability; not rendered
     pnl: float,
-    roi: float,
+    roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
+    equity: float,
 ) -> str:
+    _ = (outcome, roi)  # preserved for API compat
     return (
-        f"✅ <b>Position settled · WIN</b>\n"
+        f"✅ <b>WIN</b> |+${pnl:.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
         f"\n"
-        f"Side: {side}\n"
-        f"Resolved: {outcome}\n"
-        f"Net P/L: +${pnl:.2f} ({roi:+.0f}%)\n"
-        f"Balance: ${bankroll:.2f}"
+        f"Delfi Predicted: {side}\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Equity: ${equity:.2f}"
     )
 
 
@@ -90,59 +86,65 @@ def settled_loss(
     side: str,
     outcome: str,
     pnl: float,
-    roi: float,
+    roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
+    equity: float,
 ) -> str:
+    _ = roi  # preserved for API compat
     return (
-        f"❌ <b>Position settled · LOSS</b>\n"
+        f"❌ <b>LOSS</b> |-${abs(pnl):.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
         f"\n"
-        f"Side: {side}\n"
+        f"Delfi Expected: {side}\n"
         f"Resolved: {outcome}\n"
-        f"Net P/L: -${abs(pnl):.2f} ({roi:+.0f}%)\n"
         f"Balance: ${bankroll:.2f}\n"
-        f"\n"
-        f"Performance is measured across many positions. Delfi is recalibrating."
+        f"Equity: ${equity:.2f}"
     )
 
 
 # ── 4. First win (one-shot) ──────────────────────────────────────────────────
+# Kept as a distinct function so notifier_state can track the one-shot flag,
+# but the body delegates to settled_win so every win reads identically.
 def first_win(
     *,
     question: str,
+    side: str,
     pnl: float,
     roi: float,
     bankroll: float,
+    equity: float,
 ) -> str:
-    return (
-        f"✅ <b>First win</b>\n"
-        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
-        f"\n"
-        f"Net P/L: +${pnl:.2f} ({roi:+.0f}%)\n"
-        f"Balance: ${bankroll:.2f}\n"
-        f"\n"
-        f"The first of many. Delfi will keep reading markets, sizing positions, "
-        f"and reporting every outcome, win or loss."
+    return settled_win(
+        question=question,
+        side=side,
+        outcome=side,  # first_win implies outcome matched the chosen side
+        pnl=pnl,
+        roi=roi,
+        bankroll=bankroll,
+        equity=equity,
     )
 
 
 # ── 5. First loss (one-shot) ─────────────────────────────────────────────────
+# Delegates to settled_loss so every loss reads identically.
 def first_loss(
     *,
     question: str,
+    side: str,
+    outcome: str,
     pnl: float,
     roi: float,
     bankroll: float,
+    equity: float,
 ) -> str:
-    return (
-        f"❌ <b>First loss</b>\n"
-        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
-        f"\n"
-        f"Net P/L: -${abs(pnl):.2f} ({roi:+.0f}%)\n"
-        f"Balance: ${bankroll:.2f}\n"
-        f"\n"
-        f"Losses are part of the process. Delfi's accuracy is measured across "
-        f"dozens of positions, not single ones. Every loss sharpens the calibration."
+    return settled_loss(
+        question=question,
+        side=side,
+        outcome=outcome,
+        pnl=pnl,
+        roi=roi,
+        bankroll=bankroll,
+        equity=equity,
     )
 
 

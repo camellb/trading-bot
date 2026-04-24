@@ -430,13 +430,10 @@ class PMAnalyst:
         msg = tm.new_position(
             question=market.question,
             side=decision.side,
-            entry_cents=decision.entry_price * 100.0,
             stake_usd=decision.stake_usd,
-            shares=decision.shares,
             forecast_pct=forecast_pct,
             confidence=evaluation.confidence,
             bankroll_after=bankroll_after,
-            resolve_date=market.end_date_iso.strftime("%Y-%m-%d"),
             mode="live" if executor.mode == "live" else "simulation",
         )
         try:

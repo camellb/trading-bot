@@ -256,31 +256,36 @@ class TelegramNotifier:
         won = (outcome == side)
         roi = (pnl / cost * 100) if cost > 0 else 0.0
         bankroll = 0.0
+        equity = 0.0
         try:
             from execution.pm_executor import PMExecutor
-            bankroll = float(PMExecutor(user_id).get_bankroll())
+            stats = PMExecutor(user_id).get_portfolio_stats()
+            bankroll = float(stats.get("bankroll") or 0.0)
+            equity   = float(stats.get("equity")   or bankroll)
         except Exception:
             pass
 
         if won:
             if mark_first_win_if_unsent():
                 msg = tm.first_win(
-                    question=question, pnl=pnl, roi=roi, bankroll=bankroll,
+                    question=question, side=side, pnl=pnl, roi=roi,
+                    bankroll=bankroll, equity=equity,
                 )
             else:
                 msg = tm.settled_win(
                     question=question, side=side, outcome=outcome,
-                    pnl=pnl, roi=roi, bankroll=bankroll,
+                    pnl=pnl, roi=roi, bankroll=bankroll, equity=equity,
                 )
         else:
             if mark_first_loss_if_unsent():
                 msg = tm.first_loss(
-                    question=question, pnl=pnl, roi=roi, bankroll=bankroll,
+                    question=question, side=side, outcome=outcome,
+                    pnl=pnl, roi=roi, bankroll=bankroll, equity=equity,
                 )
             else:
                 msg = tm.settled_loss(
                     question=question, side=side, outcome=outcome,
-                    pnl=pnl, roi=roi, bankroll=bankroll,
+                    pnl=pnl, roi=roi, bankroll=bankroll, equity=equity,
                 )
         await self.send(user_id, msg)
 
