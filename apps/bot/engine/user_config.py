@@ -484,13 +484,25 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             "       notification_prefs "
             "FROM user_config WHERE user_id = :uid"
         )
-        with get_engine().begin() as conn:
-            try:
+        # Try the primary SELECT in its own transaction. If it fails because
+        # a migration hasn't been applied yet (e.g. notification_prefs),
+        # Postgres aborts the transaction and any follow-up query on the
+        # SAME connection would also fail. Retrying in a FRESH transaction
+        # keeps the fallback path usable. Losing that isolation is exactly
+        # what caused a prod incident where missing migration 019 silently
+        # zeroed starting_cash for every user (get_user_config's outer
+        # except swallowed the aborted-transaction error and returned
+        # UserConfig() defaults - starting_cash=None - so the executor
+        # then served bankroll math with starting_cash=0).
+        row = None
+        prefs_idx: Optional[int] = None
+        try:
+            with get_engine().begin() as conn:
                 row = conn.execute(text(select_sql),
                                     {"uid": user_id}).fetchone()
                 prefs_idx = 20
-            except Exception:
-                # Column doesn't exist yet - fall back to the legacy SELECT.
+        except Exception:
+            with get_engine().begin() as conn:
                 row = conn.execute(text(
                     "SELECT base_stake_pct, max_stake_pct, "
                     "       daily_loss_limit_pct, weekly_loss_limit_pct, "
@@ -506,32 +518,36 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                     "FROM user_config WHERE user_id = :uid"
                 ), {"uid": user_id}).fetchone()
                 prefs_idx = None
-            if row is None:
-                return UserConfig()
-            prefs_raw = row[prefs_idx] if prefs_idx is not None else None
-            return UserConfig(
-                base_stake_pct                = float(row[0]),
-                max_stake_pct                 = float(row[1]),
-                daily_loss_limit_pct          = float(row[2]),
-                weekly_loss_limit_pct         = float(row[3]),
-                drawdown_halt_pct             = float(row[4]),
-                streak_cooldown_losses        = int(row[5]),
-                dry_powder_reserve_pct        = float(row[6]),
-                cost_assumption_override      = (float(row[7]) if row[7] is not None else None),
-                archetype_skip_list           = _decode_csv(row[8]),
-                min_p_win                     = float(row[9]),
-                confidence_full_stake         = float(row[10]),
-                confidence_override_threshold = float(row[11]),
-                mode                          = (str(row[12]) if row[12] is not None else None),
-                starting_cash                 = (float(row[13]) if row[13] is not None else None),
-                polymarket_api_key            = (str(row[14]) if row[14] is not None else None),
-                polymarket_api_secret         = (str(row[15]) if row[15] is not None else None),
-                polymarket_passphrase         = (str(row[16]) if row[16] is not None else None),
-                wallet_address                = (str(row[17]) if row[17] is not None else None),
-                bot_enabled                   = bool(row[18]) if row[18] is not None else False,
-                archetype_stake_multipliers   = _decode_archetype_multipliers(row[19]),
-                notification_prefs            = _decode_notification_prefs(prefs_raw),
-            )
+        # Shared row-decode path: runs for both the primary and fallback
+        # branches above. prefs_idx is 20 when the primary succeeded (the
+        # row tuple includes notification_prefs as the final element) and
+        # None when we fell back to the legacy SELECT without that column.
+        if row is None:
+            return UserConfig()
+        prefs_raw = row[prefs_idx] if prefs_idx is not None else None
+        return UserConfig(
+            base_stake_pct                = float(row[0]),
+            max_stake_pct                 = float(row[1]),
+            daily_loss_limit_pct          = float(row[2]),
+            weekly_loss_limit_pct         = float(row[3]),
+            drawdown_halt_pct             = float(row[4]),
+            streak_cooldown_losses        = int(row[5]),
+            dry_powder_reserve_pct        = float(row[6]),
+            cost_assumption_override      = (float(row[7]) if row[7] is not None else None),
+            archetype_skip_list           = _decode_csv(row[8]),
+            min_p_win                     = float(row[9]),
+            confidence_full_stake         = float(row[10]),
+            confidence_override_threshold = float(row[11]),
+            mode                          = (str(row[12]) if row[12] is not None else None),
+            starting_cash                 = (float(row[13]) if row[13] is not None else None),
+            polymarket_api_key            = (str(row[14]) if row[14] is not None else None),
+            polymarket_api_secret         = (str(row[15]) if row[15] is not None else None),
+            polymarket_passphrase         = (str(row[16]) if row[16] is not None else None),
+            wallet_address                = (str(row[17]) if row[17] is not None else None),
+            bot_enabled                   = bool(row[18]) if row[18] is not None else False,
+            archetype_stake_multipliers   = _decode_archetype_multipliers(row[19]),
+            notification_prefs            = _decode_notification_prefs(prefs_raw),
+        )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",
               file=sys.stderr)
