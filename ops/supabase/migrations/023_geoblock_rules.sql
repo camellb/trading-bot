@@ -26,8 +26,12 @@
 --
 -- Seed
 -- ----
--- A conservative default list matching Polymarket's known restrictions.
--- Admin can remove any row from the dashboard immediately.
+-- A default list matching Polymarket's current known restrictions.
+-- Note: the US is NOT blocked. Polymarket acquired QCX (a CFTC-registered
+-- Designated Contract Market) in late 2024 and relaunched as Polymarket
+-- US; US residents have legal access via the CFTC-regulated venue. Admin
+-- can add US (or any state subdivision) back from the dashboard if that
+-- posture changes.
 
 BEGIN;
 
@@ -82,7 +86,6 @@ GRANT USAGE, SELECT ON SEQUENCE geoblock_rules_id_seq TO authenticated;
 -- admins can safely delete rows without them reappearing.
 INSERT INTO geoblock_rules (country_code, subdivision_code, reason)
 VALUES
-    ('US', NULL, 'US residents: CFTC / state gambling restrictions on event contracts'),
     ('GB', NULL, 'UK residents: Gambling Commission restrictions on prediction markets'),
     ('FR', NULL, 'France: ANJ restrictions on unlicensed betting'),
     ('BE', NULL, 'Belgium: Gaming Commission restrictions'),
