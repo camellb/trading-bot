@@ -685,8 +685,8 @@
 .pill-lost { background: rgba(255, 77, 61, 0.08); color: var(--ember, #FF4D3D); }
 .pill-skip { background: rgba(232, 228, 216, 0.06); color: var(--vellum-60); }
 
-.cell-up { color: var(--profit, #4BFFA1); }
-.cell-down { color: var(--ember, #FF4D3D); }
+.cell-up, td.cell-up { color: var(--profit, #4BFFA1); }
+.cell-down, td.cell-down { color: var(--ember, #FF4D3D); }
 .mono { font-family: var(--font-mono); }
 
 .btn-sm {
