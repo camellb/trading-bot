@@ -85,6 +85,27 @@ type ActivityItem = {
 type ResolutionItem = { q: string; in: string; you: string; conviction: number };
 type RiskItem = { used: number; cap: number; label: string };
 
+// Thin slice of /api/user-config used by the Risk today widget. Only
+// the three limit fractions are needed - the full BotConfig shape lives
+// in the Risk controls page.
+type RiskConfig = {
+  daily_loss_limit_pct: number;
+  drawdown_halt_pct: number;
+  dry_powder_reserve_pct: number;
+};
+
+type UserConfigPayload = { user_id: string; config: RiskConfig };
+
+// Fallback when the user has not onboarded yet or the bot is cold.
+// Mirrors the "balanced" preset from apps/web/app/onboarding/actions.ts
+// so a freshly signed-up user sees sensible caps instead of hardcoded
+// 10% / 40% / 100% that ignore their actual settings.
+const RISK_CONFIG_FALLBACK: RiskConfig = {
+  daily_loss_limit_pct:   0.10,
+  drawdown_halt_pct:      0.40,
+  dry_powder_reserve_pct: 0.20,
+};
+
 const ACT_ICON: Record<ActivityItem["kind"], string> = {
   execute: "◆",
   pass: "–",
@@ -200,7 +221,11 @@ function openToResolutions(open: OpenPosition[]): ResolutionItem[] {
     });
 }
 
-function buildRisk(summary: Summary, open: OpenPosition[]): {
+function buildRisk(
+  summary: Summary,
+  open: OpenPosition[],
+  config: RiskConfig,
+): {
   dailyLoss: RiskItem;
   drawdown: RiskItem;
   exposure: RiskItem;
@@ -211,12 +236,22 @@ function buildRisk(summary: Summary, open: OpenPosition[]): {
 
   const ddPct = starting > 0 ? Math.max(0, ((starting - bankroll) / starting) * 100) : 0;
   const dailyLoss = Math.max(0, -(summary.realized_pnl ?? 0));
-  const dailyCap = starting * 0.1;
+
+  // Caps come straight from user_config (or the balanced-preset fallback
+  // when the payload hasn't loaded yet). Previously the widget hardcoded
+  // 10% / 40% / 100%, which is why moving the sliders in Risk controls
+  // left this card unchanged.
+  const dailyCap = Math.max(1, bankroll * config.daily_loss_limit_pct);
+  const ddCapPct = config.drawdown_halt_pct * 100;
+  const exposureCap = Math.max(
+    1,
+    bankroll * Math.max(0, 1 - config.dry_powder_reserve_pct),
+  );
 
   return {
     dailyLoss: { used: Math.round(dailyLoss), cap: Math.round(dailyCap), label: "Daily loss cap" },
-    drawdown:  { used: +ddPct.toFixed(1), cap: 40, label: "Drawdown" },
-    exposure:  { used: Math.round(exposure), cap: Math.round(starting || 1), label: "Gross exposure" },
+    drawdown:  { used: +ddPct.toFixed(1), cap: +ddCapPct.toFixed(0), label: "Drawdown" },
+    exposure:  { used: Math.round(exposure), cap: Math.round(exposureCap), label: "Gross exposure" },
   };
 }
 
@@ -226,26 +261,31 @@ export default function DashboardPage() {
   const [summary, setSummary]       = useState<Summary | null>(null);
   const [positions, setPositions]   = useState<PositionsPayload | null>(null);
   const [evaluations, setEvals]     = useState<EvaluationsPayload | null>(null);
+  const [riskConfig, setRiskConfig] = useState<RiskConfig | null>(null);
   const [loaded, setLoaded]         = useState(false);
   const { version: viewModeVersion } = useViewMode();
 
   useEffect(() => {
     let cancelled = false;
     // Clear prior payloads so a mode switch doesn't flash stale data.
+    // riskConfig is tenant-scoped, not mode-scoped, so we keep the prior
+    // value to avoid flashing the fallback preset when mode toggles.
     setLoaded(false);
     setSummary(null);
     setPositions(null);
     setEvals(null);
     const load = async () => {
-      const [s, p, e] = await Promise.all([
+      const [s, p, e, cfg] = await Promise.all([
         getJSON<Summary>("/api/summary"),
         getJSON<PositionsPayload>("/api/positions"),
         getJSON<EvaluationsPayload>("/api/evaluations?limit=20"),
+        getJSON<UserConfigPayload>("/api/user-config").catch(() => null),
       ]);
       if (cancelled) return;
       setSummary(s);
       setPositions(p);
       setEvals(e);
+      if (cfg?.config) setRiskConfig(cfg.config);
       setLoaded(true);
     };
     load();
@@ -261,7 +301,10 @@ export default function DashboardPage() {
   const evals    = evaluations?.evaluations ?? [];
   const activity = useMemo(() => evaluationsToActivity(evals, open, settled), [evals, open, settled]);
   const resolving = useMemo(() => openToResolutions(open), [open]);
-  const risk      = useMemo(() => buildRisk(summary ?? ({} as Summary), open), [summary, open]);
+  const risk      = useMemo(
+    () => buildRisk(summary ?? ({} as Summary), open, riskConfig ?? RISK_CONFIG_FALLBACK),
+    [summary, open, riskConfig],
+  );
 
   const mode     = summary?.mode ?? "simulation";
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;

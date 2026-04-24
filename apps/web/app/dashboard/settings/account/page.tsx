@@ -1,46 +1,21 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import {
-  usePolymarketCredentials,
-  EMPTY_POLYMARKET,
-  type PolymarketCreds,
-} from "../../../../lib/credentials";
+import { useEffect, useState } from "react";
+
+// The Account page is for identity and account lifecycle only: display
+// name, email (read-only), reset simulation history, and close account.
+// Polymarket credentials live on the Connections tab, which is venue-aware
+// (offshore vs Polymarket US) and shouldn't be duplicated here - having
+// two places to set keys caused drift and confusion.
 
 type Profile = { email: string; displayName: string };
 
 export default function AccountPage() {
-  return (
-    <Suspense fallback={null}>
-      <AccountPageInner />
-    </Suspense>
-  );
-}
-
-function AccountPageInner() {
-  const params = useSearchParams();
-  const setupFlag = params?.get("setup");
-
   const [profile, setProfile] = useState<Profile | null>(null);
   const [nameDraft, setNameDraft] = useState("");
   const [nameSaving, setNameSaving] = useState(false);
   const [nameSavedAt, setNameSavedAt] = useState<number | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
-
-  const poly = usePolymarketCredentials();
-  const [polyDraft, setPolyDraft] = useState<PolymarketCreds>({
-    ...EMPTY_POLYMARKET,
-  });
-  const [polyReveal, setPolyReveal] = useState(false);
-  const [polySavedAt, setPolySavedAt] = useState<number | null>(null);
-
-  // Once server state hydrates, pre-fill non-sensitive fields only.
-  useEffect(() => {
-    if (poly.hydrated) {
-      setPolyDraft((d) => ({ ...d, walletAddress: poly.status.walletAddress }));
-    }
-  }, [poly.hydrated, poly.status.walletAddress]);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,22 +81,6 @@ function AccountPageInner() {
     }
   };
 
-  const savePoly = async () => {
-    const ok = await poly.save(polyDraft);
-    if (ok) {
-      // Secret fields are never echoed back from the server - clear the
-      // local draft after a successful save so the form doesn't keep them
-      // in component state. Wallet stays (it's non-sensitive).
-      setPolyDraft((d) => ({
-        ...d,
-        apiKey: "",
-        apiSecret: "",
-        passphrase: "",
-      }));
-      setPolySavedAt(Date.now());
-    }
-  };
-
   // Reset-simulation state. Wipes only simulation history; live data is kept.
   const [resetSimBusy, setResetSimBusy] = useState(false);
   const [resetSimMsg, setResetSimMsg] = useState<string | null>(null);
@@ -162,29 +121,8 @@ function AccountPageInner() {
     }
   };
 
-  const setupBanner = useMemo(() => {
-    if (setupFlag !== "live") return null;
-    if (poly.canGoLive) return null;
-    return (
-      <div className="panel" style={{ borderColor: "var(--gold-60)" }}>
-        <div className="panel-head">
-          <h2 className="panel-title">One more step - add your Polymarket keys</h2>
-          <span className="panel-meta">Live mode blocked until set</span>
-        </div>
-        <p className="panel-body">
-          You picked live trading during onboarding. Delfi needs a Polymarket API
-          key, API secret, and wallet address before it can place real trades.
-          Add them below - they are stored encrypted in your account and never
-          shared.
-        </p>
-      </div>
-    );
-  }, [setupFlag, poly.canGoLive]);
-
   return (
     <>
-      {setupBanner}
-
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Profile</h2>
@@ -231,138 +169,6 @@ function AccountPageInner() {
             )}
             {nameError && (
               <span style={{ color: "var(--red)", fontSize: 13 }}>{nameError}</span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Polymarket credentials</h2>
-          {!poly.canGoLive && poly.missing.length > 0 && (
-            <span className="panel-meta">
-              Missing: {poly.missing.join(", ")}
-            </span>
-          )}
-        </div>
-
-        <p className="panel-body" style={{ marginTop: 0, marginBottom: 18 }}>
-          Delfi needs a Polymarket API key, secret, and wallet address to place real trades.
-          Keys are stored encrypted in your Delfi account and are only decrypted by the trading
-          engine when sizing or settling a trade. We never show secrets back - leave a field
-          blank to keep the value we already have on file; type a new value to replace it; type
-          a single space to clear it.
-        </p>
-
-        <div className="form-row">
-          <div className="form-field">
-            <label>
-              Polymarket API key <span style={{ color: "var(--gold-60)" }}>·required</span>
-              {poly.status.apiKeySet && (
-                <span style={{ marginLeft: 8, color: "var(--vellum-60)", fontSize: 12 }}>
-                  (saved)
-                </span>
-              )}
-            </label>
-            <input
-              type={polyReveal ? "text" : "password"}
-              value={polyDraft.apiKey}
-              onChange={(e) => {
-                setPolyDraft((d) => ({ ...d, apiKey: e.target.value }));
-                setPolySavedAt(null);
-              }}
-              placeholder={poly.status.apiKeySet ? "••••••••" : "pk_live_…"}
-            />
-            <div className="form-hint">Create in your Polymarket account under Settings → API.</div>
-          </div>
-
-          <div className="form-field">
-            <label>
-              Polymarket API secret <span style={{ color: "var(--gold-60)" }}>·required</span>
-              {poly.status.apiSecretSet && (
-                <span style={{ marginLeft: 8, color: "var(--vellum-60)", fontSize: 12 }}>
-                  (saved)
-                </span>
-              )}
-            </label>
-            <input
-              type={polyReveal ? "text" : "password"}
-              value={polyDraft.apiSecret}
-              onChange={(e) => {
-                setPolyDraft((d) => ({ ...d, apiSecret: e.target.value }));
-                setPolySavedAt(null);
-              }}
-              placeholder={poly.status.apiSecretSet ? "••••••••" : "Shown once at creation"}
-            />
-            <div className="form-hint">Pair of the API key.</div>
-          </div>
-
-          <div className="form-field">
-            <label>
-              Polymarket passphrase
-              {poly.status.passphraseSet && (
-                <span style={{ marginLeft: 8, color: "var(--vellum-60)", fontSize: 12 }}>
-                  (saved)
-                </span>
-              )}
-            </label>
-            <input
-              type={polyReveal ? "text" : "password"}
-              value={polyDraft.passphrase}
-              onChange={(e) => {
-                setPolyDraft((d) => ({ ...d, passphrase: e.target.value }));
-                setPolySavedAt(null);
-              }}
-              placeholder="Optional"
-            />
-            <div className="form-hint">Only required if you set one when generating the key.</div>
-          </div>
-
-          <div className="form-field">
-            <label>Wallet address <span style={{ color: "var(--gold-60)" }}>·required</span></label>
-            <input
-              value={polyDraft.walletAddress}
-              onChange={(e) => {
-                setPolyDraft((d) => ({ ...d, walletAddress: e.target.value }));
-                setPolySavedAt(null);
-              }}
-              placeholder="0x…"
-            />
-            <div className="form-hint">Polygon address that will hold positions and receive fills.</div>
-          </div>
-
-          <div style={{ marginTop: 12, display: "flex", gap: 12, alignItems: "center" }}>
-            <button
-              className="btn-sm gold"
-              onClick={savePoly}
-              disabled={poly.saving}
-            >
-              {poly.saving ? "Saving…" : "Save credentials"}
-            </button>
-            <button
-              type="button"
-              className="btn-sm"
-              onClick={() => setPolyReveal((r) => !r)}
-              disabled={
-                !polyDraft.apiKey &&
-                !polyDraft.apiSecret &&
-                !polyDraft.passphrase
-              }
-              title={
-                !polyDraft.apiKey &&
-                !polyDraft.apiSecret &&
-                !polyDraft.passphrase
-                  ? "Type a key, secret, or passphrase first. Saved values are never sent back to the browser."
-                  : undefined
-              }
-            >
-              {polyReveal ? "Hide values" : "Reveal values"}
-            </button>
-            {polySavedAt && !poly.error && (
-              <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>Saved.</span>
-            )}
-            {poly.error && (
-              <span style={{ color: "var(--red)", fontSize: 13 }}>{poly.error}</span>
             )}
           </div>
         </div>
