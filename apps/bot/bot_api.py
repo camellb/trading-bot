@@ -819,7 +819,7 @@ class BotAPI:
                         "          WHERE p.user_id = uc.user_id "
                         "            AND p.status = 'settled') AS realized_pnl "
                         "FROM user_config uc "
-                        "LEFT JOIN auth.users au ON au.id::text = uc.user_id "
+                        "LEFT JOIN auth.users au ON au.id::text = uc.user_id::text "
                         "ORDER BY au.created_at DESC NULLS LAST "
                         "LIMIT 500"
                     )).fetchall()
@@ -1066,7 +1066,7 @@ class BotAPI:
                         "       p.claude_probability, p.status, "
                         "       p.realized_pnl_usd, p.settled_at "
                         "FROM pm_positions p "
-                        "LEFT JOIN auth.users au ON au.id::text = p.user_id "
+                        "LEFT JOIN auth.users au ON au.id::text = p.user_id::text "
                         "LEFT JOIN user_config uc ON uc.user_id = p.user_id "
                         f"{where} "
                         "ORDER BY p.created_at DESC "
@@ -1075,7 +1075,7 @@ class BotAPI:
 
                     total = conn.execute(text(
                         f"SELECT COUNT(*) FROM pm_positions p "
-                        "LEFT JOIN auth.users au ON au.id::text = p.user_id "
+                        "LEFT JOIN auth.users au ON au.id::text = p.user_id::text "
                         "LEFT JOIN user_config uc ON uc.user_id = p.user_id "
                         f"{where}"
                     ), params).scalar()
@@ -1156,7 +1156,7 @@ class BotAPI:
                         "       cch.new_value, cch.reason, cch.suggested_by, "
                         "       cch.outcome "
                         "FROM config_change_history cch "
-                        "LEFT JOIN auth.users au ON au.id::text = cch.user_id "
+                        "LEFT JOIN auth.users au ON au.id::text = cch.user_id::text "
                         f"WHERE {' AND '.join(where)} "
                         "ORDER BY cch.changed_at DESC LIMIT :lim"
                     )
@@ -1194,7 +1194,7 @@ class BotAPI:
                         "       au.email, el.event_type, el.severity, "
                         "       el.description, el.source "
                         "FROM event_log el "
-                        "LEFT JOIN auth.users au ON au.id::text = el.user_id "
+                        "LEFT JOIN auth.users au ON au.id::text = el.user_id::text "
                         f"WHERE {' AND '.join(where)} "
                         "ORDER BY el.timestamp DESC LIMIT :lim"
                     )
@@ -1253,7 +1253,7 @@ class BotAPI:
                         "       uc.telegram_chat_id, "
                         "       uc.polymarket_wallet_address "
                         "FROM user_config uc "
-                        "LEFT JOIN auth.users au ON au.id::text = uc.user_id "
+                        "LEFT JOIN auth.users au ON au.id::text = uc.user_id::text "
                         "WHERE uc.user_id = :uid"
                     ), {"uid": target_uid}).fetchone()
 
@@ -1477,9 +1477,10 @@ class BotAPI:
                     totals = conn.execute(text(
                         f"SELECT "
                         f"  COUNT(*) AS evaluated, "
-                        f"  COUNT(*) FILTER (WHERE skipped IS TRUE) AS skipped "
+                        f"  COUNT(*) FILTER (WHERE UPPER(COALESCE(recommendation, '')) "
+                        f"                   IN ('SKIP', 'PASS')) AS skipped "
                         f"FROM market_evaluations "
-                        f"WHERE created_at >= NOW() - INTERVAL '{days} days'"
+                        f"WHERE evaluated_at >= NOW() - INTERVAL '{days} days'"
                     )).fetchone()
 
                     by_cat = conn.execute(text(

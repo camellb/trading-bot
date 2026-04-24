@@ -16,9 +16,6 @@ type Summary = {
   settled_total: number | null;
 };
 
-type BrierPoint = { date: string | null; brier: number; n: number };
-type BrierPayload = { points: BrierPoint[] };
-
 type Bin = {
   lo: number;
   hi: number;
@@ -52,10 +49,24 @@ function sliceRange(series: BankrollPoint[], range: Range): BankrollPoint[] {
   return series.slice(-Math.max(2, days));
 }
 
+function formatShortDate(s: string): string {
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatMoney(v: number): string {
+  const sign = v < 0 ? "-" : "";
+  const abs = Math.abs(v);
+  if (abs >= 1000) {
+    return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  }
+  return `${sign}$${abs.toFixed(2)}`;
+}
+
 export default function PerformancePage() {
   const [range, setRange] = useState<Range>("all");
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [brier, setBrier] = useState<BrierPayload | null>(null);
   const [calibration, setCalibration] = useState<CalibrationPayload | null>(null);
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -63,15 +74,13 @@ export default function PerformancePage() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      const [s, b, c, d] = await Promise.all([
+      const [s, c, d] = await Promise.all([
         getJSON<Summary>("/api/summary"),
-        getJSON<BrierPayload>("/api/brier-trend?source=polymarket"),
         getJSON<CalibrationPayload>("/api/calibration?source=polymarket"),
         getJSON<Diagnostics>("/api/diagnostics?scope=all"),
       ]);
       if (cancelled) return;
       setSummary(s);
-      setBrier(b);
       setCalibration(c);
       setDiag(d);
       setLoaded(true);
@@ -98,6 +107,11 @@ export default function PerformancePage() {
 
   const winRatePct = summary?.win_rate != null ? summary.win_rate * 100 : null;
   const brierScore = summary?.brier ?? calibration?.brier ?? null;
+
+  const calBins = useMemo(
+    () => (calibration?.bins ?? []).filter((b) => b.n > 0),
+    [calibration]
+  );
 
   return (
     <div className="page-wrap">
@@ -126,22 +140,17 @@ export default function PerformancePage() {
           <div className="stat-cell-val">
             {roiPct != null ? `${roiPct >= 0 ? "+" : ""}${roiPct.toFixed(2)}%` : "-"}
           </div>
-          <div className="stat-cell-delta">Net of costs</div>
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">P&amp;L</div>
           <div className="stat-cell-val">
             {totalPnl != null ? `${totalPnl >= 0 ? "+" : ""}$${totalPnl.toFixed(2)}` : "-"}
           </div>
-          <div className="stat-cell-delta">Realized + unrealized</div>
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">Win rate</div>
           <div className="stat-cell-val">
             {winRatePct != null ? `${winRatePct.toFixed(0)}%` : "-"}
-          </div>
-          <div className="stat-cell-delta">
-            {summary?.settled_total != null ? `${summary.settled_total} settled` : "Diagnostic"}
           </div>
         </div>
         <div className="stat-cell">
@@ -149,7 +158,6 @@ export default function PerformancePage() {
           <div className="stat-cell-val">
             {brierScore != null ? brierScore.toFixed(3) : "-"}
           </div>
-          <div className="stat-cell-delta">Lower is better</div>
         </div>
       </div>
 
@@ -161,7 +169,7 @@ export default function PerformancePage() {
           </span>
         </div>
         {sliced.length > 1 ? (
-          <EquityChart data={sliced.map((p) => p.bankroll)} />
+          <EquityChart points={sliced} />
         ) : (
           <div className="empty-state" style={{ padding: 40 }}>
             {loaded
@@ -173,79 +181,82 @@ export default function PerformancePage() {
 
       <div className="panel">
         <div className="panel-head">
-          <h2 className="panel-title">Brier trend</h2>
+          <h2 className="panel-title">Is Delfi's confidence honest?</h2>
           <span className="panel-meta">
-            {brier?.points.length ? `${brier.points.length} resolved predictions` : "No data"}
-          </span>
-        </div>
-        <p className="panel-body" style={{ marginBottom: 12 }}>
-          Brier score measures how closely Delfi's stated probabilities match what actually
-          happened on the markets you entered. Lower is better. A coin flip scores 0.25. The
-          line updates every time one of your positions settles, so a downward slope means
-          Delfi is getting sharper on the trades you took.
-        </p>
-        {brier && brier.points.length > 1 ? (
-          <BrierChart data={brier.points} />
-        ) : (
-          <div className="empty-state" style={{ padding: 40 }}>
-            {loaded
-              ? "Waiting for at least two resolved predictions."
-              : "Loading..."}
-          </div>
-        )}
-      </div>
-
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Calibration</h2>
-          <span className="panel-meta">
-            {calibration?.resolved != null ? `${calibration.resolved} resolved` : "Predicted vs. realized"}
+            {calibration?.resolved != null ? `${calibration.resolved} resolved` : "Waiting"}
           </span>
         </div>
         <p className="panel-body" style={{ marginBottom: 20 }}>
-          Do Delfi's probabilities match reality? Every settled position you've taken is sorted
-          by Delfi's stated probability at entry, then compared to how often those markets
-          actually resolved in your favor. Rows are your trades only. A well-calibrated
-          forecaster keeps Actual within about 5 points of Expected once the sample in a
-          bucket reaches 20+ resolutions.
+          When Delfi says it's 70% confident a market will resolve YES, those trades
+          should win roughly 70% of the time. Each row below groups your settled
+          trades by how confident Delfi was, then shows how often they actually won.
+          A gap under 10 points once a group has 20+ trades means Delfi's confidence
+          is honest in that range.
         </p>
-        {calibration && calibration.bins.length > 0 ? (
-          <table className="table-simple">
-            <thead>
-              <tr>
-                <th>Bucket</th>
-                <th>Expected</th>
-                <th>Actual</th>
-                <th>Delta</th>
-                <th>Sample</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calibration.bins.map((b, i) => {
-                const expected = b.mean_pred != null ? b.mean_pred * 100 : null;
-                const actual = b.mean_actual != null ? b.mean_actual * 100 : null;
-                const delta = expected != null && actual != null ? actual - expected : null;
-                const label = `${Math.round(b.lo * 100)}-${Math.round(b.hi * 100)}%`;
-                return (
-                  <tr key={i}>
-                    <td>{label}</td>
-                    <td className="mono">{expected != null ? `${expected.toFixed(0)}%` : "-"}</td>
-                    <td className="mono">{actual != null ? `${actual.toFixed(0)}%` : "-"}</td>
-                    <td className={`mono ${delta != null && Math.abs(delta) > 5 ? "cell-down" : ""}`}>
-                      {delta != null
-                        ? `${delta >= 0 ? "+" : ""}${delta.toFixed(0)} pts`
-                        : "-"}
-                    </td>
-                    <td className="mono">{b.n}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+        {calBins.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {calBins.map((b, i) => {
+              const expected = b.mean_pred != null ? b.mean_pred * 100 : null;
+              const actual = b.mean_actual != null ? b.mean_actual * 100 : null;
+              const delta = expected != null && actual != null ? actual - expected : null;
+              const rangeLabel = `${Math.round(b.lo * 100)}-${Math.round(b.hi * 100)}%`;
+              const smallSample = b.n < 20;
+              const wide = delta != null && Math.abs(delta) > 10;
+              const statusText = smallSample
+                ? "Too few trades to tell"
+                : wide
+                ? "Off target"
+                : "On target";
+              const statusColor = smallSample
+                ? "rgba(255,255,255,0.45)"
+                : wide
+                ? "var(--red, #e56b6f)"
+                : "var(--teal, #4bd0c4)";
+              const winsWord = b.n === 1 ? "trade" : "trades";
+              return (
+                <div
+                  key={i}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "14px 16px",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                    borderRadius: 10,
+                    gap: 16,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+                    <div style={{ fontSize: 14, color: "rgba(255,255,255,0.95)" }}>
+                      When Delfi said it was{" "}
+                      <strong style={{ color: "var(--gold)" }}>{rangeLabel}</strong>{" "}
+                      confident
+                    </div>
+                    <div style={{ fontSize: 13, color: "rgba(255,255,255,0.65)", marginTop: 4 }}>
+                      Those markets actually won{" "}
+                      <strong style={{ color: "rgba(255,255,255,0.95)" }}>
+                        {actual != null ? `${actual.toFixed(0)}%` : "-"}
+                      </strong>{" "}
+                      of the time across {b.n} {winsWord}.
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", fontSize: 12, color: statusColor, fontFamily: "ui-monospace, SFMono-Regular, monospace" }}>
+                    {statusText}
+                    {delta != null && !smallSample ? (
+                      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", marginTop: 2 }}>
+                        Gap: {delta >= 0 ? "+" : ""}{delta.toFixed(0)} pts
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         ) : (
           <div className="empty-state" style={{ padding: 32 }}>
             {loaded
-              ? "No resolved predictions yet - calibration buckets populate after markets settle."
+              ? "No resolved predictions yet. Rows appear once your first markets settle."
               : "Loading..."}
           </div>
         )}
@@ -254,32 +265,95 @@ export default function PerformancePage() {
   );
 }
 
-function EquityChart({ data }: { data: number[] }) {
-  const w = 1000, h = 260, pad = 8;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
+function EquityChart({ points }: { points: BankrollPoint[] }) {
+  const w = 1000;
+  const h = 300;
+  const padL = 72;
+  const padR = 16;
+  const padT = 16;
+  const padB = 36;
+  const values = points.map((p) => p.bankroll);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const range = max - min || 1;
-  const step = (w - pad * 2) / Math.max(1, data.length - 1);
-  const points = data.map((v, i) => {
-    const x = pad + i * step;
-    const y = pad + (h - pad * 2) * (1 - (v - min) / range);
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const step = plotW / Math.max(1, points.length - 1);
+  const coords = points.map((p, i) => {
+    const x = padL + i * step;
+    const y = padT + plotH * (1 - (p.bankroll - min) / range);
     return [x, y] as const;
   });
-  const line = points
+  const line = coords
     .map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1))
     .join(" ");
   const area =
     line +
-    ` L ${points[points.length - 1][0].toFixed(1)} ${h - pad} L ${points[0][0].toFixed(1)} ${h - pad} Z`;
+    ` L ${coords[coords.length - 1][0].toFixed(1)} ${padT + plotH} L ${coords[0][0].toFixed(1)} ${padT + plotH} Z`;
+
+  const mid = (min + max) / 2;
+  const yTicks = [
+    { v: max, y: padT },
+    { v: mid, y: padT + plotH / 2 },
+    { v: min, y: padT + plotH },
+  ];
+
+  const lastIdx = points.length - 1;
+  const midIdx = Math.floor(lastIdx / 2);
+  const xTicks = [
+    { label: formatShortDate(points[0].date), x: coords[0][0], anchor: "start" as const },
+    { label: formatShortDate(points[midIdx].date), x: coords[midIdx][0], anchor: "middle" as const },
+    { label: formatShortDate(points[lastIdx].date), x: coords[lastIdx][0], anchor: "end" as const },
+  ];
+
+  const lastPoint = coords[coords.length - 1];
+  const lastValue = points[points.length - 1].bankroll;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", display: "block" }} preserveAspectRatio="none">
+    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", display: "block" }}>
       <defs>
         <linearGradient id="perf-eq-fill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="var(--gold)" stopOpacity="0.28" />
           <stop offset="100%" stopColor="var(--gold)" stopOpacity="0" />
         </linearGradient>
       </defs>
+      {yTicks.map((t, i) => (
+        <line
+          key={`g${i}`}
+          x1={padL}
+          x2={w - padR}
+          y1={t.y}
+          y2={t.y}
+          stroke="rgba(255,255,255,0.06)"
+          strokeDasharray="2 4"
+        />
+      ))}
+      {yTicks.map((t, i) => (
+        <text
+          key={`y${i}`}
+          x={padL - 8}
+          y={t.y + 4}
+          fill="rgba(255,255,255,0.55)"
+          fontSize="11"
+          textAnchor="end"
+          fontFamily="ui-monospace, SFMono-Regular, monospace"
+        >
+          {formatMoney(t.v)}
+        </text>
+      ))}
+      {xTicks.map((t, i) => (
+        <text
+          key={`x${i}`}
+          x={t.x}
+          y={h - 10}
+          fill="rgba(255,255,255,0.55)"
+          fontSize="11"
+          textAnchor={t.anchor}
+          fontFamily="ui-monospace, SFMono-Regular, monospace"
+        >
+          {t.label}
+        </text>
+      ))}
       <path d={area} fill="url(#perf-eq-fill)" />
       <path
         d={line}
@@ -289,36 +363,17 @@ function EquityChart({ data }: { data: number[] }) {
         strokeLinejoin="round"
         strokeLinecap="round"
       />
-    </svg>
-  );
-}
-
-function BrierChart({ data }: { data: BrierPoint[] }) {
-  const w = 1000, h = 220, pad = 8;
-  const values = data.map((p) => p.brier);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const step = (w - pad * 2) / Math.max(1, data.length - 1);
-  const points = data.map((p, i) => {
-    const x = pad + i * step;
-    const y = pad + (h - pad * 2) * ((p.brier - min) / range);
-    return [x, y] as const;
-  });
-  const line = points
-    .map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1))
-    .join(" ");
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", display: "block" }} preserveAspectRatio="none">
-      <path
-        d={line}
-        fill="none"
-        stroke="var(--teal)"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
+      <circle cx={lastPoint[0]} cy={lastPoint[1]} r="3" fill="var(--gold)" />
+      <text
+        x={lastPoint[0] - 6}
+        y={lastPoint[1] - 8}
+        fill="var(--gold)"
+        fontSize="11"
+        textAnchor="end"
+        fontFamily="ui-monospace, SFMono-Regular, monospace"
+      >
+        {formatMoney(lastValue)}
+      </text>
     </svg>
   );
 }

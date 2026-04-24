@@ -441,8 +441,8 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
         <div>Market</div>
         <div>Category</div>
         <div>Side</div>
-        <div>M YES %</div>
         <div>Size</div>
+        <div>M YES %</div>
         <div>D YES %</div>
         <div>D CONF</div>
         <div>Closes</div>
@@ -458,8 +458,8 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
             <div className="pos-q">{p.question}</div>
             <div className="pos-cat">{p.category || "-"}</div>
             <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-            <div className="pos-num t-num">{mYesPct}%</div>
             <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
+            <div className="pos-num t-num">{mYesPct}%</div>
             <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
             <div className="pos-num t-num">{dConfPct != null ? `${dConfPct}%` : "-"}</div>
             <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>

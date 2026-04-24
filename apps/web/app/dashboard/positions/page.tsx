@@ -192,8 +192,8 @@ export default function PositionsPage() {
                   <th>Market</th>
                   <th>Category</th>
                   <th>Side</th>
-                  <th>M YES %</th>
                   <th>Size</th>
+                  <th>M YES %</th>
                   <th>D YES %</th>
                   <th>D CONF</th>
                   <th>Closes</th>
@@ -214,8 +214,8 @@ export default function PositionsPage() {
                           {p.side}
                         </span>
                       </td>
-                      <td className="mono">{mYesPct}%</td>
                       <td className="mono">${p.cost_usd.toFixed(0)}</td>
+                      <td className="mono">{mYesPct}%</td>
                       <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                       <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
                       <td className="mono">{daysFromNow(p.expected_resolution_at)}</td>
