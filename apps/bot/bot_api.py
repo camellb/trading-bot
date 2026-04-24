@@ -187,6 +187,31 @@ class BotAPI:
                                       status=401)
         stats = executor.get_portfolio_stats()
         uid = executor.user_id
+        # In live mode the dashboard "Balance" card must track the user's
+        # actual on-chain USDC balance on Polygon, not the DB-derived
+        # starting + realized - open_cost formula that powers simulation.
+        # Fall through silently if the fetch fails so we never flash $0.
+        if stats.get("mode") == "live":
+            creds = get_user_polymarket_creds(uid)
+            wallet = creds.get("wallet_address")
+            if wallet:
+                try:
+                    from feeds.polymarket_wallet import get_live_usdc_balance
+                    live_balance = await get_live_usdc_balance(wallet)
+                except Exception as exc:
+                    print(f"[bot_api] live balance fetch raised for {uid}: "
+                          f"{exc}", file=sys.stderr)
+                    live_balance = None
+                if live_balance is not None:
+                    realized  = float(stats.get("realized_pnl") or 0.0)
+                    open_cost = float(stats.get("open_cost")    or 0.0)
+                    # wallet = starting + realized - open_cost
+                    # →  starting = wallet - realized + open_cost
+                    # so the hero ROI% keeps a meaningful baseline.
+                    inferred_start = live_balance - realized + open_cost
+                    stats["bankroll"]      = live_balance
+                    stats["starting_cash"] = max(0.0, inferred_start)
+                    stats["equity"]        = live_balance + open_cost
         brier_report = await asyncio.get_running_loop().run_in_executor(
             self._pool,
             lambda: calibration.get_report(source="polymarket", user_id=uid),
