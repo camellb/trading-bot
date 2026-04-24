@@ -21,7 +21,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
 
   const { data: cfg } = await supabase
     .from("user_config")
-    .select("display_name, is_admin, bot_enabled, tour_completed_at")
+    .select("display_name, is_admin, bot_enabled, tour_completed_at, mode")
     .eq("user_id", user.id)
     .maybeSingle();
 
@@ -36,12 +36,20 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const isAdmin = Boolean(cfg?.is_admin);
   const botEnabled = Boolean(cfg?.bot_enabled);
   const tourCompleted = Boolean(cfg?.tour_completed_at);
+  // The TRADING mode - what the bot actually does (vs. the read-only
+  // view-mode toggle in the sidebar). The status pill renders this so
+  // the user can see at a glance which market their running bot is
+  // hitting without having to click into settings.
+  const rawMode = (cfg?.mode as string | null | undefined) ?? null;
+  const tradingMode: "simulation" | "live" | null =
+    rawMode === "live" ? "live" : rawMode === "simulation" ? "simulation" : null;
 
   return (
     <DashboardShell
       user={shellUser}
       isAdmin={isAdmin}
       botEnabled={botEnabled}
+      tradingMode={tradingMode}
       tourCompleted={tourCompleted}
     >
       {children}

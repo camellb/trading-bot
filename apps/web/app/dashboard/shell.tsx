@@ -137,12 +137,14 @@ export function DashboardShell({
   user,
   isAdmin = false,
   botEnabled = false,
+  tradingMode = null,
   tourCompleted = false,
 }: {
   children: React.ReactNode;
   user: DashboardUser;
   isAdmin?: boolean;
   botEnabled?: boolean;
+  tradingMode?: "simulation" | "live" | null;
   tourCompleted?: boolean;
 }) {
   const pathname = usePathname() || "/dashboard";
@@ -159,9 +161,15 @@ export function DashboardShell({
   return (
     <ViewModeProvider>
       <div className="app-shell density-roomy" data-screen-label="Dashboard">
-        <Sidebar activeId={activeId} user={user} pathname={pathname} isAdmin={isAdmin} />
+        <Sidebar
+          activeId={activeId}
+          user={user}
+          pathname={pathname}
+          isAdmin={isAdmin}
+          botEnabled={botEnabled}
+          tradingMode={tradingMode}
+        />
         <main className="app-main">
-          <BotControlBanner botEnabled={botEnabled} />
           {children}
         </main>
         {!tourCompleted && <Tour />}
@@ -195,7 +203,13 @@ function ViewModeToggle() {
   );
 }
 
-function BotControlBanner({ botEnabled }: { botEnabled: boolean }) {
+function BotStatusPill({
+  botEnabled,
+  tradingMode,
+}: {
+  botEnabled: boolean;
+  tradingMode: "simulation" | "live" | null;
+}) {
   const [pending, startTransition] = useTransition();
   const [err, setErr] = useState<string | null>(null);
 
@@ -207,41 +221,47 @@ function BotControlBanner({ botEnabled }: { botEnabled: boolean }) {
     });
   };
 
+  const modeLabel = tradingMode === "live"
+    ? "Live"
+    : tradingMode === "simulation"
+      ? "Simulation"
+      : "Not set";
+
   return (
-    <div className={`bot-control ${botEnabled ? "on" : "off"}`}>
-      <div className="bot-control-left">
-        <span className={`bot-control-dot ${botEnabled ? "on" : "off"}`}></span>
-        <div className="bot-control-body">
-          <div className="bot-control-title">
-            {botEnabled ? "Delfi is running" : "Delfi is not working"}
-          </div>
-          {!botEnabled && (
-            <div className="bot-control-sub">
-              Start Delfi when you&apos;re ready and it&apos;ll begin scanning markets and placing orders.
-            </div>
-          )}
-          {err && <div className="bot-control-err">Couldn't update: {err}</div>}
-        </div>
+    <div className={`bot-pill ${botEnabled ? "on" : "off"}`}>
+      <div className="bot-pill-row">
+        <span className="bot-pill-label">Status</span>
+        <span className="bot-pill-status">
+          <span className={`bot-pill-dot ${botEnabled ? "on" : "off"}`}></span>
+          <span className="bot-pill-state">{botEnabled ? "ON" : "OFF"}</span>
+        </span>
       </div>
-      <div className="bot-control-right">
-        {botEnabled ? (
-          <button
-            className="bot-control-btn stop"
-            onClick={() => toggle(false)}
-            disabled={pending}
-          >
-            {pending ? "Pausing..." : "Pause bot"}
-          </button>
-        ) : (
-          <button
-            className="bot-control-btn start"
-            onClick={() => toggle(true)}
-            disabled={pending}
-          >
-            {pending ? "Starting..." : "Start Delfi"}
-          </button>
-        )}
+      <div className="bot-pill-row">
+        <span className="bot-pill-label">Mode</span>
+        <span className={`bot-pill-mode ${tradingMode ?? "unset"}`}>
+          {modeLabel}
+        </span>
       </div>
+      {botEnabled ? (
+        <button
+          type="button"
+          className="bot-pill-btn stop"
+          onClick={() => toggle(false)}
+          disabled={pending}
+        >
+          {pending ? "Pausing..." : "Pause bot"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="bot-pill-btn start"
+          onClick={() => toggle(true)}
+          disabled={pending}
+        >
+          {pending ? "Starting..." : "Start Delfi"}
+        </button>
+      )}
+      {err && <div className="bot-pill-err">Couldn&apos;t update: {err}</div>}
     </div>
   );
 }
@@ -251,11 +271,15 @@ function Sidebar({
   user,
   pathname,
   isAdmin,
+  botEnabled,
+  tradingMode,
 }: {
   activeId: string;
   user: DashboardUser;
   pathname: string;
   isAdmin: boolean;
+  botEnabled: boolean;
+  tradingMode: "simulation" | "live" | null;
 }) {
   return (
     <aside className="side">
@@ -301,6 +325,8 @@ function Sidebar({
           <span className="side-label">Admin panel</span>
         </Link>
       )}
+
+      <BotStatusPill botEnabled={botEnabled} tradingMode={tradingMode} />
 
       <ViewModeToggle />
 
