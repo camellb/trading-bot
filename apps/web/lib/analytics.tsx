@@ -8,20 +8,19 @@ import Script from "next/script";
 // Required env (add in Vercel project settings):
 //   NEXT_PUBLIC_GA_ID          Google Analytics 4 measurement ID (G-XXXXXXXXXX)
 //   NEXT_PUBLIC_META_PIXEL_ID  Meta Pixel ID (numeric string)
-//   NEXT_PUBLIC_POSTHOG_KEY    PostHog project API key (phc_XXXXX...)
+//   NEXT_PUBLIC_CLARITY_ID     Microsoft Clarity project ID (10-char string)
 //
-// Optional:
-//   NEXT_PUBLIC_POSTHOG_HOST   Defaults to https://app.posthog.com.
+// Clarity covers heatmaps and session recordings. It is free and
+// unlimited, replacing the earlier PostHog integration. If we later
+// want event analytics / funnels / feature flags we can add PostHog
+// back alongside Clarity; GA4 handles events today.
 //
-// PostHog covers heatmaps and session recordings via autocapture.
 // Each snippet is a vendor-supplied loader, not our code; the only
 // interpolation is the ID.
 export function Analytics() {
   const gaId = process.env.NEXT_PUBLIC_GA_ID;
   const metaId = process.env.NEXT_PUBLIC_META_PIXEL_ID;
-  const posthogKey = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-  const posthogHost =
-    process.env.NEXT_PUBLIC_POSTHOG_HOST || "https://app.posthog.com";
+  const clarityId = process.env.NEXT_PUBLIC_CLARITY_ID;
 
   return (
     <>
@@ -66,10 +65,13 @@ fbq('track', 'PageView');`}
         </>
       ) : null}
 
-      {posthogKey ? (
-        <Script id="posthog-inline" strategy="afterInteractive">
-          {`!function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.async=!0,p.src=s.api_host+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset isFeatureEnabled onFeatureFlags getFeatureFlag getFeatureFlagPayload reloadFeatureFlags group updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures getActiveMatchingSurveys getSurveys getNextSurveyStep onSessionId".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
-posthog.init('${posthogKey}', {api_host: '${posthogHost}', capture_pageview: true, autocapture: true, session_recording: { maskAllInputs: true }});`}
+      {clarityId ? (
+        <Script id="clarity-inline" strategy="afterInteractive">
+          {`(function(c,l,a,r,i,t,y){
+c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+})(window, document, "clarity", "script", "${clarityId}");`}
         </Script>
       ) : null}
     </>

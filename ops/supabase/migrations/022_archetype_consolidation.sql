@@ -78,31 +78,9 @@ UPDATE market_evaluations e
   FROM legacy_map m
  WHERE e.market_archetype = m.legacy;
 
--- predictions.market_archetype is written during legacy resolution
--- backfill; normalise it too so per-category analytics match.
-WITH legacy_map(legacy, canonical) AS (
-    VALUES
-        ('tennis_qualifier',     'tennis'),
-        ('tennis_main_draw',     'tennis'),
-        ('tennis_lower_tier',    'tennis'),
-        ('basketball_prop',      'basketball'),
-        ('basketball_game',      'basketball'),
-        ('baseball_game',        'baseball'),
-        ('baseball_prop',        'baseball'),
-        ('football_game',        'football'),
-        ('football_prop',        'football'),
-        ('hockey_game',          'hockey'),
-        ('hockey_prop',          'hockey'),
-        ('esports_match',        'esports'),
-        ('soccer_match',         'soccer'),
-        ('cricket_match',        'cricket'),
-        ('sports_match',         'sports_other'),
-        ('sports_prop',          'sports_other'),
-        ('geopolitical',         'geopolitical_event')
-)
-UPDATE predictions pr
-   SET market_archetype = m.canonical
-  FROM legacy_map m
- WHERE pr.market_archetype = m.legacy;
+-- NOTE: `predictions` does not carry `market_archetype` (only `pm_positions`
+-- and `market_evaluations` do, per apps/bot/db/models.py lines 454-457).
+-- An earlier draft of this migration touched `predictions`; that was
+-- wrong and would ERROR out. Only the two columns above exist in prod.
 
 COMMIT;
