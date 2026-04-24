@@ -382,16 +382,6 @@ export default function AdminUserDetailPage({
             <div className="split-desc">{fmtActiveFor(user.subscription_started_at)}</div>
           </div>
         </div>
-        <div className="split-row">
-          <div className="split-body">
-            <div className="split-desc" style={{ fontSize: 12, opacity: 0.7 }}>
-              Invoice history will populate here once Stripe webhooks are wired
-              (see TODO in apps/web/app/subscribe/actions.ts). Until then,
-              checkout is paper-pay and this section reflects the single
-              subscription-started transition stored on user_config.
-            </div>
-          </div>
-        </div>
       </div>
 
       <div className="panel">
