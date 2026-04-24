@@ -383,5 +383,198 @@ class ApplyDictSetDispatchTests(unittest.TestCase):
             })
 
 
+# ── Telegram /apply and /reject helpers (oldest-pending dispatch) ────────────
+class ApplyNextPendingTests(unittest.TestCase):
+    """`apply_next_pending_suggestion` picks the oldest pending row via
+    `list_pending_suggestions`, applies it via `apply_suggestion`, and
+    annotates the result with display_* fields for the Telegram handler."""
+
+    def setUp(self):
+        self._saved_list = lc.list_pending_suggestions
+        self._saved_apply = lc.apply_suggestion
+        self.apply_calls: list[tuple] = []
+
+    def tearDown(self):
+        lc.list_pending_suggestions = self._saved_list
+        lc.apply_suggestion = self._saved_apply
+
+    def _install_rows(self, rows, apply_result):
+        def fake_list(user_id, include_snoozed=False):
+            return rows
+
+        def fake_apply(suggestion_id, user_id="default", resolved_by="user"):
+            self.apply_calls.append((suggestion_id, user_id, resolved_by))
+            return dict(apply_result)
+
+        lc.list_pending_suggestions = fake_list
+        lc.apply_suggestion = fake_apply
+
+    def test_no_pending_rows_returns_none(self):
+        self._install_rows([], {"status": "applied"})
+        self.assertEqual(
+            lc.apply_next_pending_suggestion("u1"),
+            {"status": "none"},
+        )
+        self.assertEqual(self.apply_calls, [])
+
+    def test_snoozed_and_applied_are_filtered_out(self):
+        # Only 'pending' rows are candidates.
+        self._install_rows(
+            [
+                {"id": 7, "status": "snoozed",
+                 "created_at": "2026-04-01T00:00:00Z",
+                 "current_value": 0.5, "metadata": None},
+                {"id": 8, "status": "applied",
+                 "created_at": "2026-04-02T00:00:00Z",
+                 "current_value": 1.0, "metadata": None},
+            ],
+            {"status": "applied"},
+        )
+        self.assertEqual(
+            lc.apply_next_pending_suggestion("u1")["status"],
+            "none",
+        )
+        self.assertEqual(self.apply_calls, [])
+
+    def test_picks_oldest_pending_row(self):
+        self._install_rows(
+            [
+                {"id": 9, "status": "pending",
+                 "created_at": "2026-04-03T00:00:00Z",
+                 "current_value": 1.0, "metadata": None},
+                {"id": 4, "status": "pending",
+                 "created_at": "2026-04-01T00:00:00Z",
+                 "current_value": 2.0, "metadata": None},
+                {"id": 6, "status": "pending",
+                 "created_at": "2026-04-02T00:00:00Z",
+                 "current_value": 3.0, "metadata": None},
+            ],
+            {
+                "status":     "applied",
+                "param_name": "max_stake_pct",
+                "operation":  "scalar_set",
+                "value":      0.04,
+            },
+        )
+        out = lc.apply_next_pending_suggestion("u1")
+        # Oldest id is 4 (created 2026-04-01). resolved_by defaults to telegram.
+        self.assertEqual(self.apply_calls, [(4, "u1", "telegram")])
+        self.assertEqual(out["display_key"], "max_stake_pct")
+        self.assertEqual(out["display_previous"], 2.0)
+        self.assertAlmostEqual(out["display_value"], 0.04, places=6)
+
+    def test_dict_set_formats_display_key_with_bracketed_key(self):
+        self._install_rows(
+            [{"id": 1, "status": "pending",
+              "created_at": "2026-04-01T00:00:00Z",
+              "current_value": 1.0, "metadata": None}],
+            {
+                "status":     "applied",
+                "param_name": "archetype_stake_multipliers",
+                "operation":  "dict_set",
+                "key":        "tennis",
+                "value":      0.5,
+            },
+        )
+        out = lc.apply_next_pending_suggestion("u1")
+        self.assertEqual(
+            out["display_key"],
+            "archetype_stake_multipliers['tennis']",
+        )
+        self.assertEqual(out["display_previous"], 1.0)
+        self.assertAlmostEqual(out["display_value"], 0.5, places=6)
+
+    def test_dict_set_defaults_previous_to_one_when_current_value_missing(self):
+        # Brand-new archetype key: row stores current_value=None.
+        self._install_rows(
+            [{"id": 1, "status": "pending",
+              "created_at": "2026-04-01T00:00:00Z",
+              "current_value": None, "metadata": None}],
+            {
+                "status":     "applied",
+                "param_name": "archetype_stake_multipliers",
+                "operation":  "dict_set",
+                "key":        "politics",
+                "value":      1.5,
+            },
+        )
+        out = lc.apply_next_pending_suggestion("u1")
+        self.assertEqual(out["display_previous"], 1.0)
+
+    def test_list_append_formats_added_items(self):
+        self._install_rows(
+            [{"id": 1, "status": "pending",
+              "created_at": "2026-04-01T00:00:00Z",
+              "current_value": None, "metadata": None}],
+            {
+                "status":     "applied",
+                "param_name": "archetype_skip_list",
+                "operation":  "list_append",
+                "added":      ["tennis", "weather"],
+                "value":      ["tennis", "weather"],
+            },
+        )
+        out = lc.apply_next_pending_suggestion("u1")
+        self.assertEqual(out["display_key"], "archetype_skip_list")
+        self.assertEqual(out["display_previous"], "-")
+        self.assertEqual(out["display_value"], "+tennis, +weather")
+
+    def test_passes_through_non_applied_results(self):
+        self._install_rows(
+            [{"id": 1, "status": "pending",
+              "created_at": "2026-04-01T00:00:00Z",
+              "current_value": 0.05, "metadata": None}],
+            {"status": "already_resolved", "current_status": "applied"},
+        )
+        out = lc.apply_next_pending_suggestion("u1")
+        self.assertEqual(out["status"], "already_resolved")
+        # No display_* annotations when the underlying apply didn't succeed.
+        self.assertNotIn("display_key", out)
+
+
+class SkipNextPendingTests(unittest.TestCase):
+    def setUp(self):
+        self._saved_list = lc.list_pending_suggestions
+        self._saved_skip = lc.skip_suggestion
+        self.skip_calls: list[tuple] = []
+
+    def tearDown(self):
+        lc.list_pending_suggestions = self._saved_list
+        lc.skip_suggestion = self._saved_skip
+
+    def _install_rows(self, rows, skip_result):
+        def fake_list(user_id, include_snoozed=False):
+            return rows
+
+        def fake_skip(suggestion_id, user_id="default", resolved_by="user"):
+            self.skip_calls.append((suggestion_id, user_id, resolved_by))
+            return dict(skip_result)
+
+        lc.list_pending_suggestions = fake_list
+        lc.skip_suggestion = fake_skip
+
+    def test_no_pending_rows_returns_none(self):
+        self._install_rows([], {"status": "skipped"})
+        self.assertEqual(
+            lc.skip_next_pending_suggestion("u1"),
+            {"status": "none"},
+        )
+        self.assertEqual(self.skip_calls, [])
+
+    def test_picks_oldest_pending_row(self):
+        self._install_rows(
+            [
+                {"id": 9, "status": "pending",
+                 "created_at": "2026-04-03T00:00:00Z"},
+                {"id": 4, "status": "pending",
+                 "created_at": "2026-04-01T00:00:00Z"},
+            ],
+            {"status": "skipped", "id": 4},
+        )
+        out = lc.skip_next_pending_suggestion("u1")
+        self.assertEqual(self.skip_calls, [(4, "u1", "telegram")])
+        self.assertEqual(out["status"], "skipped")
+
+
 if __name__ == "__main__":
     unittest.main()

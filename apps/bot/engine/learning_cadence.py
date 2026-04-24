@@ -830,6 +830,77 @@ def snooze_suggestion(suggestion_id: int,
     return _update_status(suggestion_id, user_id, "snoozed", resolved_by)
 
 
+# ── Telegram-facing "next pending" helpers ───────────────────────────────────
+# The Telegram /apply and /reject commands don't carry a suggestion id, so
+# they work on the oldest currently-pending row for the caller. These helpers
+# keep the telegram_notifier handler thin and let us stub a single entry
+# point in tests.
+
+def _oldest_pending_row(user_id: str) -> Optional[dict]:
+    rows = list_pending_suggestions(user_id, include_snoozed=False)
+    pending = [r for r in rows if r.get("status") == "pending"]
+    if not pending:
+        return None
+    pending.sort(key=lambda r: r.get("created_at") or "")
+    return pending[0]
+
+
+def apply_next_pending_suggestion(user_id: str = DEFAULT_USER_ID,
+                                  resolved_by: str = "telegram") -> dict:
+    """Apply the oldest currently-pending suggestion for `user_id`.
+
+    Returns ``{"status": "none"}`` when the user has no pending rows.
+    Otherwise delegates to `apply_suggestion` and annotates the result with
+    `display_key`, `display_previous`, and `display_value` so a Telegram
+    handler can render one format for every operation type without caring
+    about the underlying dispatch.
+    """
+    row = _oldest_pending_row(user_id)
+    if row is None:
+        return {"status": "none"}
+
+    suggestion_id = int(row["id"])
+    previous = row.get("current_value")
+    result = apply_suggestion(suggestion_id, user_id=user_id,
+                              resolved_by=resolved_by)
+    if result.get("status") != "applied":
+        return result
+
+    operation = result.get("operation", "scalar_set")
+    if operation == "dict_set":
+        key_name = result.get("key")
+        target = result.get("param_name") or "config"
+        result["display_key"] = (
+            f"{target}['{key_name}']" if key_name else target
+        )
+        # For a brand-new archetype key the stored current_value is 1.0
+        # (the neutral-multiplier default) rather than None.
+        result["display_previous"] = previous if previous is not None else 1.0
+        result["display_value"] = result.get("value")
+    elif operation == "list_append":
+        added = result.get("added") or []
+        result["display_key"] = result.get("param_name") or "config"
+        result["display_previous"] = "-"
+        result["display_value"] = (
+            ", ".join(f"+{x}" for x in added) if added else "-"
+        )
+    else:  # scalar_set or unknown: fall back to the param_name view.
+        result["display_key"] = result.get("param_name") or "config"
+        result["display_previous"] = previous
+        result["display_value"] = result.get("value")
+    return result
+
+
+def skip_next_pending_suggestion(user_id: str = DEFAULT_USER_ID,
+                                 resolved_by: str = "telegram") -> dict:
+    """Mark the oldest currently-pending suggestion for `user_id` as skipped."""
+    row = _oldest_pending_row(user_id)
+    if row is None:
+        return {"status": "none"}
+    return skip_suggestion(int(row["id"]), user_id=user_id,
+                           resolved_by=resolved_by)
+
+
 def _update_status(suggestion_id: int, user_id: str,
                    status: str, resolved_by: str) -> dict:
     from sqlalchemy import text

@@ -591,45 +591,55 @@ class TelegramNotifier:
         await self.send(user_id, tm.resumed())
 
     async def _handle_apply(self, user_id: str) -> None:
-        if self._bot_api is None:
-            print("[telegram][admin] /apply received but BotAPI not wired",
-                  file=sys.stderr)
-            await self.send(user_id, tm.nothing_pending())
-            return
+        # Telegram /apply targets the oldest pending row from the per-user
+        # learning-cycle queue (archetype multipliers, cost corrections, etc.).
+        # The legacy operator-mode apply_pending_config singleton is no longer
+        # populated because dashboard writes now apply immediately.
+        from engine.learning_cadence import apply_next_pending_suggestion
+        loop = asyncio.get_running_loop()
         try:
-            result = self._bot_api.apply_pending_config(user_id=user_id)
+            result = await loop.run_in_executor(
+                None,
+                lambda: apply_next_pending_suggestion(
+                    user_id=user_id, resolved_by="telegram",
+                ),
+            )
         except Exception as exc:
             print(f"[telegram][admin] apply failed: {exc}", file=sys.stderr)
             await self.send(user_id, tm.generic_error(
                 context="Applying change", detail=str(exc),
             ))
             return
-        status = result.get("status")
-        if status == "applied":
+        if result.get("status") == "applied":
             await self.send(user_id, tm.calibration_applied(
-                key=result["key"],
-                previous=result.get("previous"),
-                value=result.get("value"),
-                restart_required=bool(result.get("restart_required")),
+                key=result.get("display_key") or result.get("param_name") or "config",
+                previous=result.get("display_previous"),
+                value=result.get("display_value")
+                      if result.get("display_value") is not None
+                      else result.get("value"),
+                restart_required=False,
             ))
         else:
             await self.send(user_id, tm.nothing_pending())
 
     async def _handle_reject(self, user_id: str) -> None:
-        if self._bot_api is None:
-            print("[telegram][admin] /reject received but BotAPI not wired",
-                  file=sys.stderr)
-            await self.send(user_id, tm.nothing_pending())
-            return
+        # Telegram /reject skips the oldest pending suggestion for this user.
+        from engine.learning_cadence import skip_next_pending_suggestion
+        loop = asyncio.get_running_loop()
         try:
-            result = self._bot_api.reject_pending_config()
+            result = await loop.run_in_executor(
+                None,
+                lambda: skip_next_pending_suggestion(
+                    user_id=user_id, resolved_by="telegram",
+                ),
+            )
         except Exception as exc:
             print(f"[telegram][admin] reject failed: {exc}", file=sys.stderr)
             await self.send(user_id, tm.generic_error(
                 context="Declining change", detail=str(exc),
             ))
             return
-        if result.get("status") == "rejected":
+        if result.get("status") == "skipped":
             await self.send(user_id, tm.calibration_declined())
         else:
             await self.send(user_id, tm.nothing_pending())
