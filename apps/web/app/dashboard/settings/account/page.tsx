@@ -188,7 +188,6 @@ function AccountPageInner() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Profile</h2>
-          <span className="panel-meta">How we address you</span>
         </div>
 
         <div className="form-row">
@@ -240,9 +239,11 @@ function AccountPageInner() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Polymarket credentials</h2>
-          <span className="panel-meta">
-            {poly.canGoLive ? "Ready for live trading" : `Missing: ${poly.missing.join(", ")}`}
-          </span>
+          {!poly.canGoLive && poly.missing.length > 0 && (
+            <span className="panel-meta">
+              Missing: {poly.missing.join(", ")}
+            </span>
+          )}
         </div>
 
         <p className="panel-body" style={{ marginTop: 0, marginBottom: 18 }}>
@@ -338,7 +339,23 @@ function AccountPageInner() {
             >
               {poly.saving ? "Saving…" : "Save credentials"}
             </button>
-            <button className="btn-sm" onClick={() => setPolyReveal((r) => !r)}>
+            <button
+              type="button"
+              className="btn-sm"
+              onClick={() => setPolyReveal((r) => !r)}
+              disabled={
+                !polyDraft.apiKey &&
+                !polyDraft.apiSecret &&
+                !polyDraft.passphrase
+              }
+              title={
+                !polyDraft.apiKey &&
+                !polyDraft.apiSecret &&
+                !polyDraft.passphrase
+                  ? "Type a key, secret, or passphrase first. Saved values are never sent back to the browser."
+                  : undefined
+              }
+            >
               {polyReveal ? "Hide values" : "Reveal values"}
             </button>
             {polySavedAt && !poly.error && (
@@ -354,7 +371,6 @@ function AccountPageInner() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Reset simulation history</h2>
-          <span className="panel-meta">Safe to run anytime</span>
         </div>
         <p className="panel-body">
           Clears your paper-trading positions and predictions so the dashboard
@@ -385,7 +401,6 @@ function AccountPageInner() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Close account</h2>
-          <span className="panel-meta">Permanent</span>
         </div>
         <p className="panel-body">
           Closing your account ends your subscription and revokes the trading delegation. Open positions are
