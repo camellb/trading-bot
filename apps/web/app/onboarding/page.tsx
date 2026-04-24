@@ -7,9 +7,13 @@ import "../styles/content.css";
 
 import { completeOnboarding } from "./actions";
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 type Mode = "simulation" | "live";
 type RiskProfile = "cautious" | "balanced" | "aggressive";
+// Matches SUPPORTED_VENUES in apps/bot/engine/user_config.py and the CHECK
+// constraint on user_config.venue added in migration 024. Extend both sides
+// together if a future venue (Kalshi, Manifold, ...) is introduced.
+type Venue = "polymarket" | "polymarket_us";
 
 function OnboardingErrorBanner() {
   const params = useSearchParams();
@@ -34,19 +38,26 @@ function OnboardingErrorBanner() {
 export default function OnboardingPage() {
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState<string>("");
+  // Default venue is the offshore Polymarket.com. Users in the US are expected
+  // to pick "polymarket_us" here - it's the CFTC-regulated DCM and the only
+  // legal way to trade prediction markets from the US. We don't auto-detect
+  // the country because geolocation is unreliable and forcing a user onto
+  // the wrong platform at onboarding is worse than asking them once.
+  const [venue, setVenue] = useState<Venue>("polymarket");
   const [mode, setMode] = useState<Mode>("simulation");
   const [riskProfile, setRiskProfile] = useState<RiskProfile>("balanced");
   const [notify, setNotify] = useState<boolean>(true);
 
-  // Step 1 = name, 2 = mode, 3 = risk, 4 = notify. Bankroll defaults to
-  // $1,000 for simulation; live mode uses the real wallet balance.
-  const totalSteps = 4;
+  // Step 1 = name, 2 = venue, 3 = mode, 4 = risk, 5 = notify. Bankroll
+  // defaults to $1,000 for simulation; live mode uses the real wallet
+  // balance once CLOB is wired per venue.
+  const totalSteps = 5;
   const pad = (n: number) => String(n).padStart(2, "0");
 
   const canContinueFromName = name.trim().length >= 2;
 
   const next = () =>
-    setStep((s) => (s < 4 ? ((s + 1) as Step) : s));
+    setStep((s) => (s < totalSteps ? ((s + 1) as Step) : s));
   const back = () =>
     setStep((s) => (s > 1 ? ((s - 1) as Step) : s));
 
@@ -91,6 +102,47 @@ export default function OnboardingPage() {
         {step === 2 && (
           <section>
             <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
+            <h1 className="ob-title">Which Polymarket do you trade on?</h1>
+            <p className="ob-sub">
+              Polymarket runs two separate platforms. Pick the one you can legally use. You can switch
+              later from Settings, but your account connects to one platform at a time.
+            </p>
+
+            <div className="ob-choices">
+              <button
+                className={`ob-choice ${venue === "polymarket" ? "selected" : ""}`}
+                onClick={() => setVenue("polymarket")}
+              >
+                <div className="ob-choice-head">
+                  <div className="ob-choice-title">Polymarket</div>
+                  <div className="ob-choice-meta">Most users · USDC on Polygon</div>
+                </div>
+                <div className="ob-choice-body">
+                  The original offshore Polymarket. Deeper liquidity and the widest market catalog.
+                  Not available to US residents.
+                </div>
+              </button>
+
+              <button
+                className={`ob-choice ${venue === "polymarket_us" ? "selected" : ""}`}
+                onClick={() => setVenue("polymarket_us")}
+              >
+                <div className="ob-choice-head">
+                  <div className="ob-choice-title">Polymarket US</div>
+                  <div className="ob-choice-meta">US residents · USD, CFTC-regulated</div>
+                </div>
+                <div className="ob-choice-body">
+                  The CFTC-regulated Designated Contract Market. Settles in USD, no wallet needed.
+                  Smaller market catalog today, but required if you live in the United States.
+                </div>
+              </button>
+            </div>
+          </section>
+        )}
+
+        {step === 3 && (
+          <section>
+            <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">How would you like to start?</h1>
             <p className="ob-sub">
               You can always switch modes later from your dashboard. Most users begin in Simulation to build
@@ -120,15 +172,16 @@ export default function OnboardingPage() {
                   <div className="ob-choice-title">Go live immediately</div>
                 </div>
                 <div className="ob-choice-body">
-                  Connect your wallet and deploy real capital. Delfi trades Polymarket on your behalf. Daily
-                  and drawdown caps remain active from the first trade.
+                  Connect your {venue === "polymarket_us" ? "Polymarket US" : "Polymarket"} account and
+                  deploy real capital. Delfi trades on your behalf. Daily and drawdown caps remain active
+                  from the first trade.
                 </div>
               </button>
             </div>
           </section>
         )}
 
-        {step === 3 && (
+        {step === 4 && (
           <section>
             <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Risk profile</h1>
@@ -184,7 +237,7 @@ export default function OnboardingPage() {
           </section>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <section>
             <div className="ob-eyebrow">Step {pad(step)} of {pad(totalSteps)}</div>
             <h1 className="ob-title">Notifications</h1>
@@ -242,7 +295,7 @@ export default function OnboardingPage() {
             )}
           </div>
           <div className="ob-actions-right">
-            {step < 4 ? (
+            {step < totalSteps ? (
               <button
                 className="ob-next"
                 onClick={next}
@@ -254,10 +307,13 @@ export default function OnboardingPage() {
             ) : (
               <form action={completeOnboarding} style={{ display: "inline" }}>
                 <input type="hidden" name="display_name" value={name.trim()} />
+                <input type="hidden" name="venue" value={venue} />
                 <input type="hidden" name="mode" value={mode} />
                 <input type="hidden" name="risk_profile" value={riskProfile} />
                 <button type="submit" className="ob-next" disabled={!canContinueFromName}>
-                  {mode === "live" ? "Connect wallet →" : "Enter dashboard →"}
+                  {mode === "live"
+                    ? (venue === "polymarket_us" ? "Connect Polymarket US →" : "Connect wallet →")
+                    : "Enter dashboard →"}
                 </button>
               </form>
             )}

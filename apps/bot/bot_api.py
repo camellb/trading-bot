@@ -44,14 +44,18 @@ from engine import diagnostics
 from config_utils import ALLOWED_CONFIG_KEYS, persist_config_value
 from db.engine import get_engine
 from engine.user_config import (
+    SUPPORTED_VENUES,
     USER_CONFIG_BOUNDS,
     USER_CONFIG_DESCRIPTIONS,
     get_user_config,
     get_user_polymarket_creds,
+    get_user_polymarket_us_creds,
     get_user_telegram_creds,
     is_admin as _user_is_admin,
     set_user_polymarket_creds,
+    set_user_polymarket_us_creds,
     set_user_telegram_creds,
+    set_user_venue,
     update_user_config,
 )
 from engine.learning_cadence import (
@@ -905,6 +909,161 @@ class BotAPI:
             "ready_for_live": required_ok,
         })
 
+    # ── Venue + dual-credential endpoint ─────────────────────────────────────
+    # GET /api/config/venue returns the user's current venue plus the
+    # credential status for BOTH venues, so the Connections page can render
+    # a venue picker and show which side is ready for live trading without
+    # calling two endpoints. PUT accepts venue and/or per-venue credential
+    # bundles atomically so switching venue + filling in the other side's
+    # keys is a single round-trip.
+    def _venue_payload(self, user_id: str) -> dict:
+        """Build the GET-shape payload for a user. Always includes both
+        venues so the UI can show status for each side regardless of which
+        one is currently active. readyForLive at the top level reflects
+        ONLY the active venue - that's the one the executor will try to
+        trade with."""
+        cfg = get_user_config(user_id)
+        venue = cfg.venue if cfg.venue in SUPPORTED_VENUES else "polymarket"
+        off = get_user_polymarket_creds(user_id)
+        us  = get_user_polymarket_us_creds(user_id)
+        off_ready = bool(off.get("api_key")
+                         and off.get("api_secret")
+                         and off.get("wallet_address"))
+        # Polymarket US is a DCM, no wallet. Ready = api_key + api_secret.
+        us_ready  = bool(us.get("api_key") and us.get("api_secret"))
+        return {
+            "user_id":          user_id,
+            "venue":            venue,
+            "supported_venues": list(SUPPORTED_VENUES),
+            "polymarket": {
+                "api_key_set":    bool(off.get("api_key")),
+                "api_secret_set": bool(off.get("api_secret")),
+                "passphrase_set": bool(off.get("passphrase")),
+                "wallet_address": off.get("wallet_address"),
+                "ready_for_live": off_ready,
+            },
+            "polymarket_us": {
+                "api_key_set":    bool(us.get("api_key")),
+                "api_secret_set": bool(us.get("api_secret")),
+                "passphrase_set": bool(us.get("passphrase")),
+                "ready_for_live": us_ready,
+            },
+            "ready_for_live": off_ready if venue == "polymarket" else us_ready,
+        }
+
+    async def _handle_get_venue_config(self, request: web.Request) -> web.Response:
+        user_id = self._user_id_from(request) or request.query.get("user_id")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        loop = asyncio.get_running_loop()
+        try:
+            payload = await loop.run_in_executor(
+                self._pool, self._venue_payload, user_id,
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        return web.json_response(payload)
+
+    async def _handle_put_venue_config(self, request: web.Request) -> web.Response:
+        """Accept venue and/or per-venue credential bundles. Shape:
+            {
+              "venue"?: "polymarket" | "polymarket_us",
+              "polymarket"?: { api_key?, api_secret?, passphrase?,
+                               wallet_address? },
+              "polymarket_us"?: { api_key?, api_secret?, passphrase? }
+            }
+        Each string field follows the same None/empty/set semantics as
+        set_user_polymarket_creds: missing key = untouched, empty string =
+        clear, non-empty = overwrite."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "body must be JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"error": "body must be an object"}, status=400)
+
+        user_id = self._user_id_from(request) or str(data.get("user_id") or "")
+        if not user_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+
+        def _str_or_none(obj: dict, key: str):
+            v = obj.get(key, None)
+            if v is None:
+                return None
+            if not isinstance(v, str):
+                return ValueError(f"{key} must be string or null")
+            return v
+
+        venue_raw = data.get("venue", None)
+        if venue_raw is not None:
+            if not isinstance(venue_raw, str):
+                return web.json_response(
+                    {"error": "venue must be string"}, status=400,
+                )
+            if venue_raw not in SUPPORTED_VENUES:
+                return web.json_response(
+                    {"error": f"venue must be one of "
+                              f"{list(SUPPORTED_VENUES)!r}, got {venue_raw!r}"},
+                    status=400,
+                )
+
+        off_bundle = data.get("polymarket") or {}
+        us_bundle  = data.get("polymarket_us") or {}
+        if not isinstance(off_bundle, dict):
+            return web.json_response(
+                {"error": "polymarket must be an object"}, status=400,
+            )
+        if not isinstance(us_bundle, dict):
+            return web.json_response(
+                {"error": "polymarket_us must be an object"}, status=400,
+            )
+
+        off_fields = {
+            "api_key":        _str_or_none(off_bundle, "api_key"),
+            "api_secret":     _str_or_none(off_bundle, "api_secret"),
+            "passphrase":     _str_or_none(off_bundle, "passphrase"),
+            "wallet_address": _str_or_none(off_bundle, "wallet_address"),
+        }
+        us_fields = {
+            "api_key":    _str_or_none(us_bundle, "api_key"),
+            "api_secret": _str_or_none(us_bundle, "api_secret"),
+            "passphrase": _str_or_none(us_bundle, "passphrase"),
+        }
+        for bundle, label in (
+            (off_fields, "polymarket"), (us_fields, "polymarket_us"),
+        ):
+            for k, v in bundle.items():
+                if isinstance(v, ValueError):
+                    return web.json_response(
+                        {"error": f"{label}.{k}: {v}"}, status=400,
+                    )
+
+        loop = asyncio.get_running_loop()
+        try:
+            def _apply():
+                if venue_raw is not None:
+                    set_user_venue(user_id, venue_raw)
+                if any(v is not None for v in off_fields.values()):
+                    set_user_polymarket_creds(user_id, **off_fields)
+                if any(v is not None for v in us_fields.values()):
+                    set_user_polymarket_us_creds(user_id, **us_fields)
+            await loop.run_in_executor(self._pool, _apply)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+
+        try:
+            payload = await loop.run_in_executor(
+                self._pool, self._venue_payload, user_id,
+            )
+        except Exception as exc:
+            return web.json_response({"error": f"db error: {exc}"}, status=500)
+        payload["status"] = "applied"
+        return web.json_response(payload)
+
     # ── Admin handlers ───────────────────────────────────────────────────────
     async def _require_admin(self, request: web.Request) -> Optional[str]:
         """Return caller user_id if they're flagged admin, else None.
@@ -934,6 +1093,7 @@ class BotAPI:
                         "       uc.starting_cash, uc.onboarded_at, uc.is_admin, "
                         "       uc.bot_enabled, "
                         "       uc.subscription_status, uc.subscription_plan, "
+                        "       uc.venue, "
                         "       au.email, au.created_at, "
                         "       (SELECT COUNT(*) FROM pm_positions p "
                         "          WHERE p.user_id = uc.user_id "
@@ -962,10 +1122,14 @@ class BotAPI:
                 "bot_enabled":         bool(r[6]),
                 "subscription_status": r[7],
                 "subscription_plan":   r[8],
-                "email":               r[9],
-                "created_at":          r[10].isoformat() if r[10] else None,
-                "total_positions":     int(r[11] or 0),
-                "realized_pnl":        float(r[12] or 0.0),
+                # venue column added by migration 024. Older rows pre-migration
+                # default to 'polymarket' at the DB layer so this should never
+                # be NULL, but guard the fallback anyway.
+                "venue":               r[9] or "polymarket",
+                "email":               r[10],
+                "created_at":          r[11].isoformat() if r[11] else None,
+                "total_positions":     int(r[12] or 0),
+                "realized_pnl":        float(r[13] or 0.0),
             }
             for r in rows
         ]
@@ -1385,6 +1549,7 @@ class BotAPI:
                         "       uc.starting_cash, uc.onboarded_at, uc.is_admin, "
                         "       uc.bot_enabled, "
                         "       uc.subscription_status, uc.subscription_plan, "
+                        "       uc.venue, "
                         "       uc.subscription_started_at, "
                         "       au.email, au.created_at, "
                         "       uc.telegram_chat_id, "
@@ -1465,11 +1630,15 @@ class BotAPI:
                 "bot_enabled":             bool(user_row[6]),
                 "subscription_status":     user_row[7],
                 "subscription_plan":       user_row[8],
-                "subscription_started_at": user_row[9].isoformat() if user_row[9] else None,
-                "email":                   user_row[10],
-                "created_at":              user_row[11].isoformat() if user_row[11] else None,
-                "has_telegram":            bool(user_row[12]),
-                "has_polymarket":          bool(user_row[13]),
+                # venue inserted after subscription_plan by migration 024.
+                # Null coerces to 'polymarket' so pre-migration rows look
+                # right in the admin UI.
+                "venue":                   user_row[9] or "polymarket",
+                "subscription_started_at": user_row[10].isoformat() if user_row[10] else None,
+                "email":                   user_row[11],
+                "created_at":              user_row[12].isoformat() if user_row[12] else None,
+                "has_telegram":            bool(user_row[13]),
+                "has_polymarket":          bool(user_row[14]),
             },
             "summary": {
                 "open_positions": int(summary[0] or 0),
@@ -2185,6 +2354,8 @@ class BotAPI:
         app.router.add_post("/api/config/telegram/test", self._handle_telegram_test)
         app.router.add_get ("/api/config/polymarket", self._handle_get_polymarket_config)
         app.router.add_put ("/api/config/polymarket", self._handle_put_polymarket_config)
+        app.router.add_get ("/api/config/venue", self._handle_get_venue_config)
+        app.router.add_put ("/api/config/venue", self._handle_put_venue_config)
         app.router.add_get ("/api/suggestions", self._handle_list_suggestions)
         app.router.add_get ("/api/learning-reports",
                             self._handle_list_learning_reports)

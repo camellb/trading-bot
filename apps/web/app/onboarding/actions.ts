@@ -53,6 +53,14 @@ export async function completeOnboarding(formData: FormData) {
   const mode: "simulation" | "live" =
     rawMode === "live" ? "live" : "simulation";
 
+  // Venue is enforced by the CHECK constraint on user_config.venue (migration
+  // 024). Anything other than the two known values falls back to the offshore
+  // Polymarket default so a bad form post cannot trip the CHECK and abort
+  // the upsert. The onboarding UI only sends these two values.
+  const rawVenue = String(formData.get("venue") ?? "").trim();
+  const venue: "polymarket" | "polymarket_us" =
+    rawVenue === "polymarket_us" ? "polymarket_us" : "polymarket";
+
   const rawRiskProfile = String(formData.get("risk_profile") ?? "").trim();
   const riskProfile: RiskProfile =
     rawRiskProfile === "cautious" || rawRiskProfile === "aggressive"
@@ -88,6 +96,7 @@ export async function completeOnboarding(formData: FormData) {
         user_id: user.id,
         display_name: displayName,
         mode,
+        venue,
         starting_cash: startingCash,
         onboarded_at: new Date().toISOString(),
         ...riskValues,
@@ -111,11 +120,12 @@ export async function completeOnboarding(formData: FormData) {
     redirect(`/onboarding?${params.toString()}`);
   }
 
-  // Live users still need to connect Polymarket credentials before the bot
-  // will trade for them. Route them to the credentials page; simulation
-  // users go straight to the dashboard.
+  // Live users still need to connect venue credentials before the bot will
+  // trade for them. The Connections page is venue-aware (offshore vs US)
+  // so it shows the right credential form based on what they picked above.
+  // Simulation users go straight to the dashboard.
   if (mode === "live") {
-    redirect("/dashboard/settings/account?setup=live");
+    redirect("/dashboard/settings/connections?setup=live");
   }
   redirect("/dashboard");
 }

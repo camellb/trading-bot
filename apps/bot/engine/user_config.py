@@ -33,7 +33,7 @@ class UserConfig:
     # The prior Gate 3 (minimum expected return) was removed as a doctrine
     # violation: it skipped heavy favourites where the math still favoured
     # taking the bet. Side selection + p_win floor is the full skip logic.
-    min_p_win:                      float = 0.50
+    min_p_win:                      float = 0.55
     confidence_full_stake:          float = 0.70
     confidence_override_threshold:  float = 0.75
 
@@ -63,13 +63,26 @@ class UserConfig:
     # Per-user execution state (SaaS multi-tenancy).
     # All four default to None for brand-new users who haven't onboarded.
     # The bot refuses to trade for a user whose mode or starting_cash is
-    # None; live mode additionally requires wallet + api key/secret.
+    # None; live mode additionally requires the credential set matching
+    # this user's venue (see can_trade_live below).
     mode:                  Optional[str]   = None    # 'simulation' | 'live'
     starting_cash:         Optional[float] = None    # USD, per-user bankroll seed
     polymarket_api_key:    Optional[str]   = None
     polymarket_api_secret: Optional[str]   = None
     polymarket_passphrase: Optional[str]   = None
     wallet_address:        Optional[str]   = None
+
+    # Multi-venue support (migration 024). Each user picks exactly one
+    # venue at onboarding and can change it from the dashboard connections
+    # page. 'polymarket' (offshore Polymarket.com, USDC on Polygon, EIP-712
+    # signing) or 'polymarket_us' (CFTC-regulated DCM, USD, API-key signing).
+    # Legacy rows default to 'polymarket' so pre-migration users keep
+    # behaviour. Polymarket US credentials are independent of the offshore
+    # set so switching venues doesn't stomp the other side's keys.
+    venue:                    str           = "polymarket"
+    polymarket_us_api_key:    Optional[str] = None
+    polymarket_us_api_secret: Optional[str] = None
+    polymarket_us_passphrase: Optional[str] = None
 
     # Per-user bot on/off switch. Defaults to False so newly onboarded users
     # land on the dashboard with no automated trades. User clicks "Start bot"
@@ -92,14 +105,34 @@ class UserConfig:
 
     @property
     def can_trade_live(self) -> bool:
-        """True iff mode='live' AND all required Polymarket creds set."""
+        """True iff mode='live' AND the credentials for this user's venue are set.
+
+        Offshore venue ('polymarket'): requires polymarket_api_key +
+        polymarket_api_secret + wallet_address (passphrase optional).
+
+        US venue ('polymarket_us'): requires polymarket_us_api_key +
+        polymarket_us_api_secret (passphrase optional, no wallet - DCM
+        settles off-chain in USD).
+
+        Unknown venue values return False - the CHECK constraint on
+        user_config.venue prevents writes, but a stale or hand-edited
+        row must still refuse live trading rather than pick a wrong
+        credential set.
+        """
         if self.mode != "live":
             return False
-        return bool(
-            self.polymarket_api_key
-            and self.polymarket_api_secret
-            and self.wallet_address
-        )
+        if self.venue == "polymarket":
+            return bool(
+                self.polymarket_api_key
+                and self.polymarket_api_secret
+                and self.wallet_address
+            )
+        if self.venue == "polymarket_us":
+            return bool(
+                self.polymarket_us_api_key
+                and self.polymarket_us_api_secret
+            )
+        return False
 
     @property
     def ready_to_trade(self) -> bool:
@@ -260,6 +293,12 @@ _NON_EDITABLE_VIA_USER_CONFIG: frozenset[str] = frozenset({
     "polymarket_api_secret",
     "polymarket_passphrase",
     "wallet_address",
+    # Venue change has to travel together with a compatible credential set -
+    # routed through /api/credentials / set_user_venue so the two can't drift.
+    "venue",
+    "polymarket_us_api_key",
+    "polymarket_us_api_secret",
+    "polymarket_us_passphrase",
     "display_name",
 })
 
@@ -469,6 +508,12 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
         # against a DB that hasn't been migrated yet, the SELECT falls back
         # to '{}'::jsonb via COALESCE on a non-existent column - so we do
         # the fallback ourselves at the row level.
+        # Column order matches the UserConfig(...) constructor below; if you
+        # add or reorder a column here, update the row-decode indices too.
+        # Migration 024 added venue + polymarket_us_* (columns 21-24). The
+        # fallback SELECT below drops notification_prefs (migration 019) but
+        # keeps the 024 columns - losing venue to the outer except would
+        # route live trades to the wrong credential set.
         select_sql = (
             "SELECT base_stake_pct, max_stake_pct, "
             "       daily_loss_limit_pct, weekly_loss_limit_pct, "
@@ -481,7 +526,10 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             "       polymarket_api_key, polymarket_api_secret, "
             "       polymarket_passphrase, wallet_address, "
             "       bot_enabled, archetype_stake_multipliers, "
-            "       notification_prefs "
+            "       notification_prefs, "
+            "       venue, "
+            "       polymarket_us_api_key, polymarket_us_api_secret, "
+            "       polymarket_us_passphrase "
             "FROM user_config WHERE user_id = :uid"
         )
         # Try the primary SELECT in its own transaction. If it fails because
@@ -495,13 +543,30 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
         # UserConfig() defaults - starting_cash=None - so the executor
         # then served bankroll math with starting_cash=0).
         row = None
-        prefs_idx: Optional[int] = None
+        # Column indices for the venue + US-cred block, which moves depending
+        # on whether the primary (with notification_prefs) or fallback SELECT
+        # returned the row. Tracked explicitly so a future SELECT reshuffle
+        # doesn't silently desync the row-decode.
+        prefs_idx: Optional[int]   = None
+        venue_idx: int             = 20     # overwritten per branch
+        us_key_idx: int            = 21
+        us_secret_idx: int         = 22
+        us_passphrase_idx: int     = 23
         try:
             with get_engine().begin() as conn:
                 row = conn.execute(text(select_sql),
                                     {"uid": user_id}).fetchone()
-                prefs_idx = 20
+                prefs_idx         = 20
+                venue_idx         = 21
+                us_key_idx        = 22
+                us_secret_idx     = 23
+                us_passphrase_idx = 24
         except Exception:
+            # Primary SELECT failed. Retry without notification_prefs in case
+            # migration 019 hasn't been applied. Venue + US creds (migration
+            # 024) stay in the fallback - losing those to the outer except
+            # would silently route a polymarket_us user to the offshore
+            # credential path.
             with get_engine().begin() as conn:
                 row = conn.execute(text(
                     "SELECT base_stake_pct, max_stake_pct, "
@@ -514,17 +579,29 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                     "       mode, starting_cash, "
                     "       polymarket_api_key, polymarket_api_secret, "
                     "       polymarket_passphrase, wallet_address, "
-                    "       bot_enabled, archetype_stake_multipliers "
+                    "       bot_enabled, archetype_stake_multipliers, "
+                    "       venue, "
+                    "       polymarket_us_api_key, polymarket_us_api_secret, "
+                    "       polymarket_us_passphrase "
                     "FROM user_config WHERE user_id = :uid"
                 ), {"uid": user_id}).fetchone()
-                prefs_idx = None
+                prefs_idx         = None
+                venue_idx         = 20
+                us_key_idx        = 21
+                us_secret_idx     = 22
+                us_passphrase_idx = 23
         # Shared row-decode path: runs for both the primary and fallback
         # branches above. prefs_idx is 20 when the primary succeeded (the
-        # row tuple includes notification_prefs as the final element) and
-        # None when we fell back to the legacy SELECT without that column.
+        # row tuple includes notification_prefs) and None when we fell back
+        # to the legacy SELECT without that column. Venue + US creds are
+        # always present because both branches SELECT them.
         if row is None:
             return UserConfig()
-        prefs_raw = row[prefs_idx] if prefs_idx is not None else None
+        prefs_raw          = row[prefs_idx] if prefs_idx is not None else None
+        venue_raw          = row[venue_idx]
+        us_key_raw         = row[us_key_idx]
+        us_secret_raw      = row[us_secret_idx]
+        us_passphrase_raw  = row[us_passphrase_idx]
         return UserConfig(
             base_stake_pct                = float(row[0]),
             max_stake_pct                 = float(row[1]),
@@ -547,6 +624,11 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             bot_enabled                   = bool(row[18]) if row[18] is not None else False,
             archetype_stake_multipliers   = _decode_archetype_multipliers(row[19]),
             notification_prefs            = _decode_notification_prefs(prefs_raw),
+            venue                         = (str(venue_raw) if venue_raw is not None
+                                              else "polymarket"),
+            polymarket_us_api_key         = (str(us_key_raw)        if us_key_raw        is not None else None),
+            polymarket_us_api_secret      = (str(us_secret_raw)     if us_secret_raw     is not None else None),
+            polymarket_us_passphrase      = (str(us_passphrase_raw) if us_passphrase_raw is not None else None),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config({user_id}) failed: {exc}",
@@ -866,6 +948,136 @@ def set_user_polymarket_creds(user_id: str,
             f"UPDATE user_config SET {', '.join(updates)}, updated_at = NOW() "
             f"WHERE user_id = :uid"
         ), params)
+
+
+# ── Polymarket US creds ─────────────────────────────────────────────────────
+# Parallel to get/set_user_polymarket_creds but for the CFTC-regulated US
+# venue. Stored in separate columns so switching venues doesn't stomp the
+# other side's keys - a user can onboard on offshore, try Polymarket US,
+# and switch back without re-entering their offshore creds.
+#
+# No wallet_address: Polymarket US is a DCM and settles off-chain in USD,
+# so there is nothing analogous to the Polygon wallet needed on offshore.
+SUPPORTED_VENUES: Tuple[str, ...] = ("polymarket", "polymarket_us")
+
+
+def get_user_polymarket_us_creds(user_id: str) -> dict:
+    """
+    Return {'api_key', 'api_secret', 'passphrase'} for Polymarket US, with
+    any missing value as None. Mirrors get_user_polymarket_creds.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT polymarket_us_api_key, polymarket_us_api_secret, "
+                "       polymarket_us_passphrase "
+                "FROM user_config WHERE user_id = :uid"
+            ), {"uid": user_id}).fetchone()
+        if row is None:
+            return {"api_key": None, "api_secret": None, "passphrase": None}
+        return {
+            "api_key":    (str(row[0]) if row[0] else None),
+            "api_secret": (str(row[1]) if row[1] else None),
+            "passphrase": (str(row[2]) if row[2] else None),
+        }
+    except Exception as exc:
+        print(f"[user_config] get_user_polymarket_us_creds({user_id}) failed: {exc}",
+              file=sys.stderr)
+        return {"api_key": None, "api_secret": None, "passphrase": None}
+
+
+def set_user_polymarket_us_creds(user_id: str,
+                                 api_key:    Optional[str] = None,
+                                 api_secret: Optional[str] = None,
+                                 passphrase: Optional[str] = None) -> None:
+    """
+    Write Polymarket US credentials for a user. Same None-vs-empty
+    semantics as set_user_polymarket_creds: None skips a column, empty
+    string clears it.
+    """
+    updates: list[str] = []
+    params: dict = {"uid": user_id}
+    for col, arg in (
+        ("polymarket_us_api_key",    api_key),
+        ("polymarket_us_api_secret", api_secret),
+        ("polymarket_us_passphrase", passphrase),
+    ):
+        if arg is None:
+            continue
+        trimmed = arg.strip() or None
+        updates.append(f"{col} = :{col}")
+        params[col] = trimmed
+    if not updates:
+        return
+
+    from sqlalchemy import text
+    from db.engine import get_engine
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO user_config (user_id) VALUES (:uid) "
+            "ON CONFLICT (user_id) DO NOTHING"
+        ), {"uid": user_id})
+        conn.execute(text(
+            f"UPDATE user_config SET {', '.join(updates)}, updated_at = NOW() "
+            f"WHERE user_id = :uid"
+        ), params)
+
+
+def set_user_venue(user_id: str, venue: str) -> None:
+    """
+    Write the user's venue selection. Validates against SUPPORTED_VENUES so
+    a stale dashboard can't scribble an unknown value (the DB-side CHECK
+    constraint would also reject it, but erroring here gives a cleaner
+    message). Auto-creates the user_config row if missing.
+    """
+    if venue not in SUPPORTED_VENUES:
+        raise ValueError(
+            f"venue must be one of {SUPPORTED_VENUES!r}, got: {venue!r}"
+        )
+    from sqlalchemy import text
+    from db.engine import get_engine
+    with get_engine().begin() as conn:
+        conn.execute(text(
+            "INSERT INTO user_config (user_id) VALUES (:uid) "
+            "ON CONFLICT (user_id) DO NOTHING"
+        ), {"uid": user_id})
+        conn.execute(text(
+            "UPDATE user_config "
+            "SET venue = :venue, "
+            "    updated_at = NOW() "
+            "WHERE user_id = :uid"
+        ), {"uid": user_id, "venue": venue})
+
+
+def get_active_polymarket_creds(cfg: UserConfig) -> dict:
+    """
+    Return the credential set matching the user's current venue, in the
+    shape {'api_key', 'api_secret', 'passphrase', 'wallet_address'}.
+    wallet_address is always present; for Polymarket US it's None (DCM
+    settles off-chain in USD, no Polygon wallet).
+    Unknown venue values return all-None so callers can treat them as
+    'not configured' rather than raising.
+    """
+    if cfg.venue == "polymarket":
+        return {
+            "api_key":        cfg.polymarket_api_key,
+            "api_secret":     cfg.polymarket_api_secret,
+            "passphrase":     cfg.polymarket_passphrase,
+            "wallet_address": cfg.wallet_address,
+        }
+    if cfg.venue == "polymarket_us":
+        return {
+            "api_key":        cfg.polymarket_us_api_key,
+            "api_secret":     cfg.polymarket_us_api_secret,
+            "passphrase":     cfg.polymarket_us_passphrase,
+            "wallet_address": None,
+        }
+    return {
+        "api_key": None, "api_secret": None,
+        "passphrase": None, "wallet_address": None,
+    }
 
 
 # ── Onboarding ──────────────────────────────────────────────────────────────

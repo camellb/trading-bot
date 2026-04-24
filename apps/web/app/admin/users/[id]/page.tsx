@@ -9,6 +9,9 @@ type UserPayload = {
     display_name:            string | null;
     email:                   string | null;
     mode:                    string | null;
+    // Venue the user picked at onboarding (or switched to via the
+    // Connections page). 'polymarket' = offshore, 'polymarket_us' = DCM.
+    venue:                   string | null;
     starting_cash:           number | null;
     onboarded_at:            string | null;
     created_at:              string | null;
@@ -212,6 +215,9 @@ export default function AdminUserDetailPage({
                 {user.mode === "live" ? "LIVE" : "SIM"}
               </span>
             ) : null}
+            <span className={`pill ${user.venue === "polymarket_us" ? "pill-open" : "pill-skip"}`}>
+              {user.venue === "polymarket_us" ? "US" : "OFFSHORE"}
+            </span>
             {user.subscription_status ? (
               <span className={`pill ${
                 user.subscription_status === "active" ? "pill-won"
@@ -286,6 +292,14 @@ export default function AdminUserDetailPage({
               {user.starting_cash !== null && user.starting_cash !== undefined
                 ? `$${user.starting_cash.toLocaleString()}`
                 : "-"}
+            </div>
+          </div>
+          <div className="split-body">
+            <div className="split-title">Venue</div>
+            <div className="split-desc">
+              {user.venue === "polymarket_us"
+                ? "Polymarket US (CFTC-regulated)"
+                : "Polymarket (offshore)"}
             </div>
           </div>
           <div className="split-body">

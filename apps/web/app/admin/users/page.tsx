@@ -9,6 +9,10 @@ type AdminUser = {
   display_name:        string | null;
   email:               string | null;
   mode:                string | null;
+  // Venue string matches user_config.venue column (values: 'polymarket',
+  // 'polymarket_us'). Pre-migration-024 rows will come back null; the
+  // UI treats null as offshore Polymarket to match the DB default.
+  venue:               string | null;
   starting_cash:       number | null;
   onboarded_at:        string | null;
   created_at:          string | null;
@@ -19,6 +23,11 @@ type AdminUser = {
   total_positions:     number | null;
   realized_pnl:        number | null;
 };
+
+function venuePill(venue: string | null): { label: string; klass: string } {
+  if (venue === "polymarket_us") return { label: "US", klass: "pill-open" };
+  return { label: "OFFSHORE", klass: "pill-skip" };
+}
 
 type UsersPayload = { users: AdminUser[] };
 
@@ -214,6 +223,7 @@ export default function AdminUsersPage() {
                 <th>Plan</th>
                 <th>Subscription</th>
                 <th>Mode</th>
+                <th>Venue</th>
                 <th>Bankroll</th>
                 <th>P&amp;L</th>
                 <th>Trades</th>
@@ -248,6 +258,12 @@ export default function AdminUsersPage() {
                           {u.mode === "live" ? "LIVE" : "SIM"}
                         </span>
                       ) : "-"}
+                    </td>
+                    <td>
+                      {(() => {
+                        const v = venuePill(u.venue);
+                        return <span className={`pill ${v.klass}`}>{v.label}</span>;
+                      })()}
                     </td>
                     <td className="mono">
                       {u.starting_cash !== null && u.starting_cash !== undefined

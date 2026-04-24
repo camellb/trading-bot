@@ -94,7 +94,7 @@ def size_position(
     an  = _clamp_price(ask_no)
 
     # Thresholds come from user_config so the dashboard can edit them.
-    min_p_win                       = float(getattr(user_config, "min_p_win", 0.50))
+    min_p_win                       = float(getattr(user_config, "min_p_win", 0.55))
     confidence_full_stake           = float(getattr(user_config, "confidence_full_stake", 0.70))
     confidence_override_threshold   = float(getattr(user_config, "confidence_override_threshold", 0.75))
 

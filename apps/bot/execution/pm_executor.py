@@ -253,13 +253,13 @@ class PMExecutor:
                     "  side, shares, entry_price, cost_usd, "
                     "  claude_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug, "
-                    "  market_archetype"
+                    "  market_archetype, venue"
                     ") VALUES ("
                     "  :user_id, :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
                     "  :mode, 'open', :exp, :reason, :event_slug, "
-                    "  :arch"
+                    "  :arch, :venue"
                     ") RETURNING id"
                 ), {
                     "user_id": self.user_id,
@@ -282,6 +282,12 @@ class PMExecutor:
                     "reason": (reasoning or "")[:4000] or None,
                     "event_slug": getattr(market, "event_slug", None),
                     "arch":  market_archetype,
+                    # Venue is stamped onto every row so per-venue ROI,
+                    # calibration, and dashboard filters work. Pulled from
+                    # the user_config snapshot taken in __init__; a venue
+                    # change mid-session would be picked up by the NEXT
+                    # executor instance, not this one.
+                    "venue": getattr(self._user_config, "venue", "polymarket"),
                 }).fetchone()
                 return int(row[0]) if row else None
         except Exception as exc:
@@ -292,13 +298,31 @@ class PMExecutor:
                    prediction_id, reasoning, category,
                    market_archetype=None) -> Optional[int]:
         """
-        Placeholder until Polymarket CLOB credentials are wired.
+        Placeholder until venue-specific execution clients are wired.
+        Dispatches on user_config.venue so the error message tells the
+        operator exactly which venue needs implementation next. When a
+        venue client is built, replace this raise with a call into
+        venues/<venue>.open_live(...).
         """
+        venue = getattr(self._user_config, "venue", "polymarket")
+        if venue == "polymarket":
+            raise NotImplementedError(
+                "Live execution on Polymarket.com (offshore) requires CLOB "
+                "credentials wired via py-clob-client. User has "
+                "venue='polymarket'. Implement the offshore path and dispatch "
+                "here, or keep the user on mode='simulation'."
+            )
+        if venue == "polymarket_us":
+            raise NotImplementedError(
+                "Live execution on Polymarket US (CFTC-regulated DCM) is not "
+                "yet wired. User has venue='polymarket_us'. The US venue uses "
+                "API-key signing and USD settlement (no Polygon wallet). "
+                "Keep the user on mode='simulation' until the US execution "
+                "client is implemented."
+            )
         raise NotImplementedError(
-            "Live execution requires Polymarket CLOB credentials. Set "
-            "PM_MODE='simulation' in config.py, or provide POLYMARKET_API_KEY / "
-            "PROXY_ADDRESS / PRIVATE_KEY and implement _open_live via "
-            "py-clob-client."
+            f"Live execution not implemented for venue={venue!r}. "
+            f"Keep the user on mode='simulation'."
         )
 
     # ── Settle a position ────────────────────────────────────────────────────

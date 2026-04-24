@@ -462,6 +462,18 @@ def create_all_tables() -> None:
         conn.execute(sa_text(
             "ALTER TABLE market_evaluations ADD COLUMN IF NOT EXISTS reasoning_short TEXT"
         ))
+        # Migration 024 mirror: venue column on every per-row table.
+        # Every position, evaluation, and prediction belongs to exactly one
+        # venue. Default 'polymarket' is correct for historical rows (all
+        # pre-migration rows were offshore). Also declared in migration
+        # 024_venue_and_min_p_win.sql so fresh Supabase DBs pick it up
+        # without depending on bot startup.
+        for tbl in ("pm_positions", "market_evaluations", "predictions"):
+            conn.execute(sa_text(
+                f"ALTER TABLE {tbl} "
+                f"ADD COLUMN IF NOT EXISTS venue TEXT NOT NULL "
+                f"DEFAULT 'polymarket'"
+            ))
         # Migration: historical rename edge_bps → ev_bps. The column stores
         # expected return × 10000 at entry, kept for diagnostic attribution.
         # Under the three-gate doctrine expected return is one gate, not
@@ -484,10 +496,19 @@ def create_all_tables() -> None:
             "CREATE INDEX IF NOT EXISTS idx_pm_positions_event_slug "
             "ON pm_positions(event_slug) WHERE event_slug IS NOT NULL"
         ))
-        # Partial unique index: prevent duplicate open positions on same market.
+        # Partial unique index: prevent duplicate open positions on same
+        # market. Scoped by venue too so the same market_id shape can't
+        # collide across Polymarket.com and Polymarket US (separate
+        # catalogs, potentially overlapping slugs). Drop-then-create
+        # inside the startup transaction so there's no window where the
+        # old (market_id, mode)-only predicate lingers after the new
+        # venue column exists.
+        conn.execute(sa_text(
+            "DROP INDEX IF EXISTS uq_pm_positions_open_market"
+        ))
         conn.execute(sa_text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_pm_positions_open_market "
-            "ON pm_positions(market_id, mode) WHERE status = 'open'"
+            "ON pm_positions(market_id, mode, venue) WHERE status = 'open'"
         ))
         # Market evaluation index for history lookups.
         conn.execute(sa_text(
@@ -514,7 +535,7 @@ def create_all_tables() -> None:
         for col_sql in (
             "ADD COLUMN IF NOT EXISTS cost_assumption_override DOUBLE PRECISION",
             "ADD COLUMN IF NOT EXISTS archetype_skip_list      TEXT",
-            "ADD COLUMN IF NOT EXISTS min_p_win                      DOUBLE PRECISION NOT NULL DEFAULT 0.50",
+            "ADD COLUMN IF NOT EXISTS min_p_win                      DOUBLE PRECISION NOT NULL DEFAULT 0.55",
             "ADD COLUMN IF NOT EXISTS confidence_full_stake          DOUBLE PRECISION NOT NULL DEFAULT 0.70",
             "ADD COLUMN IF NOT EXISTS confidence_override_threshold  DOUBLE PRECISION NOT NULL DEFAULT 0.75",
             "ADD COLUMN IF NOT EXISTS telegram_bot_token              TEXT",
@@ -526,6 +547,18 @@ def create_all_tables() -> None:
             "ADD COLUMN IF NOT EXISTS subscription_status             TEXT NOT NULL DEFAULT 'none'",
             "ADD COLUMN IF NOT EXISTS subscription_plan               TEXT",
             "ADD COLUMN IF NOT EXISTS subscription_started_at         TIMESTAMPTZ",
+            # Multi-venue support (migration 024). Each user picks exactly
+            # one venue: 'polymarket' (offshore, USDC on Polygon, EIP-712
+            # signing) or 'polymarket_us' (CFTC-regulated DCM, USD). The
+            # three polymarket_us_* credential columns are independent of
+            # the offshore polymarket_api_key / polymarket_api_secret /
+            # polymarket_passphrase / wallet_address set. A user on
+            # venue='polymarket_us' needs polymarket_us_* populated to
+            # trade live; simulation works with no creds on either venue.
+            "ADD COLUMN IF NOT EXISTS venue                           TEXT NOT NULL DEFAULT 'polymarket'",
+            "ADD COLUMN IF NOT EXISTS polymarket_us_api_key           TEXT",
+            "ADD COLUMN IF NOT EXISTS polymarket_us_api_secret        TEXT",
+            "ADD COLUMN IF NOT EXISTS polymarket_us_passphrase        TEXT",
             "DROP COLUMN IF EXISTS confidence_skip_floor",
             "DROP COLUMN IF EXISTS min_ev_threshold",
             "DROP COLUMN IF EXISTS probability_cap",
@@ -533,9 +566,40 @@ def create_all_tables() -> None:
             # Doctrine: Gate 3 (minimum expected return) removed. It skipped
             # heavy-favourite bets where the math still favoured trading.
             "DROP COLUMN IF EXISTS min_expected_return",
-            "ALTER COLUMN min_p_win SET DEFAULT 0.50",
+            "ALTER COLUMN min_p_win SET DEFAULT 0.55",
         ):
             conn.execute(sa_text(f"ALTER TABLE user_config {col_sql}"))
+
+        # CHECK constraint: venue must be a known value. Wrapped in DO so
+        # re-runs don't fail on duplicate constraint name. Future venues
+        # (Kalshi, Manifold, ...) extend the IN list via a new migration.
+        conn.execute(sa_text(
+            "DO $$ BEGIN "
+            "  IF NOT EXISTS ("
+            "    SELECT 1 FROM pg_constraint "
+            "     WHERE conname = 'user_config_venue_check' "
+            "       AND conrelid = 'user_config'::regclass"
+            "  ) THEN "
+            "    ALTER TABLE user_config "
+            "      ADD CONSTRAINT user_config_venue_check "
+            "      CHECK (venue IN ('polymarket', 'polymarket_us')); "
+            "  END IF; "
+            "END $$;"
+        ))
+
+        # Venue-column indexes on every per-row table. Small cardinality
+        # (two values today) but these are filtered on the admin dashboard,
+        # learning-cadence queries, and per-venue ROI attribution.
+        for tbl in (
+            "user_config",
+            "pm_positions",
+            "market_evaluations",
+            "predictions",
+        ):
+            conn.execute(sa_text(
+                f"CREATE INDEX IF NOT EXISTS idx_{tbl}_venue "
+                f"ON {tbl}(venue)"
+            ))
         # Supabase's PostgREST caches the schema and won't surface newly added
         # columns until reloaded. Without this, server actions hitting the new
         # columns fail with `Could not find the '<col>' column ... in the
