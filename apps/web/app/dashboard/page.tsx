@@ -38,6 +38,7 @@ type OpenPosition = {
   expected_resolution_at: string | null;
   created_at: string | null;
   slug: string | null;
+  reasoning: string | null;
 };
 
 type SettledPosition = {
@@ -435,6 +436,14 @@ function CardHead({
 }
 
 function PositionsTable({ positions }: { positions: OpenPosition[] }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggle = (id: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
     <div className="pos-table">
       <div className="pos-row head">
@@ -446,6 +455,7 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
         <div>D YES %</div>
         <div>D CONF</div>
         <div>Closes</div>
+        <div></div>
       </div>
       {positions.map((p) => {
         // Market's implied probability of YES regardless of chosen side.
@@ -453,17 +463,79 @@ function PositionsTable({ positions }: { positions: OpenPosition[] }) {
         const mYesPct   = Math.round(marketYes * 100);
         const dYesPct   = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
         const dConfPct  = p.confidence != null ? Math.round(p.confidence * 100) : null;
+        const isOpen = expanded.has(p.id);
+        const reasoning = (p.reasoning ?? "").trim();
+        const polyUrl = p.slug ? `https://polymarket.com/market/${p.slug}` : null;
         return (
-          <div className="pos-row" key={p.id}>
-            <div className="pos-q">{p.question}</div>
-            <div className="pos-cat">{p.category || "-"}</div>
-            <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-            <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
-            <div className="pos-num t-num">{mYesPct}%</div>
-            <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
-            <div className="pos-num t-num">{dConfPct != null ? `${dConfPct}%` : "-"}</div>
-            <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>
-          </div>
+          <React.Fragment key={p.id}>
+            <div
+              className={`pos-row expandable ${isOpen ? "expanded" : ""}`}
+              onClick={() => toggle(p.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggle(p.id);
+                }
+              }}
+            >
+              <div className="pos-q">{p.question}</div>
+              <div className="pos-cat">{p.category || "-"}</div>
+              <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
+              <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
+              <div className="pos-num t-num">{mYesPct}%</div>
+              <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
+              <div className="pos-num t-num">{dConfPct != null ? `${dConfPct}%` : "-"}</div>
+              <div className="pos-closes t-num">{daysFromNow(p.expected_resolution_at)}</div>
+              <div className={`pos-chevron ${isOpen ? "open" : ""}`}>▸</div>
+            </div>
+            {isOpen && (
+              <div className="pos-detail">
+                <div className="pos-detail-grid">
+                  <div>
+                    <div className="pos-detail-kv-label">Opened</div>
+                    <div className="pos-detail-kv-val">
+                      {p.created_at ? new Date(p.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="pos-detail-kv-label">Closes</div>
+                    <div className="pos-detail-kv-val">
+                      {p.expected_resolution_at ? new Date(p.expected_resolution_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="pos-detail-kv-label">Entry price</div>
+                    <div className="pos-detail-kv-val">{p.entry_price.toFixed(3)}</div>
+                  </div>
+                  <div>
+                    <div className="pos-detail-kv-label">Shares</div>
+                    <div className="pos-detail-kv-val">{p.shares.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div className="pos-detail-kv-label">Cost</div>
+                    <div className="pos-detail-kv-val">${p.cost_usd.toFixed(2)}</div>
+                  </div>
+                </div>
+                <div className="pos-detail-reason">
+                  <div className="pos-detail-reason-label">Delfi's reasoning</div>
+                  {reasoning ? reasoning : "No reasoning recorded for this entry."}
+                </div>
+                {polyUrl && (
+                  <a
+                    className="pos-detail-link"
+                    href={polyUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    View on Polymarket →
+                  </a>
+                )}
+              </div>
+            )}
+          </React.Fragment>
         );
       })}
     </div>

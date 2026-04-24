@@ -685,13 +685,78 @@ body.app {
 .pos-table { display: flex; flex-direction: column; }
 .pos-row {
   display: grid;
-  grid-template-columns: 2.2fr 0.9fr 0.5fr 0.8fr 0.7fr 0.8fr 0.9fr 0.6fr;
+  grid-template-columns: 2.2fr 0.9fr 0.5fr 0.8fr 0.7fr 0.8fr 0.9fr 0.6fr 24px;
   gap: 14px;
   padding: 14px 0;
   align-items: center;
   border-bottom: 1px solid var(--vellum-05);
   font-family: var(--font-body); font-size: 13.5px;
 }
+.pos-row.expandable { cursor: pointer; transition: background 0.15s ease; }
+.pos-row.expandable:hover { background: rgba(232, 228, 216, 0.025); }
+.pos-row.expanded { background: rgba(232, 228, 216, 0.02); border-bottom-color: transparent; }
+.pos-chevron {
+  color: var(--vellum-40);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  justify-self: center;
+  transition: transform 0.15s ease;
+}
+.pos-chevron.open { transform: rotate(90deg); color: var(--gold); }
+.pos-detail {
+  padding: 14px 4px 18px;
+  border-bottom: 1px solid var(--vellum-05);
+  font-size: 13px;
+  color: var(--vellum-60);
+  line-height: 1.55;
+  background: rgba(232, 228, 216, 0.02);
+}
+.pos-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px 20px;
+  margin-bottom: 12px;
+}
+.pos-detail-kv-label {
+  color: var(--vellum-40);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.pos-detail-kv-val {
+  color: var(--vellum);
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.pos-detail-reason {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: rgba(201, 162, 39, 0.04);
+  border-left: 2px solid var(--gold);
+  border-radius: 2px;
+  color: var(--vellum-80);
+}
+.pos-detail-reason-label {
+  color: var(--vellum-40);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.pos-detail-link {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--gold);
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.pos-detail-link:hover { text-decoration: underline; }
 .pos-cat {
   color: var(--vellum-60);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1021,7 +1086,7 @@ body.app {
   .dash-status { flex-direction: column; align-items: stretch; }
   .card-risk, .card-upcoming { grid-column: span 12; }
   .pos-row { grid-template-columns: 1.8fr 0.5fr 0.8fr 0.8fr 0.6fr; gap: 10px; }
-  .pos-row > :nth-child(2), .pos-row > :nth-child(5), .pos-row > :nth-child(7) { display: none; }
+  .pos-row > :nth-child(2), .pos-row > :nth-child(5), .pos-row > :nth-child(7), .pos-row > :nth-child(9) { display: none; }
   .mode-banner { flex-direction: column; align-items: flex-start; }
   .hero-deltas { flex-wrap: wrap; gap: 18px; }
   .hero-delta-div { display: none; }

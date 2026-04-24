@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
 import "../../styles/content.css";
 
@@ -18,6 +18,8 @@ type OpenPosition = {
   expected_resolution_at: string | null;
   created_at: string | null;
   category: string | null;
+  reasoning: string | null;
+  slug: string | null;
 };
 
 type SettledPosition = {
@@ -106,9 +108,19 @@ export default function PositionsPage() {
   const [evaluations, setEvals] = useState<EvalsPayload | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [expandedEvals, setExpandedEvals] = useState<Set<number>>(new Set());
+  const [expandedPositions, setExpandedPositions] = useState<Set<number>>(new Set());
 
   const toggleEval = (id: number) => {
     setExpandedEvals(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const togglePosition = (id: number) => {
+    setExpandedPositions(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -197,6 +209,7 @@ export default function PositionsPage() {
                   <th>D YES %</th>
                   <th>D CONF</th>
                   <th>Closes</th>
+                  <th style={{ width: 28 }}></th>
                 </tr>
               </thead>
               <tbody>
@@ -205,21 +218,131 @@ export default function PositionsPage() {
                   const mYesPct   = Math.round(marketYes * 100);
                   const dYesPct   = p.claude_probability != null ? Math.round(p.claude_probability * 100) : null;
                   const dConfPct  = p.confidence != null ? Math.round(p.confidence * 100) : null;
+                  const isOpen = expandedPositions.has(p.id);
+                  const reasoning = (p.reasoning ?? "").trim();
+                  const polyUrl = p.slug ? `https://polymarket.com/market/${p.slug}` : null;
                   return (
-                    <tr key={p.id}>
-                      <td>{p.question}</td>
-                      <td>{p.category ?? "-"}</td>
-                      <td>
-                        <span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>
-                          {p.side}
-                        </span>
-                      </td>
-                      <td className="mono">${p.cost_usd.toFixed(0)}</td>
-                      <td className="mono">{mYesPct}%</td>
-                      <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
-                      <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
-                      <td className="mono">{daysFromNow(p.expected_resolution_at)}</td>
-                    </tr>
+                    <React.Fragment key={p.id}>
+                      <tr
+                        onClick={() => togglePosition(p.id)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <td>{p.question}</td>
+                        <td>{p.category ?? "-"}</td>
+                        <td>
+                          <span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>
+                            {p.side}
+                          </span>
+                        </td>
+                        <td className="mono">${p.cost_usd.toFixed(0)}</td>
+                        <td className="mono">{mYesPct}%</td>
+                        <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
+                        <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
+                        <td className="mono">{daysFromNow(p.expected_resolution_at)}</td>
+                        <td
+                          className="mono"
+                          style={{
+                            color: isOpen ? "var(--gold)" : "var(--vellum-40)",
+                            transition: "transform 0.15s ease",
+                            transform: isOpen ? "rotate(90deg)" : "none",
+                            display: "inline-block",
+                          }}
+                        >
+                          ▸
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td
+                            colSpan={9}
+                            style={{
+                              background: "rgba(232, 228, 216, 0.02)",
+                              padding: "16px 20px 20px",
+                              borderBottom: "1px solid var(--vellum-05, rgba(232, 228, 216, 0.05))",
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                                gap: "12px 24px",
+                                marginBottom: 14,
+                              }}
+                            >
+                              <div>
+                                <div className="kv-label">Opened</div>
+                                <div className="mono" style={{ fontSize: 13 }}>
+                                  {p.created_at ? formatDateTime(p.created_at) : "-"}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Closes</div>
+                                <div className="mono" style={{ fontSize: 13 }}>
+                                  {p.expected_resolution_at ? formatDateTime(p.expected_resolution_at) : "-"}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Entry price</div>
+                                <div className="mono" style={{ fontSize: 13 }}>
+                                  {p.entry_price.toFixed(3)}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Shares</div>
+                                <div className="mono" style={{ fontSize: 13 }}>
+                                  {p.shares.toFixed(2)}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Cost</div>
+                                <div className="mono" style={{ fontSize: 13 }}>
+                                  ${p.cost_usd.toFixed(2)}
+                                </div>
+                              </div>
+                            </div>
+                            <div
+                              style={{
+                                padding: "12px 14px",
+                                background: "rgba(201, 162, 39, 0.04)",
+                                borderLeft: "2px solid var(--gold)",
+                                borderRadius: 2,
+                                color: "var(--vellum-80)",
+                                lineHeight: 1.55,
+                                fontSize: 13,
+                              }}
+                            >
+                              <div
+                                className="kv-label"
+                                style={{ marginBottom: 6 }}
+                              >
+                                Delfi's reasoning
+                              </div>
+                              {reasoning || "No reasoning recorded for this entry."}
+                            </div>
+                            {polyUrl && (
+                              <a
+                                href={polyUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  display: "inline-block",
+                                  marginTop: 12,
+                                  color: "var(--gold)",
+                                  textDecoration: "none",
+                                  fontFamily: "var(--font-mono)",
+                                  fontSize: 11,
+                                  letterSpacing: "0.12em",
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                View on Polymarket →
+                              </a>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
