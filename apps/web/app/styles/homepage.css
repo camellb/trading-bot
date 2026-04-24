@@ -39,14 +39,17 @@ html, body { scroll-behavior: smooth; }
   background: rgba(10,10,15,0.85); backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px); border-bottom-color: var(--vellum-10);
 }
-/* CTA in nav is invisible while hero is on screen, fades in past the fold */
+/* CTA in nav: always visible on desktop. On mobile/tablet it's hidden
+   while the hero is on screen and fades in once the user scrolls past. */
 .top-nav .nav-right .btn-primary {
   transition: opacity 300ms var(--ease), transform 300ms var(--ease);
 }
-.top-nav:not(.past-hero) .nav-right .btn-primary {
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(6px);
+@media (max-width: 1024px) {
+  .top-nav:not(.past-hero) .nav-right .btn-primary {
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(6px);
+  }
 }
 .nav-inner { max-width: 1280px; margin: 0 auto; display:flex; justify-content:space-between; align-items:center; padding: 18px 32px; }
 .nav-left { display:flex; gap: 48px; align-items: center; }
