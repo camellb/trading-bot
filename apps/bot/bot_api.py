@@ -1553,7 +1553,7 @@ class BotAPI:
                         "       uc.subscription_started_at, "
                         "       au.email, au.created_at, "
                         "       uc.telegram_chat_id, "
-                        "       uc.polymarket_wallet_address "
+                        "       uc.wallet_address "
                         "FROM user_config uc "
                         "LEFT JOIN auth.users au ON au.id::text = uc.user_id::text "
                         "WHERE uc.user_id = :uid"
