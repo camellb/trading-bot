@@ -1155,29 +1155,20 @@ class BotAPI:
                         "  (SELECT COUNT(*) FROM user_config) AS total, "
                         "  (SELECT COUNT(*) FROM user_config "
                         "     WHERE subscription_status = 'active') AS active_subs, "
-                        # "Bankroll under management" is deliberately scoped to
-                        # users who have an actual wallet / exchange account
-                        # connected for their active venue. Simulation users
-                        # hold paper money, not a real bankroll, so summing
-                        # starting_cash across simulation rows contaminates
-                        # the metric. The predicate below mirrors
-                        # UserConfig.can_trade_live (engine/user_config.py):
-                        # live mode + venue-specific creds present. When a
-                        # live-balance poller ships we can replace the
-                        # starting_cash proxy with the on-chain / exchange
-                        # balance without changing the set of rows counted.
-                        "  (SELECT COALESCE(SUM(starting_cash), 0) FROM user_config "
-                        "     WHERE mode = 'live' "
-                        "       AND ( "
-                        "         (venue = 'polymarket' "
-                        "            AND COALESCE(polymarket_api_key, '') <> '' "
-                        "            AND COALESCE(polymarket_api_secret, '') <> '' "
-                        "            AND COALESCE(wallet_address, '') <> '') "
-                        "         OR "
-                        "         (venue = 'polymarket_us' "
-                        "            AND COALESCE(polymarket_us_api_key, '') <> '' "
-                        "            AND COALESCE(polymarket_us_api_secret, '') <> '') "
-                        "       )) AS bankroll_um, "
+                        # "Bankroll under management" is the summed value of
+                        # real connected wallets / exchange accounts. It is
+                        # NOT the summed starting_cash - that field is the
+                        # user's configured bankroll seed and on simulation
+                        # users it's literally paper money. Showing it under
+                        # this label was misleading in either direction.
+                        # We don't have live wallet-balance polling yet
+                        # (offshore needs a Polygon RPC USDC balanceOf call
+                        # per wallet_address; Polymarket US needs a per-user
+                        # QCEX API balance call), so the honest value today
+                        # is zero. Keep the tuple position so totals[3]
+                        # indexing downstream stays stable; swap the literal
+                        # for the poller output once that ships.
+                        "  (SELECT 0) AS bankroll_um, "
                         "  (SELECT COUNT(*) FROM pm_positions "
                         "     WHERE status = 'open' "
                         "       AND mode = 'live') AS open_positions, "
