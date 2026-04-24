@@ -100,6 +100,18 @@ For every proposed change:
 
 If the answers are yes, yes, and clear, ship the small version. Measure. Expand if it works, revert if it doesn't.
 
+## Taxonomy rules
+
+Market archetypes are **flat**. One label per sport, no nesting. Use `tennis`, not `tennis_qualifier` / `tennis_main_draw` / `tennis_lower_tier`. Use `basketball`, not `basketball_game` / `basketball_prop`. Same rule for baseball, football, hockey, esports, soccer, cricket. Non-sport archetypes follow the same flat shape: `price_threshold`, `activity_count`, `geopolitical_event`, `binary_event`, `sports_other`.
+
+Source of truth: the `ARCHETYPES` tuple in `apps/bot/engine/archetype_classifier.py`. When adding a classifier branch:
+
+1. If the new pattern fits an existing canonical label, return that label. Do not invent a sub-tier.
+2. If the new pattern genuinely does not fit, add a single new canonical label to `ARCHETYPES` **and** to `BUILTIN_ARCHETYPES` in `apps/web/app/dashboard/settings/risk/page.tsx`. Keep the two lists in sync.
+3. Any label ever emitted by an older classifier goes into `LEGACY_ARCHETYPE_MAP` (runtime collapse) and into a migration under `ops/supabase/migrations/` (historical row rewrite). Migration 022 is the canonical example.
+
+Never reintroduce sub-tier labels to work around a specific pattern. If a branch of the taxonomy grows, split it at the canonical level or keep it flat. This rule was settled because sub-tier labels caused per-category analytics to double-bucket the same sport and the dashboard to show chips that did not match what the classifier emitted.
+
 ## Settled lessons that must not be re-litigated
 
 - Filtering for disagreement with the market is a losing strategy. Delfi backs the model's pick directly.

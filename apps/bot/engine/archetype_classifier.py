@@ -228,8 +228,10 @@ def classify_archetype(
 # dashboard/UI can offer a checkbox list without going out of sync. Flat,
 # sport-level labels - one label per sport. Legacy fine-grained labels
 # ("tennis_qualifier", "basketball_prop", ...) may still appear in the
-# historical DB rows; they are surfaced by `/api/archetypes` via the
-# `discovered` field (DISTINCT scan of pm_positions + market_evaluations).
+# historical DB rows; migration 022 rewrites them in place, and
+# `canonicalize_archetype()` below collapses any that slip through at
+# runtime (belt-and-suspenders so UI + analytics never see a legacy
+# label even if a row predates the migration).
 ARCHETYPES: tuple[str, ...] = (
     "tennis",
     "basketball",
@@ -245,3 +247,43 @@ ARCHETYPES: tuple[str, ...] = (
     "geopolitical_event",
     "binary_event",
 )
+
+
+# Legacy-to-canonical mapping. Source of truth for migration 022 and for
+# any runtime collapse (e.g., /api/archetypes discovery). Keep in sync
+# with ops/supabase/migrations/022_archetype_consolidation.sql.
+LEGACY_ARCHETYPE_MAP: dict[str, str] = {
+    "tennis_qualifier":  "tennis",
+    "tennis_main_draw":  "tennis",
+    "tennis_lower_tier": "tennis",
+    "basketball_prop":   "basketball",
+    "basketball_game":   "basketball",
+    "baseball_game":     "baseball",
+    "baseball_prop":     "baseball",
+    "football_game":     "football",
+    "football_prop":     "football",
+    "hockey_game":       "hockey",
+    "hockey_prop":       "hockey",
+    "esports_match":     "esports",
+    "soccer_match":      "soccer",
+    "cricket_match":     "cricket",
+    "sports_match":      "sports_other",
+    "sports_prop":       "sports_other",
+    "geopolitical":      "geopolitical_event",
+}
+
+
+def canonicalize_archetype(label: Optional[str]) -> Optional[str]:
+    """
+    Collapse a possibly-legacy archetype label to its canonical form.
+
+    Returns None for None / empty input. Returns the canonical label when
+    `label` is in LEGACY_ARCHETYPE_MAP. Otherwise returns `label`
+    unchanged (including labels outside ARCHETYPES, so future classifier
+    additions are not silently dropped).
+
+    Keep in sync with the mapping in migration 022.
+    """
+    if not label:
+        return None
+    return LEGACY_ARCHETYPE_MAP.get(label, label)

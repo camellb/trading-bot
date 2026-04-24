@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engine.archetype_classifier import (
     ARCHETYPES,
+    LEGACY_ARCHETYPE_MAP,
+    canonicalize_archetype,
     classify_archetype,
 )
 
@@ -304,6 +306,106 @@ class SkipListIntegrationTests(unittest.TestCase):
             archetype=archetype,
         )
         self.assertTrue(decision.should_trade)
+
+
+class CanonicalizationTests(unittest.TestCase):
+    """
+    `canonicalize_archetype` is the runtime belt-and-suspenders behind
+    migration 022. Every legacy label must collapse to a canonical one,
+    canonical labels must pass through unchanged, and unknown new labels
+    must not be silently dropped.
+    """
+
+    def test_every_legacy_label_maps_to_a_canonical_archetype(self):
+        canon = set(ARCHETYPES)
+        for legacy, canonical in LEGACY_ARCHETYPE_MAP.items():
+            with self.subTest(legacy=legacy):
+                self.assertIn(
+                    canonical, canon,
+                    f"{legacy!r} maps to {canonical!r} which is not in ARCHETYPES",
+                )
+                self.assertEqual(canonicalize_archetype(legacy), canonical)
+
+    def test_canonical_labels_pass_through_unchanged(self):
+        for label in ARCHETYPES:
+            with self.subTest(label=label):
+                self.assertEqual(canonicalize_archetype(label), label)
+
+    def test_unknown_new_label_passes_through(self):
+        # Future classifier additions should not be silently dropped.
+        self.assertEqual(
+            canonicalize_archetype("some_future_label"),
+            "some_future_label",
+        )
+
+    def test_none_and_empty_return_none(self):
+        self.assertIsNone(canonicalize_archetype(None))
+        self.assertIsNone(canonicalize_archetype(""))
+
+
+class ClassifierFlatLabelsTests(unittest.TestCase):
+    """
+    Enforce the "one label per sport, no nesting" taxonomy at the
+    classifier boundary. The fixtures are real-shape questions taken
+    from pm_positions snapshots; each branch of `classify_archetype`
+    must land inside ARCHETYPES. If anyone reintroduces a sub-tier
+    label ("tennis_qualifier", "basketball_prop", "sports_match", ...)
+    this test fails.
+    """
+
+    _FIXTURES: tuple[tuple[str, str, str | None], ...] = (
+        # (question, category, event_slug_or_None)
+        ("Madrid Open, Qualification: Alycia Parks vs Ksenia Efremova",
+         "sports", "wta-parks-efremov-2026-04-21"),
+        ("Roland Garros Qualifying: Smith vs Jones", "sports", None),
+        ("Madrid Open: Kaitlin Quevedo vs Venus Williams",
+         "sports", "wta-quevedo-william-2026-04-21"),
+        ("Savannah: Alex Rybakov vs Kilian Feldbausch",
+         "sports", "atp-rybakov-feldbau-2026-04-21"),
+        ("St. Louis Cardinals vs. Miami Marlins",
+         "sports", "mlb-stl-mia-2026-04-21"),
+        ("Lakers vs. Celtics", "sports", None),
+        ("Trail Blazers vs. Spurs: O/U 219.5",
+         "sports", "nba-por-sas-2026-04-21"),
+        ("Pakistan Super League: Rawalpindi Pindiz vs Multan Sultans",
+         "sports", None),
+        ("Premier League: Arsenal vs Chelsea", "sports", None),
+        ("Maple Leafs vs. Bruins", "sports", None),
+        ("Patriots vs. Chiefs", "sports", None),
+        ("LCS Finals: Cloud9 vs TSM", "sports", None),
+        ("Will Bitcoin reach $80,000 April 20-26?", "crypto", None),
+        ("Will Elon Musk post 65-89 tweets from April 20 to April 22, 2026?",
+         "entertainment", None),
+        ("US x Iran diplomatic meeting by April 24, 2026?",
+         "geopolitics", None),
+        ("Spread: something (-5.5)", "sports", "nba-hou-lal-2026-04-21"),
+        ("Some obscure thing happens", "sports", None),
+        ("Will something unusual happen by 2027?", None, None),
+    )
+
+    def test_every_fixture_yields_a_canonical_label(self):
+        canon = set(ARCHETYPES)
+        for question, category, event_slug in self._FIXTURES:
+            with self.subTest(question=question):
+                label = classify_archetype(
+                    question,
+                    category=category,
+                    event_slug=event_slug,
+                )
+                self.assertIn(
+                    label, canon,
+                    f"{question!r} produced non-canonical label {label!r}",
+                )
+
+    def test_no_sub_tier_labels_leak_into_canonical_set(self):
+        # Guard against reintroducing legacy sub-tier labels in ARCHETYPES
+        # itself (someone might "add tennis_qualifier back" on a whim).
+        banned = set(LEGACY_ARCHETYPE_MAP.keys())
+        leaked = banned & set(ARCHETYPES)
+        self.assertEqual(
+            leaked, set(),
+            f"Legacy sub-tier labels must not appear in ARCHETYPES: {leaked}",
+        )
 
 
 if __name__ == "__main__":

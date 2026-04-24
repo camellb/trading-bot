@@ -478,10 +478,18 @@ class BotAPI:
 
         The Python classifier has a fixed taxonomy (ARCHETYPES tuple).
         Older data, manual inserts, or future classifier expansions may
-        introduce labels outside that set. The dashboard renders this
-        combined list so users can still skip unfamiliar archetypes.
+        introduce labels outside that set. Legacy sub-tier labels
+        ("tennis_qualifier", "sports_match", ...) are collapsed via
+        `canonicalize_archetype` so the dashboard never surfaces a chip
+        for a retired label even if migration 022 has not yet run or a
+        stray row slipped in. Anything not in LEGACY_ARCHETYPE_MAP and
+        not in ARCHETYPES is passed through unchanged so genuine
+        classifier extensions appear.
         """
-        from engine.archetype_classifier import ARCHETYPES as _CANON
+        from engine.archetype_classifier import (
+            ARCHETYPES as _CANON,
+            canonicalize_archetype,
+        )
         loop = asyncio.get_running_loop()
 
         def _discover() -> list[str]:
@@ -500,7 +508,12 @@ class BotAPI:
 
         discovered = await loop.run_in_executor(self._pool, _discover)
         canon_set = set(_CANON)
-        extras = sorted(set(discovered) - canon_set)
+        # Collapse legacy sub-tier labels before subtracting the canonical set.
+        normalised = {
+            canonicalize_archetype(label) or label
+            for label in discovered
+        }
+        extras = sorted(normalised - canon_set)
         return web.json_response({
             "canonical": list(_CANON),
             "discovered": extras,
