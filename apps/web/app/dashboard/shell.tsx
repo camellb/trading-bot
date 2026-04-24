@@ -178,7 +178,6 @@ function ViewModeToggle() {
   ];
   return (
     <div className="view-mode-toggle" role="group" aria-label="View mode">
-      <div className="view-mode-label">View</div>
       <div className="view-mode-chips">
         {options.map((o) => (
           <button
