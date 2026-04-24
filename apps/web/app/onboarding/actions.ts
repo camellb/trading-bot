@@ -61,9 +61,25 @@ export async function completeOnboarding(formData: FormData) {
   const riskValues = RISK_PRESETS[riskProfile];
 
   // Simulation bankroll is fixed at $1,000 for every new user. Live mode
-  // uses the real wallet balance once CLOB is wired, so we persist 0 as a
-  // placeholder the executor can read.
-  const startingCash = mode === "live" ? 0 : 1000;
+  // uses the real wallet balance once CLOB is wired; until then we still
+  // seed simulation bankroll = $1000 so the user has a working sim view
+  // regardless of which mode they picked at onboarding.
+  //
+  // IMPORTANT: never overwrite starting_cash on re-onboarding. The upsert
+  // below conflicts on user_id; if a row already exists (the user is
+  // re-submitting, or a bot process seeded the row), we must preserve the
+  // bankroll they have been trading against. Otherwise we reset their sim
+  // history to a 0 baseline and their P&L math goes negative.
+  const { data: existingRow } = await supabase
+    .from("user_config")
+    .select("starting_cash")
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  const startingCash =
+    existingRow?.starting_cash != null
+      ? Number(existingRow.starting_cash)
+      : 1000;
 
   const { error } = await supabase
     .from("user_config")
