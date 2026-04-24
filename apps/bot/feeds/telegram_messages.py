@@ -62,20 +62,21 @@ def settled_win(
     *,
     question: str,
     side: str,
-    outcome: str,  # kept for call-site stability; not rendered
+    outcome: str,
     pnl: float,
     roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
     equity: float,
     mode: str | None = None,
 ) -> str:
-    _ = (outcome, roi)  # preserved for API compat
+    _ = roi  # preserved for API compat
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
-        f"✅ <b>WIN</b> |+${pnl:.2f}\n"
+        f"✅ <b>WIN</b> | +${pnl:.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
         f"\n"
         f"Delfi Predicted: {side}\n"
+        f"Resolved: {outcome}\n"
         f"Balance: ${bankroll:.2f}\n"
         f"Equity: ${equity:.2f}\n"
         f"Mode: {mode_label}"
@@ -97,7 +98,7 @@ def settled_loss(
     _ = roi  # preserved for API compat
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
-        f"❌ <b>LOSS</b> |-${abs(pnl):.2f}\n"
+        f"❌ <b>LOSS</b> | -${abs(pnl):.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
         f"\n"
         f"Delfi Expected: {side}\n"
