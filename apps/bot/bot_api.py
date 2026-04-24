@@ -246,6 +246,14 @@ class BotAPI:
         open_rows = executor.get_open_positions()
         mode      = executor.mode
         uid       = executor.user_id
+        # Caller-controlled limit. Default 50 keeps the positions page
+        # lightweight; Performance page requests up to 500 so its
+        # category/cohort aggregates reflect the user's whole history.
+        try:
+            raw_limit = int(request.query.get("limit", "50"))
+        except (TypeError, ValueError):
+            raw_limit = 50
+        limit = max(1, min(500, raw_limit))
         try:
             def _q():
                 with get_engine().begin() as conn:
@@ -259,8 +267,8 @@ class BotAPI:
                         "WHERE user_id = :uid AND mode = :m "
                         "  AND status IN ('settled', 'invalid') "
                         "ORDER BY settled_at DESC NULLS LAST "
-                        "LIMIT 50"
-                    ), {"uid": uid, "m": mode}).fetchall()
+                        "LIMIT :lim"
+                    ), {"uid": uid, "m": mode, "lim": limit}).fetchall()
             settled_rows = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
         except Exception as exc:
             print(f"[bot_api] positions query failed: {exc}", file=sys.stderr)
