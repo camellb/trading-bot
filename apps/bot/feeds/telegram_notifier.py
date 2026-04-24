@@ -242,7 +242,18 @@ class TelegramNotifier:
     # ── Settlement ──────────────────────────────────────────────────────────
     async def notify_settlement(self, user_id: str, position_id: int,
                                  question: str, side: str, outcome: str,
-                                 pnl: float, cost: float) -> None:
+                                 pnl: float, cost: float,
+                                 mode: Optional[str] = None) -> None:
+        """
+        `mode` is the mode the settling position was opened in
+        ("simulation" | "live"). We scope the PMExecutor stats query via
+        view_mode_override=mode so the Balance/Equity figures reflect that
+        mode's ledger, not whatever the user's current trading mode is
+        right now. Without this, a user who settles a simulation position
+        while their config is set to live sees $0 balance (live bankroll),
+        which is misleading. The Mode line in the message surfaces the
+        scope explicitly.
+        """
         if self._get_creds(user_id) is None:
             return
         if not should_notify(user_id, "position_settled"):
@@ -260,11 +271,21 @@ class TelegramNotifier:
         roi = (pnl / cost * 100) if cost > 0 else 0.0
         bankroll = 0.0
         equity = 0.0
+        resolved_mode = mode
         try:
             from execution.pm_executor import PMExecutor
-            stats = PMExecutor(user_id).get_portfolio_stats()
+            # Scope stats to the position's mode when we know it; otherwise
+            # fall back to the user's current trading mode (legacy path).
+            executor = (
+                PMExecutor(user_id, view_mode_override=mode)
+                if mode in ("simulation", "live")
+                else PMExecutor(user_id)
+            )
+            stats = executor.get_portfolio_stats()
             bankroll = float(stats.get("bankroll") or 0.0)
             equity   = float(stats.get("equity")   or bankroll)
+            if not resolved_mode:
+                resolved_mode = str(stats.get("mode") or "")
         except Exception:
             pass
 
@@ -272,23 +293,26 @@ class TelegramNotifier:
             if mark_first_win_if_unsent():
                 msg = tm.first_win(
                     question=question, side=side, pnl=pnl, roi=roi,
-                    bankroll=bankroll, equity=equity,
+                    bankroll=bankroll, equity=equity, mode=resolved_mode,
                 )
             else:
                 msg = tm.settled_win(
                     question=question, side=side, outcome=outcome,
                     pnl=pnl, roi=roi, bankroll=bankroll, equity=equity,
+                    mode=resolved_mode,
                 )
         else:
             if mark_first_loss_if_unsent():
                 msg = tm.first_loss(
                     question=question, side=side, outcome=outcome,
                     pnl=pnl, roi=roi, bankroll=bankroll, equity=equity,
+                    mode=resolved_mode,
                 )
             else:
                 msg = tm.settled_loss(
                     question=question, side=side, outcome=outcome,
                     pnl=pnl, roi=roi, bankroll=bankroll, equity=equity,
+                    mode=resolved_mode,
                 )
         await self.send(user_id, msg)
 

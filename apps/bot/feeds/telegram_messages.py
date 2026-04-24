@@ -67,15 +67,18 @@ def settled_win(
     roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
     equity: float,
+    mode: str | None = None,
 ) -> str:
     _ = (outcome, roi)  # preserved for API compat
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
         f"✅ <b>WIN</b> |+${pnl:.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
         f"\n"
         f"Delfi Predicted: {side}\n"
         f"Balance: ${bankroll:.2f}\n"
-        f"Equity: ${equity:.2f}"
+        f"Equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
     )
 
 
@@ -89,8 +92,10 @@ def settled_loss(
     roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
     equity: float,
+    mode: str | None = None,
 ) -> str:
     _ = roi  # preserved for API compat
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
     return (
         f"❌ <b>LOSS</b> |-${abs(pnl):.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
@@ -98,7 +103,8 @@ def settled_loss(
         f"Delfi Expected: {side}\n"
         f"Resolved: {outcome}\n"
         f"Balance: ${bankroll:.2f}\n"
-        f"Equity: ${equity:.2f}"
+        f"Equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
     )
 
 
@@ -113,6 +119,7 @@ def first_win(
     roi: float,
     bankroll: float,
     equity: float,
+    mode: str | None = None,
 ) -> str:
     return settled_win(
         question=question,
@@ -122,6 +129,7 @@ def first_win(
         roi=roi,
         bankroll=bankroll,
         equity=equity,
+        mode=mode,
     )
 
 
@@ -136,6 +144,7 @@ def first_loss(
     roi: float,
     bankroll: float,
     equity: float,
+    mode: str | None = None,
 ) -> str:
     return settled_loss(
         question=question,
@@ -145,6 +154,7 @@ def first_loss(
         roi=roi,
         bankroll=bankroll,
         equity=equity,
+        mode=mode,
     )
 
 

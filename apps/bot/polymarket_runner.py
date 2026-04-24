@@ -149,6 +149,7 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
                         question=p.get("question", ""),
                         side=side, outcome=outcome, pnl=pnl,
                         cost=p["cost_usd"],
+                        mode=p.get("mode"),
                     )
                 except Exception:
                     pass
@@ -207,7 +208,7 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
                 where += " AND expected_resolution_at < NOW() + INTERVAL '24 hours'"
             rows = conn.execute(text(
                 f"SELECT id, market_id, side, shares, cost_usd, prediction_id, "
-                f"       question, user_id "
+                f"       question, user_id, mode "
                 f"FROM pm_positions WHERE {where}"
             )).fetchall()
         return [
@@ -220,6 +221,7 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
                 "prediction_id": int(r[5]) if r[5] is not None else None,
                 "question":      str(r[6] or ""),
                 "user_id":       str(r[7]) if r[7] is not None else None,
+                "mode":          str(r[8]) if r[8] is not None else None,
             }
             for r in rows
         ]
