@@ -47,6 +47,7 @@ type UserPayload = {
     status:             string | null;
     realized_pnl_usd:   number | null;
     settled_at:         string | null;
+    mode:               string | null;
   }>;
   events: Array<{
     timestamp:   string | null;
@@ -89,6 +90,36 @@ function fmtMoney(v: number | null | undefined): string {
 function fmtPct(v: number | null | undefined): string {
   if (v === null || v === undefined || Number.isNaN(v)) return "-";
   return `${(v * 100).toFixed(1)}%`;
+}
+
+// Plan pricing is hardcoded client-side because it matches the /subscribe
+// page copy and is not stored on user_config. When real Stripe is wired up
+// the invoice amounts will come from the webhook payload and this table
+// becomes display-only.
+const PLAN_DETAILS: Record<string, {
+  label:    string;
+  cycle:    string;
+  price:    string;
+}> = {
+  monthly: { label: "Monthly",  cycle: "Billed monthly", price: "$69.99 / month" },
+  annual:  { label: "Annual",   cycle: "Billed yearly",  price: "$52.50 / month ($630 / yr)" },
+  legacy:  { label: "Lifetime", cycle: "One-time",       price: "$999" },
+};
+
+function fmtActiveFor(startedIso: string | null): string {
+  if (!startedIso) return "-";
+  const started = new Date(startedIso);
+  if (Number.isNaN(started.getTime())) return "-";
+  const days = Math.max(0, Math.floor((Date.now() - started.getTime()) / 86_400_000));
+  if (days < 1)   return "today";
+  if (days === 1) return "1 day";
+  if (days < 30)  return `${days} days`;
+  const months = Math.floor(days / 30);
+  if (months === 1) return "1 month";
+  if (months < 12)  return `${months} months`;
+  const years = Math.floor(days / 365);
+  if (years === 1) return "1 year";
+  return `${years} years`;
 }
 
 function severityPill(s: number): string {
@@ -279,22 +310,6 @@ export default function AdminUserDetailPage({
             <div className="split-desc">{fmtDate(user.onboarded_at)}</div>
           </div>
           <div className="split-body">
-            <div className="split-title">Plan</div>
-            <div className="split-desc">{user.subscription_plan || "-"}</div>
-          </div>
-          <div className="split-body">
-            <div className="split-title">Sub started</div>
-            <div className="split-desc">{fmtDate(user.subscription_started_at)}</div>
-          </div>
-          <div className="split-body">
-            <div className="split-title">Starting bankroll</div>
-            <div className="split-desc mono">
-              {user.starting_cash !== null && user.starting_cash !== undefined
-                ? `$${user.starting_cash.toLocaleString()}`
-                : "-"}
-            </div>
-          </div>
-          <div className="split-body">
             <div className="split-title">Venue</div>
             <div className="split-desc">
               {user.venue === "polymarket_us"
@@ -309,6 +324,72 @@ export default function AdminUserDetailPage({
           <div className="split-body">
             <div className="split-title">Telegram</div>
             <div className="split-desc">{user.has_telegram ? "connected" : "not connected"}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Billing</h2>
+        </div>
+        <div className="split-row">
+          <div className="split-body">
+            <div className="split-title">Status</div>
+            <div className="split-desc">
+              {user.subscription_status ? (
+                <span className={`pill ${
+                  user.subscription_status === "active" ? "pill-won"
+                  : user.subscription_status === "past_due" ? "pill-no"
+                  : "pill-skip"
+                }`}>
+                  {user.subscription_status}
+                </span>
+              ) : (
+                "-"
+              )}
+            </div>
+          </div>
+          <div className="split-body">
+            <div className="split-title">Plan</div>
+            <div className="split-desc">
+              {user.subscription_plan && PLAN_DETAILS[user.subscription_plan]
+                ? PLAN_DETAILS[user.subscription_plan].label
+                : "-"}
+            </div>
+          </div>
+          <div className="split-body">
+            <div className="split-title">Cycle</div>
+            <div className="split-desc">
+              {user.subscription_plan && PLAN_DETAILS[user.subscription_plan]
+                ? PLAN_DETAILS[user.subscription_plan].cycle
+                : "-"}
+            </div>
+          </div>
+          <div className="split-body">
+            <div className="split-title">Price</div>
+            <div className="split-desc mono">
+              {user.subscription_plan && PLAN_DETAILS[user.subscription_plan]
+                ? PLAN_DETAILS[user.subscription_plan].price
+                : "-"}
+            </div>
+          </div>
+          <div className="split-body">
+            <div className="split-title">Started</div>
+            <div className="split-desc">{fmtDate(user.subscription_started_at)}</div>
+          </div>
+          <div className="split-body">
+            <div className="split-title">Active for</div>
+            <div className="split-desc">{fmtActiveFor(user.subscription_started_at)}</div>
+          </div>
+        </div>
+        <div className="split-row">
+          <div className="split-body">
+            <div className="split-desc" style={{ fontSize: 12, opacity: 0.7 }}>
+              Invoice history will populate here once Stripe webhooks are wired
+              (see TODO in apps/web/app/subscribe/actions.ts). Until then,
+              checkout is paper-pay and this section reflects the single
+              subscription-started transition stored on user_config.
+            </div>
           </div>
         </div>
       </div>
@@ -389,6 +470,7 @@ export default function AdminUserDetailPage({
             <thead>
               <tr>
                 <th>When</th>
+                <th>Mode</th>
                 <th>Market</th>
                 <th>Category</th>
                 <th>Side</th>
@@ -403,6 +485,11 @@ export default function AdminUserDetailPage({
               {positions.map((p) => (
                 <tr key={p.id}>
                   <td className="mono">{fmtDateTime(p.created_at)}</td>
+                  <td>
+                    <span className={`pill ${p.mode === "live" ? "pill-no" : "pill-open"}`}>
+                      {p.mode === "live" ? "LIVE" : "SIM"}
+                    </span>
+                  </td>
                   <td>
                     <div>{p.question || p.slug || p.market_id || "-"}</div>
                     {p.market_archetype ? (

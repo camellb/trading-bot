@@ -1570,8 +1570,13 @@ class BotAPI:
                         "WHERE uc.user_id = :uid"
                     ), {"uid": target_uid}).fetchone()
 
-                    # Admin user detail reports live-only activity so the
-                    # per-user KPIs match the aggregate overview cards.
+                    # Admin user detail shows ALL activity for the user,
+                    # sim + live. A filter on mode='live' here was hiding
+                    # every simulation-mode user's activity (i.e. almost
+                    # everyone pre-live-launch), which made the admin panel
+                    # read empty even when the user was actively trading
+                    # in sim. Aggregate admin-overview cards stay live-only;
+                    # per-user detail is the customer-support view.
                     summary = conn.execute(text(
                         "SELECT "
                         "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
@@ -1588,18 +1593,16 @@ class BotAPI:
                         "  COALESCE(SUM(cost_usd) "
                         "           FILTER (WHERE status = 'open'), 0) "
                         "    AS open_cost "
-                        "FROM pm_positions WHERE user_id = :uid "
-                        "  AND mode = 'live'"
+                        "FROM pm_positions WHERE user_id = :uid"
                     ), {"uid": target_uid}).fetchone()
 
                     position_rows = conn.execute(text(
                         "SELECT id, created_at, market_id, slug, question, "
                         "       category, market_archetype, side, cost_usd, "
                         "       entry_price, claude_probability, status, "
-                        "       realized_pnl_usd, settled_at "
+                        "       realized_pnl_usd, settled_at, mode "
                         "FROM pm_positions "
                         "WHERE user_id = :uid "
-                        "  AND mode = 'live' "
                         "ORDER BY created_at DESC "
                         "LIMIT 25"
                     ), {"uid": target_uid}).fetchall()
@@ -1676,6 +1679,10 @@ class BotAPI:
                     "status":             r[11],
                     "realized_pnl_usd":   float(r[12]) if r[12] is not None else None,
                     "settled_at":         r[13].isoformat() if r[13] else None,
+                    # mode added so the admin detail page can disambiguate
+                    # sim from live now that the mode='live' filter was
+                    # removed above. Value is 'simulation' | 'live'.
+                    "mode":               r[14],
                 }
                 for r in position_rows
             ],
