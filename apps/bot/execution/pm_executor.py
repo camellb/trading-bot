@@ -46,13 +46,33 @@ class PMExecutor:
     single user. Construct one instance per user per scan/request.
     """
 
-    def __init__(self, user_id: str, *, user_config: Optional[UserConfig] = None):
+    def __init__(
+        self,
+        user_id: str,
+        *,
+        user_config: Optional[UserConfig] = None,
+        view_mode_override: Optional[str] = None,
+    ):
+        """
+        `view_mode_override` is a read-only lens from the dashboard's
+        SIM/LIVE toggle. When set, the `mode` property returns it so
+        portfolio stats, open/settled queries, and bankroll calculations
+        scope by the requested mode. Writes (opening positions, settling)
+        always use the user's configured trading mode via `trading_mode` -
+        the override is never used to place a real order.
+        """
         if not user_id or not isinstance(user_id, str):
             raise ValueError(f"PMExecutor requires a user_id, got: {user_id!r}")
         self.user_id = user_id
         # Snapshot the user's config at construction time. Callers that need
         # fresh values after a dashboard edit should rebuild the executor.
         self._user_config: UserConfig = user_config or get_user_config(user_id)
+        # Accept "simulation" / "live" only; silently drop anything else
+        # so a bad header never blanks the dashboard.
+        if view_mode_override in ("simulation", "live"):
+            self._view_mode_override: Optional[str] = view_mode_override
+        else:
+            self._view_mode_override = None
 
     # ── Readiness ────────────────────────────────────────────────────────────
     @property
@@ -62,7 +82,18 @@ class PMExecutor:
 
     @property
     def mode(self) -> Optional[str]:
-        """The user's configured mode, or None if not yet set."""
+        """
+        Mode used for read queries: view_mode_override when set, otherwise
+        the user's configured trading mode. Use `trading_mode` for writes.
+        """
+        return self._view_mode_override or self._user_config.mode
+
+    @property
+    def trading_mode(self) -> Optional[str]:
+        """
+        The user's configured trading mode. Always from user_config,
+        never from the view-mode override. Writes use this.
+        """
         return self._user_config.mode
 
     # ── Bankroll ─────────────────────────────────────────────────────────────
@@ -190,7 +221,10 @@ class PMExecutor:
                   file=sys.stderr)
             return None
 
-        if self.mode == "live":
+        # Writes always use the configured trading mode. The view-mode
+        # override only affects read queries - it must never redirect a
+        # real order to a different mode.
+        if self.trading_mode == "live":
             pos_id = self._open_live(market, decision, claude_probability,
                                       prediction_id, reasoning, category,
                                       market_archetype)
@@ -201,7 +235,7 @@ class PMExecutor:
 
         if pos_id and pos_id > 0:
             print(
-                f"[pm_executor][{self.mode}] opened pm_position {pos_id}: "
+                f"[pm_executor][{self.trading_mode}] opened pm_position {pos_id}: "
                 f"{market.question[:60]!r} {decision.side} "
                 f"{decision.shares:.2f} shares @ {decision.entry_price:.3f} "
                 f"(cost ${decision.stake_usd:.2f}, ev {decision.ev*100:+.2f}%)",
@@ -234,7 +268,8 @@ class PMExecutor:
                     ") RETURNING id"
                 ), {
                     "user_id": self.user_id,
-                    "mode":  self.mode,
+                    # Persist the trading mode, never the view-mode override.
+                    "mode":  self.trading_mode,
                     "pid":   prediction_id,
                     "mid":   market.id,
                     "cid":   market.condition_id,
@@ -342,16 +377,18 @@ class PMExecutor:
                 )
 
             print(
-                f"[pm_executor][{self.mode}] settled pm_position {position_id}: "
+                f"[pm_executor][{self.trading_mode}] settled pm_position {position_id}: "
                 f"outcome={outcome}, side={side}, pnl=${pnl:+.2f}",
                 flush=True,
             )
 
             # Trade-volume learning cadence - cheap no-op until the
-            # 50-settled-trade gate is crossed for this user.
+            # 50-settled-trade gate is crossed for this user. Always uses
+            # the trading mode so the learning cycle evaluates the actual
+            # trades the bot made, not a view-mode snapshot.
             try:
                 from engine.learning_cadence import maybe_run_learning_cycle
-                maybe_run_learning_cycle(user_id=self.user_id, mode=self.mode)
+                maybe_run_learning_cycle(user_id=self.user_id, mode=self.trading_mode)
             except Exception as exc:
                 print(f"[pm_executor] learning_cadence hook failed: {exc}",
                       file=sys.stderr)

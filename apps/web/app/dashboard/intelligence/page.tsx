@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
+import { useViewMode } from "@/lib/view-mode";
 import "../../styles/content.css";
 
 type Suggestion = {
@@ -69,8 +70,13 @@ export default function IntelligencePage() {
   const [loaded, setLoaded]             = useState(false);
   const [openReportId, setOpenReportId] = useState<number | null>(null);
 
+  const { version: viewModeVersion } = useViewMode();
+
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
+    setReports(null);
+    setSuggestions(null);
     const load = async () => {
       const [r1, r2] = await Promise.all([
         getJSON<ReportsPayload>("/api/learning-reports?limit=20"),
@@ -87,7 +93,7 @@ export default function IntelligencePage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [viewModeVersion]);
 
   const pending = useMemo(
     () => (suggestions ?? []).filter((s) => s.status === "pending"),

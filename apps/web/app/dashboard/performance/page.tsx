@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
+import { useViewMode } from "@/lib/view-mode";
 import { createClient } from "@/lib/supabase/client";
 import "../../styles/content.css";
 
@@ -148,8 +149,14 @@ export default function PerformancePage() {
     };
   }, []);
 
+  const { version: viewModeVersion } = useViewMode();
+
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
+    setSummary(null);
+    setCalibration(null);
+    setDiag(null);
     const load = async () => {
       const [s, c, d] = await Promise.all([
         getJSON<Summary>("/api/summary"),
@@ -168,7 +175,7 @@ export default function PerformancePage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [viewModeVersion]);
 
   const bankrollSeries = diag?.system?.bankroll_series ?? [];
   const baselined = useMemo(
@@ -247,7 +254,7 @@ export default function PerformancePage() {
 
       <div className="panel">
         <div className="panel-head">
-          <h2 className="panel-title">Equity curve</h2>
+          <h2 className="panel-title">Equity chart</h2>
           <span className="panel-meta">
             {sliced.length > 1 ? (() => {
               const first = new Date(sliced[0].date).getTime();
@@ -258,11 +265,11 @@ export default function PerformancePage() {
           </span>
         </div>
         {sliced.length > 1 ? (
-          <EquityChart points={sliced} />
+          <EquityChart points={sliced} startingCash={startingCash ?? 1000} />
         ) : (
           <div className="empty-state" style={{ padding: 40 }}>
             {loaded
-              ? "Not enough history to draw an equity curve yet."
+              ? "Not enough history to draw an equity chart yet."
               : "Loading..."}
           </div>
         )}
@@ -354,22 +361,27 @@ export default function PerformancePage() {
   );
 }
 
-function EquityChart({ points }: { points: BankrollPoint[] }) {
+function EquityChart({ points, startingCash }: { points: BankrollPoint[]; startingCash: number }) {
   const w = 1000;
   const h = 300;
-  const padL = 72;
-  const padR = 16;
-  const padT = 16;
-  const padB = 36;
-  const values = points.map((p) => p.bankroll);
-  // Floor at $0 so the baseline always reads "zero". If the curve dips below
-  // zero, extend the floor down to accommodate the loss; otherwise the floor
-  // stays at $0 and the curve rises from there.
-  const rawMin = Math.min(...values);
-  const rawMax = Math.max(...values);
-  const min = Math.min(0, rawMin);
-  const max = Math.max(0, rawMax);
-  const range = max - min || 1;
+  const padL = 88;
+  const padR = 24;
+  const padT = 24;
+  const padB = 44;
+  // The incoming series is cumulative P&L (starts at 0). Equity is
+  // starting cash plus cumulative P&L, so we render the actual dollar
+  // equity the user holds at each point in time.
+  const equity = points.map((p) => startingCash + p.bankroll);
+  const rawMin = Math.min(...equity);
+  const rawMax = Math.max(...equity);
+  // Always include the starting-cash line in the visible range so the
+  // user can see where they began. Add a small 8% pad above and below.
+  const baseMin = Math.min(startingCash, rawMin);
+  const baseMax = Math.max(startingCash, rawMax);
+  const span = Math.max(1, baseMax - baseMin);
+  const yMin = baseMin - span * 0.08;
+  const yMax = baseMax + span * 0.08;
+  const range = yMax - yMin || 1;
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
   // X-axis is time-based so equal days produce equal horizontal spacing even
@@ -383,44 +395,36 @@ function EquityChart({ points }: { points: BankrollPoint[] }) {
   const tSpan = tMax - tMin || 1;
   const coords = points.map((p, i) => {
     const x = padL + plotW * ((xTimes[i] - tMin) / tSpan);
-    const y = padT + plotH * (1 - (p.bankroll - min) / range);
+    const y = padT + plotH * (1 - (equity[i] - yMin) / range);
     return [x, y] as const;
   });
   const line = coords
     .map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1))
     .join(" ");
-  const area =
-    line +
-    ` L ${coords[coords.length - 1][0].toFixed(1)} ${padT + plotH} L ${coords[0][0].toFixed(1)} ${padT + plotH} Z`;
 
-  const mid = (min + max) / 2;
+  // Y-axis: always include the starting cash as a labelled tick so the
+  // "$1,000 at start" baseline is unmissable.
+  const startY = padT + plotH * (1 - (startingCash - yMin) / range);
   const yTicks = [
-    { v: max, y: padT },
-    { v: mid, y: padT + plotH / 2 },
-    { v: min, y: padT + plotH },
+    { v: yMax, y: padT, isStart: false },
+    { v: startingCash, y: startY, isStart: true },
+    { v: yMin, y: padT + plotH, isStart: false },
   ];
-  // If the floor is exactly 0 we still want a visible "$0" label; mid will
-  // be non-zero unless the series is flat at 0.
 
   const lastIdx = points.length - 1;
   const midIdx = Math.floor(lastIdx / 2);
   const xTicks = [
-    { label: formatShortDate(points[0].date), x: coords[0][0], anchor: "start" as const },
-    { label: formatShortDate(points[midIdx].date), x: coords[midIdx][0], anchor: "middle" as const },
-    { label: formatShortDate(points[lastIdx].date), x: coords[lastIdx][0], anchor: "end" as const },
+    { label: formatShortDate(points[0].date), x: coords[0][0], anchor: "start" as const, isStart: true },
+    { label: formatShortDate(points[midIdx].date), x: coords[midIdx][0], anchor: "middle" as const, isStart: false },
+    { label: formatShortDate(points[lastIdx].date), x: coords[lastIdx][0], anchor: "end" as const, isStart: false },
   ];
 
+  const firstPoint = coords[0];
   const lastPoint = coords[coords.length - 1];
-  const lastValue = points[points.length - 1].bankroll;
+  const lastEquity = equity[equity.length - 1];
 
   return (
     <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", display: "block" }}>
-      <defs>
-        <linearGradient id="perf-eq-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="var(--gold)" stopOpacity="0.28" />
-          <stop offset="100%" stopColor="var(--gold)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
       {yTicks.map((t, i) => (
         <line
           key={`g${i}`}
@@ -428,16 +432,16 @@ function EquityChart({ points }: { points: BankrollPoint[] }) {
           x2={w - padR}
           y1={t.y}
           y2={t.y}
-          stroke="rgba(255,255,255,0.06)"
-          strokeDasharray="2 4"
+          stroke={t.isStart ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.06)"}
+          strokeDasharray={t.isStart ? "4 4" : "2 4"}
         />
       ))}
       {yTicks.map((t, i) => (
         <text
           key={`y${i}`}
-          x={padL - 8}
+          x={padL - 10}
           y={t.y + 4}
-          fill="rgba(255,255,255,0.55)"
+          fill={t.isStart ? "rgba(255,255,255,0.78)" : "rgba(255,255,255,0.5)"}
           fontSize="11"
           textAnchor="end"
           fontFamily="ui-monospace, SFMono-Regular, monospace"
@@ -449,8 +453,8 @@ function EquityChart({ points }: { points: BankrollPoint[] }) {
         <text
           key={`x${i}`}
           x={t.x}
-          y={h - 10}
-          fill="rgba(255,255,255,0.55)"
+          y={h - 14}
+          fill={t.isStart ? "rgba(255,255,255,0.78)" : "rgba(255,255,255,0.5)"}
           fontSize="11"
           textAnchor={t.anchor}
           fontFamily="ui-monospace, SFMono-Regular, monospace"
@@ -458,25 +462,41 @@ function EquityChart({ points }: { points: BankrollPoint[] }) {
           {t.label}
         </text>
       ))}
-      <path d={area} fill="url(#perf-eq-fill)" />
+      {xTicks.map((t, i) =>
+        t.isStart ? (
+          <text
+            key={`x-start-${i}`}
+            x={t.x}
+            y={h - 28}
+            fill="rgba(255,255,255,0.45)"
+            fontSize="10"
+            textAnchor={t.anchor}
+            fontFamily="ui-monospace, SFMono-Regular, monospace"
+            letterSpacing="0.08em"
+          >
+            START
+          </text>
+        ) : null,
+      )}
       <path
         d={line}
         fill="none"
         stroke="var(--gold)"
-        strokeWidth="1.6"
+        strokeWidth="2"
         strokeLinejoin="round"
         strokeLinecap="round"
       />
-      <circle cx={lastPoint[0]} cy={lastPoint[1]} r="3" fill="var(--gold)" />
+      <circle cx={firstPoint[0]} cy={firstPoint[1]} r="3.5" fill="var(--gold)" opacity="0.65" />
+      <circle cx={lastPoint[0]} cy={lastPoint[1]} r="3.5" fill="var(--gold)" />
       <text
-        x={lastPoint[0] - 6}
-        y={lastPoint[1] - 8}
+        x={lastPoint[0] - 8}
+        y={lastPoint[1] - 10}
         fill="var(--gold)"
         fontSize="11"
         textAnchor="end"
         fontFamily="ui-monospace, SFMono-Regular, monospace"
       >
-        {formatMoney(lastValue)}
+        {formatMoney(lastEquity)}
       </text>
     </svg>
   );

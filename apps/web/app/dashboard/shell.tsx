@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { signOut } from "../auth/actions";
 import { setBotEnabled } from "./actions";
 import { Tour } from "./Tour";
+import { ViewModeProvider, useViewMode, type ViewMode } from "@/lib/view-mode";
 
 export type IconKey =
   | "grid"
@@ -156,13 +157,41 @@ export function DashboardShell({
   const activeId = NAV.find((n) => n.match?.test(pathname))?.id ?? "dashboard";
 
   return (
-    <div className="app-shell density-roomy" data-screen-label="Dashboard">
-      <Sidebar activeId={activeId} user={user} pathname={pathname} isAdmin={isAdmin} />
-      <main className="app-main">
-        <BotControlBanner botEnabled={botEnabled} />
-        {children}
-      </main>
-      {!tourCompleted && <Tour />}
+    <ViewModeProvider>
+      <div className="app-shell density-roomy" data-screen-label="Dashboard">
+        <Sidebar activeId={activeId} user={user} pathname={pathname} isAdmin={isAdmin} />
+        <main className="app-main">
+          <BotControlBanner botEnabled={botEnabled} />
+          {children}
+        </main>
+        {!tourCompleted && <Tour />}
+      </div>
+    </ViewModeProvider>
+  );
+}
+
+function ViewModeToggle() {
+  const { mode, setMode } = useViewMode();
+  const options: { id: ViewMode; label: string }[] = [
+    { id: "simulation", label: "Simulation" },
+    { id: "live", label: "Live" },
+  ];
+  return (
+    <div className="view-mode-toggle" role="group" aria-label="View mode">
+      <div className="view-mode-label">View</div>
+      <div className="view-mode-chips">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            className={`view-mode-chip ${mode === o.id ? "active" : ""}`}
+            onClick={() => setMode(o.id)}
+            aria-pressed={mode === o.id}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -273,6 +302,8 @@ function Sidebar({
           <span className="side-label">Admin panel</span>
         </Link>
       )}
+
+      <ViewModeToggle />
 
       <div className="side-foot">
         <Link className="side-user" href="/dashboard/settings/account">

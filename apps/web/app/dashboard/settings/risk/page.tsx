@@ -45,18 +45,15 @@ type Diagnostics = {
 type ArchetypeItem = { id: string; label: string; group: string };
 
 const BUILTIN_ARCHETYPES: ArchetypeItem[] = [
-  { id: "tennis_qualifier",    label: "Tennis - qualifier",     group: "Sports" },
-  { id: "tennis_main_draw",    label: "Tennis - main draw",     group: "Sports" },
-  { id: "tennis_lower_tier",   label: "Tennis - lower tier",    group: "Sports" },
-  { id: "basketball_game",     label: "Basketball - game",      group: "Sports" },
-  { id: "basketball_prop",     label: "Basketball - prop",      group: "Sports" },
-  { id: "baseball_game",       label: "Baseball - game",        group: "Sports" },
-  { id: "football_game",       label: "Football - game",        group: "Sports" },
-  { id: "hockey_game",         label: "Hockey - game",          group: "Sports" },
-  { id: "cricket_match",       label: "Cricket - match",        group: "Sports" },
-  { id: "esports_match",       label: "Esports - match",        group: "Sports" },
-  { id: "soccer_match",        label: "Soccer - match",         group: "Sports" },
-  { id: "sports_other",        label: "Sports - other",         group: "Sports" },
+  { id: "tennis",              label: "Tennis",                 group: "Sports" },
+  { id: "basketball",          label: "Basketball",             group: "Sports" },
+  { id: "baseball",            label: "Baseball",               group: "Sports" },
+  { id: "football",            label: "Football",               group: "Sports" },
+  { id: "hockey",              label: "Hockey",                 group: "Sports" },
+  { id: "cricket",             label: "Cricket",                group: "Sports" },
+  { id: "esports",             label: "Esports",                group: "Sports" },
+  { id: "soccer",              label: "Soccer",                 group: "Sports" },
+  { id: "sports_other",        label: "Other sports",           group: "Sports" },
   { id: "price_threshold",     label: "Price threshold",        group: "Markets" },
   { id: "activity_count",      label: "Activity count",         group: "Markets" },
   { id: "geopolitical_event",  label: "Geopolitical event",     group: "Markets" },
@@ -250,21 +247,49 @@ export default function RiskPage() {
     );
   }
 
-  const series = diag?.system?.bankroll_series ?? [];
-  const currentBankroll = summary?.bankroll ?? (series.length ? series[series.length - 1].bankroll : null);
-  const peak = series.reduce((m, p) => Math.max(m, p.bankroll), 0);
-  const drawdown = peak > 0 && currentBankroll != null
-    ? Math.max(0, (peak - currentBankroll) / peak)
-    : 0;
+  // The diagnostics endpoint returns `bankroll_series` as cumulative P&L
+  // starting at 0 - NOT real bankroll dollars. Convert to actual bankroll by
+  // adding starting_cash to every point, so peak / drawdown / daily-loss math
+  // stays consistent with the bankroll shown everywhere else.
+  const startingCash = summary?.starting_cash ?? 0;
+  const pnlSeries = diag?.system?.bankroll_series ?? [];
+  const bankrollHistory = pnlSeries.map((p) => startingCash + p.bankroll);
 
-  const prevBankroll = series.length >= 2 ? series[series.length - 2].bankroll : null;
-  const dailyLossPct = prevBankroll && prevBankroll > 0 && currentBankroll != null
-    ? Math.max(0, (prevBankroll - currentBankroll) / prevBankroll)
-    : 0;
+  const currentBankroll =
+    summary?.bankroll ??
+    (bankrollHistory.length ? bankrollHistory[bankrollHistory.length - 1] : startingCash);
 
-  const exposurePct = currentBankroll && currentBankroll > 0 && summary?.open_cost != null
-    ? summary.open_cost / currentBankroll
-    : 0;
+  // Peak bankroll floored at starting_cash so "peak $0" can never happen.
+  const peak = bankrollHistory.length
+    ? Math.max(startingCash, ...bankrollHistory)
+    : startingCash;
+
+  const drawdownDollars =
+    currentBankroll != null ? Math.max(0, peak - currentBankroll) : 0;
+  const drawdown = peak > 0 ? drawdownDollars / peak : 0;
+
+  // Yesterday's bankroll from the penultimate point in the series.
+  const prevBankroll =
+    bankrollHistory.length >= 2
+      ? bankrollHistory[bankrollHistory.length - 2]
+      : null;
+
+  // Clamp to non-negative: a gain since yesterday is not a loss.
+  const dailyLossDollars =
+    prevBankroll != null && currentBankroll != null
+      ? Math.max(0, prevBankroll - currentBankroll)
+      : 0;
+  const dailyLossPct =
+    prevBankroll != null && prevBankroll > 0
+      ? dailyLossDollars / prevBankroll
+      : 0;
+  const dailyCapDollars =
+    prevBankroll != null ? prevBankroll * draft.daily_loss_limit_pct : null;
+
+  const openCost = summary?.open_cost ?? 0;
+  const exposurePct =
+    currentBankroll && currentBankroll > 0 ? openCost / currentBankroll : 0;
+  const exposureCapFraction = Math.max(0.0001, 1 - draft.dry_powder_reserve_pct);
 
   return (
     <div className="page-wrap">
@@ -445,37 +470,41 @@ export default function RiskPage() {
         </div>
 
         <GaugeRow
-          label="Daily loss used"
+          label="Daily loss"
           desc={
-            prevBankroll && currentBankroll != null
-              ? `$${(prevBankroll - currentBankroll).toFixed(0)} since yesterday · cap ${(draft.daily_loss_limit_pct * 100).toFixed(0)}%`
-              : "Waiting for at least one closed day of bankroll history."
+            prevBankroll == null
+              ? "Starts counting once today's first full day closes."
+              : dailyLossDollars > 0
+              ? `Lost $${dailyLossDollars.toFixed(0)} since yesterday. Cap: ${(draft.daily_loss_limit_pct * 100).toFixed(0)}% of bankroll${dailyCapDollars != null ? ` ($${dailyCapDollars.toFixed(0)})` : ""}.`
+              : `No losses today. Cap: ${(draft.daily_loss_limit_pct * 100).toFixed(0)}% of bankroll${dailyCapDollars != null ? ` ($${dailyCapDollars.toFixed(0)})` : ""}.`
           }
           pct={dailyLossPct / Math.max(0.0001, draft.daily_loss_limit_pct)}
-          valueLabel={`${(dailyLossPct * 100).toFixed(1)}%`}
+          valueLabel={`${(dailyLossPct * 100).toFixed(1)}% of cap`}
           tone={dailyLossPct >= draft.daily_loss_limit_pct ? "warn" : "ok"}
         />
         <GaugeRow
-          label="Drawdown"
+          label="Drawdown from peak"
           desc={
-            peak > 0
-              ? `${(drawdown * 100).toFixed(1)}% from peak $${peak.toFixed(0)} · halt at ${(draft.drawdown_halt_pct * 100).toFixed(0)}%`
-              : "Bankroll series not yet available."
+            peak <= startingCash && drawdownDollars === 0
+              ? `Peak $${peak.toFixed(0)} (no higher balance reached yet). Halt at ${(draft.drawdown_halt_pct * 100).toFixed(0)}%.`
+              : drawdownDollars === 0
+              ? `At peak bankroll $${peak.toFixed(0)}. Halt at ${(draft.drawdown_halt_pct * 100).toFixed(0)}%.`
+              : `Down $${drawdownDollars.toFixed(0)} from peak $${peak.toFixed(0)}. Halt at ${(draft.drawdown_halt_pct * 100).toFixed(0)}%.`
           }
           pct={drawdown / Math.max(0.0001, draft.drawdown_halt_pct)}
-          valueLabel={`${(drawdown * 100).toFixed(1)}%`}
+          valueLabel={`${(drawdown * 100).toFixed(1)}% of halt`}
           tone={drawdown >= draft.drawdown_halt_pct ? "warn" : "ok"}
         />
         <GaugeRow
           label="Gross exposure"
           desc={
-            summary?.open_cost != null && currentBankroll
-              ? `$${summary.open_cost.toFixed(0)} deployed of $${currentBankroll.toFixed(0)} bankroll`
-              : "No open positions."
+            openCost === 0 || !currentBankroll
+              ? `No open positions. Reserve: ${(draft.dry_powder_reserve_pct * 100).toFixed(0)}% of bankroll.`
+              : `$${openCost.toFixed(0)} deployed of $${currentBankroll.toFixed(0)} bankroll. Reserve: ${(draft.dry_powder_reserve_pct * 100).toFixed(0)}%.`
           }
-          pct={exposurePct / Math.max(0.0001, 1 - draft.dry_powder_reserve_pct)}
-          valueLabel={summary?.open_cost != null ? `$${summary.open_cost.toFixed(0)}` : "$0"}
-          tone="ok"
+          pct={exposurePct / exposureCapFraction}
+          valueLabel={`${(exposurePct * 100).toFixed(0)}% of cap`}
+          tone={exposurePct >= exposureCapFraction ? "warn" : "ok"}
         />
       </div>
     </div>

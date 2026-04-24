@@ -132,18 +132,33 @@ class BotAPI:
         uid = (request.headers.get("X-User-Id") or "").strip()
         return uid or None
 
+    def _view_mode_from(self, request: web.Request) -> Optional[str]:
+        """
+        Read the `view_mode` query string parameter. Clients (Next.js
+        dashboard) append it to every API call so the bot can scope
+        reads by simulation|live without changing the user's trading
+        mode. Unknown values are dropped - the executor's validator
+        treats None as "no override" and uses user_config.mode.
+        """
+        raw = (request.query.get("view_mode") or "").strip().lower()
+        if raw in ("simulation", "live"):
+            return raw
+        return None
+
     def _user_executor(self, request: web.Request):
         """
         Construct a per-user PMExecutor from the request's X-User-Id.
         Returns None if the header is missing - the caller is expected to
-        respond with 401 in that case.
+        respond with 401 in that case. The view_mode query param (if
+        present) is applied as a read-only lens on top of the user's
+        configured trading mode.
         """
         from execution.pm_executor import PMExecutor
         uid = self._user_id_from(request)
         if not uid:
             return None
         try:
-            return PMExecutor(uid)
+            return PMExecutor(uid, view_mode_override=self._view_mode_from(request))
         except Exception as exc:
             print(f"[bot_api] PMExecutor({uid}) failed: {exc}", file=sys.stderr)
             return None
@@ -375,9 +390,12 @@ class BotAPI:
         scope = (request.query.get("scope") or "all").lower()
         if scope not in ("all", "traded", "skipped"):
             scope = "all"
+        view_mode = self._view_mode_from(request)
         report = await asyncio.get_running_loop().run_in_executor(
             self._pool,
-            lambda: diagnostics.full_report(scope, user_id=user_id),
+            lambda: diagnostics.full_report(scope,
+                                             user_id=user_id,
+                                             mode=view_mode),
         )
         return web.json_response(report)
 
@@ -806,6 +824,9 @@ class BotAPI:
         try:
             def _q():
                 with get_engine().begin() as conn:
+                    # Admin user list shows real-money stats only. Simulation
+                    # positions are paper-only and don't represent customer
+                    # value or product performance, so they are excluded.
                     return conn.execute(text(
                         "SELECT uc.user_id, uc.display_name, uc.mode, "
                         "       uc.starting_cash, uc.onboarded_at, uc.is_admin, "
@@ -813,10 +834,12 @@ class BotAPI:
                         "       uc.subscription_status, uc.subscription_plan, "
                         "       au.email, au.created_at, "
                         "       (SELECT COUNT(*) FROM pm_positions p "
-                        "          WHERE p.user_id = uc.user_id) AS total_positions, "
+                        "          WHERE p.user_id = uc.user_id "
+                        "            AND p.mode = 'live') AS total_positions, "
                         "       (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
                         "          FROM pm_positions p "
                         "          WHERE p.user_id = uc.user_id "
+                        "            AND p.mode = 'live' "
                         "            AND p.status = 'settled') AS realized_pnl "
                         "FROM user_config uc "
                         "LEFT JOIN auth.users au ON au.id::text = uc.user_id::text "
@@ -856,6 +879,9 @@ class BotAPI:
         try:
             def _q():
                 with get_engine().begin() as conn:
+                    # All pm_positions stats on the admin overview are
+                    # filtered to mode = 'live' so MRR/ARR/trade counts
+                    # reflect real customer activity, not paper-trading.
                     totals = conn.execute(text(
                         "SELECT "
                         "  (SELECT COUNT(*) FROM user_config "
@@ -867,12 +893,15 @@ class BotAPI:
                         "     WHERE subscription_status = 'active' "
                         "       AND bot_enabled = TRUE) AS bankroll_um, "
                         "  (SELECT COUNT(*) FROM pm_positions "
-                        "     WHERE status = 'open') AS open_positions, "
+                        "     WHERE status = 'open' "
+                        "       AND mode = 'live') AS open_positions, "
                         "  (SELECT COUNT(*) FROM pm_positions "
-                        "     WHERE created_at >= NOW() - INTERVAL '24 hours') "
+                        "     WHERE created_at >= NOW() - INTERVAL '24 hours' "
+                        "       AND mode = 'live') "
                         "    AS trades_24h, "
                         "  (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
-                        "     FROM pm_positions WHERE status = 'settled') "
+                        "     FROM pm_positions WHERE status = 'settled' "
+                        "       AND mode = 'live') "
                         "    AS realized_pnl, "
                         "  (SELECT COUNT(*) FROM market_evaluations) "
                         "    AS total_evaluations, "
@@ -896,11 +925,13 @@ class BotAPI:
                         "    AS new_subs_7d, "
                         "  (SELECT COUNT(*) FROM pm_positions "
                         "     WHERE status = 'settled' "
+                        "       AND mode = 'live' "
                         "       AND settled_at >= NOW() - INTERVAL '24 hours') "
                         "    AS settles_24h, "
                         "  (SELECT COALESCE(SUM(realized_pnl_usd), 0) "
                         "     FROM pm_positions "
                         "     WHERE status = 'settled' "
+                        "       AND mode = 'live' "
                         "       AND settled_at >= NOW() - INTERVAL '24 hours') "
                         "    AS realized_24h"
                     )).fetchone()
@@ -926,6 +957,7 @@ class BotAPI:
                         "SELECT p.settled_at, p.question, p.realized_pnl_usd, p.user_id "
                         "FROM pm_positions p "
                         "WHERE p.status = 'settled' "
+                        "  AND p.mode = 'live' "
                         "  AND p.settled_at >= NOW() - INTERVAL '24 hours' "
                         "ORDER BY p.settled_at DESC "
                         "LIMIT 15"
@@ -1019,7 +1051,10 @@ class BotAPI:
             return web.json_response({"error": "admin access required"},
                                       status=403)
 
-        mode   = (request.query.get("mode")   or "all").lower()
+        # Admin trades view defaults to live so the admin dashboard never
+        # shows paper-trading volume as real business activity. Admins can
+        # still pass ?mode=simulation or ?mode=all to inspect sim traffic.
+        mode   = (request.query.get("mode")   or "live").lower()
         status = (request.query.get("status") or "all").lower()
         q_raw  = (request.query.get("q")      or "").strip()
         try:
@@ -1257,6 +1292,8 @@ class BotAPI:
                         "WHERE uc.user_id = :uid"
                     ), {"uid": target_uid}).fetchone()
 
+                    # Admin user detail reports live-only activity so the
+                    # per-user KPIs match the aggregate overview cards.
                     summary = conn.execute(text(
                         "SELECT "
                         "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
@@ -1273,7 +1310,8 @@ class BotAPI:
                         "  COALESCE(SUM(cost_usd) "
                         "           FILTER (WHERE status = 'open'), 0) "
                         "    AS open_cost "
-                        "FROM pm_positions WHERE user_id = :uid"
+                        "FROM pm_positions WHERE user_id = :uid "
+                        "  AND mode = 'live'"
                     ), {"uid": target_uid}).fetchone()
 
                     position_rows = conn.execute(text(
@@ -1283,6 +1321,7 @@ class BotAPI:
                         "       realized_pnl_usd, settled_at "
                         "FROM pm_positions "
                         "WHERE user_id = :uid "
+                        "  AND mode = 'live' "
                         "ORDER BY created_at DESC "
                         "LIMIT 25"
                     ), {"uid": target_uid}).fetchall()
@@ -1483,6 +1522,9 @@ class BotAPI:
                         f"WHERE evaluated_at >= NOW() - INTERVAL '{days} days'"
                     )).fetchone()
 
+                    # Admin forecaster health reports category performance
+                    # on real trades only. Simulation fills have zero
+                    # slippage/cost variance vs live and would skew ROI.
                     by_cat = conn.execute(text(
                         f"SELECT "
                         f"  COALESCE(category, 'uncategorized') AS cat, "
@@ -1493,6 +1535,7 @@ class BotAPI:
                         f"    FILTER (WHERE status = 'settled'), 0) AS realized "
                         f"FROM pm_positions "
                         f"WHERE created_at >= NOW() - INTERVAL '{days} days' "
+                        f"  AND mode = 'live' "
                         f"GROUP BY cat "
                         f"ORDER BY settled DESC "
                         f"LIMIT 20"
@@ -1838,6 +1881,57 @@ class BotAPI:
                + (" Shared evaluations + markouts also wiped." if wipe_all else ""))
         return web.json_response({"status": "ok", "message": msg})
 
+    async def _handle_reset_simulation(self,
+                                       request: web.Request) -> web.Response:
+        """
+        Wipe only the caller's `simulation` pm_positions + their linked
+        predictions. Live trades are never touched. This lets users reset the
+        paper-trading baseline back to starting cash without losing real P&L
+        history. Safe in both simulation and live trading modes.
+        """
+        caller_id = self._user_id_from(request)
+        if not caller_id:
+            return web.json_response({"error": "X-User-Id header required"},
+                                      status=401)
+        loop = asyncio.get_running_loop()
+
+        def _wipe_sim() -> dict:
+            with get_engine().begin() as conn:
+                deleted_preds = conn.execute(text(
+                    "DELETE FROM predictions WHERE trade_id IN "
+                    "(SELECT id FROM pm_positions "
+                    " WHERE user_id = :uid AND mode = 'simulation')"
+                ), {"uid": caller_id}).rowcount or 0
+                deleted_positions = conn.execute(text(
+                    "DELETE FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = 'simulation'"
+                ), {"uid": caller_id}).rowcount or 0
+            return {
+                "positions_deleted":   int(deleted_positions),
+                "predictions_deleted": int(deleted_preds),
+            }
+
+        try:
+            stats = await loop.run_in_executor(self._pool, _wipe_sim)
+        except Exception as exc:
+            print(f"[bot_api] reset-simulation failed for {caller_id}: {exc}",
+                  file=sys.stderr)
+            return web.json_response(
+                {"status": "error", "reason": str(exc)}, status=500)
+
+        # Bump the diagnostics cache so the bankroll series re-computes with
+        # the freshly-emptied simulation slice on the next dashboard load.
+        try:
+            diagnostics.clear_cache()
+        except Exception:
+            pass
+
+        return web.json_response({
+            "status":  "ok",
+            "message": "Simulation history cleared. Live positions kept.",
+            **stats,
+        })
+
     async def _handle_switch_mode(self, request: web.Request) -> web.Response:
         data = await request.json()
         mode = str(data.get("mode") or "").strip().lower()
@@ -1999,6 +2093,8 @@ class BotAPI:
         app.router.add_post("/api/scan-now",    self._handle_scan_now)
         app.router.add_post("/api/resolve-now", self._handle_resolve_now)
         app.router.add_post("/api/reset-test",    self._handle_reset_test)
+        app.router.add_post("/api/reset-simulation",
+                             self._handle_reset_simulation)
         app.router.add_post("/api/switch-mode",   self._handle_switch_mode)
         app.router.add_post("/api/update-config", self._handle_update_config)
         app.router.add_get ("/api/admin/users",    self._handle_admin_users)

@@ -122,6 +122,46 @@ function AccountPageInner() {
     }
   };
 
+  // Reset-simulation state. Wipes only simulation history; live data is kept.
+  const [resetSimBusy, setResetSimBusy] = useState(false);
+  const [resetSimMsg, setResetSimMsg] = useState<string | null>(null);
+  const [resetSimErr, setResetSimErr] = useState<string | null>(null);
+
+  const resetSimulation = async () => {
+    setResetSimErr(null);
+    setResetSimMsg(null);
+    const confirmed = window.confirm(
+      "Reset simulation history? This clears all paper-trading positions and predictions. Live trades are not touched.",
+    );
+    if (!confirmed) return;
+    setResetSimBusy(true);
+    try {
+      const r = await fetch("/api/reset-simulation", {
+        method: "POST",
+        cache: "no-store",
+      });
+      const body = (await r.json().catch(() => ({}))) as {
+        positions_deleted?: number;
+        predictions_deleted?: number;
+        error?: string;
+      };
+      if (!r.ok) {
+        setResetSimErr(body.error ?? "Reset failed, try again.");
+        return;
+      }
+      const n = body.positions_deleted ?? 0;
+      setResetSimMsg(
+        n > 0
+          ? `Cleared ${n} simulation position${n === 1 ? "" : "s"}. Dashboard will show fresh data.`
+          : "No simulation history to clear.",
+      );
+    } catch {
+      setResetSimErr("Reset failed, try again.");
+    } finally {
+      setResetSimBusy(false);
+    }
+  };
+
   const setupBanner = useMemo(() => {
     if (setupFlag !== "live") return null;
     if (poly.canGoLive) return null;
@@ -308,6 +348,37 @@ function AccountPageInner() {
               <span style={{ color: "var(--red)", fontSize: 13 }}>{poly.error}</span>
             )}
           </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Reset simulation history</h2>
+          <span className="panel-meta">Safe to run anytime</span>
+        </div>
+        <p className="panel-body">
+          Clears your paper-trading positions and predictions so the dashboard
+          starts from a clean slate. Your live trades, configuration, and
+          credentials are kept exactly as they are.
+        </p>
+        <div style={{ marginTop: 12, display: "flex", gap: 12, alignItems: "center" }}>
+          <button
+            className="btn-sm"
+            onClick={resetSimulation}
+            disabled={resetSimBusy}
+          >
+            {resetSimBusy ? "Clearing…" : "Reset simulation data"}
+          </button>
+          {resetSimMsg && !resetSimErr && (
+            <span style={{ color: "var(--vellum-60)", fontSize: 13 }}>
+              {resetSimMsg}
+            </span>
+          )}
+          {resetSimErr && (
+            <span style={{ color: "var(--red)", fontSize: 13 }}>
+              {resetSimErr}
+            </span>
+          )}
         </div>
       </div>
 

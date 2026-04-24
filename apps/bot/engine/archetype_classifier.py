@@ -96,11 +96,6 @@ _NHL_TEAMS = (
     "sharks", "knights", "kraken",
 )
 
-_NBA_PROP_RE = re.compile(
-    r"\b(o/u|over/under|spread|moneyline|player\s+props?|total\s+points)\b",
-    re.IGNORECASE,
-)
-
 # ── Cricket / soccer / esports ──────────────────────────────────────────────
 
 _CRICKET_RE = re.compile(
@@ -175,9 +170,13 @@ def classify_archetype(
     es = (event_slug or "").lower()
     cat = (category or "").lower()
 
-    # Tennis first - the taxonomy the user asked for.
+    # Sport-level only. Earlier versions split tennis into
+    # qualifier / main_draw / lower_tier and basketball into game / prop,
+    # but the user asked for one label per sport ("just based on sport:
+    # Tennis, Baseball, Football, Soccer"). The UI renders these as
+    # plain sport chips without sub-tier dashes.
     if _TENNIS_QUALIFIER_RE.search(q):
-        return "tennis_qualifier"
+        return "tennis"
 
     is_tennis_by_brand = bool(_ATP_RE.search(q) or _ATP_RE.search(es) or
                               _WTA_RE.search(q) or _WTA_RE.search(es))
@@ -187,34 +186,26 @@ def classify_archetype(
         for city in _TENNIS_LOWER_TIER_CITY_HINTS
     )
 
-    if is_tennis_by_tournament and not is_tennis_by_lower_city:
-        # Main-draw tennis at a recognised Grand Slam / Masters.
-        return "tennis_main_draw"
-    if is_tennis_by_lower_city:
-        return "tennis_lower_tier"
-    if is_tennis_by_brand:
-        # ATP/WTA branded but no tournament match - challenger / low-tier.
-        return "tennis_lower_tier"
+    if is_tennis_by_tournament or is_tennis_by_lower_city or is_tennis_by_brand:
+        return "tennis"
 
-    # Team sports.
-    if _NBA_PROP_RE.search(q) and _has_any(q, _NBA_TEAMS):
-        return "basketball_prop"
+    # Team sports - one label per sport regardless of game / prop shape.
     if _has_any(q, _NBA_TEAMS):
-        return "basketball_game"
+        return "basketball"
     if _has_any(q, _MLB_TEAMS):
-        return "baseball_game"
+        return "baseball"
     if _has_any(q, _NFL_TEAMS):
-        return "football_game"
+        return "football"
     if _has_any(q, _NHL_TEAMS):
-        return "hockey_game"
+        return "hockey"
 
     # Sport-family regexes.
     if _CRICKET_RE.search(q):
-        return "cricket_match"
+        return "cricket"
     if _ESPORTS_RE.search(q):
-        return "esports_match"
+        return "esports"
     if _SOCCER_RE.search(q):
-        return "soccer_match"
+        return "soccer"
 
     # Sports catch-all - the evaluator tagged it as sports but no
     # specific pattern matched.
@@ -234,19 +225,20 @@ def classify_archetype(
 
 
 # Canonical set of archetypes this classifier can produce. Exposed so the
-# dashboard/UI can offer a checkbox list without going out of sync.
+# dashboard/UI can offer a checkbox list without going out of sync. Flat,
+# sport-level labels - one label per sport. Legacy fine-grained labels
+# ("tennis_qualifier", "basketball_prop", ...) may still appear in the
+# historical DB rows; they are surfaced by `/api/archetypes` via the
+# `discovered` field (DISTINCT scan of pm_positions + market_evaluations).
 ARCHETYPES: tuple[str, ...] = (
-    "tennis_qualifier",
-    "tennis_main_draw",
-    "tennis_lower_tier",
-    "basketball_game",
-    "basketball_prop",
-    "baseball_game",
-    "football_game",
-    "hockey_game",
-    "cricket_match",
-    "esports_match",
-    "soccer_match",
+    "tennis",
+    "basketball",
+    "baseball",
+    "football",
+    "hockey",
+    "cricket",
+    "esports",
+    "soccer",
     "sports_other",
     "price_threshold",
     "activity_count",

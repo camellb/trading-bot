@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { getJSON } from "@/lib/fetch-json";
+import { useViewMode } from "@/lib/view-mode";
 
 // ---- Shapes coming off the bot API (see apps/bot/bot_api.py) -----------
 
@@ -226,9 +227,15 @@ export default function DashboardPage() {
   const [positions, setPositions]   = useState<PositionsPayload | null>(null);
   const [evaluations, setEvals]     = useState<EvaluationsPayload | null>(null);
   const [loaded, setLoaded]         = useState(false);
+  const { version: viewModeVersion } = useViewMode();
 
   useEffect(() => {
     let cancelled = false;
+    // Clear prior payloads so a mode switch doesn't flash stale data.
+    setLoaded(false);
+    setSummary(null);
+    setPositions(null);
+    setEvals(null);
     const load = async () => {
       const [s, p, e] = await Promise.all([
         getJSON<Summary>("/api/summary"),
@@ -247,7 +254,7 @@ export default function DashboardPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [viewModeVersion]);
 
   const open     = positions?.open ?? [];
   const settled  = positions?.settled ?? [];
@@ -267,9 +274,10 @@ export default function DashboardPage() {
       <DashHero
         mode={mode}
         bankroll={bankroll}
-        starting={starting}
         realizedPnl={pnl}
         realizedPct={pnlPct}
+        winRate={summary?.win_rate ?? null}
+        closedTrades={summary?.settled_total ?? 0}
         loaded={loaded}
       />
 
@@ -330,16 +338,18 @@ export default function DashboardPage() {
 function DashHero({
   mode,
   bankroll,
-  starting,
   realizedPnl,
   realizedPct,
+  winRate,
+  closedTrades,
   loaded,
 }: {
   mode: string;
   bankroll: number;
-  starting: number;
   realizedPnl: number;
   realizedPct: number;
+  winRate: number | null;
+  closedTrades: number;
   loaded: boolean;
 }) {
   const isSim   = mode === "simulation";
@@ -381,9 +391,16 @@ function DashHero({
           </div>
           <div className="hero-delta-div"></div>
           <div className="hero-delta">
-            <div className="hero-delta-label">Started at</div>
+            <div className="hero-delta-label">Win rate</div>
             <div className="hero-delta-val t-num">
-              {loaded ? `$${starting.toLocaleString("en-US", { minimumFractionDigits: 0 })}` : "-"}
+              {loaded && winRate != null ? `${Math.round(winRate * 100)}%` : "-"}
+            </div>
+          </div>
+          <div className="hero-delta-div"></div>
+          <div className="hero-delta">
+            <div className="hero-delta-label">Closed trades</div>
+            <div className="hero-delta-val t-num">
+              {loaded ? `${closedTrades}` : "-"}
             </div>
           </div>
         </div>

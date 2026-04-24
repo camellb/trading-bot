@@ -610,20 +610,27 @@ def _cost_validation_impl(user_id: Optional[str], _bucket: int) -> dict:
 # ── Public: bankroll series ─────────────────────────────────────────────────
 def bankroll_series(resolution: str = "daily",
                     starting_cash: Optional[float] = None,
-                    user_id: Optional[str] = None) -> list[dict]:
+                    user_id: Optional[str] = None,
+                    mode: Optional[str] = None) -> list[dict]:
     """
     Cumulative realised P&L over time, by day or hour.
 
     When `user_id` is provided the series is scoped to that user's settled
     positions only. When user_id is None the series is global (admin use).
+
+    When `mode` is "simulation" or "live" the series is further restricted
+    to that pm_positions.mode so the dashboard's SIM/LIVE view toggle
+    shows only the relevant history. Unknown values are ignored.
     """
+    mode_clean = mode if mode in ("simulation", "live") else None
     return _bankroll_series_impl(resolution, starting_cash, user_id,
-                                  _cache_bucket())
+                                  mode_clean, _cache_bucket())
 
 
 @lru_cache(maxsize=32)
 def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
                           user_id: Optional[str],
+                          mode: Optional[str],
                           _bucket: int) -> list[dict]:
     try:
         from sqlalchemy import text
@@ -633,6 +640,10 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
         if user_id:
             user_clause = "  AND user_id = :uid "
             params["uid"] = user_id
+        mode_clause = ""
+        if mode:
+            mode_clause = "  AND mode = :m "
+            params["m"] = mode
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 f"SELECT date_trunc('{grain}', settled_at) AS ts, "
@@ -642,6 +653,7 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
                 "  AND settled_at IS NOT NULL "
                 "  AND realized_pnl_usd IS NOT NULL "
                 f"{user_clause}"
+                f"{mode_clause}"
                 "GROUP BY ts ORDER BY ts ASC"
             ), params).fetchall()
         base = float(starting_cash) if starting_cash is not None else 0.0
@@ -781,7 +793,8 @@ def _archetype_pnl_attribution_impl(user_id: Optional[str],
 
 # ── Public: full report (packaged for the dashboard + learning cadence) ─────
 def full_report(scope: Scope = "all",
-                user_id: Optional[str] = None) -> dict:
+                user_id: Optional[str] = None,
+                mode: Optional[str] = None) -> dict:
     """
     Bundle every metric into one dict. Used by /api/diagnostics.
 
@@ -789,6 +802,10 @@ def full_report(scope: Scope = "all",
     to that user. Forecaster-level metrics (calibration, brier) read from the
     shared `predictions` table and remain global - they are admin-only and the
     user-facing dashboard should route around them.
+
+    When `mode` is "simulation" or "live" the time-series visuals (bankroll
+    history) are restricted to that pm_positions.mode. Unknown values are
+    ignored.
     """
     return {
         "scope":           scope,
@@ -810,6 +827,7 @@ def full_report(scope: Scope = "all",
         },
         "system": {
             "bankroll_series":      bankroll_series("daily",
-                                                    user_id=user_id),
+                                                    user_id=user_id,
+                                                    mode=mode),
         },
     }

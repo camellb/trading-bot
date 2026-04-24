@@ -4,6 +4,10 @@ Unit tests for engine.archetype_classifier.classify_archetype.
 The classifier is a pure function. Each test exercises one branch and
 its expected label. Real production questions (from pm_positions) are
 used as fixtures so the tests describe exactly the inputs the bot sees.
+
+The taxonomy is sport-level: "tennis", "basketball", "baseball",
+"football", "hockey", "cricket", "esports", "soccer", plus the
+sports catch-all "sports_other" and non-sports labels.
 """
 
 from __future__ import annotations
@@ -21,36 +25,36 @@ from engine.archetype_classifier import (
 
 
 class TennisClassificationTests(unittest.TestCase):
-    def test_qualifier_matches_qualification_anywhere(self):
+    def test_qualification_returns_tennis(self):
         self.assertEqual(
             classify_archetype(
                 "Madrid Open, Qualification: Alycia Parks vs Ksenia Efremova",
                 category="sports",
                 event_slug="wta-parks-efremov-2026-04-21",
             ),
-            "tennis_qualifier",
+            "tennis",
         )
 
-    def test_qualifier_matches_qualifying_round(self):
+    def test_qualifying_round_returns_tennis(self):
         self.assertEqual(
             classify_archetype(
                 "Roland Garros Qualifying: Smith vs Jones",
                 category="sports",
             ),
-            "tennis_qualifier",
+            "tennis",
         )
 
-    def test_main_draw_grand_slam(self):
+    def test_grand_slam_main_draw_returns_tennis(self):
         self.assertEqual(
             classify_archetype(
                 "Madrid Open: Kaitlin Quevedo vs Venus Williams",
                 category="sports",
                 event_slug="wta-quevedo-william-2026-04-21",
             ),
-            "tennis_main_draw",
+            "tennis",
         )
 
-    def test_lower_tier_challenger_by_city_prefix(self):
+    def test_challenger_by_city_prefix_returns_tennis(self):
         # "Savannah: X vs Y" - ATP Challenger-tier event.
         self.assertEqual(
             classify_archetype(
@@ -58,96 +62,127 @@ class TennisClassificationTests(unittest.TestCase):
                 category="sports",
                 event_slug="atp-rybakov-feldbau-2026-04-21",
             ),
-            "tennis_lower_tier",
+            "tennis",
         )
 
-    def test_lower_tier_abidjan(self):
+    def test_abidjan_challenger_returns_tennis(self):
         self.assertEqual(
             classify_archetype(
                 "Abidjan: Maxime Chazal vs Millen Hurrion",
                 category="sports",
                 event_slug="atp-chazal-hurrion-2026-04-21",
             ),
-            "tennis_lower_tier",
+            "tennis",
         )
 
-    def test_atp_branded_without_tournament_name_is_lower_tier(self):
-        # Fallthrough for ATP-flagged matches we don't have a tournament
-        # match for - treated as lower tier by default.
+    def test_atp_branded_without_tournament_name_returns_tennis(self):
         self.assertEqual(
             classify_archetype(
                 "ATP event: Doe vs Roe",
                 category="sports",
                 event_slug="atp-doe-roe-2026",
             ),
-            "tennis_lower_tier",
+            "tennis",
         )
 
 
 class TeamSportsTests(unittest.TestCase):
-    def test_mlb_game(self):
+    def test_mlb_game_returns_baseball(self):
         self.assertEqual(
             classify_archetype(
                 "St. Louis Cardinals vs. Miami Marlins",
                 category="sports",
                 event_slug="mlb-stl-mia-2026-04-21",
             ),
-            "baseball_game",
+            "baseball",
         )
 
-    def test_nba_prop_over_under(self):
+    def test_nba_prop_over_under_returns_basketball(self):
         self.assertEqual(
             classify_archetype(
                 "Trail Blazers vs. Spurs: O/U 219.5",
                 category="sports",
                 event_slug="nba-por-sas-2026-04-21",
             ),
-            "basketball_prop",
+            "basketball",
         )
 
-    def test_nba_spread(self):
+    def test_nba_spread_without_team_falls_to_sports_other(self):
         # No NBA team tokens in the question, so it lands in sports_other
-        # via the coarse category. The accompanying O/U or spread market
-        # on the same event does get tagged basketball_prop.
-        self.assertIn(
+        # via the coarse category.
+        self.assertEqual(
             classify_archetype(
-                "Spread: Rockets (-5.5)",
+                "Spread: something (-5.5)",
                 category="sports",
                 event_slug="nba-hou-lal-2026-04-21",
             ),
-            ("basketball_prop", "basketball_game"),
+            "sports_other",
         )
 
-    def test_nba_straight_game(self):
+    def test_nba_straight_game_returns_basketball(self):
         self.assertEqual(
             classify_archetype(
                 "Lakers vs. Celtics",
                 category="sports",
             ),
-            "basketball_game",
+            "basketball",
         )
 
-    def test_cricket_psl(self):
+    def test_cricket_psl_returns_cricket(self):
         self.assertEqual(
             classify_archetype(
                 "Pakistan Super League: Rawalpindi Pindiz vs Multan Sultans",
                 category="sports",
             ),
-            "cricket_match",
+            "cricket",
         )
 
-    def test_esports_lol_qualifier_is_tennis_qualifier_by_rule(self):
+    def test_soccer_premier_league_returns_soccer(self):
+        self.assertEqual(
+            classify_archetype(
+                "Premier League: Arsenal vs Chelsea",
+                category="sports",
+            ),
+            "soccer",
+        )
+
+    def test_nhl_game_returns_hockey(self):
+        self.assertEqual(
+            classify_archetype(
+                "Maple Leafs vs. Bruins",
+                category="sports",
+            ),
+            "hockey",
+        )
+
+    def test_nfl_game_returns_football(self):
+        self.assertEqual(
+            classify_archetype(
+                "Patriots vs. Chiefs",
+                category="sports",
+            ),
+            "football",
+        )
+
+    def test_esports_lol_qualifier_returns_tennis_by_qualifier_rule(self):
         # The word "Qualifier" in the question triggers the qualifier
-        # branch regardless of sport. The user's explicit ask is to skip
-        # *qualifier-tier* trades across the board - treating esports
-        # qualifiers the same as tennis qualifiers is consistent with that.
+        # branch regardless of sport - short-circuit by design.
         self.assertEqual(
             classify_archetype(
                 "LoL: LYON vs FlyQuest (BO3) - Esports World Cup "
                 "North America Qualifier Playoffs",
                 category="sports",
             ),
-            "tennis_qualifier",
+            "tennis",
+        )
+
+    def test_esports_non_qualifier_returns_esports(self):
+        self.assertEqual(
+            classify_archetype(
+                "LCS Finals: Cloud9 vs TSM",
+                category="sports",
+            ),
+            "esports",
         )
 
 
@@ -207,25 +242,25 @@ class EdgeCaseTests(unittest.TestCase):
             "binary_event",
         )
 
-    def test_canonical_labels_cover_fixtures(self):
+    def test_canonical_labels_cover_sport_level_taxonomy(self):
         expected = {
-            "tennis_qualifier", "tennis_main_draw", "tennis_lower_tier",
-            "basketball_game", "basketball_prop", "baseball_game",
-            "cricket_match",
+            "tennis", "basketball", "baseball", "football", "hockey",
+            "cricket", "esports", "soccer", "sports_other",
             "price_threshold", "activity_count", "geopolitical_event",
-            "sports_other", "binary_event",
+            "binary_event",
         }
-        self.assertTrue(expected.issubset(set(ARCHETYPES)))
+        self.assertEqual(expected, set(ARCHETYPES))
 
 
 class SkipListIntegrationTests(unittest.TestCase):
     """
     End-to-end contract: the sizer's skip-list gate fires on the
-    classifier's output. This is the whole point of B1.
+    classifier's output. Flat taxonomy - "tennis" instead of
+    "tennis_qualifier" - is the label the skip list must match.
     """
 
     def _uc(self, skip_list):
-        from dataclasses import dataclass, field
+        from dataclasses import dataclass
 
         @dataclass
         class _UC:
@@ -240,7 +275,7 @@ class SkipListIntegrationTests(unittest.TestCase):
         uc.archetype_skip_list = tuple(skip_list)
         return uc
 
-    def test_skip_list_rejects_tennis_qualifier(self):
+    def test_skip_list_rejects_tennis(self):
         from execution.pm_sizer import size_position
 
         archetype = classify_archetype(
@@ -251,13 +286,13 @@ class SkipListIntegrationTests(unittest.TestCase):
             claude_p=0.80, confidence=0.75,
             ask_yes=0.40, ask_no=0.60,
             bankroll=1000.0,
-            user_config=self._uc(("tennis_qualifier",)),
+            user_config=self._uc(("tennis",)),
             archetype=archetype,
         )
         self.assertFalse(decision.should_trade)
         self.assertIn("skip list", decision.skip_reason or "")
 
-    def test_skip_list_permits_basketball_game(self):
+    def test_skip_list_permits_basketball(self):
         from execution.pm_sizer import size_position
 
         archetype = classify_archetype("Lakers vs. Celtics", category="sports")
@@ -265,7 +300,7 @@ class SkipListIntegrationTests(unittest.TestCase):
             claude_p=0.80, confidence=0.75,
             ask_yes=0.40, ask_no=0.60,
             bankroll=1000.0,
-            user_config=self._uc(("tennis_qualifier",)),
+            user_config=self._uc(("tennis",)),
             archetype=archetype,
         )
         self.assertTrue(decision.should_trade)

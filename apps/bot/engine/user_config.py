@@ -116,9 +116,12 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     "confidence_override_threshold": (0.60, 0.95),
     "base_stake_pct":                (0.005, 0.05),
     "max_stake_pct":                 (0.01, 0.10),
-    "daily_loss_limit_pct":          (0.05, 0.25),
-    "weekly_loss_limit_pct":         (0.10, 0.40),
-    "drawdown_halt_pct":             (0.20, 0.60),
+    # Loss caps and drawdown halt accept the full 0-100% range so users
+    # can set whatever envelope fits their risk tolerance. Defaults are
+    # still conservative; these ranges just enable flexibility.
+    "daily_loss_limit_pct":          (0.01, 1.00),
+    "weekly_loss_limit_pct":         (0.01, 1.00),
+    "drawdown_halt_pct":             (0.01, 1.00),
     "streak_cooldown_losses":        (2, 10),
     "dry_powder_reserve_pct":        (0.10, 0.40),
     "cost_assumption_override":      (0.0, 0.10),

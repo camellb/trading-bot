@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
+import { useViewMode } from "@/lib/view-mode";
 import "../../styles/content.css";
 
 type Filter = "all" | "open" | "closed" | "skipped";
@@ -128,8 +129,13 @@ export default function PositionsPage() {
     });
   };
 
+  const { version: viewModeVersion } = useViewMode();
+
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
+    setPositions(null);
+    setEvals(null);
     const load = async () => {
       const [p, e] = await Promise.all([
         getJSON<PositionsPayload>("/api/positions"),
@@ -146,7 +152,7 @@ export default function PositionsPage() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [viewModeVersion]);
 
   const open    = positions?.open ?? [];
   const settled = positions?.settled ?? [];
