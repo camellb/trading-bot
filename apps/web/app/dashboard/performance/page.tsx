@@ -556,11 +556,6 @@ export default function PerformancePage() {
             {categoryStats.length} {categoryStats.length === 1 ? "category" : "categories"}
           </span>
         </div>
-        <p className="panel-body" style={{ marginBottom: 20 }}>
-          Which kinds of markets make money, and which bleed. Categories with fewer
-          than 10 settled trades are muted. Their numbers are noise until the
-          sample grows.
-        </p>
         {categoryStats.length === 0 ? (
           <div className="empty-state" style={{ padding: 32 }}>
             {loaded
@@ -584,28 +579,9 @@ export default function PerformancePage() {
               {categoryStats.map((c) => {
                 const winRate = c.n > 0 ? (c.wins / c.n) * 100 : 0;
                 const roi = c.totalCost > 0 ? (c.totalPnl / c.totalCost) * 100 : 0;
-                const smallSample = c.n < 10;
-                const rowStyle = smallSample
-                  ? { color: "rgba(232, 228, 216, 0.45)" }
-                  : undefined;
                 return (
-                  <tr key={c.category} style={rowStyle}>
-                    <td>
-                      {c.category}
-                      {smallSample ? (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            letterSpacing: "0.12em",
-                            textTransform: "uppercase",
-                            marginLeft: 8,
-                            color: "rgba(232, 228, 216, 0.35)",
-                          }}
-                        >
-                          low n
-                        </span>
-                      ) : null}
-                    </td>
+                  <tr key={c.category}>
+                    <td>{c.category}</td>
                     <td className="mono">{c.n}</td>
                     <td className="mono">{winRate.toFixed(0)}%</td>
                     <td className={`mono ${c.totalPnl >= 0 ? "cell-up" : "cell-down"}`}>
