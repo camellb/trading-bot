@@ -213,10 +213,11 @@ class BotAPI:
         if executor is None:
             return web.json_response({"error": "X-User-Id header required"},
                                       status=401)
-        if not executor.ready:
-            # Not-yet-onboarded users see an empty portfolio, never another
-            # user's positions leaked through.
-            return web.json_response({"open": [], "settled": []})
+        # Read-only endpoint: never gate on `executor.ready`. A user who
+        # picked 'live' at onboarding but hasn't wired Polymarket creds yet
+        # is not ready to TRADE live, but they must still see their own
+        # history when the view toggle is on Simulation. Cross-tenant
+        # isolation is enforced by the `user_id = :uid` filter below.
         open_rows = executor.get_open_positions()
         mode      = executor.mode
         uid       = executor.user_id

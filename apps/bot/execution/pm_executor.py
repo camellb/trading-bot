@@ -113,10 +113,15 @@ class PMExecutor:
             bankroll = starting_cash
                      + Σ realized_pnl_usd   (user, settled/invalid)
                      - Σ cost_usd           (user, open)
+
+        Not gated on `self.ready` - reads must always surface the user's own
+        history. A user whose trading-mode config is incomplete (e.g. picked
+        'live' but hasn't wired Polymarket creds yet) should still see their
+        historical bankroll in either view. The `ready` flag only gates
+        writes (opening new positions); write-path callers in pm_analyst
+        already short-circuit upstream before calling this.
         """
         starting = self.get_starting_cash()
-        if not self.ready:
-            return 0.0
         try:
             with get_engine().begin() as conn:
                 realized = conn.execute(text(
@@ -142,25 +147,15 @@ class PMExecutor:
 
     def get_portfolio_stats(self) -> dict:
         """
-        Dashboard-friendly summary for this user in their current mode.
+        Dashboard-friendly summary for this user in the current view mode.
 
-        Not-ready users (no onboarding) see all zeros - never data that
-        leaked from another tenant.
+        Never gated on `self.ready`. A user who picked 'live' at onboarding
+        but hasn't wired Polymarket creds yet is not ready to TRADE live,
+        but they must still see their historical simulation stats when the
+        view toggle is on Simulation. Cross-tenant isolation is preserved
+        by the `user_id = :uid` filter on every underlying query, not by
+        the readiness flag.
         """
-        if not self.ready:
-            return {
-                "mode":            self._user_config.mode,     # may be None
-                "starting_cash":   0.0,
-                "bankroll":        0.0,
-                "equity":          0.0,
-                "open_positions":  0,
-                "open_cost":       0.0,
-                "settled_total":   0,
-                "settled_wins":    0,
-                "win_rate":        None,
-                "realized_pnl":    0.0,
-                "ready":           False,
-            }
         starting = self.get_starting_cash()
         try:
             with get_engine().begin() as conn:
@@ -399,8 +394,9 @@ class PMExecutor:
 
     # ── Open-position lookups ────────────────────────────────────────────────
     def get_open_positions(self) -> list[dict]:
-        if not self.ready:
-            return []
+        # Read-only lookup: never gated on `self.ready`. A user who isn't
+        # currently trade-ready (e.g. live mode without creds) must still
+        # see their own history. Isolation is enforced by `user_id = :uid`.
         try:
             with get_engine().begin() as conn:
                 rows = conn.execute(text(
