@@ -321,6 +321,128 @@ class PolymarketFeed:
         long.sort(key=lambda m: m.volume_24h_clob, reverse=True)
         return (short + long)[:limit]
 
+    # ── Tag-scoped candidate fetch ────────────────────────────────────────
+    async def fetch_candidates_by_tag(
+        self,
+        tag_id:           int,
+        limit:            int   = 25,
+        scan_pages:       int   = 2,    # 200 rows per tag is plenty
+        min_volume_24h:   float = DEFAULT_MIN_VOLUME_24H,
+        min_p:            float = DEFAULT_MIN_P,
+        max_p:            float = DEFAULT_MAX_P,
+        min_days:         int   = DEFAULT_MIN_DAYS_OUT,
+        max_days:         int   = DEFAULT_MAX_DAYS_OUT,
+    ) -> list[PolyMarket]:
+        """
+        Like `fetch_candidate_markets` but constrained to a single Gamma
+        top-level `tag_id`. Same gate suite (uncertainty, horizon, volume),
+        same short-horizon-first ranking; only the universe is narrower.
+
+        Note: the `tag_slug` query parameter is silently ignored by Gamma -
+        only the numeric `tag_id` filters. Verified empirically.
+        """
+        all_rows: list[dict] = []
+        for page in range(scan_pages):
+            data = await self._get("/markets", {
+                "active":    "true",
+                "closed":    "false",
+                "limit":     "100",
+                "order":     "volume24hr",
+                "ascending": "false",
+                "offset":    str(page * 100),
+                "tag_id":    str(int(tag_id)),
+            })
+            if not isinstance(data, list) or not data:
+                break
+            all_rows.extend(data)
+
+        kept: list[PolyMarket] = []
+        for row in all_rows:
+            if not row.get("acceptingOrders", False):
+                continue
+            mk = _as_market(row)
+            if mk is None:
+                continue
+            if not (min_p <= mk.yes_price <= max_p):
+                continue
+            d = mk.days_to_end
+            if d < min_days or d > max_days:
+                continue
+            if mk.volume_24h_clob < min_volume_24h:
+                continue
+            kept.append(mk)
+
+        short = [m for m in kept if m.days_to_end <= 7]
+        long  = [m for m in kept if m.days_to_end > 7]
+        short.sort(key=lambda m: m.volume_24h_clob, reverse=True)
+        long.sort(key=lambda m: m.volume_24h_clob, reverse=True)
+        return (short + long)[:limit]
+
+    async def fetch_candidates_balanced(
+        self,
+        tag_quotas:       dict[int, int],
+        min_volume_24h:   float = DEFAULT_MIN_VOLUME_24H,
+        min_p:            float = DEFAULT_MIN_P,
+        max_p:            float = DEFAULT_MAX_P,
+        min_days:         int   = DEFAULT_MIN_DAYS_OUT,
+        max_days:         int   = DEFAULT_MAX_DAYS_OUT,
+    ) -> list[PolyMarket]:
+        """
+        Tag-balanced fan-out fetch.
+
+        For each (tag_id, quota) pair in `tag_quotas`, fetch up to `quota`
+        candidate markets via `fetch_candidates_by_tag`. Then dedupe by
+        market.id (a market with multiple top-level tags appears in only
+        one bucket - the first one it was picked up in, in tag_quotas
+        iteration order) and re-apply the global short-horizon-first
+        ranking so the analyst still sees soonest-resolving markets first.
+
+        Surplus from a tag that returns fewer markets than its quota is
+        deliberately NOT redistributed to other tags. The whole point of
+        this method is to correct the structural sports bias of
+        `fetch_candidate_markets`; spilling sports overflow into politics
+        slots would silently undo that correction.
+
+        An empty `tag_quotas` returns an empty list - callers should fall
+        back to the untagged path themselves.
+        """
+        if not tag_quotas:
+            return []
+
+        async def _one(tag_id: int, quota: int):
+            try:
+                rows = await self.fetch_candidates_by_tag(
+                    tag_id=tag_id, limit=quota,
+                    min_volume_24h=min_volume_24h,
+                    min_p=min_p, max_p=max_p,
+                    min_days=min_days, max_days=max_days,
+                )
+                return tag_id, rows
+            except Exception as exc:
+                print(f"[polymarket] tag {tag_id} fetch failed: {exc}",
+                      file=sys.stderr)
+                return tag_id, []
+
+        results = await asyncio.gather(
+            *(_one(tid, q) for tid, q in tag_quotas.items())
+        )
+        by_tag = {tid: rows for tid, rows in results}
+
+        seen: set[str] = set()
+        accumulated: list[PolyMarket] = []
+        for tid in tag_quotas.keys():
+            for mk in by_tag.get(tid, []):
+                if mk.id in seen:
+                    continue
+                seen.add(mk.id)
+                accumulated.append(mk)
+
+        short = [m for m in accumulated if m.days_to_end <= 7]
+        long  = [m for m in accumulated if m.days_to_end > 7]
+        short.sort(key=lambda m: m.volume_24h_clob, reverse=True)
+        long.sort(key=lambda m: m.volume_24h_clob, reverse=True)
+        return short + long
+
     # ── Resolution lookup ─────────────────────────────────────────────────
     async def fetch_market(self, market_id: str) -> Optional[dict]:
         """Return the raw market row for a given id (needed to check resolution)."""

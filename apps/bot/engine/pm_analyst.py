@@ -337,12 +337,27 @@ class PMAnalyst:
             print("[pm_analyst] no onboarded users - skipping scan", flush=True)
             return summary
 
+        # Tag-balanced fan-out when PM_SCAN_TAG_QUOTAS is configured.
+        # Without this, a top-by-volume scan is ~80% sports (the highest-
+        # volume archetype on Polymarket), which crowds out the categories
+        # where Delfi has been better calibrated. Quotas sum to the
+        # effective scan size; an empty dict falls back to the legacy
+        # untagged path.
+        tag_quotas: dict[int, int] = dict(getattr(config, "PM_SCAN_TAG_QUOTAS", {}) or {})
+
         async with PolymarketFeed() as feed:
             try:
-                markets = await feed.fetch_candidate_markets(
-                    limit=limit, min_volume_24h=min_volume_24h,
-                    min_days=min_days, max_days=max_days,
-                )
+                if tag_quotas:
+                    markets = await feed.fetch_candidates_balanced(
+                        tag_quotas=tag_quotas,
+                        min_volume_24h=min_volume_24h,
+                        min_days=min_days, max_days=max_days,
+                    )
+                else:
+                    markets = await feed.fetch_candidate_markets(
+                        limit=limit, min_volume_24h=min_volume_24h,
+                        min_days=min_days, max_days=max_days,
+                    )
             except Exception as exc:
                 print(f"[pm_analyst] fetch candidates failed: {exc}",
                       file=sys.stderr)

@@ -36,6 +36,30 @@ PM_MIN_DAYS_TO_END      = 0           # include markets resolving in hours
 PM_MAX_DAYS_TO_END      = 7           # 7-day simulation test - short-horizon only
 PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving markets
 
+# Tag-balanced scan quotas. Without this, a top-by-volume scan is ~80%
+# sports because sports markets dominate Polymarket's 24h volume. Sports
+# have been a net loser per archetype, so we cap their share and reserve
+# slots for politics, geopolitics, crypto, economy, world, and culture.
+# Keys are Polymarket Gamma top-level tag_id values; values are the max
+# number of markets to keep from that tag in a single scan AFTER all
+# uncertainty / horizon / liquidity gates are applied. A market that
+# carries multiple top-level tags is fetched per tag bucket but
+# deduplicated by id before being returned. Surplus from a tag that
+# returns fewer markets than its quota is NOT redistributed to other
+# tags, because that would silently undo the bias correction.
+#
+# Setting this to an empty dict falls back to the legacy untagged
+# top-by-volume scan (kept available for emergencies and tests).
+PM_SCAN_TAG_QUOTAS: dict[int, int] = {
+    1:      20,   # Sports       (NBA / soccer / tennis - capped despite high volume)
+    2:      30,   # Politics     (Fed, elections, policy)
+    21:     15,   # Crypto       (BTC / ETH price thresholds)
+    100265: 15,   # Geopolitics  (ceasefires, treaties, summits)
+    100328: 10,   # Economy      (Fed rates, GDP, jobs)
+    596:    5,    # Culture      (Oscars, awards, celebrity)
+    101970: 5,    # World        (broader catch-all)
+}
+
 
 # ── Scheduler cadence ────────────────────────────────────────────────────────
 # Market scan: how often we look for new opportunities.
