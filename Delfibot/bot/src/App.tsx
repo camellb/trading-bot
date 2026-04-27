@@ -9,33 +9,11 @@ import Settings from "./pages/Settings";
 /**
  * Root component for the Delfi desktop app.
  *
- * Layout
- * ======
- * Two-column shell. Left sidebar carries the brand, primary nav, mode
- * toggle, and a status pill. Right column hosts the current page. The
- * sidebar mirrors the SaaS dashboard's information architecture so the
- * experience is identical regardless of where Delfi runs.
- *
- * State ownership
- * ===============
- * App owns the lightweight top-level state every page wants to see at a
- * glance: BotState (mode, can_trade_live, uptime, error count) and
- * Credentials (presence flags + wallet address). Both are refreshed
- * every 5 seconds and on demand via `refresh()`.
- *
- * Heavier per-page data (positions, evaluations, performance summary,
- * suggestions, learning reports) is fetched inside each page so we
- * don't waste cycles polling for things the user can't see. Each page
- * gets `mode` and a `refresh()` callback; that's enough to keep their
- * panels coherent with the global state.
- *
- * Boot screen
- * ===========
- * The bundled Python sidecar takes up to ~30 seconds to decompress on a
- * first launch (PyInstaller unpacks the interpreter to a tempdir). The
- * Rust shell waits up to 120s for the ready handshake. Showing a clean
- * boot screen instead of an empty shell with placeholders avoids the
- * "is it broken?" moment.
+ * Two-column shell with the SaaS information architecture: brand row,
+ * primary nav (Dashboard, Positions, Performance, Intelligence, Settings
+ * + sub-tabs), bot status pill, footer. Right column hosts the active
+ * page. App owns top-level state (BotState, Credentials, config) and
+ * polls every 5s. Each page fetches its own heavier data on demand.
  */
 
 export type Page =
@@ -45,8 +23,11 @@ export type Page =
   | "intelligence"
   | "settings";
 
+export type SettingsTab = "account" | "connections" | "risk" | "notifications";
+
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
   const [state, setState] = useState<BotState | null>(null);
   const [creds, setCreds] = useState<Credentials | null>(null);
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
@@ -92,30 +73,45 @@ export default function App() {
     }
   };
 
+  const goto = (p: Page, tab?: SettingsTab) => {
+    setPage(p);
+    if (p === "settings" && tab) setSettingsTab(tab);
+  };
+
   if (!connected) {
     return <BootScreen error={error} />;
   }
 
+  const mode = (state?.mode as "simulation" | "live") ?? "simulation";
+
   return (
-    <div className="shell">
+    <div className="app-shell">
       <Sidebar
         page={page}
+        settingsTab={settingsTab}
         setPage={setPage}
-        mode={(state?.mode as "simulation" | "live") ?? "simulation"}
+        setSettingsTab={setSettingsTab}
+        mode={mode}
         canTradeLive={state?.can_trade_live ?? false}
         setMode={setMode}
         modeBusy={modeBusy}
       />
-      <main className="main">
+      <main className="app-main">
         {error && <div className="error">{error}</div>}
         {page === "dashboard" && (
-          <Dashboard state={state} refresh={refresh} />
+          <Dashboard state={state} refresh={refresh} goto={goto} />
         )}
         {page === "positions" && <Positions />}
         {page === "performance" && <PerformancePage />}
         {page === "intelligence" && <Intelligence />}
         {page === "settings" && (
-          <Settings creds={creds} config={config} onSaved={refresh} />
+          <Settings
+            tab={settingsTab}
+            setTab={setSettingsTab}
+            creds={creds}
+            config={config}
+            onSaved={refresh}
+          />
         )}
       </main>
     </div>
@@ -127,7 +123,7 @@ export default function App() {
 function BootScreen({ error }: { error: string | null }) {
   return (
     <div className="boot">
-      <img src="/src/assets/brand/mark.svg" alt="" className="mark" />
+      <img src="/brand/mark.svg" alt="" className="boot-mark" />
       <h1>DELFI</h1>
       <p className="boot-status">
         {error
@@ -137,9 +133,12 @@ function BootScreen({ error }: { error: string | null }) {
       {error ? (
         <p className="boot-detail">{error}</p>
       ) : (
-        <p className="boot-detail">
-          First launch can take up to 30 seconds while the sidecar unpacks.
-        </p>
+        <>
+          <p className="boot-detail">
+            First launch can take up to 30 seconds while the sidecar unpacks.
+          </p>
+          <div className="boot-progress" aria-hidden="true" />
+        </>
       )}
     </div>
   );
@@ -147,82 +146,155 @@ function BootScreen({ error }: { error: string | null }) {
 
 // ── Sidebar ───────────────────────────────────────────────────────────
 
-const NAV: Array<{ id: Page; label: string; icon: ReactNode }> = [
+type NavItem = {
+  id: Page;
+  label: string;
+  icon: ReactNode;
+  sub?: { id: SettingsTab; label: string }[];
+};
+
+const NAV: NavItem[] = [
   { id: "dashboard",    label: "Dashboard",    icon: IconGrid() },
   { id: "positions",    label: "Positions",    icon: IconLayers() },
   { id: "performance",  label: "Performance",  icon: IconTrend() },
   { id: "intelligence", label: "Intelligence", icon: IconBolt() },
-  { id: "settings",     label: "Settings",     icon: IconGear() },
+  {
+    id: "settings",
+    label: "Settings",
+    icon: IconGear(),
+    sub: [
+      { id: "account",       label: "Account" },
+      { id: "connections",   label: "Connections" },
+      { id: "risk",          label: "Risk controls" },
+      { id: "notifications", label: "Notifications" },
+    ],
+  },
 ];
 
 function Sidebar({
   page,
+  settingsTab,
   setPage,
+  setSettingsTab,
   mode,
   canTradeLive,
   setMode,
   modeBusy,
 }: {
   page: Page;
+  settingsTab: SettingsTab;
   setPage: (p: Page) => void;
+  setSettingsTab: (t: SettingsTab) => void;
   mode: "simulation" | "live";
   canTradeLive: boolean;
   setMode: (m: "simulation" | "live") => void;
   modeBusy: boolean;
 }) {
   return (
-    <aside className="sidebar">
-      <div className="sidebar-brand">
-        <img src="/src/assets/brand/mark.svg" alt="" width={28} height={28} />
-        <span className="sidebar-brand-text">DELFI</span>
-      </div>
+    <aside className="side">
+      <a
+        href="#"
+        className="side-brand"
+        onClick={(e) => { e.preventDefault(); setPage("dashboard"); }}
+      >
+        <img src="/brand/mark.svg" alt="" className="side-mark" />
+        <span className="side-word">DELFI</span>
+      </a>
 
-      <nav className="sidebar-nav">
-        {NAV.map((item) => (
-          <button
-            key={item.id}
-            className={`nav-item ${page === item.id ? "active" : ""}`}
-            onClick={() => setPage(item.id)}
-            type="button"
-          >
-            <span className="nav-icon">{item.icon}</span>
-            <span>{item.label}</span>
-          </button>
-        ))}
+      <nav className="side-nav" aria-label="Primary">
+        {NAV.map((item) => {
+          const active = page === item.id;
+          return (
+            <div className="side-group" key={item.id}>
+              <button
+                type="button"
+                className={`side-link ${active ? "active" : ""}`}
+                onClick={() => setPage(item.id)}
+                aria-current={active ? "page" : undefined}
+              >
+                <span className="side-icon">{item.icon}</span>
+                <span className="side-label">{item.label}</span>
+              </button>
+              {active && item.sub && (
+                <div className="side-sub">
+                  {item.sub.map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      className={`side-sublink ${settingsTab === s.id ? "active" : ""}`}
+                      onClick={() => setSettingsTab(s.id)}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </nav>
 
-      <div className="sidebar-footer">
-        <div className="status-pill" data-mode={mode}>
-          <span className={`live-dot ${mode === "live" ? "profit" : ""}`} />
-          {mode}
-        </div>
-        <div className="mode-toggle">
-          <button
-            type="button"
-            className={mode === "simulation" ? "on" : ""}
-            onClick={() => setMode("simulation")}
-            disabled={modeBusy}
-          >
-            Sim
-          </button>
-          <button
-            type="button"
-            className={mode === "live" ? "on" : ""}
-            onClick={() => setMode("live")}
-            disabled={modeBusy || !canTradeLive}
-            title={
-              canTradeLive ? "" : "Add Polymarket key + wallet to enable live"
-            }
-          >
-            Live
-          </button>
-        </div>
+      <BotStatusPill
+        mode={mode}
+        canTradeLive={canTradeLive}
+        setMode={setMode}
+        modeBusy={modeBusy}
+      />
+
+      <div className="side-foot">
+        <div className="side-footnote">Local · v0.1.0</div>
       </div>
     </aside>
   );
 }
 
-// ── Inline sidebar icons (pixel-matched to SaaS shell) ─────────────────
+function BotStatusPill({
+  mode,
+  canTradeLive,
+  setMode,
+  modeBusy,
+}: {
+  mode: "simulation" | "live";
+  canTradeLive: boolean;
+  setMode: (m: "simulation" | "live") => void;
+  modeBusy: boolean;
+}) {
+  const isLive = mode === "live";
+  return (
+    <div className={`bot-pill ${isLive ? "on" : ""}`}>
+      <div className="bot-pill-row">
+        <span className="bot-pill-label">Status</span>
+        <span className="bot-pill-status">
+          <span className={`bot-pill-dot ${isLive ? "on" : "off"}`} />
+          <span className="bot-pill-state">{isLive ? "LIVE" : "SIMULATION"}</span>
+        </span>
+      </div>
+      <div className="bot-pill-modes" role="group" aria-label="Trading mode">
+        <button
+          type="button"
+          className={`bot-pill-mode-btn ${mode === "simulation" ? "on" : ""}`}
+          onClick={() => setMode("simulation")}
+          disabled={modeBusy}
+          aria-pressed={mode === "simulation"}
+        >
+          Simulation
+        </button>
+        <button
+          type="button"
+          className={`bot-pill-mode-btn ${mode === "live" ? "on" : ""}`}
+          onClick={() => setMode("live")}
+          disabled={modeBusy || !canTradeLive}
+          aria-pressed={mode === "live"}
+          title={canTradeLive ? "" : "Add Polymarket key + wallet to enable live"}
+        >
+          Live
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Inline icons (pixel-matched to SaaS shell) ─────────────────────────
 
 function IconGrid() {
   return (

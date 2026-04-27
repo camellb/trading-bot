@@ -6,55 +6,73 @@ import {
 } from "../api";
 
 /**
- * Intelligence — Delfi's review reports and the proposals it queues
- * from each cycle.
+ * Intelligence - SaaS-parity layout, with desktop-only in-app
+ * Apply / Snooze / Skip controls. The SaaS still routes those through
+ * Telegram /apply and /reject; the desktop has buttons in the card.
  *
- * Mirrors the SaaS `/dashboard/intelligence` surface, but with two
- * differences:
- *
- *  1. Proposals carry inline action buttons (Apply, Snooze, Skip)
- *     instead of asking the user to send `/apply <id>` from Telegram.
- *     Telegram is one delivery channel, not the only one.
- *
- *  2. Review reports carry a "Show full report" toggle that renders
- *     `body` (which the local API returns as either pretty JSON or a
- *     pre-rendered string) so the user can see what Delfi actually
- *     wrote without leaving the desktop app.
- *
- * Refresh cadence: 60s. Reports change rarely (one per 50 settled
- * trades), suggestions change on apply/skip/snooze and on each new
- * cycle, so 60s is the right amount of liveness without thrashing.
+ * page-wrap with three sections:
+ *   - Latest reviews: 50-trade narrative reports, expandable
+ *   - Proposals queued: pending suggestions with Apply/Snooze/Skip
+ *   - Snoozed: suggestions waiting for more samples
  */
 
-export default function Intelligence() {
-  const [reports, setReports] = useState<LearningReport[] | null>(null);
-  const [suggestions, setSuggestions] = useState<PendingSuggestion[] | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [openReportId, setOpenReportId] = useState<number | null>(null);
-  const [busyId, setBusyId] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function fmtDate(iso: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
+}
+function fmtDateTime(iso: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("en-US", {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+function fmtNum(n: number | null, digits = 3): string {
+  if (n == null) return "-";
+  return n.toFixed(digits);
+}
+function fmtDelta(n: number | null): string {
+  if (n == null) return "-";
+  const sign = n >= 0 ? "+" : "";
+  return `${sign}${(n * 100).toFixed(2)}%`;
+}
 
-  const load = useCallback(async () => {
+function reportBodyText(body: LearningReport["body"]): string {
+  if (body == null) return "";
+  if (typeof body === "string") return body;
+  try { return JSON.stringify(body, null, 2); } catch { return String(body); }
+}
+
+export default function Intelligence() {
+  const [reports, setReports]         = useState<LearningReport[] | null>(null);
+  const [suggestions, setSuggestions] = useState<PendingSuggestion[] | null>(null);
+  const [error, setError]             = useState<string | null>(null);
+  const [openReportId, setOpenReportId] = useState<number | null>(null);
+  const [busyId, setBusyId]             = useState<number | null>(null);
+
+  const refresh = useCallback(async () => {
     try {
       setError(null);
-      const [rRes, sRes] = await Promise.all([
-        api.learningReports(20),
-        api.suggestions(),
+      const [r1, r2] = await Promise.all([
+        api.learningReports(20).then((x) => x.reports),
+        api.suggestions().then((x) => x.suggestions),
       ]);
-      setReports(rRes.reports ?? []);
-      setSuggestions(sRes.suggestions ?? []);
-      setLoaded(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setLoaded(true);
+      setReports(r1);
+      setSuggestions(r2);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
 
   useEffect(() => {
-    load();
-    const id = setInterval(load, 60_000);
+    refresh();
+    const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
-  }, [load]);
+  }, [refresh]);
 
   const pending = useMemo(
     () => (suggestions ?? []).filter((s) => s.status === "pending"),
@@ -66,87 +84,82 @@ export default function Intelligence() {
   );
 
   const reportsList = reports ?? [];
-  const hasAnything =
-    reportsList.length > 0 || pending.length > 0 || snoozed.length > 0;
+  const loaded = reports !== null && suggestions !== null;
+  const hasAnything = reportsList.length > 0 || pending.length > 0 || snoozed.length > 0;
 
   const apply = async (id: number) => {
-    if (busyId) return;
     setBusyId(id);
-    try {
-      await api.applySuggestion(id);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyId(null);
-    }
+    try { await api.applySuggestion(id); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setBusyId(null); }
   };
   const skip = async (id: number) => {
-    if (busyId) return;
     setBusyId(id);
-    try {
-      await api.skipSuggestion(id);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyId(null);
-    }
+    try { await api.skipSuggestion(id); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setBusyId(null); }
   };
   const snooze = async (id: number) => {
-    if (busyId) return;
     setBusyId(id);
-    try {
-      await api.snoozeSuggestion(id);
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusyId(null);
-    }
+    try { await api.snoozeSuggestion(id, 25); await refresh(); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    finally { setBusyId(null); }
   };
 
   return (
-    <div>
-      <div className="page-header">
-        <h1>Intelligence</h1>
+    <div className="page-wrap">
+      <div className="page-head">
+        <div className="page-head-row">
+          <div>
+            <h1 className="page-h1">Intelligence</h1>
+            <p className="page-sub">
+              Every 50 closed trades Delfi writes a review: what moved the book,
+              where calibration held or drifted, and what the next cycle will
+              focus on. Proposed config changes land below each review with
+              evidence and inline Apply / Snooze / Skip controls.
+            </p>
+          </div>
+        </div>
       </div>
-
-      <p className="hint" style={{ maxWidth: 760, marginBottom: 24 }}>
-        Every 50 closed trades Delfi writes a review: what moved the book,
-        where calibration held or drifted, and what the next cycle will focus
-        on. Proposed config changes land below each review with evidence.
-        Apply, snooze, or skip each proposal here.
-      </p>
 
       {error && <div className="error">{error}</div>}
 
-      {!loaded && <div className="empty">Loading reviews...</div>}
+      {!loaded && <div className="empty-state">Loading reviews...</div>}
 
-      {loaded && !hasAnything && <EmptyState />}
+      {loaded && !hasAnything && (
+        <section className="intel-empty">
+          <div className="intel-empty-pill">NO REVIEWS YET</div>
+          <h2 className="intel-empty-head">Delfi&apos;s first review is on the way</h2>
+          <p className="intel-empty-body">
+            Review cycles fire every 50 closed trades. Until then, Delfi keeps
+            forecasting and collecting the sample it needs to write something
+            statistically meaningful.
+          </p>
+        </section>
+      )}
 
       {loaded && reportsList.length > 0 && (
-        <Section title="Latest reviews">
-          <ul className="reports">
+        <section className="intel-section">
+          <h2 className="intel-section-title">Latest reviews</h2>
+          <div className="intel-list">
             {reportsList.map((r) => (
-              <ReportRow
+              <ReportCard
                 key={r.id}
                 report={r}
                 expanded={openReportId === r.id}
-                onToggle={() =>
-                  setOpenReportId(openReportId === r.id ? null : r.id)
-                }
+                onToggle={() => setOpenReportId(openReportId === r.id ? null : r.id)}
               />
             ))}
-          </ul>
-        </Section>
+          </div>
+        </section>
       )}
 
       {loaded && pending.length > 0 && (
-        <Section title="Proposals queued">
-          <ul className="proposals">
+        <section className="intel-section">
+          <h2 className="intel-section-title">Proposals queued</h2>
+          <div className="intel-list">
             {pending.map((s) => (
-              <SuggestionRow
+              <SuggestionCard
                 key={s.id}
                 s={s}
                 busy={busyId === s.id}
@@ -155,15 +168,16 @@ export default function Intelligence() {
                 onSkip={() => skip(s.id)}
               />
             ))}
-          </ul>
-        </Section>
+          </div>
+        </section>
       )}
 
       {loaded && snoozed.length > 0 && (
-        <Section title="Snoozed">
-          <ul className="proposals">
+        <section className="intel-section">
+          <h2 className="intel-section-title">Snoozed</h2>
+          <div className="intel-list">
             {snoozed.map((s) => (
-              <SuggestionRow
+              <SuggestionCard
                 key={s.id}
                 s={s}
                 busy={busyId === s.id}
@@ -172,131 +186,61 @@ export default function Intelligence() {
                 onSkip={() => skip(s.id)}
               />
             ))}
-          </ul>
-        </Section>
-      )}
-
-      {loaded && hasAnything && (
-        <p
-          className="hint"
-          style={{ marginTop: 32, textAlign: "center", color: "var(--vellum-40)" }}
-        >
-          Learning accumulates. The more Delfi runs, the better it gets.
-        </p>
+          </div>
+        </section>
       )}
     </div>
   );
 }
 
-// ── Sections / rows ──────────────────────────────────────────────────────
-
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section style={{ marginBottom: 28 }}>
-      <h2
-        className="t-caption"
-        style={{ margin: "0 0 12px", color: "var(--vellum-60)" }}
-      >
-        {title}
-      </h2>
-      {children}
-    </section>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="card" style={{ alignItems: "flex-start" }}>
-      <div className="t-caption" style={{ color: "var(--gold)" }}>
-        No reviews yet
-      </div>
-      <h3
-        style={{
-          margin: "4px 0 0",
-          fontFamily: "var(--font-display)",
-          fontSize: 22,
-          fontWeight: 400,
-          color: "var(--vellum)",
-        }}
-      >
-        Delfi&apos;s first review is on the way
-      </h3>
-      <p className="hint" style={{ maxWidth: 600 }}>
-        Review cycles fire every 50 closed trades. Until then, Delfi keeps
-        forecasting and collecting the sample it needs to write something
-        statistically meaningful.
-      </p>
-    </div>
-  );
-}
-
-function ReportRow({
-  report,
-  expanded,
-  onToggle,
+function ReportCard({
+  report, expanded, onToggle,
 }: {
   report: LearningReport;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const settled = report.settled_count_at_creation ?? 0;
+  const body = reportBodyText(report.body);
+  const settled = (report as { settled_count_at_creation: number | null }).settled_count_at_creation ?? 0;
   return (
-    <li>
-      <div className="report-head">
-        <span>{fmtDateTime(report.created_at)}</span>
-        <span>{settled} settled trades</span>
+    <article className="intel-card">
+      <header className="intel-card-head">
+        <div className="intel-card-date">{fmtDateTime(report.created_at)}</div>
+        <div className="intel-card-status mode-simulation">SIMULATION</div>
+      </header>
+
+      <div className="intel-card-param">
+        {settled} settled trades at creation
       </div>
 
-      {report.thesis ? (
-        <p className="report-thesis">{report.thesis}</p>
-      ) : (
-        <p className="report-thesis text-muted">
-          (No thesis recorded for this cycle.)
+      {report.thesis && (
+        <p className="intel-card-evidence" style={{ marginTop: 8 }}>
+          {report.thesis}
         </p>
       )}
 
-      <div style={{ marginTop: 10 }}>
-        <button
-          type="button"
-          onClick={onToggle}
-          className="btn ghost small"
-          style={{ padding: "5px 12px", fontSize: 12 }}
-        >
-          {expanded ? "Hide full report" : "Show full report"}
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          background: "none", border: 0, padding: 0, cursor: "pointer",
+          textAlign: "left", width: "100%", color: "var(--gold)",
+          fontFamily: "var(--font-mono)", fontSize: 12, letterSpacing: "0.12em",
+          textTransform: "uppercase", marginTop: 6,
+        }}
+      >
+        {expanded ? "Hide full report" : "Show full report"}
+      </button>
 
-      {expanded && (
-        <div className="report-body">
-          <ReportBody body={report.body} />
-        </div>
+      {expanded && body && (
+        <pre className="intel-card-body">{body}</pre>
       )}
-    </li>
+    </article>
   );
 }
 
-function ReportBody({ body }: { body: LearningReport["body"] }) {
-  if (body == null) {
-    return <p className="empty">No detail captured.</p>;
-  }
-  if (typeof body === "string") {
-    return <pre style={{ whiteSpace: "pre-wrap" }}>{body}</pre>;
-  }
-  return <pre>{JSON.stringify(body, null, 2)}</pre>;
-}
-
-function SuggestionRow({
-  s,
-  busy,
-  onApply,
-  onSnooze,
-  onSkip,
+function SuggestionCard({
+  s, busy, onApply, onSnooze, onSkip,
 }: {
   s: PendingSuggestion;
   busy: boolean;
@@ -304,138 +248,66 @@ function SuggestionRow({
   onSnooze: () => void;
   onSkip: () => void;
 }) {
+  const isPending = s.status === "pending";
   return (
-    <li>
-      <div className="proposal-head">
-        <span className="proposal-name">{formatParam(s)}</span>
-        <span
-          className="t-caption"
-          style={{
-            color:
-              s.status === "snoozed" ? "var(--warn)" : "var(--vellum-60)",
-          }}
-        >
-          {s.status}
-        </span>
+    <article className="intel-card">
+      <header className="intel-card-head">
+        <div className="intel-card-date">{fmtDate(s.created_at)}</div>
+        <div className={`intel-card-status ${s.status}`}>{s.status.toUpperCase()}</div>
+      </header>
+
+      <div className="intel-card-param">{s.param_name}</div>
+
+      <div className="intel-card-move">
+        <span className="intel-card-from">{fmtNum(s.current_value)}</span>
+        <span className="intel-card-arrow">→</span>
+        <span className="intel-card-to">{fmtNum(s.proposed_value)}</span>
       </div>
 
-      <div className="proposal-change">
-        <ChangeDisplay s={s} />
-      </div>
+      {s.evidence && <p className="intel-card-evidence">{s.evidence}</p>}
 
-      {s.evidence && <p className="proposal-evidence">{s.evidence}</p>}
+      <dl className="intel-card-stats">
+        <div className="intel-card-stat">
+          <dt>Backtest delta</dt>
+          <dd className={s.backtest_delta != null && s.backtest_delta >= 0 ? "profit" : "ember"}>
+            {fmtDelta(s.backtest_delta)}
+          </dd>
+        </div>
+        <div className="intel-card-stat">
+          <dt>Backtest trades</dt>
+          <dd>{s.backtest_trades ?? "-"}</dd>
+        </div>
+        <div className="intel-card-stat">
+          <dt>Settled at review</dt>
+          <dd>{s.settled_count ?? "-"}</dd>
+        </div>
+      </dl>
 
-      <p className="proposal-backtest">
-        <BacktestLine s={s} />
-      </p>
-
-      <div className="proposal-actions">
-        <button
-          type="button"
-          className="btn small"
-          onClick={onApply}
-          disabled={busy}
-        >
-          Apply
-        </button>
-        {s.status !== "snoozed" && (
-          <button
-            type="button"
-            className="btn ghost small"
-            onClick={onSnooze}
-            disabled={busy}
-          >
-            Snooze
-          </button>
+      <div className="intel-card-actions">
+        {isPending && (
+          <>
+            <button className="btn-sm gold" disabled={busy} onClick={onApply}>
+              {busy ? "Applying..." : "Apply"}
+            </button>
+            <button className="btn-sm" disabled={busy} onClick={onSnooze}>
+              Snooze 25 trades
+            </button>
+            <button className="btn-sm danger" disabled={busy} onClick={onSkip}>
+              Skip
+            </button>
+          </>
         )}
-        <button
-          type="button"
-          className="btn ghost small"
-          onClick={onSkip}
-          disabled={busy}
-        >
-          Skip
-        </button>
+        {s.status === "snoozed" && (
+          <>
+            <button className="btn-sm gold" disabled={busy} onClick={onApply}>
+              Apply now
+            </button>
+            <button className="btn-sm danger" disabled={busy} onClick={onSkip}>
+              Skip
+            </button>
+          </>
+        )}
       </div>
-    </li>
+    </article>
   );
-}
-
-// ── Formatting helpers ─────────────────────────────────────────────────
-
-function formatParam(s: PendingSuggestion): string {
-  const op = (s.metadata?.operation as string | undefined) ?? "scalar_set";
-  const key = (s.metadata?.key as string | undefined) ?? null;
-  if (op === "dict_set" && key) {
-    return `${s.param_name}['${key}']`;
-  }
-  return s.param_name;
-}
-
-function ChangeDisplay({ s }: { s: PendingSuggestion }) {
-  const op = (s.metadata?.operation as string | undefined) ?? "scalar_set";
-
-  if (op === "list_append") {
-    const adds = (s.metadata?.adds as unknown[] | undefined) ?? [];
-    if (adds.length === 0) {
-      return <span className="text-muted">(empty list change)</span>;
-    }
-    return (
-      <span>
-        {adds.map((x, i) => (
-          <span key={i} style={{ marginRight: 8 }}>
-            <span className="arrow">+</span>
-            <span style={{ color: "var(--profit)" }}>{String(x)}</span>
-          </span>
-        ))}
-      </span>
-    );
-  }
-
-  // scalar_set, dict_set both render as prev → new
-  return (
-    <span>
-      <span>{fmtVal(s.current_value)}</span>
-      <span className="arrow">→</span>
-      <span style={{ color: "var(--gold)" }}>{fmtVal(s.proposed_value)}</span>
-    </span>
-  );
-}
-
-function BacktestLine({ s }: { s: PendingSuggestion }) {
-  const parts: string[] = [];
-  if (s.backtest_delta != null) {
-    const sign = s.backtest_delta >= 0 ? "+" : "";
-    parts.push(`Backtest delta ${sign}${(s.backtest_delta * 100).toFixed(2)}%`);
-  }
-  if (s.backtest_trades != null) {
-    parts.push(`${s.backtest_trades} trades`);
-  }
-  if (s.settled_count != null) {
-    parts.push(`Settled at review: ${s.settled_count}`);
-  }
-  if (parts.length === 0) {
-    return <span className="text-muted">No backtest provided.</span>;
-  }
-  return <>{parts.join(" • ")}</>;
-}
-
-function fmtVal(v: number | null): string {
-  if (v == null) return "-";
-  if (Math.abs(v) < 10) return v.toFixed(3);
-  if (Math.abs(v) < 1000) return v.toFixed(2);
-  return v.toLocaleString();
-}
-
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }

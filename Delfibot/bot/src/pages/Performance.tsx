@@ -8,28 +8,36 @@ import {
 } from "../api";
 
 /**
- * Performance page (desktop equivalent of /dashboard/performance).
+ * Performance - SaaS-parity layout.
  *
- * Sections:
- *   1. Snapshot - bankroll, ROI, win rate, Brier.
- *   2. Equity history - SVG sparkline reconstructed from settled
- *      positions cumulating realized P&L from starting_cash.
- *   3. Calibration bins - probability bucket vs predicted vs actual.
- *   4. By category - per-archetype N, Brier, win rate.
- *   5. By horizon - short/medium/long bucket performance.
- *   6. Brier trend - sparkline of brier over time.
- *
- * The equity SVG is reconstructed client-side because the desktop
- * sidecar doesn't take daily snapshots; we walk settled positions and
- * accumulate realized_pnl_usd starting from starting_cash. This matches
- * what the user sees in summary.bankroll at any point in time.
+ * page-wrap with title + range chips, then:
+ *   - stat-row: Bankroll, Realized P&L, Win rate, Brier (4 tiles)
+ *   - Equity chart (SVG, reconstructed client-side from settled positions)
+ *   - Calibration bins (predicted vs actual)
+ *   - Brier trend sparkline
+ *   - By category / by horizon tables
  */
 
-const RANGES: Array<{ id: "all" | "30d" | "7d"; label: string }> = [
+type Range = "all" | "30d" | "7d";
+
+const RANGES: { id: Range; label: string }[] = [
   { id: "all", label: "All time" },
-  { id: "30d", label: "Last 30 days" },
-  { id: "7d",  label: "Last 7 days" },
+  { id: "30d", label: "30 days" },
+  { id: "7d",  label: "7 days" },
 ];
+
+const RANGE_DAYS: Record<Exclude<Range, "all">, number> = { "30d": 30, "7d": 7 };
+
+function fmtMoney(v: number): string {
+  const sign = v < 0 ? "-" : "";
+  const abs = Math.abs(v);
+  if (abs >= 1000) return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `${sign}$${abs.toFixed(2)}`;
+}
+function fmtPct(v: number, digits = 1): string {
+  const sign = v >= 0 ? "+" : "";
+  return `${sign}${v.toFixed(digits)}%`;
+}
 
 export default function Performance() {
   const [summary, setSummary] = useState<PerformanceSummary | null>(null);
@@ -37,7 +45,8 @@ export default function Performance() {
   const [calibration, setCalibration] = useState<CalibrationReport | null>(null);
   const [closed, setClosed] = useState<PMPosition[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [range, setRange] = useState<"all" | "30d" | "7d">("all");
+  const [range, setRange] = useState<Range>("all");
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -46,20 +55,17 @@ export default function Performance() {
         api.summary(),
         api.brierTrend().then((x) => x.points),
         api.calibration({ source: "polymarket" }),
-        api
-          .positions(500)
-          .then((r) =>
-            r.positions
-              .filter((x) => x.status === "settled")
-              .sort((a, b) =>
-                (a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1,
-              ),
-          ),
+        api.positions(500).then((r) =>
+          r.positions
+            .filter((x) => x.status === "settled")
+            .sort((a, b) => ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1)),
+        ),
       ]);
       setSummary(s);
       setTrend(t);
       setCalibration(c);
       setClosed(p);
+      setLoaded(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -67,415 +73,263 @@ export default function Performance() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 30_000);
+    const id = setInterval(refresh, 60_000);
     return () => clearInterval(id);
   }, [refresh]);
 
-  const equity = useMemo(
-    () => buildEquitySeries(closed, summary?.starting_cash ?? 0, range),
-    [closed, summary?.starting_cash, range],
-  );
+  const filtered = useMemo(() => {
+    if (range === "all") return closed;
+    const cutoff = Date.now() - RANGE_DAYS[range] * 86_400_000;
+    return closed.filter((p) => {
+      if (!p.settled_at) return false;
+      const t = new Date(p.settled_at).getTime();
+      return Number.isFinite(t) && t >= cutoff;
+    });
+  }, [closed, range]);
+
+  const filteredStats = useMemo(() => {
+    let trades = 0, wins = 0, losses = 0, totalPnl = 0, totalCost = 0;
+    for (const r of filtered) {
+      const pnl = (r.realized_pnl_usd as number | null | undefined) ?? 0;
+      const outcome = r.settlement_outcome as string | null | undefined;
+      if (outcome == null) continue;
+      trades++;
+      if (outcome === r.side) wins++; else losses++;
+      totalPnl += pnl;
+      totalCost += r.cost_usd ?? 0;
+    }
+    const winRate = trades > 0 ? (wins / trades) * 100 : 0;
+    const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+    return { trades, wins, losses, totalPnl, totalCost, winRate, roi };
+  }, [filtered]);
+
+  const equitySeries = useMemo(() => {
+    const start = summary?.starting_cash ?? 0;
+    let cum = start;
+    return [{ ts: "", v: start }, ...filtered.map((r) => {
+      cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
+      return { ts: r.settled_at ?? "", v: cum };
+    })];
+  }, [summary, filtered]);
 
   return (
-    <>
-      <header className="page-header">
-        <h1>Performance</h1>
-        <div className="page-actions">
-          {RANGES.map((r) => (
-            <button
-              key={r.id}
-              className={`btn small ${range === r.id ? "" : "ghost"}`}
-              onClick={() => setRange(r.id)}
-              type="button"
-            >
-              {r.label}
-            </button>
-          ))}
+    <div className="page-wrap">
+      <div className="page-head">
+        <div className="page-head-row">
+          <div>
+            <h1 className="page-h1">Performance</h1>
+            <p className="page-sub">
+              ROI, calibration, and category-level breakdowns. Numbers count only positions Delfi actually entered.
+            </p>
+          </div>
+          <div className="page-head-right">
+            {RANGES.map((r) => (
+              <button
+                key={r.id}
+                className={`chip ${range === r.id ? "on" : ""}`}
+                onClick={() => setRange(r.id)}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </header>
+      </div>
 
       {error && <div className="error">{error}</div>}
 
-      {/* Snapshot row */}
-      <div className="grid-4" style={{ marginBottom: 20 }}>
-        <Tile
-          label="Bankroll"
-          value={fmtUsd(summary?.bankroll)}
-          sub={`from $${(summary?.starting_cash ?? 0).toFixed(0)} starting`}
-        />
-        <Tile
-          label="ROI"
-          value={fmtPct(summary?.roi)}
-          tone={(summary?.roi ?? 0) >= 0 ? "profit" : "ember"}
-          sub={fmtPnL(summary?.realized_pnl)}
-        />
-        <Tile
-          label="Win rate"
-          value={
-            summary?.win_rate != null
-              ? `${(summary.win_rate * 100).toFixed(0)}%`
-              : "-"
-          }
-          sub={`${summary?.settled_wins ?? 0} of ${summary?.settled_total ?? 0} wins`}
-        />
-        <Tile
-          label="Brier"
-          value={summary?.brier != null ? summary.brier.toFixed(3) : "-"}
-          sub="lower is better"
-        />
-      </div>
-
-      {/* Equity history */}
-      <section className="equity-frame" style={{ marginBottom: 20 }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-            marginBottom: 12,
-          }}
-        >
-          <h2 className="card-title">Equity history</h2>
-          <span className="hero-label">
-            {equity.points.length > 0
-              ? `${equity.points.length} settled trades`
-              : "no settled trades yet"}
-          </span>
+      <div className="stat-row">
+        <div className="stat-cell">
+          <div className="stat-cell-label">Bankroll</div>
+          <div className="stat-cell-val t-num">
+            {summary ? fmtMoney(summary.bankroll ?? summary.starting_cash ?? 0) : "-"}
+          </div>
         </div>
-        {equity.points.length === 0 ? (
-          <p className="empty">
-            Equity will populate as Delfi settles trades. The first settled
-            position becomes the first datapoint here.
-          </p>
-        ) : (
-          <EquitySvg points={equity.points} starting={equity.starting} />
-        )}
-      </section>
-
-      {/* Two-column body: calibration + brier */}
-      <div className="grid-2">
-        <section className="card">
-          <h2 className="card-title">Calibration</h2>
-          {!calibration || calibration.resolved === 0 ? (
-            <p className="empty">No resolved predictions yet.</p>
-          ) : (
-            <div>
-              {calibration.bins.map((b, idx) => (
-                <CalibBin key={idx} bin={b} />
-              ))}
-              <p
-                className="hint"
-                style={{ marginTop: 12, fontSize: 12 }}
-              >
-                Teal = predicted, gold = actual. Closer is better calibration.
-              </p>
-            </div>
-          )}
-        </section>
-
-        <section className="card">
-          <h2 className="card-title">Brier trend</h2>
-          {trend.length === 0 ? (
-            <p className="empty">No settled positions yet.</p>
-          ) : (
-            <BrierSpark points={trend} />
-          )}
-        </section>
-
-        {/* By category drill-down */}
-        <section className="card">
-          <h2 className="card-title">By category</h2>
-          {!calibration || calibration.by_category.length === 0 ? (
-            <p className="empty">Categories appear after the first trades settle.</p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Category</th>
-                  <th className="num">N</th>
-                  <th className="num">Brier</th>
-                  <th className="num">Win rate</th>
-                </tr>
-              </thead>
-              <tbody>
-                {calibration.by_category
-                  .filter((c) => c.n > 0)
-                  .sort((a, b) => b.n - a.n)
-                  .map((c, i) => (
-                    <tr key={i}>
-                      <td>{c.category || "uncategorized"}</td>
-                      <td className="num">{c.n}</td>
-                      <td className="num">
-                        {c.brier != null ? c.brier.toFixed(3) : "-"}
-                      </td>
-                      <td className="num">
-                        {c.win_rate != null
-                          ? `${(c.win_rate * 100).toFixed(0)}%`
-                          : "-"}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          )}
-        </section>
-
-        {/* By horizon drill-down */}
-        <section className="card">
-          <h2 className="card-title">By horizon</h2>
-          {!calibration || calibration.by_horizon.length === 0 ? (
-            <p className="empty">Horizons appear after the first trades settle.</p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th>Horizon</th>
-                  <th className="num">N</th>
-                  <th className="num">Brier</th>
-                  <th className="num">Pred / Actual</th>
-                </tr>
-              </thead>
-              <tbody>
-                {calibration.by_horizon
-                  .filter((h) => h.n > 0)
-                  .map((h, i) => (
-                    <tr key={i}>
-                      <td>{h.bucket}</td>
-                      <td className="num">{h.n}</td>
-                      <td className="num">
-                        {h.brier != null ? h.brier.toFixed(3) : "-"}
-                      </td>
-                      <td className="num">
-                        {h.mean_pred != null && h.mean_actual != null
-                          ? `${h.mean_pred.toFixed(2)} / ${h.mean_actual.toFixed(2)}`
-                          : "-"}
-                      </td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+        <div className="stat-cell">
+          <div className="stat-cell-label">Realized P&amp;L</div>
+          <div className={`stat-cell-val t-num ${filteredStats.totalPnl > 0 ? "profit" : filteredStats.totalPnl < 0 ? "ember" : ""}`}>
+            {loaded ? fmtMoney(filteredStats.totalPnl) : "-"}
+          </div>
+          <div className={`stat-cell-delta ${filteredStats.roi < 0 ? "down" : ""}`}>
+            {loaded && filteredStats.totalCost > 0 ? `${fmtPct(filteredStats.roi)} ROI` : ""}
+          </div>
+        </div>
+        <div className="stat-cell">
+          <div className="stat-cell-label">Win rate</div>
+          <div className="stat-cell-val t-num">
+            {filteredStats.trades > 0 ? `${filteredStats.winRate.toFixed(0)}%` : "-"}
+          </div>
+          <div className="stat-cell-delta">
+            {filteredStats.trades > 0 ? `${filteredStats.wins}W / ${filteredStats.losses}L` : ""}
+          </div>
+        </div>
+        <div className="stat-cell">
+          <div className="stat-cell-label">Brier score</div>
+          <div className="stat-cell-val t-num gold">
+            {summary?.brier != null ? summary.brier.toFixed(3) : "-"}
+          </div>
+        </div>
       </div>
-    </>
+
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Equity history</h2>
+          <span className="panel-meta">{filteredStats.trades} settled trades</span>
+        </div>
+        {filteredStats.trades === 0 ? (
+          <div className="empty-state">
+            {loaded ? "No equity history yet, take a trade to see this curve." : "Loading..."}
+          </div>
+        ) : (
+          <EquityChart series={equitySeries} />
+        )}
+      </div>
+
+      {calibration && calibration.bins.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">Calibration</h2>
+            <span className="panel-meta">
+              {calibration.resolved} resolved · Brier {calibration.brier?.toFixed(3) ?? "-"}
+            </span>
+          </div>
+          <div>
+            {calibration.bins.map((b, i) => {
+              const predPct = (b.mean_pred ?? 0) * 100;
+              const actualPct = (b.mean_actual ?? 0) * 100;
+              return (
+                <div className="calib-bin" key={i}>
+                  <div>{(b.lo * 100).toFixed(0)}-{(b.hi * 100).toFixed(0)}%</div>
+                  <div>{b.n} trades</div>
+                  <div className="calib-bar">
+                    <div className="pred"   style={{ width: `${predPct}%` }} />
+                    <div className="actual" style={{ width: `${actualPct}%` }} />
+                  </div>
+                  <div>{actualPct.toFixed(0)}%</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {trend.length > 1 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">Brier trend</h2>
+            <span className="panel-meta">Lower is better, 0 is perfect</span>
+          </div>
+          <BrierSpark points={trend} />
+        </div>
+      )}
+
+      {calibration && calibration.by_category.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">By category</h2>
+            <span className="panel-meta">{calibration.by_category.length} archetypes</span>
+          </div>
+          <table className="table-simple">
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Trades</th>
+                <th>Brier</th>
+                <th>Win rate</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calibration.by_category.map((c, i) => (
+                <tr key={i}>
+                  <td>{c.category ?? "Uncategorised"}</td>
+                  <td className="mono">{c.n}</td>
+                  <td className="mono">{c.brier?.toFixed(3) ?? "-"}</td>
+                  <td className="mono">{c.win_rate != null ? `${(c.win_rate * 100).toFixed(0)}%` : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {calibration && calibration.by_horizon.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">By horizon</h2>
+            <span className="panel-meta">Resolution time bucket</span>
+          </div>
+          <table className="table-simple">
+            <thead>
+              <tr>
+                <th>Bucket</th>
+                <th>Trades</th>
+                <th>Brier</th>
+                <th>Mean predicted</th>
+                <th>Mean actual</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calibration.by_horizon.map((h, i) => (
+                <tr key={i}>
+                  <td>{h.bucket}</td>
+                  <td className="mono">{h.n}</td>
+                  <td className="mono">{h.brier?.toFixed(3) ?? "-"}</td>
+                  <td className="mono">{h.mean_pred != null ? `${(h.mean_pred * 100).toFixed(0)}%` : "-"}</td>
+                  <td className="mono">{h.mean_actual != null ? `${(h.mean_actual * 100).toFixed(0)}%` : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 
-// ── Equity series reconstructed from settled positions ─────────────────
-
-type EquityPoint = { ts: string; equity: number };
-
-function buildEquitySeries(
-  settled: PMPosition[],
-  starting: number,
-  range: "all" | "30d" | "7d",
-): { points: EquityPoint[]; starting: number } {
-  const cutoff =
-    range === "all"
-      ? null
-      : Date.now() - (range === "30d" ? 30 : 7) * 86_400_000;
-
-  let equity = starting;
-  const series: EquityPoint[] = [];
-  for (const p of settled) {
-    if (!p.settled_at) continue;
-    equity += p.realized_pnl_usd ?? 0;
-    series.push({ ts: p.settled_at, equity });
-  }
-  if (cutoff != null) {
-    return {
-      points: series.filter((s) => new Date(s.ts).getTime() >= cutoff),
-      starting,
-    };
-  }
-  return { points: series, starting };
-}
-
-function EquitySvg({
-  points,
-  starting,
-}: {
-  points: EquityPoint[];
-  starting: number;
-}) {
-  if (points.length === 0) return null;
-
-  const w = 920;
-  const h = 200;
-  const padX = 24;
-  const padY = 16;
-
-  const xs = points.map((_, i) => {
-    const denom = Math.max(1, points.length - 1);
-    return padX + (i / denom) * (w - padX * 2);
-  });
-  const ys = points.map((p) => p.equity);
-  const yMin = Math.min(starting, ...ys);
-  const yMax = Math.max(starting, ...ys);
-  const ySpan = Math.max(1, yMax - yMin);
-
-  const pathD = points
-    .map((p, i) => {
-      const y = h - padY - ((p.equity - yMin) / ySpan) * (h - padY * 2);
-      return `${i === 0 ? "M" : "L"} ${xs[i].toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  const fillD = `${pathD} L ${xs[xs.length - 1].toFixed(1)} ${h - padY} L ${xs[0].toFixed(1)} ${h - padY} Z`;
-
-  const yBase =
-    h - padY - ((starting - yMin) / ySpan) * (h - padY * 2);
-  const last = points[points.length - 1].equity;
-  const lastTone = last >= starting ? "profit" : "ember";
-
+function EquityChart({ series }: { series: { ts: string; v: number }[] }) {
+  if (series.length < 2) return null;
+  const W = 800, H = 180, PAD = 8;
+  const xs = series.map((_, i) => i);
+  const ys = series.map((p) => p.v);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const sx = (i: number) => PAD + ((W - PAD * 2) * i) / Math.max(1, xs.length - 1);
+  const sy = (v: number) => H - PAD - ((H - PAD * 2) * (v - minY)) / Math.max(1, maxY - minY);
+  const d = series.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i)},${sy(p.v)}`).join(" ");
+  const lastV = series[series.length - 1].v;
+  const firstV = series[0].v;
+  const positive = lastV >= firstV;
+  const color = positive ? "var(--profit)" : "var(--ember)";
+  const fill = positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)";
+  const area = `${d} L${sx(series.length - 1)},${H - PAD} L${sx(0)},${H - PAD} Z`;
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="equity-svg" preserveAspectRatio="none">
-      <defs>
-        <linearGradient id="eq-fill" x1="0" y1="0" x2="0" y2="1">
-          <stop
-            offset="0%"
-            stopColor={
-              last >= starting ? "var(--profit)" : "var(--ember)"
-            }
-            stopOpacity="0.18"
-          />
-          <stop offset="100%" stopColor="transparent" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <line
-        x1={padX}
-        x2={w - padX}
-        y1={yBase}
-        y2={yBase}
-        stroke="var(--vellum-20)"
-        strokeWidth={1}
-        strokeDasharray="3 4"
-      />
-      <path d={fillD} fill="url(#eq-fill)" />
-      <path
-        d={pathD}
-        fill="none"
-        stroke={`var(--${lastTone})`}
-        strokeWidth={1.5}
-      />
+    <svg viewBox={`0 0 ${W} ${H}`} className="eq-svg" preserveAspectRatio="none">
+      <path d={area} fill={fill} />
+      <path d={d} fill="none" stroke={color} strokeWidth="1.6" />
+      <line x1={sx(0)} y1={sy(firstV)} x2={sx(series.length - 1)} y2={sy(firstV)}
+            stroke="var(--vellum-10)" strokeDasharray="2 4" />
     </svg>
   );
 }
 
-// ── Calibration bin row ────────────────────────────────────────────────
-
-function CalibBin({
-  bin,
-}: {
-  bin: {
-    lo: number;
-    hi: number;
-    n: number;
-    mean_pred: number | null;
-    mean_actual: number | null;
-  };
-}) {
-  const pred = bin.mean_pred ?? 0;
-  const actual = bin.mean_actual ?? 0;
-  return (
-    <div className="calib-bin">
-      <span style={{ color: "var(--vellum)" }}>
-        {bin.lo.toFixed(1)} - {bin.hi.toFixed(1)}
-      </span>
-      <span style={{ color: "var(--vellum-60)" }}>n = {bin.n}</span>
-      <div className="calib-bar">
-        <span
-          className="pred"
-          style={{ width: `${Math.min(100, pred * 100)}%` }}
-        />
-        <span
-          className="actual"
-          style={{ width: `${Math.min(100, actual * 100)}%` }}
-        />
-      </div>
-      <span style={{ color: "var(--vellum-60)" }}>
-        {pred.toFixed(2)} / {actual.toFixed(2)}
-      </span>
-    </div>
-  );
-}
-
-// ── Brier sparkline ────────────────────────────────────────────────────
-
 function BrierSpark({ points }: { points: BrierTrendPoint[] }) {
-  if (points.length < 2) {
-    const last = points[0];
-    return (
-      <p style={{ margin: 0 }}>
-        Brier <strong>{last.brier.toFixed(3)}</strong> on {last.n} trade
-        {last.n === 1 ? "" : "s"}.
-      </p>
-    );
-  }
-  const w = 360;
-  const h = 80;
-  const xs = points.map((_, i) => (i / (points.length - 1)) * w);
+  if (points.length < 2) return null;
+  const W = 800, H = 60, PAD = 6;
   const ys = points.map((p) => p.brier);
-  const yMin = Math.min(...ys);
-  const yMax = Math.max(...ys);
-  const span = Math.max(0.001, yMax - yMin);
-  const path = points
-    .map((p, i) => {
-      const y = h - ((p.brier - yMin) / span) * h;
-      return `${i === 0 ? "M" : "L"} ${xs[i].toFixed(1)} ${y.toFixed(1)}`;
-    })
-    .join(" ");
-  const last = points[points.length - 1];
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const sx = (i: number) => PAD + ((W - PAD * 2) * i) / (points.length - 1);
+  const sy = (v: number) => H - PAD - ((H - PAD * 2) * (v - minY)) / Math.max(1e-9, maxY - minY);
+  const d = points.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i)},${sy(p.brier)}`).join(" ");
   return (
     <div className="brier-spark">
-      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={h}>
-        <path d={path} fill="none" stroke="var(--gold)" strokeWidth="1.5" />
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        <path d={d} fill="none" stroke="var(--gold)" strokeWidth="1.4" />
       </svg>
       <p className="brier-foot">
-        Latest <strong style={{ color: "var(--gold)" }}>
-          {last.brier.toFixed(3)}
-        </strong> on {last.n} trades. Lower is better; perfect calibration is 0.
+        {points[0].brier.toFixed(3)} → {points[points.length - 1].brier.toFixed(3)} ·
+        {" "}{points.length} samples
       </p>
     </div>
   );
-}
-
-// ── Tiles ──────────────────────────────────────────────────────────────
-
-function Tile({
-  label,
-  value,
-  sub,
-  tone,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  tone?: "profit" | "ember" | "gold";
-}) {
-  return (
-    <div className="kpi-tile">
-      <span className="kpi-label">{label}</span>
-      <span className={`kpi-value ${tone ?? ""}`.trim()}>{value}</span>
-      {sub && <span className="kpi-sub">{sub}</span>}
-    </div>
-  );
-}
-
-// ── Format helpers ─────────────────────────────────────────────────────
-
-function fmtUsd(v: number | null | undefined): string {
-  if (v == null) return "-";
-  return `$${v.toFixed(2)}`;
-}
-
-function fmtPct(v: number | null | undefined): string {
-  if (v == null) return "-";
-  return `${(v * 100).toFixed(1)}%`;
-}
-
-function fmtPnL(v: number | null | undefined): string {
-  if (v == null) return "-";
-  const sign = v > 0 ? "+" : v < 0 ? "-" : "";
-  return `${sign}$${Math.abs(v).toFixed(2)}`;
 }

@@ -7,24 +7,16 @@ import {
   NotificationsConfig,
   TelegramConfig,
 } from "../api";
+import type { SettingsTab } from "../App";
 
 /**
- * Settings — the desktop equivalent of the SaaS settings stack.
+ * Settings - SaaS-parity layout, with desktop additions:
+ *   - Per-archetype grid (vs the SaaS JSON editor)
+ *   - Simulation reset (desktop-only)
  *
- * Architecture
- * ============
- * One sub-nav (Account / Connections / Notifications / Risk) and four
- * sub-pages, each with its own form state and save flow. Each form
- * submits independently and refreshes the parent on success so the
- * sidebar status pill stays coherent.
- *
- * Why one file
- * ============
- * The four sub-pages share data fetched from the parent (`creds`,
- * `config`) plus a few derived endpoints (telegram, notifications,
- * archetypes). Keeping them co-located avoids prop-drilling 5+ shared
- * helpers. Each section is small enough that one file is still
- * navigable.
+ * The active tab is owned by App and surfaced via the sidebar sub-nav.
+ * This page renders one panel at a time. Each form submits independently
+ * and refreshes the parent on success.
  */
 
 const BOUNDS = {
@@ -53,61 +45,56 @@ type ConfigShape = {
 };
 
 interface Props {
+  tab: SettingsTab;
+  setTab: (t: SettingsTab) => void;
   creds: Credentials | null;
   config: ConfigShape | null;
   onSaved: () => void;
 }
 
-type Tab = "account" | "connections" | "notifications" | "risk";
+const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
+  account: {
+    h1: "Account",
+    sub: "Bankroll and starting capital. The number Delfi treats as 100% of your trading capital.",
+  },
+  connections: {
+    h1: "Connections",
+    sub: "Polymarket private key, wallet address, and Anthropic API key. Stored in your OS keychain, never on disk.",
+  },
+  risk: {
+    h1: "Risk and sizing",
+    sub: "Stake size, loss limits, and per-archetype multipliers. Applied immediately, no Telegram confirmation.",
+  },
+  notifications: {
+    h1: "Notifications",
+    sub: "Telegram bot setup and per-category notification toggles. Optional, the desktop dashboard shows everything in-app.",
+  },
+};
 
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "account",       label: "Account" },
-  { id: "connections",   label: "Connections" },
-  { id: "notifications", label: "Notifications" },
-  { id: "risk",          label: "Risk and sizing" },
-];
-
-export default function Settings({ creds, config, onSaved }: Props) {
-  const [tab, setTab] = useState<Tab>("account");
-
+export default function Settings({ tab, creds, config, onSaved }: Props) {
+  // setTab is in Props for future use (eg deep-linking) but the sidebar owns
+  // tab switching today; ignore it here without triggering noUnusedLocals.
+  const t = TITLES[tab];
   return (
-    <div>
-      <div className="page-header">
-        <h1>Settings</h1>
-      </div>
-
-      <div className="settings-grid">
-        <nav className="settings-sidenav">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={tab === t.id ? "active" : ""}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        <div>
-          {tab === "account" && (
-            <AccountPanel config={config} onSaved={onSaved} />
-          )}
-          {tab === "connections" && (
-            <ConnectionsPanel creds={creds} onSaved={onSaved} />
-          )}
-          {tab === "notifications" && <NotificationsPanel />}
-          {tab === "risk" && (
-            <RiskPanel config={config} onSaved={onSaved} />
-          )}
+    <div className="page-wrap">
+      <div className="page-head">
+        <div className="page-head-row">
+          <div>
+            <h1 className="page-h1">{t.h1}</h1>
+            <p className="page-sub">{t.sub}</p>
+          </div>
         </div>
       </div>
+
+      {tab === "account"       && <AccountPanel       config={config} onSaved={onSaved} />}
+      {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} />}
+      {tab === "risk"          && <RiskPanel          config={config} onSaved={onSaved} />}
+      {tab === "notifications" && <NotificationsPanel />}
     </div>
   );
 }
 
-// ── Account: bankroll + simulation reset ─────────────────────────────────
+// ── Account ──────────────────────────────────────────────────────────────
 
 function AccountPanel({
   config,
@@ -161,40 +148,47 @@ function AccountPanel({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <form className="settings-card" onSubmit={save}>
-        <h2>Bankroll</h2>
-        <p className="hint">
-          The starting cash Delfi treats as 100% of bankroll. Stake size and
-          circuit breakers are computed against this number. In simulation
-          mode it is the synthetic balance; in live mode it is your seeded
-          capital.
-        </p>
-        <label>
-          Starting cash (USD)
-          <input
-            type="number"
-            min={BOUNDS.starting_cash[0]}
-            max={BOUNDS.starting_cash[1]}
-            step="1"
-            value={startingCash}
-            onChange={(e) => setStartingCash(e.target.value)}
-          />
-        </label>
-        <div className="form-actions">
-          <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save bankroll"}
-          </button>
-          {msg && <span className={msg.kind}>{msg.text}</span>}
+    <>
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Bankroll</h2>
         </div>
-      </form>
+        <p className="page-sub" style={{ marginBottom: 16 }}>
+          The starting cash Delfi treats as 100% of bankroll. Stake size and
+          circuit breakers are computed against this number.
+        </p>
+        <form className="form-row" onSubmit={save}>
+          <div className="form-field">
+            <label>Starting cash (USD)</label>
+            <input
+              type="number"
+              min={BOUNDS.starting_cash[0]}
+              max={BOUNDS.starting_cash[1]}
+              step="1"
+              value={startingCash}
+              onChange={(e) => setStartingCash(e.target.value)}
+            />
+          </div>
+          <div className="form-actions">
+            <button type="submit" className="btn small" disabled={busy}>
+              {busy ? "Saving..." : "Save bankroll"}
+            </button>
+            {msg && (
+              <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
+                {msg.text}
+              </span>
+            )}
+          </div>
+        </form>
+      </div>
 
-      <div className="settings-card">
-        <h2>Simulation reset</h2>
-        <p className="hint">
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Simulation reset</h2>
+        </div>
+        <p className="page-sub" style={{ marginBottom: 16 }}>
           Clears all simulation positions and resets the synthetic bankroll
-          to your starting cash. Live trading is untouched. Use this when
-          you want to re-test from a clean slate.
+          to your starting cash. Live trading is untouched.
         </p>
         {!confirm ? (
           <div className="form-actions">
@@ -227,11 +221,11 @@ function AccountPanel({
           </div>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
-// ── Connections: keychain credentials ────────────────────────────────────
+// ── Connections ──────────────────────────────────────────────────────────
 
 function ConnectionsPanel({
   creds,
@@ -266,10 +260,7 @@ function ConnectionsPanel({
       const res = await api.saveCredentials(payload);
       setPmKey("");
       setAnthropic("");
-      setMsg({
-        kind: "ok",
-        text: `Saved: ${res.wrote.join(", ") || "nothing"}.`,
-      });
+      setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
@@ -279,70 +270,73 @@ function ConnectionsPanel({
   };
 
   return (
-    <form className="settings-card" onSubmit={save}>
-      <h2>Connections</h2>
-      <p className="hint">
-        Private keys are stored in your operating system keychain, never in
-        plain text on disk. The wallet address is the public 0x address
-        that pairs with your Polymarket private key. Leaving a key field
-        blank keeps the existing value.
-      </p>
-
-      <label>
-        Polymarket private key
-        <input
-          type="password"
-          autoComplete="off"
-          placeholder={creds?.has_polymarket_key ? "(stored)" : "0x..."}
-          value={pmKey}
-          onChange={(e) => setPmKey(e.target.value)}
-        />
-      </label>
-
-      <label>
-        Wallet address
-        <input
-          type="text"
-          autoComplete="off"
-          placeholder="0x..."
-          value={wallet}
-          onChange={(e) => setWallet(e.target.value)}
-        />
-      </label>
-
-      <label>
-        Anthropic API key
-        <input
-          type="password"
-          autoComplete="off"
-          placeholder={creds?.has_anthropic_key ? "(stored)" : "sk-ant-..."}
-          value={anthropic}
-          onChange={(e) => setAnthropic(e.target.value)}
-        />
-      </label>
-
-      <div className="form-actions">
-        <button type="submit" className="btn small" disabled={busy}>
-          {busy ? "Saving..." : "Save credentials"}
-        </button>
-        {msg && <span className={msg.kind}>{msg.text}</span>}
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Credentials</h2>
+        <span className="panel-meta">Stored in OS keychain</span>
       </div>
-    </form>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Private keys are stored in your operating system keychain, never on
+        disk. The wallet address is the public 0x address that pairs with
+        your Polymarket private key. Leaving a field blank keeps the
+        existing value.
+      </p>
+      <form className="form-row" onSubmit={save}>
+        <div className="form-field">
+          <label>Polymarket private key</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={creds?.has_polymarket_key ? "(stored)" : "0x..."}
+            value={pmKey}
+            onChange={(e) => setPmKey(e.target.value)}
+          />
+        </div>
+        <div className="form-field">
+          <label>Wallet address</label>
+          <input
+            type="text"
+            autoComplete="off"
+            placeholder="0x..."
+            value={wallet}
+            onChange={(e) => setWallet(e.target.value)}
+          />
+        </div>
+        <div className="form-field">
+          <label>Anthropic API key</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={creds?.has_anthropic_key ? "(stored)" : "sk-ant-..."}
+            value={anthropic}
+            onChange={(e) => setAnthropic(e.target.value)}
+          />
+        </div>
+        <div className="form-actions">
+          <button type="submit" className="btn small" disabled={busy}>
+            {busy ? "Saving..." : "Save credentials"}
+          </button>
+          {msg && (
+            <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
+              {msg.text}
+            </span>
+          )}
+        </div>
+      </form>
+    </div>
   );
 }
 
-// ── Notifications: Telegram + per-category toggles ───────────────────────
+// ── Notifications ────────────────────────────────────────────────────────
 
 const CATEGORY_LABELS: Record<string, { title: string; description: string }> = {
   position_opened: {
     title: "New positions",
-    description:
-      "Every time Delfi opens a position: market, side, stake, and forecast.",
+    description: "Every time Delfi opens a position: market, side, stake, and forecast.",
   },
   position_settled: {
     title: "Position resolutions",
-    description:
-      "Every win or loss when a market resolves, with P&L and running bankroll.",
+    description: "Every win or loss when a market resolves, with P&L and running bankroll.",
   },
   daily_summary: {
     title: "Daily summary",
@@ -354,15 +348,30 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   },
   calibration: {
     title: "Calibration proposals",
-    description:
-      "When Delfi proposes a strategy change, with evidence and inline controls.",
+    description: "When Delfi proposes a strategy change, with evidence and inline controls.",
   },
   risk_event: {
     title: "Risk events",
-    description:
-      "Circuit breaker trips: daily loss cap, drawdown halt, or streak cooldown.",
+    description: "Circuit breaker trips: daily loss cap, drawdown halt, or streak cooldown.",
   },
 };
+
+function humanizeTelegramError(raw: string): string {
+  const s = raw.toLowerCase();
+  if (s.includes("chat not found")) {
+    return "Telegram cannot find that chat. Open your bot in Telegram, tap Start, then copy the chat ID again from https://api.telegram.org/bot<TOKEN>/getUpdates.";
+  }
+  if (s.includes("unauthorized")) {
+    return "Telegram rejected the bot token. Double-check you copied the full token from @BotFather (including the colon).";
+  }
+  if (s.includes("bot was blocked") || s.includes("blocked by the user")) {
+    return "You have blocked this bot in Telegram. Unblock it and send /start, then retry.";
+  }
+  if (s.includes("forbidden")) {
+    return "Telegram refused delivery. For groups, make sure the bot is a member. For personal chats, message the bot first.";
+  }
+  return raw;
+}
 
 function NotificationsPanel() {
   const [tg, setTg] = useState<TelegramConfig | null>(null);
@@ -386,17 +395,12 @@ function NotificationsPanel() {
         }
       } catch (err) {
         if (!cancelled) {
-          setMsg({
-            kind: "err",
-            text: err instanceof Error ? err.message : String(err),
-          });
+          setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
         }
       }
     };
     load();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   const saveTelegram = async (e: React.FormEvent) => {
@@ -448,15 +452,9 @@ function NotificationsPanel() {
     setMsg(null);
     try {
       const r = await api.testTelegram();
-      setMsg({
-        kind: r.ok ? "ok" : "err",
-        text: r.detail || (r.ok ? "Test message sent." : "Test failed."),
-      });
+      setMsg({ kind: r.ok ? "ok" : "err", text: r.detail || (r.ok ? "Test message sent." : "Test failed.") });
     } catch (err) {
-      setMsg({
-        kind: "err",
-        text: humanizeTelegramError(err instanceof Error ? err.message : String(err)),
-      });
+      setMsg({ kind: "err", text: humanizeTelegramError(err instanceof Error ? err.message : String(err)) });
     } finally {
       setTesting(false);
     }
@@ -478,10 +476,7 @@ function NotificationsPanel() {
       setNotif(res);
     } catch (err) {
       setNotif(previous);
-      setMsg({
-        kind: "err",
-        text: err instanceof Error ? err.message : String(err),
-      });
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
     } finally {
       setPrefSavingKey(null);
     }
@@ -498,93 +493,83 @@ function NotificationsPanel() {
     : Object.keys(CATEGORY_LABELS);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <form className="settings-card" onSubmit={saveTelegram}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "baseline",
-          }}
-        >
-          <h2>Telegram</h2>
-          <span className="t-caption">
-            {tg == null
-              ? "Loading..."
-              : tg.is_configured
-              ? "Connected"
-              : "Not connected"}
+    <>
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Telegram</h2>
+          <span className="panel-meta">
+            {tg == null ? "Loading..." : tg.is_configured ? "Connected" : "Not connected"}
           </span>
         </div>
-        <p className="hint">
+        <p className="page-sub" style={{ marginBottom: 16 }}>
           Delfi sends every new position, every resolution, and daily and
           weekly summaries straight to your Telegram. Create a bot with{" "}
           <code>@BotFather</code>, paste its token below, message the bot
           once, then grab your chat ID from{" "}
           <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>.
         </p>
+        <form className="form-row" onSubmit={saveTelegram}>
+          <div className="form-field">
+            <label>Bot token</label>
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder={tg?.has_telegram_token ? "(stored)" : "123456:ABC-..."}
+              value={botToken}
+              onChange={(e) => setBotToken(e.target.value)}
+            />
+          </div>
+          <div className="form-field">
+            <label>Chat ID</label>
+            <input
+              type="text"
+              autoComplete="off"
+              placeholder="e.g. 123456789"
+              value={chatId}
+              onChange={(e) => setChatId(e.target.value)}
+            />
+          </div>
+          <div className="form-actions">
+            <button type="submit" className="btn small" disabled={busy}>
+              {busy ? "Saving..." : "Save"}
+            </button>
+            {tg?.is_configured && (
+              <>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={sendTest}
+                  disabled={testing}
+                >
+                  {testing ? "Sending..." : "Send test message"}
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={disconnect}
+                  disabled={busy}
+                >
+                  Disconnect
+                </button>
+              </>
+            )}
+            {msg && (
+              <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
+                {msg.text}
+              </span>
+            )}
+          </div>
+        </form>
+      </div>
 
-        <label>
-          Bot token
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={tg?.has_telegram_token ? "(stored)" : "123456:ABC-..."}
-            value={botToken}
-            onChange={(e) => setBotToken(e.target.value)}
-          />
-        </label>
-
-        <label>
-          Chat ID
-          <input
-            type="text"
-            autoComplete="off"
-            placeholder="e.g. 123456789"
-            value={chatId}
-            onChange={(e) => setChatId(e.target.value)}
-          />
-        </label>
-
-        <div className="form-actions">
-          <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save"}
-          </button>
-          {tg?.is_configured && (
-            <>
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={sendTest}
-                disabled={testing}
-              >
-                {testing ? "Sending..." : "Send test message"}
-              </button>
-              <button
-                type="button"
-                className="btn ghost small"
-                onClick={disconnect}
-                disabled={busy}
-              >
-                Disconnect
-              </button>
-            </>
-          )}
-          {msg && <span className={msg.kind}>{msg.text}</span>}
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">What Delfi will send</h2>
+          <span className="panel-meta">Changes apply immediately</span>
         </div>
-      </form>
-
-      <div className="settings-card">
-        <h2>What Delfi will send</h2>
-        <p className="hint">
-          Toggle individual categories on or off. Changes apply immediately.
-        </p>
         <div>
           {categories.map((key) => {
-            const label = CATEGORY_LABELS[key] ?? {
-              title: key,
-              description: "",
-            };
+            const label = CATEGORY_LABELS[key] ?? { title: key, description: "" };
             return (
               <div key={key} className="notif-row">
                 <div>
@@ -593,42 +578,25 @@ function NotificationsPanel() {
                     <div className="notif-desc">{label.description}</div>
                   )}
                 </div>
-                <label className="toggle">
+                <label className="toggle-switch">
                   <input
                     type="checkbox"
                     checked={isOn(key)}
                     disabled={prefSavingKey === key}
                     onChange={() => togglePref(key)}
                   />
-                  <span className="slider" />
+                  <span className="toggle-slider" />
                 </label>
               </div>
             );
           })}
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
-function humanizeTelegramError(raw: string): string {
-  const s = raw.toLowerCase();
-  if (s.includes("chat not found")) {
-    return "Telegram cannot find that chat. Open your bot in Telegram, tap Start (or send any message), then copy the chat ID again from https://api.telegram.org/bot<TOKEN>/getUpdates. Group chats use a negative ID.";
-  }
-  if (s.includes("unauthorized")) {
-    return "Telegram rejected the bot token. Double-check you copied the full token from @BotFather (including the colon).";
-  }
-  if (s.includes("bot was blocked") || s.includes("blocked by the user")) {
-    return "You have blocked this bot in Telegram. Unblock it and send /start, then retry.";
-  }
-  if (s.includes("forbidden")) {
-    return "Telegram refused delivery. For groups, make sure the bot is a member. For personal chats, message the bot first.";
-  }
-  return raw;
-}
-
-// ── Risk and sizing: numeric form + per-archetype grid ───────────────────
+// ── Risk + sizing ────────────────────────────────────────────────────────
 
 function RiskPanel({
   config,
@@ -669,12 +637,8 @@ function RiskPanel({
     try {
       const changes: Record<string, unknown> = {};
       const numericKeys = [
-        "base_stake_pct",
-        "max_stake_pct",
-        "daily_loss_limit_pct",
-        "weekly_loss_limit_pct",
-        "drawdown_halt_pct",
-        "dry_powder_reserve_pct",
+        "base_stake_pct", "max_stake_pct", "daily_loss_limit_pct",
+        "weekly_loss_limit_pct", "drawdown_halt_pct", "dry_powder_reserve_pct",
       ] as const;
       for (const k of numericKeys) {
         const raw = risk[k].trim();
@@ -708,85 +672,82 @@ function RiskPanel({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <form className="settings-card" onSubmit={saveRisk}>
-        <h2>Risk and sizing</h2>
-        <p className="hint">
-          Sizing is flat: stake = bankroll * base stake * archetype
-          multiplier, capped at max stake. Loss limits halt new trades when
-          realized loss crosses the threshold. All values are fractions of
-          bankroll (0.05 = 5%).
+    <>
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Sizing and limits</h2>
+          <span className="panel-meta">Fractions of bankroll</span>
+        </div>
+        <p className="page-sub" style={{ marginBottom: 16 }}>
+          Stake = bankroll × base stake × archetype multiplier, capped at
+          max stake. Loss limits halt new trades when realized loss crosses
+          the threshold.
         </p>
-        <div className="grid-2">
-          <NumField
-            label="Base stake (fraction)"
-            step="0.001"
-            range={BOUNDS.base_stake_pct}
-            value={risk.base_stake_pct}
-            onChange={(v) => setRisk({ ...risk, base_stake_pct: v })}
-          />
-          <NumField
-            label="Max stake (fraction)"
-            step="0.001"
-            range={BOUNDS.max_stake_pct}
-            value={risk.max_stake_pct}
-            onChange={(v) => setRisk({ ...risk, max_stake_pct: v })}
-          />
-          <NumField
-            label="Daily loss limit (fraction)"
-            step="0.01"
-            range={BOUNDS.daily_loss_limit_pct}
-            value={risk.daily_loss_limit_pct}
-            onChange={(v) => setRisk({ ...risk, daily_loss_limit_pct: v })}
-          />
-          <NumField
-            label="Weekly loss limit (fraction)"
-            step="0.01"
-            range={BOUNDS.weekly_loss_limit_pct}
-            value={risk.weekly_loss_limit_pct}
-            onChange={(v) => setRisk({ ...risk, weekly_loss_limit_pct: v })}
-          />
-          <NumField
-            label="Drawdown halt (fraction)"
-            step="0.01"
-            range={BOUNDS.drawdown_halt_pct}
-            value={risk.drawdown_halt_pct}
-            onChange={(v) => setRisk({ ...risk, drawdown_halt_pct: v })}
-          />
-          <NumField
-            label="Streak cooldown (losses)"
-            step="1"
-            range={BOUNDS.streak_cooldown_losses}
-            value={risk.streak_cooldown_losses}
-            onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
-          />
-          <NumField
-            label="Dry powder reserve (fraction)"
-            step="0.01"
-            range={BOUNDS.dry_powder_reserve_pct}
-            value={risk.dry_powder_reserve_pct}
-            onChange={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
-          />
-        </div>
-        <div className="form-actions">
-          <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save risk and sizing"}
-          </button>
-          {msg && <span className={msg.kind}>{msg.text}</span>}
-        </div>
-      </form>
+        <form onSubmit={saveRisk}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
+            <NumField
+              label="Base stake (fraction)" step="0.001"
+              range={BOUNDS.base_stake_pct}
+              value={risk.base_stake_pct}
+              onChange={(v) => setRisk({ ...risk, base_stake_pct: v })}
+            />
+            <NumField
+              label="Max stake (fraction)" step="0.001"
+              range={BOUNDS.max_stake_pct}
+              value={risk.max_stake_pct}
+              onChange={(v) => setRisk({ ...risk, max_stake_pct: v })}
+            />
+            <NumField
+              label="Daily loss limit" step="0.01"
+              range={BOUNDS.daily_loss_limit_pct}
+              value={risk.daily_loss_limit_pct}
+              onChange={(v) => setRisk({ ...risk, daily_loss_limit_pct: v })}
+            />
+            <NumField
+              label="Weekly loss limit" step="0.01"
+              range={BOUNDS.weekly_loss_limit_pct}
+              value={risk.weekly_loss_limit_pct}
+              onChange={(v) => setRisk({ ...risk, weekly_loss_limit_pct: v })}
+            />
+            <NumField
+              label="Drawdown halt" step="0.01"
+              range={BOUNDS.drawdown_halt_pct}
+              value={risk.drawdown_halt_pct}
+              onChange={(v) => setRisk({ ...risk, drawdown_halt_pct: v })}
+            />
+            <NumField
+              label="Streak cooldown (losses)" step="1"
+              range={BOUNDS.streak_cooldown_losses}
+              value={risk.streak_cooldown_losses}
+              onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
+            />
+            <NumField
+              label="Dry powder reserve" step="0.01"
+              range={BOUNDS.dry_powder_reserve_pct}
+              value={risk.dry_powder_reserve_pct}
+              onChange={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
+            />
+          </div>
+          <div className="form-actions" style={{ marginTop: 18 }}>
+            <button type="submit" className="btn small" disabled={busy}>
+              {busy ? "Saving..." : "Save risk and sizing"}
+            </button>
+            {msg && (
+              <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
+                {msg.text}
+              </span>
+            )}
+          </div>
+        </form>
+      </div>
 
       <ArchetypePanel onSaved={onSaved} />
-    </div>
+    </>
   );
 }
 
 function NumField({
-  label,
-  step,
-  range,
-  value,
-  onChange,
+  label, step, range, value, onChange,
 }: {
   label: string;
   step: string;
@@ -795,8 +756,8 @@ function NumField({
   onChange: (v: string) => void;
 }) {
   return (
-    <label>
-      {label}
+    <div className="form-field">
+      <label>{label}</label>
       <input
         type="number"
         step={step}
@@ -805,10 +766,8 @@ function NumField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
-      <span style={{ color: "var(--vellum-40)", fontSize: 11 }}>
-        Range: {range[0]} - {range[1]}
-      </span>
-    </label>
+      <span className="form-hint">Range: {range[0]} - {range[1]}</span>
+    </div>
   );
 }
 
@@ -828,9 +787,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
+  useEffect(() => { load(); }, []);
 
   const groups = useMemo(() => {
     if (!data) return [] as Array<{ title: string; items: ArchetypeEntry[] }>;
@@ -864,10 +821,6 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
     setBusyId(a.id);
     setError(null);
 
-    // Build the next config delta in one shot. The bot's API accepts
-    // archetype_skip_list (full replacement) and
-    // archetype_stake_multipliers (full replacement). We send both so the
-    // user's intent is unambiguous.
     const nextSkip = new Set(
       data.archetypes
         .filter((x) => (x.id === a.id ? (patch.skip ?? x.skip) : x.skip))
@@ -876,7 +829,6 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
     const nextMults: Record<string, number> = {};
     for (const x of data.archetypes) {
       const m = x.id === a.id ? (patch.multiplier ?? x.multiplier) : x.multiplier;
-      // Only persist non-default values to keep the config compact.
       if (Math.abs(m - x.default_mult) > 1e-6) {
         nextMults[x.id] = m;
       }
@@ -902,9 +854,11 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
 
   if (!data) {
     return (
-      <div className="settings-card">
-        <h2>Archetypes</h2>
-        <p className="empty">Loading archetypes...</p>
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">Archetypes</h2>
+        </div>
+        <div className="empty-state">Loading archetypes...</div>
         {error && <div className="error">{error}</div>}
       </div>
     );
@@ -913,22 +867,22 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
   const { multiplier_min, multiplier_max } = data.bounds;
 
   return (
-    <div className="settings-card">
-      <h2>Archetypes</h2>
-      <p className="hint">
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Archetypes</h2>
+        <span className="panel-meta">{data.archetypes.length} categories</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
         Each market Delfi looks at is classified into one archetype. Skip an
         archetype to ignore those markets entirely. Use the multiplier to
-        size up or down without skipping. Default for unknown archetypes is
-        1.0 (full stake).
+        size up or down without skipping. Default for unknown archetypes is 1.0×.
       </p>
 
       {error && <div className="error">{error}</div>}
 
       {groups.map((g) => (
-        <div key={g.title} style={{ marginTop: 8 }}>
-          <h3 className="t-caption" style={{ margin: "0 0 8px", color: "var(--vellum-60)" }}>
-            {g.title}
-          </h3>
+        <div key={g.title} style={{ marginTop: 16 }}>
+          <h3 className="t-caption" style={{ margin: "0 0 8px" }}>{g.title}</h3>
           <div className="archetype-grid">
             {g.items.map((a) => (
               <ArchetypeCard
@@ -950,13 +904,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
 }
 
 function ArchetypeCard({
-  a,
-  busy,
-  multMin,
-  multMax,
-  onToggleSkip,
-  onMultChange,
-  onReset,
+  a, busy, multMin, multMax, onToggleSkip, onMultChange, onReset,
 }: {
   a: ArchetypeEntry;
   busy: boolean;
@@ -966,7 +914,6 @@ function ArchetypeCard({
   onMultChange: (m: number) => void;
   onReset: () => void;
 }) {
-  // Local slider state for instant feedback; commits on mouseup via onChange.
   const [pending, setPending] = useState<number | null>(null);
   const shown = pending ?? a.multiplier;
   const isDefault =
@@ -980,24 +927,20 @@ function ArchetypeCard({
       </div>
 
       <div className="archetype-controls">
-        <span
-          style={{
-            fontSize: 11,
-            color: "var(--vellum-60)",
-            letterSpacing: "0.1em",
-            textTransform: "uppercase",
-          }}
-        >
+        <span style={{
+          fontSize: 11, color: "var(--vellum-60)",
+          letterSpacing: "0.1em", textTransform: "uppercase",
+        }}>
           {a.skip ? "Skip" : "Trade"}
         </span>
-        <label className="toggle">
+        <label className="toggle-switch">
           <input
             type="checkbox"
             checked={!a.skip}
             disabled={busy}
             onChange={onToggleSkip}
           />
-          <span className="slider" />
+          <span className="toggle-slider" />
         </label>
       </div>
 
@@ -1005,7 +948,6 @@ function ArchetypeCard({
         <span className="archetype-mult-label">Stake mult</span>
         <input
           type="range"
-          className="range"
           min={multMin}
           max={multMax}
           step="0.05"
@@ -1022,16 +964,15 @@ function ArchetypeCard({
             setPending(null);
             if (Math.abs(v - a.multiplier) > 1e-6) onMultChange(v);
           }}
-          style={{ flex: 1 }}
         />
-        <span className="archetype-mult-value">{shown.toFixed(2)}x</span>
+        <span className="archetype-mult-value">{shown.toFixed(2)}×</span>
         {!isDefault && (
           <button
             type="button"
             className="archetype-mult-default"
             onClick={onReset}
             disabled={busy}
-            title={`Default: ${a.default_skip ? "skip" : "trade"} at ${a.default_mult}x`}
+            title={`Default: ${a.default_skip ? "skip" : "trade"} at ${a.default_mult}×`}
           >
             Reset
           </button>
