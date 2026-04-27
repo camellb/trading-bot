@@ -136,6 +136,86 @@ export interface EventLogRow {
   user_id: string;
 }
 
+export interface PerformanceSummary {
+  mode: string | null;
+  bankroll: number | null;
+  equity: number | null;
+  starting_cash: number | null;
+  open_positions: number | null;
+  open_cost: number | null;
+  settled_total: number | null;
+  settled_wins: number | null;
+  win_rate: number | null;
+  realized_pnl: number | null;
+  roi: number | null;
+  brier: number | null;
+  resolved_predictions: number | null;
+  total_predictions: number | null;
+}
+
+export interface BrierTrendPoint {
+  date: string | null;
+  brier: number;
+  n: number;
+}
+
+export interface CalibrationBin {
+  lo: number;
+  hi: number;
+  n: number;
+  mean_pred: number | null;
+  mean_actual: number | null;
+}
+
+export interface CalibrationReport {
+  source: string | null;
+  since_days: number | null;
+  total: number;
+  resolved: number;
+  unresolved: number;
+  brier: number | null;
+  mean_prob: number | null;
+  mean_outcome: number | null;
+  realized_pnl_usd: number | null;
+  bins: CalibrationBin[];
+  by_category: Array<{
+    category: string | null;
+    n: number;
+    brier: number | null;
+    win_rate?: number | null;
+  }>;
+  by_horizon: Array<{
+    bucket: string;
+    n: number;
+    brier: number | null;
+    mean_pred: number | null;
+    mean_actual: number | null;
+  }>;
+}
+
+export interface PendingSuggestion {
+  id: number;
+  created_at: string | null;
+  param_name: string;
+  current_value: number | null;
+  proposed_value: number | null;
+  evidence: string | null;
+  backtest_delta: number | null;
+  backtest_trades: number | null;
+  status: string;
+  settled_count: number | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface LearningReport {
+  id: number;
+  created_at: string | null;
+  settled_count_at_creation: number | null;
+  thesis: string | null;
+  body: Record<string, unknown> | string | null;
+  user_id: string;
+}
+
 export const api = {
   health:        () => request<HealthSnapshot>("/api/health"),
   state:         () => request<BotState>("/api/state"),
@@ -164,4 +244,32 @@ export const api = {
   start: () => request<{ mode: string }>("/api/bot/start", { method: "POST" }),
   stop:  () => request<{ mode: string }>("/api/bot/stop",  { method: "POST" }),
   scan:  () => request<{ queued: boolean }>("/api/scan",   { method: "POST" }),
+
+  // Performance + learning
+  summary:     () => request<PerformanceSummary>("/api/summary"),
+  brierTrend:  () => request<{ points: BrierTrendPoint[] }>("/api/brier-trend"),
+  calibration: (opts?: { source?: string; since_days?: number }) => {
+    const q = new URLSearchParams();
+    if (opts?.source) q.set("source", opts.source);
+    if (opts?.since_days) q.set("since_days", String(opts.since_days));
+    const qs = q.toString();
+    return request<CalibrationReport>(`/api/calibration${qs ? `?${qs}` : ""}`);
+  },
+  suggestions: () =>
+    request<{ suggestions: PendingSuggestion[] }>("/api/suggestions"),
+  applySuggestion: (id: number) =>
+    request<Record<string, unknown>>(`/api/suggestions/${id}/apply`, {
+      method: "POST",
+    }),
+  skipSuggestion: (id: number) =>
+    request<Record<string, unknown>>(`/api/suggestions/${id}/skip`, {
+      method: "POST",
+    }),
+  snoozeSuggestion: (id: number, wait_trades?: number) =>
+    request<Record<string, unknown>>(`/api/suggestions/${id}/snooze`, {
+      method: "POST",
+      body: JSON.stringify(wait_trades ? { wait_trades } : {}),
+    }),
+  learningReports: (limit = 10) =>
+    request<{ reports: LearningReport[] }>(`/api/learning-reports?limit=${limit}`),
 };

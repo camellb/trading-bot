@@ -125,6 +125,68 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: upp
 .form-actions .ok  { color: var(--good); font-size: 12px; }
 .form-actions .err { color: var(--bad);  font-size: 12px; }
 
+/* Performance tab */
+.error.wide { grid-column: 1 / -1; }
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 22px;
+}
+.metric { display: flex; flex-direction: column; gap: 4px; }
+.metric-label {
+  font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.metric-value { font-size: 22px; font-weight: 600; color: var(--text); }
+.metric-value.good { color: var(--good); }
+.metric-value.bad  { color: var(--bad); }
+
+.proposals { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.proposals li {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: rgba(0,0,0,0.15);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.proposal-head {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+}
+.proposal-name {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px; color: var(--text);
+}
+.proposal-change { font-size: 13px; color: var(--muted); }
+.proposal-change .arrow { color: var(--accent); margin: 0 4px; }
+.proposal-evidence { margin: 2px 0 0; color: var(--text); font-size: 13px; }
+.proposal-backtest { margin: 0; color: var(--muted); font-size: 12px; }
+.proposal-actions { display: flex; gap: 8px; margin-top: 4px; }
+.proposal-actions button.ghost {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border);
+}
+.proposal-actions button.ghost:hover { border-color: var(--accent); }
+
+.brier-spark svg { display: block; }
+.brier-foot { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+.brier-single { color: var(--text); font-size: 14px; }
+.brier-single strong { color: var(--accent); }
+
+.reports { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.reports li {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.report-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 12px; color: var(--muted); margin-bottom: 4px;
+}
+.report-when { font-family: ui-monospace, monospace; }
+.report-n { color: var(--accent); }
+.report-thesis { margin: 0; color: var(--text); font-size: 13px; line-height: 1.5; }
+
 /* Boot screen - shown until the first /api/state call succeeds. */
 .boot {
   display: flex;

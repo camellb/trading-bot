@@ -113,7 +113,7 @@ def resolve_prediction_by_trade(
         with get_engine().begin() as conn:
             conn.execute(text(
                 "UPDATE predictions SET "
-                "  resolved_at      = NOW(), "
+                "  resolved_at      = CURRENT_TIMESTAMP, "
                 "  resolved_outcome = :outcome, "
                 "  resolved_pnl_usd = :pnl, "
                 "  resolved_note    = :note "
@@ -144,7 +144,7 @@ def resolve_prediction_by_id(
         with get_engine().begin() as conn:
             conn.execute(text(
                 "UPDATE predictions SET "
-                "  resolved_at      = NOW(), "
+                "  resolved_at      = CURRENT_TIMESTAMP, "
                 "  resolved_outcome = :outcome, "
                 "  resolved_pnl_usd = :pnl, "
                 "  resolved_note    = :note "
@@ -238,7 +238,7 @@ def get_report(
         ]
         if since_days and since_days > 0:
             res_filters.append(
-                f"settled_at >= NOW() - INTERVAL '{int(since_days)} days'"
+                f"settled_at >= datetime('now', '-{int(since_days)} days')"
             )
         res_where = "WHERE " + " AND ".join(res_filters)
 
@@ -247,7 +247,7 @@ def get_report(
         ]
         if since_days and since_days > 0:
             total_filters.append(
-                f"created_at >= NOW() - INTERVAL '{int(since_days)} days'"
+                f"created_at >= datetime('now', '-{int(since_days)} days')"
             )
         total_where = "WHERE " + " AND ".join(total_filters)
 
@@ -320,14 +320,14 @@ def get_report(
             for label, lo_h, hi_h in HORIZON_BUCKETS:
                 horizon_filters = list(res_filters) + [
                     "expected_resolution_at IS NOT NULL",
-                    "EXTRACT(EPOCH FROM (expected_resolution_at - created_at))"
-                    " / 3600.0 >= :h_lo",
+                    "(julianday(expected_resolution_at) - julianday(created_at))"
+                    " * 24.0 >= :h_lo",
                 ]
                 h_params = {**params, "h_lo": lo_h}
                 if hi_h is not None:
                     horizon_filters.append(
-                        "EXTRACT(EPOCH FROM (expected_resolution_at - created_at))"
-                        " / 3600.0 < :h_hi"
+                        "(julianday(expected_resolution_at) - julianday(created_at))"
+                        " * 24.0 < :h_hi"
                     )
                     h_params["h_hi"] = hi_h
                 h_where = "WHERE " + " AND ".join(horizon_filters)

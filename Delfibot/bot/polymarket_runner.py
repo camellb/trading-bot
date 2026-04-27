@@ -192,7 +192,7 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                         "  AND status = 'open' "
                         "  AND ("
                         "    expected_resolution_at IS NULL OR "
-                        "    ABS(EXTRACT(EPOCH FROM (expected_resolution_at - :new_dt))) > 60"
+                        "    ABS((julianday(expected_resolution_at) - julianday(:new_dt)) * 86400.0) > 60"
                         "  )"
                     ), {"id": pos_id, "new_dt": new_dt})
         except Exception as exc:
@@ -248,7 +248,7 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
         with get_engine().begin() as conn:
             where = "status = 'open'"
             if short_horizon_only:
-                where += " AND expected_resolution_at < NOW() + INTERVAL '24 hours'"
+                where += " AND expected_resolution_at < datetime('now', '+24 hours')"
             rows = conn.execute(text(
                 f"SELECT id, market_id, side, shares, cost_usd, prediction_id, "
                 f"       question, user_id, mode "

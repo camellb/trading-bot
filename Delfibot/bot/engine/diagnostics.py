@@ -163,7 +163,7 @@ def _calibration_curve_impl(scope: str, _bucket: int) -> dict:
                 row = conn.execute(text(
                     "SELECT COUNT(*) AS n, "
                     "       AVG(p.probability) AS mp, "
-                    "       AVG(p.resolved_outcome::float) AS ma "
+                    "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
                     "FROM predictions p "
                     "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                     "  AND p.resolved_outcome IN (0,1) "
@@ -231,9 +231,9 @@ def _brier_score_impl(scope: str, archetype: Optional[str],
         with _get_engine().begin() as conn:
             row = conn.execute(text(
                 "SELECT COUNT(*) AS n, "
-                "       AVG((p.probability - p.resolved_outcome)^2) AS brier, "
+                "       AVG((p.probability - p.resolved_outcome) * (p.probability - p.resolved_outcome)) AS brier, "
                 "       AVG(p.probability) AS mp, "
-                "       AVG(p.resolved_outcome::float) AS ma "
+                "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
                 f"FROM predictions p WHERE {where}"
             ), params).fetchone()
         n = int(row[0] or 0)
@@ -331,9 +331,9 @@ def _brier_by_archetype_impl(scope: str, flag_threshold: float,
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT p.category, COUNT(*) AS n, "
-                "       AVG((p.probability - p.resolved_outcome)^2) AS brier, "
+                "       AVG((p.probability - p.resolved_outcome) * (p.probability - p.resolved_outcome)) AS brier, "
                 "       AVG(p.probability) AS mp, "
-                "       AVG(p.resolved_outcome::float) AS ma "
+                "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
                 "FROM predictions p "
                 "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                 "  AND p.resolved_outcome IN (0,1) "
@@ -634,7 +634,12 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
                           _bucket: int) -> list[dict]:
     try:
         from sqlalchemy import text
-        grain = "day" if resolution != "hour" else "hour"
+        # SQLite has no `date_trunc`, so we use strftime with an ISO-8601
+        # template. Day grain pins the time-of-day to 00:00:00; hour grain
+        # pins the minute-and-second to :00:00. Output is a string, so the
+        # downstream conversion below tolerates both string and datetime
+        # values to keep this function portable across dialects.
+        grain_fmt = "%Y-%m-%dT%H:00:00" if resolution == "hour" else "%Y-%m-%dT00:00:00"
         params: dict = {}
         user_clause = ""
         if user_id:
@@ -646,7 +651,7 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
             params["m"] = mode
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
-                f"SELECT date_trunc('{grain}', settled_at) AS ts, "
+                f"SELECT strftime('{grain_fmt}', settled_at) AS ts, "
                 "       COALESCE(SUM(realized_pnl_usd),0) AS pnl "
                 "FROM pm_positions "
                 "WHERE status IN ('settled','invalid') "
@@ -661,8 +666,14 @@ def _bankroll_series_impl(resolution: str, starting_cash: Optional[float],
         out = []
         for ts, pnl in rows:
             cum += float(pnl or 0.0)
+            if ts is None:
+                ts_iso: Optional[str] = None
+            elif hasattr(ts, "isoformat"):
+                ts_iso = ts.isoformat()
+            else:
+                ts_iso = str(ts)
             out.append({
-                "ts":       ts.isoformat() if ts is not None else None,
+                "ts":       ts_iso,
                 "pnl":      float(pnl or 0.0),
                 "bankroll": cum,
             })

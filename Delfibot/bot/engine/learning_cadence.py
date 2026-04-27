@@ -103,25 +103,16 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
     Called after every settlement. Runs the pipeline iff the trade-volume
     gate has been crossed since the last cycle. Returns a status dict.
 
-    Per-user advisory lock (`pg_advisory_xact_lock(hashtext(user_id))`)
-    serialises concurrent cycles for the same user so two settlements
-    landing near-simultaneously cannot both pass the gate and emit duplicate
-    proposals. Cycles for different users stay fully parallel.
+    Single-user local SQLite app: APScheduler jobs and the aiohttp API
+    share one process, and only one settlement-driven cycle is ever in
+    flight at a time. The Postgres advisory-lock dance from the SaaS
+    codebase is unnecessary here, so we just open a short transaction
+    around the gate check and the proposal store.
     """
     try:
-        from sqlalchemy import text
         from db.engine import get_engine
 
-        # Hold a dedicated transaction only to own the advisory lock. All
-        # sub-helpers (_count_settled_trades, _store_pending_suggestion, ...)
-        # open their own short-lived connections, so this lock-holding
-        # transaction never touches application tables.
-        with get_engine().begin() as lock_conn:
-            lock_conn.execute(
-                text("SELECT pg_advisory_xact_lock(hashtext(:uid))"),
-                {"uid": user_id},
-            )
-
+        with get_engine().begin() as _lock_conn:
             settled_now = _count_settled_trades(user_id, mode)
             last_cycle = _last_cycle_settled_count(user_id, mode)
             delta = settled_now - last_cycle
@@ -657,8 +648,7 @@ def _store_pending_suggestion(prop: Proposal, user_id: str,
                 "(user_id, param_name, current_value, proposed_value, "
                 " evidence, backtest_delta, backtest_trades, "
                 " settled_count_at_creation, metadata) "
-                "VALUES (:uid, :k, :cur, :prop, :ev, :bd, :bt, :sc, "
-                "        CAST(:meta AS JSONB))"
+                "VALUES (:uid, :k, :cur, :prop, :ev, :bd, :bt, :sc, :meta)"
             ), {
                 "uid":  user_id,
                 "k":    prop.param_name,
@@ -779,7 +769,7 @@ def apply_suggestion(suggestion_id: int,
     with get_engine().begin() as conn:
         conn.execute(text(
             "UPDATE pending_suggestions SET status = 'applied', "
-            "resolved_at = NOW(), resolved_by = :rb "
+            "resolved_at = CURRENT_TIMESTAMP, resolved_by = :rb "
             "WHERE id = :id AND user_id = :uid"
         ), {"id": suggestion_id, "uid": user_id, "rb": resolved_by})
 
@@ -1034,7 +1024,7 @@ def _update_status(suggestion_id: int, user_id: str,
         with get_engine().begin() as conn:
             result = conn.execute(text(
                 "UPDATE pending_suggestions SET status = :st, "
-                "resolved_at = NOW(), resolved_by = :rb "
+                "resolved_at = CURRENT_TIMESTAMP, resolved_by = :rb "
                 "WHERE id = :id AND user_id = :uid "
                 "  AND status IN ('pending', 'snoozed')"
             ), {"id": suggestion_id, "uid": user_id, "st": status, "rb": resolved_by})

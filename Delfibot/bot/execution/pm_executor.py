@@ -382,7 +382,7 @@ class PMExecutor:
                 conn.execute(text(
                     "UPDATE pm_positions SET "
                     "  status              = :st, "
-                    "  settled_at          = NOW(), "
+                    "  settled_at          = CURRENT_TIMESTAMP, "
                     "  settlement_outcome  = :out, "
                     "  settlement_price    = :sp, "
                     "  realized_pnl_usd    = :pnl "

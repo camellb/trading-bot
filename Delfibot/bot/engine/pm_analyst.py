@@ -474,7 +474,7 @@ def _recently_predicted(market_id: str, days: int) -> bool:
                 "SELECT 1 FROM predictions "
                 "WHERE source = :src "
                 "  AND subject_key = :sk "
-                "  AND created_at >= NOW() - (:d || ' days')::interval "
+                "  AND created_at >= datetime('now', '-' || :d || ' days') "
                 "LIMIT 1"
             ), {
                 "src": SOURCE,

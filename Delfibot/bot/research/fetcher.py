@@ -303,14 +303,14 @@ def _fetch_rss_matches(keywords: list[str], limit: int = 8) -> list[str]:
         params: dict = {}
         for i, kw in enumerate(keywords):
             key = f"kw{i}"
-            like_clauses.append(f"headline ILIKE :{key}")
+            like_clauses.append(f"headline LIKE :{key}")
             params[key] = f"%{kw}%"
         clause = " OR ".join(like_clauses)
         with get_engine().begin() as conn:
             rows = conn.execute(text(
                 f"SELECT headline, source, logged_at "
                 f"FROM news_event_log "
-                f"WHERE logged_at >= NOW() - INTERVAL '48 hours' "
+                f"WHERE logged_at >= datetime('now', '-48 hours') "
                 f"  AND ({clause}) "
                 f"ORDER BY logged_at DESC "
                 f"LIMIT :lim"
@@ -372,7 +372,7 @@ def _fetch_base_rate(category: Optional[str]) -> Optional[str]:
     try:
         with get_engine().begin() as conn:
             row = conn.execute(text(
-                "SELECT COUNT(*) AS n, AVG(resolved_outcome::float) AS rate "
+                "SELECT COUNT(*) AS n, AVG(CAST(resolved_outcome AS REAL)) AS rate "
                 "FROM predictions "
                 "WHERE source = 'polymarket' "
                 "  AND category = :cat "

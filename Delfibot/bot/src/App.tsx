@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, BotState, Credentials, PMPosition, EventLogRow } from "./api";
+import Performance from "./Performance";
 import Settings from "./Settings";
 
-type Tab = "overview" | "settings";
+type Tab = "overview" | "performance" | "settings";
 
 /**
  * Root component. Two-tab shell: overview (status, positions, recent
@@ -101,6 +102,12 @@ export default function App() {
             Overview
           </button>
           <button
+            className={tab === "performance" ? "tab active" : "tab"}
+            onClick={() => setTab("performance")}
+          >
+            Performance
+          </button>
+          <button
             className={tab === "settings" ? "tab active" : "tab"}
             onClick={() => setTab("settings")}
           >
@@ -191,6 +198,8 @@ export default function App() {
           </div>
         </section>
       )}
+
+      {tab === "performance" && <Performance />}
 
       {tab === "settings" && (
         <Settings creds={creds} config={config} onSaved={refresh} />

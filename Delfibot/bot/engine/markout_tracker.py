@@ -40,7 +40,7 @@ async def check_markouts() -> None:
                 "SELECT me.id, me.evaluated_at, me.market_id, "
                 "       me.market_price_yes, me.claude_probability "
                 "FROM market_evaluations me "
-                "WHERE me.evaluated_at >= NOW() - INTERVAL '48 hours' "
+                "WHERE me.evaluated_at >= datetime('now', '-48 hours') "
                 "ORDER BY me.evaluated_at DESC"
             )).fetchall()
 

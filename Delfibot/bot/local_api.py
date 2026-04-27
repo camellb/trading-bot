@@ -21,17 +21,29 @@ similar custom scheme). Loopback-only binding makes this safe.
 
 Surface
 =======
-GET  /api/health          process health (uptime, last-ok per job)
-GET  /api/state           bot state summary (mode, started_at, etc.)
-GET  /api/config          current user_config (no secrets)
-PUT  /api/config          partial update of user_config (validated)
-GET  /api/credentials     which credentials are present (booleans + wallet)
-PUT  /api/credentials     write Polymarket / Anthropic creds to OS keychain
-GET  /api/positions       open + recent pm_positions rows
-GET  /api/events          recent event_log rows
-POST /api/bot/start       set mode=live (requires creds + wallet)
-POST /api/bot/stop        set mode=simulation
-POST /api/scan            kick a one-off scan job
+GET  /api/health                    process health (uptime, last-ok per job)
+GET  /api/state                     bot state summary (mode, started_at, etc.)
+GET  /api/config                    current user_config (no secrets)
+PUT  /api/config                    partial update of user_config (validated)
+GET  /api/credentials               which credentials are present (booleans + wallet)
+PUT  /api/credentials               write Polymarket / Anthropic creds to OS keychain
+GET  /api/positions                 open + recent pm_positions rows
+GET  /api/events                    recent event_log rows
+POST /api/bot/start                 set mode=live (requires creds + wallet)
+POST /api/bot/stop                  set mode=simulation
+POST /api/scan                      kick a one-off scan job
+
+Performance + Learning surface
+==============================
+GET  /api/summary                   bankroll, equity, win rate, ROI, Brier
+GET  /api/calibration               full calibration report (?source, ?since_days)
+GET  /api/brier-trend               running Brier on settled positions over time
+GET  /api/suggestions               pending V1-multiplier proposals from the
+                                    learning cadence (apply / skip / snooze)
+POST /api/suggestions/{id}/apply    apply a proposal to user_config
+POST /api/suggestions/{id}/skip     reject a proposal
+POST /api/suggestions/{id}/snooze   snooze a proposal until N more settled trades
+GET  /api/learning-reports          50-trade narrative reviews (?limit)
 
 Errors are returned as `{"error": "<message>"}` with an appropriate
 4xx/5xx status. Successful responses are JSON (no envelope).
@@ -45,11 +57,20 @@ from datetime import datetime
 from typing import Any, Optional
 
 from aiohttp import web
-from sqlalchemy import desc, select
+from sqlalchemy import desc, select, text
 
+import calibration
 from db.engine import get_engine
 from db.models import event_log, pm_positions
+from engine.learning_cadence import (
+    apply_suggestion,
+    list_pending_suggestions,
+    skip_suggestion,
+    snooze_suggestion,
+)
+from engine.review_report import list_learning_reports
 from engine.user_config import (
+    DEFAULT_USER_ID,
     KEYRING_ANTHROPIC_KEY,
     KEYRING_POLYMARKET_KEY,
     _keyring_get,
@@ -60,6 +81,7 @@ from engine.user_config import (
     update_user_config,
     validated_update_payload,
 )
+from execution.pm_executor import PMExecutor
 from process_health import health as proc_health
 
 
@@ -188,6 +210,19 @@ class LocalAPI:
         app.router.add_post("/api/bot/start",  self._bot_start)
         app.router.add_post("/api/bot/stop",   self._bot_stop)
         app.router.add_post("/api/scan",       self._scan)
+
+        # Performance + learning
+        app.router.add_get("/api/summary",          self._get_summary)
+        app.router.add_get("/api/calibration",      self._get_calibration)
+        app.router.add_get("/api/brier-trend",      self._get_brier_trend)
+        app.router.add_get("/api/suggestions",      self._get_suggestions)
+        app.router.add_post("/api/suggestions/{suggestion_id}/apply",
+                            self._apply_suggestion)
+        app.router.add_post("/api/suggestions/{suggestion_id}/skip",
+                            self._skip_suggestion)
+        app.router.add_post("/api/suggestions/{suggestion_id}/snooze",
+                            self._snooze_suggestion)
+        app.router.add_get("/api/learning-reports", self._get_learning_reports)
 
         # Permissive CORS preflight for the Vite dev server.
         async def _options(_req: web.Request) -> web.Response:
@@ -377,6 +412,185 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to schedule scan: {exc}", 500)
         return _ok({"queued": True})
+
+    # ── Performance + Learning ────────────────────────────────────────────────
+    async def _get_summary(self, _req: web.Request) -> web.Response:
+        """
+        Headline performance numbers: bankroll, equity, win rate, ROI, Brier.
+        Single-user; no X-User-Id needed. Mode is always taken from
+        user_config (no view-mode override in v1).
+        """
+        try:
+            executor = PMExecutor(DEFAULT_USER_ID)
+            stats = executor.get_portfolio_stats()
+        except Exception as exc:
+            return _err(f"failed to compute portfolio stats: {exc}", 500)
+
+        # Brier on this user's settled positions. Source filter is
+        # 'polymarket' to match the bucket that drives sizing decisions.
+        try:
+            brier = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: calibration.get_report(
+                    source="polymarket", user_id=DEFAULT_USER_ID,
+                ),
+            )
+        except Exception:
+            brier = {"brier": None, "resolved": 0, "total": 0}
+
+        starting = float(stats.get("starting_cash") or 0.0)
+        realized = float(stats.get("realized_pnl") or 0.0)
+        roi = (realized / starting) if starting > 0 else None
+
+        return _ok({
+            "mode":           stats.get("mode"),
+            "bankroll":       stats.get("bankroll"),
+            "equity":         stats.get("equity"),
+            "starting_cash":  stats.get("starting_cash"),
+            "open_positions": stats.get("open_positions"),
+            "open_cost":      stats.get("open_cost"),
+            "settled_total":  stats.get("settled_total"),
+            "settled_wins":   stats.get("settled_wins"),
+            "win_rate":       stats.get("win_rate"),
+            "realized_pnl":   stats.get("realized_pnl"),
+            "roi":            roi,
+            "brier":          brier.get("brier"),
+            "resolved_predictions": brier.get("resolved"),
+            "total_predictions":    brier.get("total"),
+        })
+
+    async def _get_calibration(self, req: web.Request) -> web.Response:
+        """Full calibration report (Brier + reliability buckets)."""
+        source = req.query.get("source") or "polymarket"
+        since_raw = req.query.get("since_days")
+        since_int = int(since_raw) if since_raw and since_raw.isdigit() else None
+        try:
+            report = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: calibration.get_report(
+                    source=None if source == "all" else source,
+                    since_days=since_int,
+                    user_id=DEFAULT_USER_ID,
+                ),
+            )
+        except Exception as exc:
+            return _err(f"calibration query failed: {exc}", 500)
+        return _ok(report)
+
+    async def _get_brier_trend(self, _req: web.Request) -> web.Response:
+        """
+        Running Brier over settled positions, in chronological order.
+        Used to show whether the forecaster is getting more or less
+        calibrated as more data accumulates.
+        """
+        try:
+            with get_engine().begin() as conn:
+                rows = conn.execute(text(
+                    "SELECT settled_at, claude_probability, side, "
+                    "       CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid "
+                    "  AND settled_at IS NOT NULL "
+                    "  AND claude_probability IS NOT NULL "
+                    "  AND settlement_outcome IN ('YES', 'NO') "
+                    "ORDER BY settled_at ASC"
+                ), {"uid": DEFAULT_USER_ID}).fetchall()
+        except Exception as exc:
+            return _err(f"brier-trend query failed: {exc}", 500)
+
+        points = []
+        running = 0.0
+        for i, r in enumerate(rows, 1):
+            p_yes = float(r[1])
+            side = (r[2] or "YES").upper()
+            # Brier is computed on the chosen side: p_yes if YES, else 1-p_yes.
+            p = p_yes if side == "YES" else (1.0 - p_yes)
+            o = int(r[3])
+            running += (p - o) ** 2
+            points.append({
+                "date":  r[0].isoformat() if r[0] else None,
+                "brier": round(running / i, 4),
+                "n":     i,
+            })
+        return _ok({"points": points})
+
+    async def _get_suggestions(self, req: web.Request) -> web.Response:
+        """List pending V1-multiplier proposals from the learning cadence."""
+        include_snoozed = req.query.get("include_snoozed", "1") != "0"
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: list_pending_suggestions(
+                    DEFAULT_USER_ID, include_snoozed=include_snoozed,
+                ),
+            )
+        except Exception as exc:
+            return _err(f"failed to list suggestions: {exc}", 500)
+        return _ok({"suggestions": rows})
+
+    async def _suggestion_action(self, req: web.Request, fn) -> web.Response:
+        try:
+            sid = int(req.match_info.get("suggestion_id", "0"))
+        except ValueError:
+            return _err("invalid suggestion id", 400)
+        if sid <= 0:
+            return _err("invalid suggestion id", 400)
+        try:
+            payload = await req.json() if req.has_body else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        kwargs = {"user_id": DEFAULT_USER_ID, "resolved_by": "user"}
+        # snooze takes an optional `wait_trades` knob; tolerate it for
+        # apply/skip too (those just ignore it).
+        if "wait_trades" in payload:
+            try:
+                kwargs["wait_trades"] = int(payload["wait_trades"])
+            except (TypeError, ValueError):
+                pass
+
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(None, lambda: fn(sid, **kwargs))
+        except TypeError:
+            # Older signatures may not accept wait_trades; retry without.
+            kwargs.pop("wait_trades", None)
+            try:
+                result = await loop.run_in_executor(None, lambda: fn(sid, **kwargs))
+            except Exception as exc:
+                return _err(f"suggestion action failed: {exc}", 500)
+        except Exception as exc:
+            return _err(f"suggestion action failed: {exc}", 500)
+        return _ok(result if isinstance(result, dict) else {"result": result})
+
+    async def _apply_suggestion(self, req: web.Request) -> web.Response:
+        return await self._suggestion_action(req, apply_suggestion)
+
+    async def _skip_suggestion(self, req: web.Request) -> web.Response:
+        return await self._suggestion_action(req, skip_suggestion)
+
+    async def _snooze_suggestion(self, req: web.Request) -> web.Response:
+        return await self._suggestion_action(req, snooze_suggestion)
+
+    async def _get_learning_reports(self, req: web.Request) -> web.Response:
+        """50-trade narrative reviews. Single-user, so no admin gate."""
+        try:
+            limit = int(req.query.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        limit = max(1, min(limit, 50))
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: list_learning_reports(
+                    user_id=DEFAULT_USER_ID, limit=limit, include_admin=False,
+                ),
+            )
+        except Exception as exc:
+            return _err(f"failed to list learning reports: {exc}", 500)
+        return _ok({"reports": rows})
 
 
 # Helpful when poking at the API from the dev shell:

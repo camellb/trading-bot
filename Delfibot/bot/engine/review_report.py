@@ -141,7 +141,7 @@ def save_report(user_id: str, mode: str, report: dict) -> Optional[int]:
                 "INSERT INTO learning_reports "
                 "(user_id, mode, settled_count, thesis, summary_user, "
                 " summary_admin, data) "
-                "VALUES (:uid, :m, :sc, :th, :su, :sa, CAST(:d AS JSONB)) "
+                "VALUES (:uid, :m, :sc, :th, :su, :sa, :d) "
                 "ON CONFLICT (user_id, mode, settled_count) DO NOTHING "
                 "RETURNING id"
             ), {
