@@ -45,6 +45,19 @@ POST /api/suggestions/{id}/skip     reject a proposal
 POST /api/suggestions/{id}/snooze   snooze a proposal until N more settled trades
 GET  /api/learning-reports          50-trade narrative reviews (?limit)
 
+Archetypes + Telegram + Notifications + Reset
+=============================================
+GET  /api/archetypes                canonical archetype catalogue with the
+                                    user's current per-archetype skip flag
+                                    and stake multiplier
+GET  /api/evaluations               recent market_evaluations rows
+GET  /api/config/telegram           presence of bot token + current chat id
+PUT  /api/config/telegram           write bot token (keychain) / chat id (DB)
+POST /api/config/telegram/test      send a one-off test message
+GET  /api/config/notifications      per-category notification prefs
+PUT  /api/config/notifications      replace per-category notification prefs
+POST /api/reset-simulation          wipe simulation-mode positions
+
 Errors are returned as `{"error": "<message>"}` with an appropriate
 4xx/5xx status. Successful responses are JSON (no envelope).
 """
@@ -61,7 +74,8 @@ from sqlalchemy import desc, select, text
 
 import calibration
 from db.engine import get_engine
-from db.models import event_log, pm_positions
+from db.models import event_log, market_evaluations, pm_positions
+from engine.archetype_classifier import ARCHETYPES
 from engine.learning_cadence import (
     apply_suggestion,
     list_pending_suggestions,
@@ -70,19 +84,61 @@ from engine.learning_cadence import (
 )
 from engine.review_report import list_learning_reports
 from engine.user_config import (
+    ARCHETYPE_MULTIPLIER_BOUNDS,
     DEFAULT_USER_ID,
     KEYRING_ANTHROPIC_KEY,
     KEYRING_POLYMARKET_KEY,
+    KEYRING_TELEGRAM_TOKEN,
+    NOTIFICATION_CATEGORIES,
+    V1_DEFAULT_ARCHETYPE_SKIP_LIST,
+    V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS,
     _keyring_get,
     get_anthropic_api_key,
+    get_telegram_bot_token,
     get_user_config,
     set_anthropic_api_key,
+    set_telegram_bot_token,
     set_user_polymarket_creds,
     update_user_config,
     validated_update_payload,
 )
 from execution.pm_executor import PMExecutor
+from feeds import telegram_notifier
 from process_health import health as proc_health
+
+
+# ── Static metadata: archetype labels + descriptions ────────────────────
+# Human-readable text that drives the per-archetype settings UI. Kept in
+# this module rather than the classifier so editing copy doesn't churn
+# the engine. Description copy mirrors the SaaS Risk page.
+ARCHETYPE_META: dict[str, dict[str, str]] = {
+    "tennis":             {"label": "Tennis",
+                           "description": "Singles and doubles matches across all tours and qualifiers."},
+    "basketball":         {"label": "Basketball",
+                           "description": "NBA, EuroLeague, college, props, and full-game lines."},
+    "baseball":           {"label": "Baseball",
+                           "description": "MLB, KBO, NPB, and full-game props."},
+    "football":           {"label": "Football",
+                           "description": "American football: NFL, college, props, and full-game lines."},
+    "hockey":             {"label": "Hockey",
+                           "description": "NHL, KHL, and other ice hockey markets."},
+    "cricket":            {"label": "Cricket",
+                           "description": "ODI, T20, IPL, and Test matches."},
+    "esports":            {"label": "Esports",
+                           "description": "CS, Dota, LoL, Valorant - any pro-tier match."},
+    "soccer":             {"label": "Soccer",
+                           "description": "Domestic leagues, internationals, props, full-time results."},
+    "sports_other":       {"label": "Other sports",
+                           "description": "Anything sport-shaped not listed above (boxing, MMA, golf, motorsport, etc.)."},
+    "price_threshold":    {"label": "Price threshold",
+                           "description": "Will an asset cross a price by a date (BTC, equities, FX, commodities)?"},
+    "activity_count":     {"label": "Activity count",
+                           "description": "Counts of public activity (executive orders, posts, hires, layoffs) by date."},
+    "geopolitical_event": {"label": "Geopolitical event",
+                           "description": "Wars, sanctions, ceasefires, elections, and other state-level outcomes."},
+    "binary_event":       {"label": "Binary event",
+                           "description": "Other yes/no markets that don't fit the categories above."},
+}
 
 
 def _json_default(obj: Any) -> Any:
@@ -120,6 +176,11 @@ def _config_to_dict(cfg) -> dict:
     # Never echo secrets back through GET /api/config. Keychain values are
     # surfaced through GET /api/credentials as booleans only.
     raw.pop("polymarket_api_key", None)
+    raw.pop("polymarket_api_secret", None)
+    raw.pop("polymarket_passphrase", None)
+    raw.pop("polymarket_us_api_key", None)
+    raw.pop("polymarket_us_api_secret", None)
+    raw.pop("polymarket_us_passphrase", None)
     return raw
 
 
@@ -223,6 +284,22 @@ class LocalAPI:
         app.router.add_post("/api/suggestions/{suggestion_id}/snooze",
                             self._snooze_suggestion)
         app.router.add_get("/api/learning-reports", self._get_learning_reports)
+
+        # Archetypes (the per-archetype Settings UX)
+        app.router.add_get("/api/archetypes",       self._get_archetypes)
+
+        # Recent market evaluations (feeds Intelligence + Positions detail)
+        app.router.add_get("/api/evaluations",      self._get_evaluations)
+
+        # Telegram + notification prefs
+        app.router.add_get("/api/config/telegram",        self._get_telegram)
+        app.router.add_put("/api/config/telegram",        self._put_telegram)
+        app.router.add_post("/api/config/telegram/test",  self._post_telegram_test)
+        app.router.add_get("/api/config/notifications",   self._get_notifications)
+        app.router.add_put("/api/config/notifications",   self._put_notifications)
+
+        # Simulation reset (zeros out simulation positions + bankroll)
+        app.router.add_post("/api/reset-simulation",      self._reset_simulation)
 
         # Permissive CORS preflight for the Vite dev server.
         async def _options(_req: web.Request) -> web.Response:
@@ -591,6 +668,213 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to list learning reports: {exc}", 500)
         return _ok({"reports": rows})
+
+    # ── Archetype catalogue ──────────────────────────────────────────────
+    async def _get_archetypes(self, _req: web.Request) -> web.Response:
+        """Return the canonical archetype list with current per-user state.
+
+        Drives the per-archetype Settings UI. Each entry carries the
+        canonical id, a human-readable label + description, the
+        V1-doctrine default skip/multiplier (so the "reset to default"
+        button knows what to set), and the user's current effective
+        skip flag and multiplier value.
+        """
+        cfg = get_user_config()
+        skip_set = set(cfg.archetype_skip_list or ())
+        mults = dict(cfg.archetype_stake_multipliers or {})
+
+        out = []
+        for arch in ARCHETYPES:
+            meta = ARCHETYPE_META.get(arch, {"label": arch, "description": ""})
+            default_mult = float(V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS.get(arch, 1.0))
+            default_skip = arch in V1_DEFAULT_ARCHETYPE_SKIP_LIST
+            current_mult = float(mults.get(arch, default_mult))
+            out.append({
+                "id":             arch,
+                "label":          meta["label"],
+                "description":    meta["description"],
+                "skip":           arch in skip_set,
+                "multiplier":     current_mult,
+                "default_skip":   default_skip,
+                "default_mult":   default_mult,
+            })
+
+        bounds_lo, bounds_hi = ARCHETYPE_MULTIPLIER_BOUNDS
+        return _ok({
+            "archetypes": out,
+            "bounds": {
+                "multiplier_min": bounds_lo,
+                "multiplier_max": bounds_hi,
+            },
+        })
+
+    # ── Recent market evaluations ────────────────────────────────────────
+    async def _get_evaluations(self, req: web.Request) -> web.Response:
+        """Recent rows from the market_evaluations cache.
+
+        Used by Intelligence + the Positions detail panel to show why
+        Delfi looked at a market and what it concluded - including the
+        ones it skipped (which never become pm_positions rows).
+        """
+        try:
+            limit = int(req.query.get("limit", "100"))
+        except ValueError:
+            limit = 100
+        limit = max(1, min(limit, 500))
+
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                stmt = (
+                    select(market_evaluations)
+                    .order_by(desc(market_evaluations.c.evaluated_at))
+                    .limit(limit)
+                )
+                rows = [dict(r._mapping) for r in conn.execute(stmt)]
+        except Exception as exc:
+            return _err(f"failed to read evaluations: {exc}", 500)
+        return _ok({"evaluations": rows})
+
+    # ── Telegram bot config ──────────────────────────────────────────────
+    async def _get_telegram(self, _req: web.Request) -> web.Response:
+        """Return whether the bot token is set + the chat id (no token).
+
+        We never echo the bot token back through any API. The UI just
+        needs to know whether one is stored and what the chat id is.
+        """
+        cfg = get_user_config()
+        return _ok({
+            "has_telegram_token": _keyring_get(KEYRING_TELEGRAM_TOKEN) is not None,
+            "telegram_chat_id":   cfg.telegram_chat_id,
+            "is_configured":      telegram_notifier.is_configured(),
+        })
+
+    async def _put_telegram(self, req: web.Request) -> web.Response:
+        """Update the bot token (keychain) and/or the chat id (DB)."""
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+
+        wrote: list[str] = []
+
+        # Token: only write if the field is present in the payload AND
+        # is a non-empty string. An empty string clears the keychain.
+        if "telegram_bot_token" in payload:
+            tok = payload.get("telegram_bot_token")
+            if tok is None or (isinstance(tok, str) and tok.strip() == ""):
+                set_telegram_bot_token(None)
+                wrote.append("telegram_bot_token (cleared)")
+            elif isinstance(tok, str):
+                set_telegram_bot_token(tok.strip())
+                wrote.append("telegram_bot_token")
+            else:
+                return _err("telegram_bot_token must be a string or null", 400)
+
+        if "telegram_chat_id" in payload:
+            chat = payload.get("telegram_chat_id")
+            if chat is None:
+                update_user_config(telegram_chat_id=None)
+                wrote.append("telegram_chat_id (cleared)")
+            elif isinstance(chat, (str, int)):
+                update_user_config(telegram_chat_id=str(chat))
+                wrote.append("telegram_chat_id")
+            else:
+                return _err("telegram_chat_id must be a string", 400)
+
+        cfg = get_user_config()
+        return _ok({
+            "wrote": wrote,
+            "has_telegram_token": _keyring_get(KEYRING_TELEGRAM_TOKEN) is not None,
+            "telegram_chat_id":   cfg.telegram_chat_id,
+            "is_configured":      telegram_notifier.is_configured(),
+        })
+
+    async def _post_telegram_test(self, _req: web.Request) -> web.Response:
+        """Fire a test message so the user can verify their setup end-to-end."""
+        try:
+            ok, detail = await asyncio.get_event_loop().run_in_executor(
+                None, telegram_notifier.send_test_message,
+            )
+        except Exception as exc:
+            return _err(f"telegram test failed: {exc}", 500)
+        if ok:
+            return _ok({"ok": True, "detail": "test message sent"})
+        return _ok({"ok": False, "detail": detail}, status=400)
+
+    # ── Notification prefs (per-category toggles) ───────────────────────
+    async def _get_notifications(self, _req: web.Request) -> web.Response:
+        cfg = get_user_config()
+        prefs = dict(cfg.notification_prefs or {})
+        # Categories not present in the stored prefs default to True so
+        # a fresh install gets every notification until the user opts
+        # out. The shape mirrors what the UI expects.
+        full = {cat: bool(prefs.get(cat, True)) for cat in NOTIFICATION_CATEGORIES}
+        return _ok({
+            "categories":         list(NOTIFICATION_CATEGORIES),
+            "notification_prefs": full,
+        })
+
+    async def _put_notifications(self, req: web.Request) -> web.Response:
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+
+        # Accept either {"notification_prefs": {...}} or a flat dict of
+        # {category: bool}.  Either way we hand the inner dict to
+        # update_user_config which validates against NOTIFICATION_CATEGORIES.
+        prefs = payload.get("notification_prefs", payload)
+        if not isinstance(prefs, dict):
+            return _err("notification_prefs must be a JSON object", 400)
+        try:
+            update_user_config(notification_prefs=prefs)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        except Exception as exc:
+            return _err(f"update failed: {exc}", 500)
+
+        cfg = get_user_config()
+        full = {cat: bool((cfg.notification_prefs or {}).get(cat, True))
+                for cat in NOTIFICATION_CATEGORIES}
+        return _ok({
+            "categories":         list(NOTIFICATION_CATEGORIES),
+            "notification_prefs": full,
+        })
+
+    # ── Reset simulation ────────────────────────────────────────────────
+    async def _reset_simulation(self, _req: web.Request) -> web.Response:
+        """Wipe simulation-mode positions so the user can start a fresh sim.
+
+        Live positions are untouched - the SQL is mode-scoped. This is
+        the local equivalent of the SaaS "reset simulation" button.
+        Settled simulation positions get hard-deleted (along with their
+        cascading evaluation/markout rows we joined in to keep stats
+        clean).
+        """
+        try:
+            engine = get_engine()
+            with engine.begin() as conn:
+                # Open simulation positions: cancel them so the new run
+                # starts cleanly. Settled simulation positions: drop them
+                # so the simulation Brier / ROI restarts from zero.
+                conn.execute(text(
+                    "DELETE FROM pm_positions WHERE mode = 'simulation' "
+                    "  AND user_id = :uid"
+                ), {"uid": DEFAULT_USER_ID})
+                conn.execute(text(
+                    "DELETE FROM markouts WHERE evaluation_id IN ("
+                    "  SELECT id FROM market_evaluations "
+                    "  WHERE user_id = :uid"
+                    ")"
+                ), {"uid": DEFAULT_USER_ID})
+        except Exception as exc:
+            return _err(f"reset failed: {exc}", 500)
+        return _ok({"ok": True, "detail": "simulation positions reset"})
 
 
 # Helpful when poking at the API from the dev shell:

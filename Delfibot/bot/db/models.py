@@ -347,6 +347,14 @@ user_config = Table(
     # in the OS keychain). Empty string until the user pastes one in.
     Column("wallet_address",  Text, nullable=True),
 
+    # Telegram. Bot token lives in the OS keychain (it's a secret); the
+    # chat id is just the recipient identifier so it stays in the DB.
+    # Notification prefs is a JSON object of {category: bool} where the
+    # categories are NOTIFICATION_CATEGORIES from engine/user_config.py.
+    Column("telegram_chat_id",  Text, nullable=True),
+    Column("notification_prefs", JSON, nullable=False,
+           server_default=sa_text("'{}'")),
+
     # Onboarding.
     Column("tour_completed_at", DateTime, nullable=True),
 
@@ -416,6 +424,24 @@ def create_all_tables() -> None:
     with engine.begin() as conn:
         for stmt in index_statements:
             conn.execute(sa_text(stmt))
+
+        # ── In-place column backfills for existing DBs ───────────────────
+        # SQLite has no ALTER TABLE ADD COLUMN IF NOT EXISTS, so we probe
+        # via PRAGMA table_info and add only the missing columns. This
+        # keeps existing local databases working when the user upgrades
+        # the desktop bundle without forcing a wipe.
+        existing_user_config_cols = {
+            r[1] for r in conn.execute(sa_text("PRAGMA table_info(user_config)")).fetchall()
+        }
+        if "telegram_chat_id" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN telegram_chat_id TEXT"
+            ))
+        if "notification_prefs" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN notification_prefs JSON "
+                "NOT NULL DEFAULT '{}'"
+            ))
 
         # Seed the singleton row if absent. Local install always has
         # exactly one row; doing this here means the engine modules can

@@ -45,6 +45,7 @@ DEFAULT_USER_ID = "local"
 KEYRING_SERVICE = "delfi"
 KEYRING_POLYMARKET_KEY = "polymarket_private_key"
 KEYRING_ANTHROPIC_KEY = "anthropic_api_key"
+KEYRING_TELEGRAM_TOKEN = "telegram_bot_token"
 
 
 @dataclass
@@ -84,6 +85,16 @@ class UserConfig:
     polymarket_us_api_key:    Optional[str] = None
     polymarket_us_api_secret: Optional[str] = None
     polymarket_us_passphrase: Optional[str] = None
+
+    # Telegram. Bot token lives in the OS keychain (secret), only the
+    # `has_telegram_token` boolean is exposed via the API. Chat id is
+    # the recipient address (the chat id of the user's own DM with their
+    # bot, fetched once via @BotFather setup) and lives in the DB.
+    telegram_chat_id:         Optional[str]  = None
+
+    # Per-category notification toggles. Keys are NOTIFICATION_CATEGORIES.
+    # Missing keys default to True (everything fires until the user opts
+    # out).
     notification_prefs:       Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -206,8 +217,9 @@ _CASTERS: dict[str, type] = {
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
-# stale Telegram / venue / US-cred / V0-sizer writes from transferred
-# modules don't poison the SQLite schema.
+# stale venue / US-cred / V0-sizer writes from transferred modules don't
+# poison the SQLite schema. Telegram bot token is keychain-only and
+# never goes through this set; chat_id and notification_prefs persist.
 _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "base_stake_pct",
     "max_stake_pct",
@@ -223,6 +235,8 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "starting_cash",
     "wallet_address",
     "bot_enabled",
+    "telegram_chat_id",
+    "notification_prefs",
 })
 
 
@@ -316,6 +330,11 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
             return None
         s = str(raw).strip()
         return s or None
+    if key == "telegram_chat_id":
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
     if key == "bot_enabled":
         if isinstance(raw, bool):
             return raw
@@ -360,7 +379,7 @@ def validate_user_config_value(key: str, value) -> None:
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
-    if key in ("mode", "wallet_address", "bot_enabled"):
+    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id"):
         return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
@@ -466,6 +485,31 @@ def ensure_default_user_config() -> None:
         print(f"[user_config] ensure_default failed: {exc}", file=sys.stderr)
 
 
+def _decode_notification_prefs(raw) -> Dict[str, bool]:
+    """Decode the JSON-text notification_prefs column. Drops unknown keys."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    allowed = set(NOTIFICATION_CATEGORIES)
+    out: Dict[str, bool] = {}
+    for k, v in raw.items():
+        if str(k) not in allowed:
+            continue
+        if isinstance(v, bool):
+            out[str(k)] = v
+        elif isinstance(v, (int, float)):
+            out[str(k)] = bool(v)
+        elif isinstance(v, str):
+            out[str(k)] = v.strip().lower() in ("1", "true", "yes", "on")
+    return out
+
+
 def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
     """Load the singleton config row. Returns dataclass defaults on any error."""
     try:
@@ -479,7 +523,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       dry_powder_reserve_pct, "
                 "       cost_assumption_override, archetype_skip_list, "
                 "       mode, starting_cash, wallet_address, "
-                "       bot_enabled, archetype_stake_multipliers "
+                "       bot_enabled, archetype_stake_multipliers, "
+                "       telegram_chat_id, notification_prefs "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -499,6 +544,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             wallet_address                = (str(row[11]) if row[11] is not None else None),
             bot_enabled                   = bool(row[12]) if row[12] is not None else False,
             archetype_stake_multipliers   = _decode_archetype_multipliers(row[13]),
+            telegram_chat_id              = (str(row[14]) if row[14] is not None else None),
+            notification_prefs            = _decode_notification_prefs(row[15]),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -523,7 +570,7 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
     if not clean:
         return get_user_config(user_id)
 
-    json_fields = set(USER_CONFIG_DICT_FIELDS)
+    json_fields = set(USER_CONFIG_DICT_FIELDS) | set(USER_CONFIG_BOOL_DICT_FIELDS)
     set_parts = ", ".join(f"{k} = :{k}" for k in clean)
 
     params: dict = {}
@@ -675,14 +722,37 @@ def get_default_user_config() -> UserConfig:
     return UserConfig()
 
 
+# ── Telegram bot token (keychain) ───────────────────────────────────────────
+def get_telegram_bot_token() -> Optional[str]:
+    """Read the Telegram bot HTTP token from the OS keychain.
+
+    Returns None if the user has not pasted a token yet. The token is
+    `<bot-id>:<auth-key>` shape from BotFather; we never validate the
+    format ourselves, just pass it through to api.telegram.org.
+    """
+    return _keyring_get(KEYRING_TELEGRAM_TOKEN)
+
+
+def set_telegram_bot_token(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_TELEGRAM_TOKEN, value)
+
+
 # ── Notification prefs ──────────────────────────────────────────────────────
 def should_notify(user_id: str = DEFAULT_USER_ID, category: str = "") -> bool:
-    """Stub for legacy callers that still gate sends through this hook.
+    """Whether `category` is enabled for `user_id`.
 
-    Local v1 emits every notification to the SQLite event_log; the
-    dashboard does its own per-category filtering on read.
+    Categories not present in `notification_prefs` default to True, so a
+    fresh install gets every notification until the user opts out. An
+    unknown category returns True too (defence-in-depth: callers ought
+    to use NOTIFICATION_CATEGORIES, but don't punish them for typos).
+    Returns False only when the user has explicitly toggled the
+    category off.
     """
-    return True
+    if not category:
+        return True
+    cfg = get_user_config(user_id)
+    prefs = cfg.notification_prefs or {}
+    return bool(prefs.get(category, True))
 
 
 # ── Admin (single-user app: the user is always 'admin') ─────────────────────
