@@ -83,7 +83,7 @@ async function request<T>(
   return data as T;
 }
 
-// Typed endpoints
+// ── Typed endpoints ────────────────────────────────────────────────────
 
 export interface HealthSnapshot {
   uptime_s: number;
@@ -123,6 +123,15 @@ export interface PMPosition {
   created_at: string;
   settled_at: string | null;
   realized_pnl_usd: number | null;
+  claude_probability?: number | null;
+  market_archetype?: string | null;
+  reasoning?: string | null;
+  category?: string | null;
+  settlement_outcome?: string | null;
+  settlement_price?: number | null;
+  expected_resolution_at?: string | null;
+  ev_bps?: number | null;
+  confidence?: number | null;
   [k: string]: unknown;
 }
 
@@ -216,16 +225,65 @@ export interface LearningReport {
   user_id: string;
 }
 
+export interface ArchetypeEntry {
+  id: string;
+  label: string;
+  description: string;
+  skip: boolean;
+  multiplier: number;
+  default_skip: boolean;
+  default_mult: number;
+}
+
+export interface ArchetypeCatalogue {
+  archetypes: ArchetypeEntry[];
+  bounds: { multiplier_min: number; multiplier_max: number };
+}
+
+export interface MarketEvaluation {
+  id: number;
+  evaluated_at: string;
+  market_id: string;
+  question: string;
+  category: string | null;
+  market_price_yes: number;
+  claude_probability: number;
+  confidence: number | null;
+  ev_bps: number | null;
+  recommendation: string | null;
+  reasoning_short: string | null;
+  reasoning: string | null;
+  market_archetype: string | null;
+  [k: string]: unknown;
+}
+
+export interface TelegramConfig {
+  has_telegram_token: boolean;
+  telegram_chat_id: string | null;
+  is_configured: boolean;
+}
+
+export interface NotificationsConfig {
+  categories: string[];
+  notification_prefs: Record<string, boolean>;
+}
+
 export const api = {
+  // Process / config
   health:        () => request<HealthSnapshot>("/api/health"),
   state:         () => request<BotState>("/api/state"),
   config:        () => request<Record<string, unknown>>("/api/config"),
   credentials:   () => request<Credentials>("/api/credentials"),
+
+  // Live data
   positions:     (limit = 100) =>
     request<{ positions: PMPosition[] }>(`/api/positions?limit=${limit}`),
   events:        (limit = 200) =>
     request<{ events: EventLogRow[] }>(`/api/events?limit=${limit}`),
+  evaluations:   (limit = 100) =>
+    request<{ evaluations: MarketEvaluation[] }>(`/api/evaluations?limit=${limit}`),
 
+  // Mutations
   updateConfig:  (changes: Record<string, unknown>) =>
     request<Record<string, unknown>>("/api/config", {
       method: "PUT",
@@ -241,9 +299,14 @@ export const api = {
       body: JSON.stringify(creds),
     }),
 
+  // Bot lifecycle
   start: () => request<{ mode: string }>("/api/bot/start", { method: "POST" }),
   stop:  () => request<{ mode: string }>("/api/bot/stop",  { method: "POST" }),
   scan:  () => request<{ queued: boolean }>("/api/scan",   { method: "POST" }),
+  resetSimulation: () =>
+    request<{ ok: boolean; detail: string }>("/api/reset-simulation", {
+      method: "POST",
+    }),
 
   // Performance + learning
   summary:     () => request<PerformanceSummary>("/api/summary"),
@@ -272,4 +335,25 @@ export const api = {
     }),
   learningReports: (limit = 10) =>
     request<{ reports: LearningReport[] }>(`/api/learning-reports?limit=${limit}`),
+
+  // Archetypes
+  archetypes: () => request<ArchetypeCatalogue>("/api/archetypes"),
+
+  // Telegram + notifications
+  telegram:        () => request<TelegramConfig>("/api/config/telegram"),
+  saveTelegram:    (changes: { telegram_bot_token?: string | null; telegram_chat_id?: string | null }) =>
+    request<TelegramConfig & { wrote: string[] }>("/api/config/telegram", {
+      method: "PUT",
+      body: JSON.stringify(changes),
+    }),
+  testTelegram:    () =>
+    request<{ ok: boolean; detail: string }>("/api/config/telegram/test", {
+      method: "POST",
+    }),
+  notifications:   () => request<NotificationsConfig>("/api/config/notifications"),
+  saveNotifications: (prefs: Record<string, boolean>) =>
+    request<NotificationsConfig>("/api/config/notifications", {
+      method: "PUT",
+      body: JSON.stringify({ notification_prefs: prefs }),
+    }),
 };
