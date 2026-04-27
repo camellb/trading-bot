@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -39,6 +40,37 @@ try:
     _DDGS_AVAILABLE = True
 except ImportError:
     _DDGS_AVAILABLE = False
+
+# Pre-warm DDGS at module import time.
+#
+# DDGS lazy-loads its engine plugins (ddgs/__init__.py:_load_real,
+# ddgs/ddgs.py:_get_engines, ddgs/http_client.py.__init__) on the first
+# DDGS() instantiation. _fetch_web_search_raw later spawns up to 4
+# worker threads inside an inner ThreadPoolExecutor; if those workers
+# all race to instantiate DDGS for the first time, Python's import lock
+# and ddgs's internal init synchronization don't compose and the threads
+# deadlock indefinitely. Symptom: after a scan starts, the asyncio API
+# stops responding because the default executor's threads are stuck.
+#
+# Forcing one DDGS() construction here, single-threaded, before
+# APScheduler starts pays the lazy-load cost once during boot and lets
+# every later DDGS() call short-circuit through the already-populated
+# module caches.
+if _DDGS_AVAILABLE:
+    try:
+        _ddgs_warm_t0 = time.monotonic()
+        with DDGS():
+            pass
+        print(f"[research] DDGS warmed in "
+              f"{time.monotonic() - _ddgs_warm_t0:.2f}s",
+              flush=True)
+    except Exception as _ddgs_warm_exc:
+        # Don't fail import if the warmup itself crashes (e.g. transient
+        # network error during plugin discovery). The first real scan will
+        # try again, and at worst we re-introduce the deadlock risk for
+        # exactly that one scan.
+        print(f"[research] DDGS warmup failed: {_ddgs_warm_exc}",
+              file=sys.stderr, flush=True)
 
 try:
     import trafilatura
