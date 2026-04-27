@@ -1,0 +1,30 @@
+# Node / Vite
+node_modules/
+dist/
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OS
+.DS_Store
+
+# Tauri build artefacts (mirrored in src-tauri/.gitignore for safety)
+src-tauri/target/
+src-tauri/gen/schemas
+src-tauri/binaries/
+
+# Local DB seeded by `python main.py` if DELFI_DB_PATH points here
+delfi.db
+delfi.db-shm
+delfi.db-wal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

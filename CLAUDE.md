@@ -2,15 +2,15 @@
 
 ## What Delfi is
 
-Delfi is an autonomous prediction market trader. It watches Polymarket, forecasts which side of every tradeable market will resolve true, and backs that forecast with a small, confidence-scaled stake. It manages positions dynamically and learns from every resolution.
+Delfi is an autonomous prediction market trader. It watches Polymarket, follows the market favourite on every tradeable market its forecaster also points at, and stakes a flat fraction of bankroll scaled only by per-archetype multipliers. It manages positions dynamically and learns from every resolution.
 
-The product is both the trader and the experience of watching it trade. Users connect their Polymarket account. Delfi goes to work. They see its reasoning on a live dashboard, watch positions move in real time, and witness the calibrated intelligence of a system that treats every market as a solvable problem.
+The product is both the trader and the experience of watching it trade. Users connect their Polymarket account. Delfi goes to work. They see its reasoning on a live dashboard, watch positions move in real time, and witness a system that respects the market's pricing on each trade while filtering out the trades its own research disagrees with.
 
 ## The goal
 
 **Make money.** Maximize ROI on bankroll across all trades. That is the only metric that matters. Win rate, calibration, Brier score are diagnostics, not targets. If a proposed change improves expected ROI with evidence, ship it. If it doesn't, don't.
 
-The forecaster is the product. Every dollar of ROI depends on the model being right more often than wrong on its own picks. Engineering effort goes into making the forecaster better: richer research, stronger prompts, ensemble construction, calibration analysis, learning from resolved markets. The sizer stays narrow and dumb on purpose.
+The forecaster is the filter, not the picker. The market picks the side. The forecaster decides whether Delfi takes the trade at all (skip if the forecast disagrees with the market favourite) and informs per-archetype tuning over time. Engineering effort goes into making the forecaster better calibrated against the market price (so its disagreements are signal, not noise), into the per-archetype skip and multiplier defaults, and into the learning loop that proposes those defaults from settled-trade data. The sizer stays narrow and dumb on purpose.
 
 ## The product experience
 
@@ -64,19 +64,19 @@ These are not style preferences. Violations will be rejected.
 
 ## The core principle. Simple on purpose
 
-**Forecast the outcome. Back the forecast.**
+**Follow the market. Use the forecast as a filter.**
 
-Delfi bets the side its ensemble thinks will win. Price does not enter the side-selection decision. There is no "bet the cheaper side relative to our probability" filter. That structure selects for cases where the forecaster is wrong and loses money.
+Delfi bets the side the market favours (the side with implied probability >= 0.50). The forecaster's job is the veto: if it disagrees with the market's pick, skip the trade. The forecaster does not pick the side, does not size the stake, and does not override the market's price.
 
-Two operational gates plus a confidence softener live in code and in `memory/doctrine_back_the_forecast.md`:
+This is the V1 doctrine, locked 2026-04-27. It replaces the prior "back the forecast" doctrine after a 250-trade simulation-mode counterfactual showed the prior architecture was systematically losing money to a market-default baseline (V0 actual: -3.53% ROI; V1 selected: +14.47% ROI on the same trades). Authoritative numbers and the rejected alternatives live in `memory/doctrine_back_the_forecast.md`; never invent or reset them from this document.
 
-1. **Direction agreement** (never skips on its own; determines side).
-2. **Minimum chosen-side probability** (`min_p_win`).
-3. **Confidence softener** (shrinks stake on low confidence; never skips alone).
+The single operational gate that lives in code:
 
-An earlier third gate (minimum expected return after cost) was removed because it skipped heavy favourites where the math still favoured taking the bet. The numbers in the memory file are authoritative; never invent or reset them from this document.
+1. **Delfi direction agreement** — `claude_p_yes` and `market_p_yes` must be on the same side of 0.50; otherwise skip.
 
-Sizing is flat and scaled by model confidence only. Not by disagreement size, not by price, not by anything else. Simple sizing keeps variance per trade low so the portfolio learns fast.
+There are no other gates. `min_p_win`, the confidence softener, and the historical "minimum expected return" gate are all retired. The market favourite is by definition >= 0.50, so a `min_p_win` filter would just clip the most-profitable narrow-favourite band; the confidence softener was empirically anti-signal (high-confidence Delfi picks won 52.9%, low-confidence won 67.6%); the EV gate was retired in V0 and stays banned in V1 because it silenced positive-EV heavy favourites.
+
+Sizing is flat and scaled only by per-archetype multipliers (default 1.0 for unknown archetypes; specific defaults `basketball: 1.5`, `tennis: 0.5`). Skip list is a hard skip (default `sports_other`, `hockey`, `cricket`). Both lists are user-editable in the dashboard. Simple sizing keeps variance per trade low so the portfolio learns fast.
 
 ## Risk management
 
@@ -114,19 +114,21 @@ Never reintroduce sub-tier labels to work around a specific pattern. If a branch
 
 ## Settled lessons that must not be re-litigated
 
-- Filtering for disagreement with the market is a losing strategy. Delfi backs the model's pick directly.
-- Kelly sizing amplifies estimator errors on noisy forecasters (produces win-small-lose-big). Flat, confidence-scaled sizing until calibration is proven per category.
+- **Backing the forecast against the market is a losing strategy on this dataset.** Reversed 2026-04-27 from the V0 lesson "filtering for disagreement with the market is a losing strategy". The 250-trade counterfactual is unambiguous: market beats Delfi on the disagreement subset 65.7% to 34.3% (non-overlapping 95% CIs), Delfi-as-picker delivered -3.53% ROI, market-default-with-Delfi-veto delivered +14.47%. The forecaster has signal in aggregate but is anti-signal exactly where it has an opinion that differs from the price. V1 follows the market and uses the forecast only as a skip filter.
+- Kelly sizing amplifies estimator errors on noisy forecasters (produces win-small-lose-big). Flat, archetype-multiplier-scaled sizing under V1 (no confidence input).
 - Autonomous config changes on small samples drift harmfully. All config changes require user approval.
 - Simulation with disabled risk brakes does not simulate live. Identical risk parameters across both modes.
 - Brier score is not profit. A well-calibrated bot can still lose money. Brier is diagnostic, not target.
-- Short-horizon sports (tennis, qualifiers, low-tier matches) have cost us money. Default skip list until category evidence says otherwise.
+- Short-horizon sports (tennis, qualifiers, low-tier matches) have cost us money. V1 default skip list is `sports_other`, `hockey`, `cricket`; tennis is half-staked rather than skipped because the market itself is reasonably accurate on tennis.
 - Metrics count only entered predictions. Skipped evaluations never enter ROI, win rate, or Brier. Anything else misreports the bot's real performance.
+- The V0 confidence softener is retired. High-confidence Delfi picks lost more often than low-confidence picks on this dataset. Do not reintroduce confidence-scaled sizing without per-archetype evidence that calibration has improved.
+- The V0 `min_p_win` floor is retired. Under V1, side selection is the market favourite (>= 0.50 by definition); a min_p_win at 0.55 would just clip the profitable 0.50-0.55 band.
 
 ## Closing
 
-Delfi exists to make money for its users. It does that by forecasting outcomes as accurately as possible and backing those forecasts with small, confidence-scaled stakes. Everything else is a safety gate, a risk brake, or an optimization of the forecaster itself.
+Delfi exists to make money for its users. It does that by following the market favourite on every tradeable market its forecaster also points at, with a flat per-archetype-scaled stake. Everything else is a safety gate, a risk brake, or an optimization of the forecaster's filter quality.
 
-Forecast the outcome. Back the forecast. Measure the result. Improve.
+Follow the market. Use the forecast as a filter. Measure the result. Improve.
 
 ## Anti-Compression Memory
 

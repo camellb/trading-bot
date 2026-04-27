@@ -46,3 +46,18 @@ apps/web/logs/
 
 # Local-only backups produced during the restructure (safe to delete)
 _archive/
+
+# Delfibot desktop build artefacts
+Delfibot/web/.next/
+Delfibot/bot/dist/
+Delfibot/bot/build/
+Delfibot/bot/src-tauri/target/
+Delfibot/bot/src-tauri/gen/
+Delfibot/bot/src-tauri/binaries/
+Delfibot/bot/tsconfig.tsbuildinfo
+Delfibot/bot/tsconfig.node.tsbuildinfo
+Delfibot/bot/data/macro_calendar.json
+
+# Throwaway analysis scratch files
+tmp_*.md
+tmp_*.py
