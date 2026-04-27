@@ -188,11 +188,15 @@ fn main() {
             }
 
             // Wait for the ready handshake on a background task, with a
-            // 30s timeout. Once we have the bound port, write it into
+            // 120s timeout. The PyInstaller-bundled sidecar needs to
+            // decompress its bundled Python interpreter and modules to a
+            // tempdir on first launch, which can take 10-30s on cold
+            // disk; the smoke test was bumped from 30s to 120s for the
+            // same reason. Once we have the bound port, write it into
             // ApiState so JS can retrieve it.
             let app_handle = app.handle().clone();
             async_runtime::spawn(async move {
-                let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
+                let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
                 tokio::select! {
                     res = ready_rx => {
                         match res {
@@ -207,7 +211,7 @@ fn main() {
                         }
                     }
                     _ = timeout => {
-                        eprintln!("[delfi] sidecar did not become ready within 30s");
+                        eprintln!("[delfi] sidecar did not become ready within 120s");
                     }
                 }
             });

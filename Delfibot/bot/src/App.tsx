@@ -21,6 +21,7 @@ export default function App() {
   const [positions, setPositions] = useState<PMPosition[]>([]);
   const [events, setEvents] = useState<EventLogRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [connected, setConnected] = useState<boolean>(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -37,6 +38,7 @@ export default function App() {
       setConfig(cfg);
       setPositions(p);
       setEvents(e);
+      setConnected(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -60,6 +62,29 @@ export default function App() {
     try { await api.scan(); }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   };
+
+  // First-launch boot screen. The bundled sidecar can take up to ~30s to
+  // decompress its Python interpreter on cold launch, and the Rust shell
+  // waits up to 120s for the ready handshake. Showing a clear startup
+  // state (instead of an empty shell with "..." placeholders) avoids the
+  // "is it broken?" moment.
+  if (!connected) {
+    return (
+      <main className="app">
+        <div className="boot">
+          <h1>Delfi</h1>
+          <p className="boot-status">
+            {error ? "Could not reach the local engine" : "Starting the local engine..."}
+          </p>
+          {error ? (
+            <p className="boot-detail">{error}</p>
+          ) : (
+            <p className="boot-detail">First launch can take up to 30 seconds while the sidecar unpacks.</p>
+          )}
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="app">

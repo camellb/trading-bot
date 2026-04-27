@@ -33,8 +33,11 @@ async function fetchPort(): Promise<number> {
     );
   }
 
-  // Inside Tauri: poll the IPC command until it reports ready.
-  const deadline = Date.now() + 30_000;
+  // Inside Tauri: poll the IPC command until it reports ready. Mirror
+  // the 120s deadline on the Rust side - PyInstaller cold-start on a
+  // first launch can take tens of seconds while the bundled Python
+  // interpreter decompresses to a tempdir.
+  const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const res = await invoke<{ port: number; ready: boolean }>(
       "get_api_port",
@@ -45,7 +48,7 @@ async function fetchPort(): Promise<number> {
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error("sidecar did not become ready within 30s");
+  throw new Error("sidecar did not become ready within 120s");
 }
 
 async function port(): Promise<number> {
