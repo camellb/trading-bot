@@ -261,7 +261,7 @@ class BotAPI:
         try:
             def _q():
                 with get_engine().begin() as conn:
-                    return conn.execute(text(
+                    rows = conn.execute(text(
                         "SELECT id, market_id, question, category, side, shares, "
                         "       entry_price, cost_usd, claude_probability, "
                         "       ev_bps, confidence, settlement_outcome, "
@@ -273,10 +273,22 @@ class BotAPI:
                         "ORDER BY settled_at DESC NULLS LAST "
                         "LIMIT :lim"
                     ), {"uid": uid, "m": mode, "lim": limit}).fetchall()
-            settled_rows = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
+                    # Unbounded count so the Closed (N) pill on the
+                    # positions page reflects the user's full settled
+                    # history, not the size of the (LIMIT-capped) array
+                    # returned above. Without this the pill would max
+                    # out at `limit` (default 50) even though the user
+                    # has hundreds of settled rows.
+                    total = conn.execute(text(
+                        "SELECT COUNT(*) FROM pm_positions "
+                        "WHERE user_id = :uid AND mode = :m "
+                        "  AND status IN ('settled', 'invalid')"
+                    ), {"uid": uid, "m": mode}).scalar()
+                    return rows, int(total or 0)
+            settled_rows, settled_total = await asyncio.get_running_loop().run_in_executor(self._pool, _q)
         except Exception as exc:
             print(f"[bot_api] positions query failed: {exc}", file=sys.stderr)
-            settled_rows = []
+            settled_rows, settled_total = [], 0
         settled = [
             {
                 "id":             r[0],
@@ -299,7 +311,11 @@ class BotAPI:
             }
             for r in settled_rows
         ]
-        return web.json_response({"open": open_rows, "settled": settled})
+        return web.json_response({
+            "open":          open_rows,
+            "settled":       settled,
+            "settled_total": settled_total,
+        })
 
     async def _handle_evaluations(self, request: web.Request) -> web.Response:
         limit = int(request.query.get("limit", "50"))

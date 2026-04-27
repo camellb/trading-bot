@@ -37,7 +37,14 @@ type SettledPosition = {
   category: string | null;
 };
 
-type PositionsPayload = { open: OpenPosition[]; settled: SettledPosition[] };
+type PositionsPayload = {
+  open:           OpenPosition[];
+  settled:        SettledPosition[];
+  // Unbounded count of settled rows for this user+mode. The `settled`
+  // array itself is LIMIT-capped (default 50) so we cannot derive the
+  // true count from `settled.length` once the user crosses the cap.
+  settled_total?: number;
+};
 
 type Evaluation = {
   id: number;
@@ -161,6 +168,9 @@ export default function PositionsPage() {
 
   const open    = positions?.open ?? [];
   const settled = positions?.settled ?? [];
+  // Closed pill must reflect the true count, not the (capped) array
+  // length. Server returns `settled_total` as an unbounded COUNT(*).
+  const closedTotal = positions?.settled_total ?? settled.length;
   const evals   = evaluations?.evaluations ?? [];
   const skippedEvals = evals.filter((e) => normalizeDecision(e.recommendation) === "SKIP");
   const deployed = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
@@ -185,7 +195,7 @@ export default function PositionsPage() {
             Open ({open.length})
           </button>
           <button className={`chip ${filter === "closed" ? "on" : ""}`} onClick={() => setFilter("closed")}>
-            Closed ({settled.length})
+            Closed ({closedTotal})
           </button>
           <button className={`chip ${filter === "skipped" ? "on" : ""}`} onClick={() => setFilter("skipped")}>
             Skipped ({skippedEvals.length})
@@ -497,7 +507,11 @@ export default function PositionsPage() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Closed</h2>
-            <span className="panel-meta">{settled.length} settled</span>
+            <span className="panel-meta">
+              {settled.length < closedTotal
+                ? `Showing ${settled.length} of ${closedTotal} settled`
+                : `${closedTotal} settled`}
+            </span>
           </div>
 
           {settled.length === 0 ? (
