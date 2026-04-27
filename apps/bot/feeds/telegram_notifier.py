@@ -591,16 +591,19 @@ class TelegramNotifier:
         await self.send(user_id, tm.resumed())
 
     async def _handle_apply(self, user_id: str) -> None:
-        # Telegram /apply targets the oldest pending row from the per-user
-        # learning-cycle queue (archetype multipliers, cost corrections, etc.).
-        # The legacy operator-mode apply_pending_config singleton is no longer
-        # populated because dashboard writes now apply immediately.
-        from engine.learning_cadence import apply_next_pending_suggestion
+        # Telegram /apply applies every pending suggestion in the per-user
+        # learning-cycle queue in one shot. Users complained that applying
+        # one row at a time was tedious - they almost always want every
+        # proposal from the most recent review at once. The legacy
+        # operator-mode apply_pending_config singleton is no longer
+        # populated because dashboard writes apply immediately, so this
+        # path owns the entire /apply behaviour.
+        from engine.learning_cadence import apply_all_pending_suggestions
         loop = asyncio.get_running_loop()
         try:
             result = await loop.run_in_executor(
                 None,
-                lambda: apply_next_pending_suggestion(
+                lambda: apply_all_pending_suggestions(
                     user_id=user_id, resolved_by="telegram",
                 ),
             )
@@ -610,17 +613,13 @@ class TelegramNotifier:
                 context="Applying change", detail=str(exc),
             ))
             return
-        if result.get("status") == "applied":
-            await self.send(user_id, tm.calibration_applied(
-                key=result.get("display_key") or result.get("param_name") or "config",
-                previous=result.get("display_previous"),
-                value=result.get("display_value")
-                      if result.get("display_value") is not None
-                      else result.get("value"),
-                restart_required=False,
-            ))
-        else:
+        if result.get("status") == "none":
             await self.send(user_id, tm.nothing_pending())
+            return
+        await self.send(user_id, tm.calibration_applied_all(
+            applied=result.get("applied") or [],
+            failed=result.get("failed") or [],
+        ))
 
     async def _handle_reject(self, user_id: str) -> None:
         # Telegram /reject skips the oldest pending suggestion for this user.

@@ -248,6 +248,65 @@ def calibration_applied(
     )
 
 
+# ── 9b. Calibration applied (batch) ──────────────────────────────────────────
+def calibration_applied_all(
+    *,
+    applied: list[dict],
+    failed: list[dict] | None = None,
+) -> str:
+    """Multi-row /apply response. Renders one `<code>key: prev → new</code>`
+    line per successfully applied suggestion, then a separate block for any
+    rows that failed mid-batch. `applied` items must already carry the
+    `display_key`, `display_previous`, `display_value` fields produced by
+    `engine.learning_cadence.apply_all_pending_suggestions`.
+    """
+    failed = failed or []
+    n_applied = len(applied)
+    n_failed  = len(failed)
+
+    if n_applied == 0 and n_failed == 0:
+        return "Nothing pending right now."
+
+    if n_applied == 1 and n_failed == 0:
+        only = applied[0]
+        return calibration_applied(
+            key=only.get("display_key") or only.get("param_name") or "config",
+            previous=only.get("display_previous"),
+            value=(only.get("display_value")
+                   if only.get("display_value") is not None
+                   else only.get("value")),
+            restart_required=False,
+        )
+
+    lines: list[str] = []
+    if n_applied:
+        header = (
+            "✅ <b>Calibration applied</b>"
+            if n_applied == 1
+            else f"✅ <b>{n_applied} calibrations applied</b>"
+        )
+        lines.append(header)
+        lines.append("")
+        for item in applied:
+            key = item.get("display_key") or item.get("param_name") or "config"
+            prev = item.get("display_previous")
+            val  = (item.get("display_value")
+                    if item.get("display_value") is not None
+                    else item.get("value"))
+            lines.append(f"<code>{key}</code>: {prev} → {val}")
+
+    if n_failed:
+        if lines:
+            lines.append("")
+        plural = "s" if n_failed != 1 else ""
+        lines.append(
+            f"⚠️ {n_failed} suggestion{plural} could not be applied. "
+            "Delfi will retry on the next cycle."
+        )
+
+    return "\n".join(lines)
+
+
 # ── 10. Calibration declined ─────────────────────────────────────────────────
 def calibration_declined() -> str:
     return "Declined. No change made."

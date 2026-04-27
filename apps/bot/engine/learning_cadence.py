@@ -123,7 +123,7 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
             )
 
             settled_now = _count_settled_trades(user_id, mode)
-            last_cycle = _last_cycle_settled_count(user_id)
+            last_cycle = _last_cycle_settled_count(user_id, mode)
             delta = settled_now - last_cycle
             if delta < LEARNING_CYCLE_TRADE_INTERVAL:
                 return {
@@ -385,6 +385,13 @@ def _compose_and_deliver_report(user_id: str, mode: str,
     and fire the user-facing version through Telegram. Every step is
     wrapped in its own try/except so a flaky downstream doesn't sink
     the learning cycle.
+
+    Telegram send is gated on `save_report` returning a non-None id. The
+    unique constraint on `learning_reports(user_id, mode, settled_count)`
+    causes the INSERT to no-op (returning None) when a row for the same
+    bookmark already exists. That makes the constraint a hard gate
+    against duplicate Telegram sends, even if the bookmark logic ever
+    regresses again.
     """
     try:
         from engine import review_report
@@ -403,6 +410,16 @@ def _compose_and_deliver_report(user_id: str, mode: str,
     except Exception as exc:
         print(f"[learning_cadence] save_report failed: {exc}", file=sys.stderr)
 
+    if report_id is None:
+        # Either save failed or a duplicate row was rejected by the unique
+        # constraint. Either way, do NOT fire Telegram - this is the path
+        # that prevents the user from seeing two review reports in a row.
+        print(
+            "[learning_cadence] skipping telegram send: no fresh report row",
+            file=sys.stderr,
+        )
+        return None
+
     try:
         _send_report_via_telegram(user_id=user_id, report=report)
     except Exception as exc:
@@ -414,7 +431,16 @@ def _compose_and_deliver_report(user_id: str, mode: str,
 
 def _send_report_via_telegram(user_id: str, report: dict) -> None:
     """Wrap the plain-text body in <pre> so Telegram HTML mode preserves
-    the column alignment of the deterministic tables."""
+    the column alignment of the deterministic tables.
+
+    Telegram's hard limit per message is 4096 characters. Long reports
+    (many archetypes, full calibration table, several proposals) blow
+    past that and Telegram silently truncates the tail mid-character,
+    which is what the user saw as "cut off mid-word". We split the body
+    on line boundaries into chunks well under the limit and send each as
+    its own `<pre>`-wrapped HTML message, with a "(part X/Y)" header on
+    every chunk after the first.
+    """
     try:
         from feeds.telegram_notifier import TelegramNotifier
     except Exception as exc:
@@ -425,14 +451,67 @@ def _send_report_via_telegram(user_id: str, report: dict) -> None:
     body = (report.get("user_text") or "").strip()
     if not body:
         return
-    # Minimal HTML-escape for the three characters that matter inside <pre>.
-    safe = (
-        body.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    )
-    message = f"<b>Delfi 50-trade review</b>\n<pre>{safe}</pre>"
-    TelegramNotifier().send_sync(user_id, message)
+
+    chunks = _chunk_for_telegram(body)
+    notifier = TelegramNotifier()
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks, start=1):
+        # Minimal HTML-escape for the three characters that matter inside <pre>.
+        safe = (
+            chunk.replace("&", "&amp;")
+                 .replace("<", "&lt;")
+                 .replace(">", "&gt;")
+        )
+        if total == 1:
+            header = "<b>Delfi 50-trade review</b>"
+        else:
+            header = f"<b>Delfi 50-trade review</b> (part {idx}/{total})"
+        message = f"{header}\n<pre>{safe}</pre>"
+        notifier.send_sync(user_id, message)
+
+
+# Per-chunk plain-text budget. Telegram's hard limit is 4096 chars per
+# message. We need headroom for the `<b>...</b>` header (up to ~50 chars
+# including the optional "(part X/Y)" suffix), the `<pre>...</pre>`
+# wrapper (11 chars), and worst-case HTML escaping (each `&`, `<`, `>`
+# expands to 4-5 chars). Budget 3500 chars of source text per chunk so
+# the post-escape post-wrap message fits comfortably inside 4096.
+_TELEGRAM_CHUNK_BUDGET = 3500
+
+
+def _chunk_for_telegram(body: str) -> list[str]:
+    """Split `body` into sub-strings of at most `_TELEGRAM_CHUNK_BUDGET`
+    characters, preferring line boundaries so multi-line tables stay
+    intact across the split. Pure helper - no IO, fully unit-testable.
+    """
+    if len(body) <= _TELEGRAM_CHUNK_BUDGET:
+        return [body]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in body.split("\n"):
+        # +1 accounts for the newline we will rejoin with.
+        line_len = len(line) + 1
+        # An individual line longer than the budget is rare (only the
+        # thesis paragraph could approach it, and it caps at 480 chars
+        # via _THESIS_MAX_CHARS) but handle defensively by hard-splitting
+        # on character boundaries.
+        if line_len > _TELEGRAM_CHUNK_BUDGET:
+            if current:
+                chunks.append("\n".join(current))
+                current, current_len = [], 0
+            for i in range(0, len(line), _TELEGRAM_CHUNK_BUDGET):
+                chunks.append(line[i:i + _TELEGRAM_CHUNK_BUDGET])
+            continue
+        if current_len + line_len > _TELEGRAM_CHUNK_BUDGET and current:
+            chunks.append("\n".join(current))
+            current, current_len = [], 0
+        current.append(line)
+        current_len += line_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
 
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
@@ -451,18 +530,45 @@ def _count_settled_trades(user_id: str, mode: str) -> int:
         return 0
 
 
-def _last_cycle_settled_count(user_id: str) -> int:
-    """The settled_count we stamped on the most recent suggestion."""
+def _last_cycle_settled_count(user_id: str, mode: str) -> int:
+    """High-water mark of settled_count from any past learning cycle.
+
+    Read from BOTH `learning_reports` and `pending_suggestions` and take
+    the MAX. This bookmark advances whenever a cycle leaves a trace,
+    which fixes the duplicate-fire bug:
+
+    - When a cycle ran but produced ZERO proposals, no row gets inserted
+      into `pending_suggestions`. The old query returned the previous
+      MAX, `delta = settled_now - last_cycle` stayed >= the threshold,
+      and the next single settlement re-triggered the cycle - the user
+      received two review reports back to back.
+
+    - `learning_reports` gets a row every cycle regardless of proposal
+      count (compose_and_deliver_report always writes one), so it is the
+      authoritative bookmark going forward. We keep `pending_suggestions`
+      in the MAX as a fallback for historical rows that pre-date the
+      report-bookmark fix and for the rare case where the report INSERT
+      itself fails but suggestion INSERTs succeed.
+
+    Scoped by mode for `learning_reports` (the table tracks it).
+    `pending_suggestions` does not, so it stays user-scoped only - that
+    is acceptable because the bookmark only ever moves forward.
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
         with get_engine().begin() as conn:
-            val = conn.execute(text(
+            from_reports = conn.execute(text(
+                "SELECT MAX(settled_count) "
+                "FROM learning_reports "
+                "WHERE user_id = :uid AND mode = :m"
+            ), {"uid": user_id, "m": mode}).scalar()
+            from_pending = conn.execute(text(
                 "SELECT MAX(settled_count_at_creation) "
                 "FROM pending_suggestions "
                 "WHERE user_id = :uid"
             ), {"uid": user_id}).scalar()
-            return int(val or 0)
+            return max(int(from_reports or 0), int(from_pending or 0))
     except Exception as exc:
         print(f"[learning_cadence] last_cycle_count failed: {exc}", file=sys.stderr)
         return 0
@@ -899,6 +1005,100 @@ def skip_next_pending_suggestion(user_id: str = DEFAULT_USER_ID,
         return {"status": "none"}
     return skip_suggestion(int(row["id"]), user_id=user_id,
                            resolved_by=resolved_by)
+
+
+def apply_all_pending_suggestions(user_id: str = DEFAULT_USER_ID,
+                                  resolved_by: str = "telegram") -> dict:
+    """Apply every currently-pending suggestion for `user_id` in one call.
+
+    Walks the pending rows in `created_at` order and delegates each one
+    through `apply_suggestion`, collecting per-row results. A failure on
+    any single row is captured in `failed` but does not stop the loop -
+    the caller (Telegram /apply handler) still applies as many rows as
+    possible and reports the partial outcome to the user.
+
+    Returns:
+        {
+            "status":  "applied" | "none" | "partial",
+            "applied": [<per-row apply result with display fields>, ...],
+            "failed":  [{"id": int, "error": str}, ...],
+            "total":   int,    # rows attempted
+        }
+
+    `status == "none"` means the user had nothing pending. `"applied"`
+    means every row succeeded. `"partial"` means at least one row failed
+    while at least one succeeded - the Telegram handler renders the full
+    list either way.
+    """
+    rows = list_pending_suggestions(user_id, include_snoozed=False) or []
+    pending = [r for r in rows if r.get("status") == "pending"]
+    if not pending:
+        return {"status": "none", "applied": [], "failed": [], "total": 0}
+
+    pending.sort(key=lambda r: r.get("created_at") or "")
+
+    applied: list[dict] = []
+    failed:  list[dict] = []
+    for row in pending:
+        suggestion_id = int(row["id"])
+        previous = row.get("current_value")
+        try:
+            result = apply_suggestion(
+                suggestion_id, user_id=user_id, resolved_by=resolved_by,
+            )
+        except Exception as exc:
+            failed.append({"id": suggestion_id, "error": str(exc)})
+            continue
+
+        if result.get("status") != "applied":
+            failed.append({
+                "id":     suggestion_id,
+                "error":  result.get("status") or "unknown",
+            })
+            continue
+
+        # Mirror the display annotations that `apply_next_pending_suggestion`
+        # sets so the Telegram handler can render dict / list / scalar
+        # operations through one code path.
+        operation = result.get("operation", "scalar_set")
+        if operation == "dict_set":
+            key_name = result.get("key")
+            target = result.get("param_name") or "config"
+            result["display_key"] = (
+                f"{target}['{key_name}']" if key_name else target
+            )
+            result["display_previous"] = (
+                previous if previous is not None else 1.0
+            )
+            result["display_value"] = result.get("value")
+        elif operation == "list_append":
+            added = result.get("added") or []
+            result["display_key"] = result.get("param_name") or "config"
+            result["display_previous"] = "-"
+            result["display_value"] = (
+                ", ".join(f"+{x}" for x in added) if added else "-"
+            )
+        else:
+            result["display_key"] = result.get("param_name") or "config"
+            result["display_previous"] = previous
+            result["display_value"] = result.get("value")
+        applied.append(result)
+
+    if applied and not failed:
+        status = "applied"
+    elif applied and failed:
+        status = "partial"
+    else:
+        # Every row failed - keep "none" semantics out of this branch by
+        # reporting "partial" with empty applied so the handler shows the
+        # error list.
+        status = "partial"
+    return {
+        "status":  status,
+        "applied": applied,
+        "failed":  failed,
+        "total":   len(pending),
+    }
 
 
 def _update_status(suggestion_id: int, user_id: str,

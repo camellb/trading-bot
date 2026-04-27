@@ -122,9 +122,16 @@ def compose_report(user_id: str,
 
 
 def save_report(user_id: str, mode: str, report: dict) -> Optional[int]:
-    """INSERT one row into learning_reports. Returns the new id or None
-    on failure (the learning cycle must not crash because persistence
-    was flaky)."""
+    """INSERT one row into learning_reports. Returns the new id, or None
+    if a row already exists for the same (user_id, mode, settled_count)
+    bookmark or the persistence call failed.
+
+    The ON CONFLICT clause matches the UNIQUE constraint added in
+    migration 025 and turns duplicate-key collisions into a clean None
+    return rather than an exception. The learning cadence reads that
+    None as "skip Telegram send", which is the defence-in-depth gate
+    against the duplicate-review bug.
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
@@ -135,6 +142,7 @@ def save_report(user_id: str, mode: str, report: dict) -> Optional[int]:
                 "(user_id, mode, settled_count, thesis, summary_user, "
                 " summary_admin, data) "
                 "VALUES (:uid, :m, :sc, :th, :su, :sa, CAST(:d AS JSONB)) "
+                "ON CONFLICT (user_id, mode, settled_count) DO NOTHING "
                 "RETURNING id"
             ), {
                 "uid": user_id,
@@ -147,6 +155,13 @@ def save_report(user_id: str, mode: str, report: dict) -> Optional[int]:
             }).fetchone()
             return int(row[0]) if row else None
     except Exception as exc:
+        # ON CONFLICT requires the matching unique constraint to exist.
+        # If migration 025 has not yet been applied on this database, the
+        # INSERT will raise and we fall back to the safe behaviour: no
+        # row written, no Telegram sent. The bookmark fix in
+        # `_last_cycle_settled_count` already prevents the duplicate-fire
+        # at the source, so this fallback is only relevant in the
+        # transient pre-migration window.
         print(f"[review_report] save_report failed: {exc}", file=sys.stderr)
         return None
 
@@ -217,11 +232,28 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "win_rate":   0.0,
         "brier":      None,
     }
+    # Lifetime block aligns with what the dashboard's Performance page
+    # shows (`/dashboard/performance`). The user complained that the
+    # review's ROI did not match the dashboard's ROI: the cycle-window
+    # number is ROI on capital staked over the last 50 trades, while the
+    # dashboard reports lifetime ROI as `(equity - starting)/starting`.
+    # We surface both here, clearly labelled, so the two numbers can be
+    # reconciled at a glance.
+    lifetime = {
+        "settled_total":  0,
+        "wins":           0,
+        "win_rate":       None,
+        "realized_pnl":   0.0,
+        "starting_cash":  None,
+        "equity":         None,
+        "roi":            None,   # dashboard formula: (equity - start) / start
+    }
     data: dict[str, Any] = {
         "mode":               mode,
         "cycle_size":         cycle_size,
         "settled_count":      0,
         "headline":           headline,
+        "lifetime":           lifetime,
         "per_archetype":      [],
         "calibration":        [],
         "cost_validation":    None,
@@ -232,6 +264,11 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "proposals":          [],
         "verdict":            "insufficient_data",
     }
+
+    # Always populate the lifetime block, even when the cycle window is
+    # empty - if the user has no settled trades at all it will read all
+    # zeros and the report still renders cleanly.
+    lifetime.update(_fetch_lifetime_stats(user_id=user_id, mode=mode))
 
     rows = _fetch_settled_rows(user_id=user_id, mode=mode,
                                cycle_size=cycle_size)
@@ -313,6 +350,76 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     data["settled_count"] = n
     data["verdict"] = _verdict(roi=roi, brier=brier_avg, n=n)
     return data
+
+
+def _fetch_lifetime_stats(user_id: str, mode: str) -> dict:
+    """Pull the lifetime numbers the dashboard's Performance page shows so
+    the review's headline reconciles with what the user sees there.
+
+    Returns the same keys as the lifetime block declared in
+    `gather_cycle_data`. ROI uses the dashboard formula
+    `(equity - starting_cash) / starting_cash`, which differs from the
+    cycle-window ROI (`pnl/cost_staked`). Both are surfaced in the
+    rendered report so the user can reconcile.
+    """
+    out = {
+        "settled_total":  0,
+        "wins":           0,
+        "win_rate":       None,
+        "realized_pnl":   0.0,
+        "starting_cash":  None,
+        "equity":         None,
+        "roi":            None,
+    }
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        from engine.user_config import get_user_config
+    except Exception as exc:
+        print(f"[review_report] lifetime stats import failed: {exc}",
+              file=sys.stderr)
+        return out
+
+    try:
+        cfg = get_user_config(user_id)
+        starting = float(getattr(cfg, "starting_cash", 0.0) or 0.0)
+    except Exception as exc:
+        print(f"[review_report] starting_cash lookup failed: {exc}",
+              file=sys.stderr)
+        starting = 0.0
+
+    try:
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT "
+                "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid')) AS settled_n, "
+                "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid') "
+                "                    AND realized_pnl_usd > 0) AS wins, "
+                "  COALESCE(SUM(realized_pnl_usd) "
+                "           FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized "
+                "FROM pm_positions WHERE user_id = :uid AND mode = :m"
+            ), {"uid": user_id, "m": mode}).fetchone()
+        settled_n = int((row[0] if row else 0) or 0)
+        wins      = int((row[1] if row else 0) or 0)
+        realized  = float((row[2] if row else 0.0) or 0.0)
+    except Exception as exc:
+        print(f"[review_report] lifetime stats query failed: {exc}",
+              file=sys.stderr)
+        return out
+
+    equity = starting + realized
+    roi = ((equity - starting) / starting) if starting > 0 else None
+
+    out.update({
+        "settled_total":  settled_n,
+        "wins":           wins,
+        "win_rate":       (wins / settled_n) if settled_n else None,
+        "realized_pnl":   round(realized, 2),
+        "starting_cash":  round(starting, 2),
+        "equity":         round(equity, 2),
+        "roi":            roi,
+    })
+    return out
 
 
 def _fetch_settled_rows(user_id: str, mode: str,
@@ -624,11 +731,47 @@ def _sanitise_thesis(text_val: str) -> str:
 # ── Deterministic tables ─────────────────────────────────────────────────────
 def render_data_tables(data: dict) -> str:
     headline = data.get("headline") or {}
+    lifetime = data.get("lifetime") or {}
     lines: list[str] = []
 
-    lines.append("CYCLE SUMMARY")
+    # Lifetime block matches the dashboard's Performance page exactly so
+    # the two surfaces reconcile. ROI here is `(equity - start)/start`.
+    if lifetime.get("settled_total") or lifetime.get("starting_cash"):
+        lines.append("LIFETIME (matches dashboard)")
+        lines.append(
+            f"  Trades settled:   {int(lifetime.get('settled_total') or 0)}"
+        )
+        if lifetime.get("starting_cash") is not None:
+            lines.append(
+                f"  Starting cash:    "
+                f"${float(lifetime.get('starting_cash') or 0.0):.2f}"
+            )
+        if lifetime.get("equity") is not None:
+            lines.append(
+                f"  Equity:           "
+                f"${float(lifetime.get('equity') or 0.0):.2f}"
+            )
+        lines.append(
+            f"  Realized PnL:     "
+            f"${float(lifetime.get('realized_pnl') or 0.0):.2f}"
+        )
+        lines.append(
+            f"  ROI (lifetime):   {_pct(lifetime.get('roi'))}"
+        )
+        lines.append(
+            f"  Win rate:         {_pct(lifetime.get('win_rate'))}"
+        )
+        lines.append("")
+
+    cycle_n = int(headline.get('n') or 0)
+    cycle_label = (
+        f"THIS CYCLE (last {cycle_n} settled trades)"
+        if cycle_n
+        else "THIS CYCLE"
+    )
+    lines.append(cycle_label)
     lines.append(
-        f"  Trades settled:   {headline.get('n', 0)}"
+        f"  Trades settled:   {cycle_n}"
     )
     lines.append(
         f"  Net PnL:          ${float(headline.get('pnl_usd') or 0.0):.2f}"
@@ -637,7 +780,7 @@ def render_data_tables(data: dict) -> str:
         f"  Capital staked:   ${float(headline.get('cost_usd') or 0.0):.2f}"
     )
     lines.append(
-        f"  ROI:              {_pct(headline.get('roi'))}"
+        f"  ROI on staked:    {_pct(headline.get('roi'))}"
     )
     lines.append(
         f"  Win rate:         {_pct(headline.get('win_rate'))}"
