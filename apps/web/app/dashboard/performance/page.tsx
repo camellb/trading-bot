@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { getJSON } from "@/lib/fetch-json";
 import { useViewMode } from "@/lib/view-mode";
 import { createClient } from "@/lib/supabase/client";
@@ -46,7 +46,21 @@ type CalibrationPayload = {
   bins: Bin[];
 };
 
-type BankrollPoint = { date: string; bankroll: number };
+// The bot's `_bankroll_series_impl` emits each point as
+// `{ts: ISO string, pnl: number, bankroll: number}` where `bankroll` is
+// cumulative realised P&L (starts at $0 because diagnostics calls
+// bankroll_series with starting_cash=None). We accept either `ts` or
+// `date` so the field rename can land in either repo without breaking.
+type BankrollPoint = {
+  ts?:       string;
+  date?:     string;
+  pnl?:      number;
+  bankroll:  number;
+};
+
+function pointDate(p: BankrollPoint): string {
+  return p.date ?? p.ts ?? "";
+}
 
 type Diagnostics = {
   system?: { bankroll_series?: BankrollPoint[] };
@@ -83,7 +97,7 @@ function sliceRange(series: BankrollPoint[], range: Range): BankrollPoint[] {
   const cutoffMs = Date.now() - days * 86_400_000;
   // Prefer filtering by actual timestamp when points have valid dates.
   const filtered = series.filter((p) => {
-    const t = new Date(p.date).getTime();
+    const t = new Date(pointDate(p)).getTime();
     return Number.isFinite(t) && t >= cutoffMs;
   });
   if (filtered.length >= 2) return filtered;
@@ -104,25 +118,25 @@ function withBaseline(
     if (joinedAt) {
       const today = new Date().toISOString();
       return [
-        { date: joinedAt.toISOString(), bankroll: 0 },
-        { date: today, bankroll: 0 },
+        { ts: joinedAt.toISOString(), bankroll: 0 },
+        { ts: today, bankroll: 0 },
       ];
     }
     return [];
   }
   const out = series.slice();
   if (joinedAt) {
-    const firstDate = new Date(out[0].date).getTime();
+    const firstDate = new Date(pointDate(out[0])).getTime();
     if (!Number.isFinite(firstDate) || joinedAt.getTime() < firstDate - 60_000) {
-      out.unshift({ date: joinedAt.toISOString(), bankroll: 0 });
+      out.unshift({ ts: joinedAt.toISOString(), bankroll: 0 });
     }
   }
   const last = out[out.length - 1];
-  const lastDate = new Date(last.date).getTime();
+  const lastDate = new Date(pointDate(last)).getTime();
   const now = Date.now();
   // Extend to today when the last settled point is older than ~6 hours.
   if (!Number.isFinite(lastDate) || now - lastDate > 6 * 3600 * 1000) {
-    out.push({ date: new Date(now).toISOString(), bankroll: last.bankroll });
+    out.push({ ts: new Date(now).toISOString(), bankroll: last.bankroll });
   }
   return out;
 }
@@ -462,8 +476,8 @@ export default function PerformancePage() {
           <h2 className="panel-title">Equity chart</h2>
           <span className="panel-meta">
             {sliced.length > 1 ? (() => {
-              const first = new Date(sliced[0].date).getTime();
-              const last = new Date(sliced[sliced.length - 1].date).getTime();
+              const first = new Date(pointDate(sliced[0])).getTime();
+              const last = new Date(pointDate(sliced[sliced.length - 1])).getTime();
               const days = Math.max(1, Math.round((last - first) / 86_400_000));
               return `${days} ${days === 1 ? "day" : "days"}`;
             })() : "No data"}
@@ -549,60 +563,11 @@ export default function PerformancePage() {
         )}
       </div>
 
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Performance by category</h2>
-          <span className="panel-meta">
-            {categoryStats.length} {categoryStats.length === 1 ? "category" : "categories"}
-          </span>
-        </div>
-        {categoryStats.length === 0 ? (
-          <div className="empty-state" style={{ padding: 32 }}>
-            {loaded
-              ? "No settled trades in this window yet."
-              : "Loading..."}
-          </div>
-        ) : (
-          <table className="table-simple">
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>Trades</th>
-                <th>Win rate</th>
-                <th>P&amp;L</th>
-                <th>ROI</th>
-                <th>Avg stake</th>
-                <th>Avg conf</th>
-              </tr>
-            </thead>
-            <tbody>
-              {categoryStats.map((c) => {
-                const winRate = c.n > 0 ? (c.wins / c.n) * 100 : 0;
-                const roi = c.totalCost > 0 ? (c.totalPnl / c.totalCost) * 100 : 0;
-                return (
-                  <tr key={c.category}>
-                    <td>{c.category}</td>
-                    <td className="mono">{c.n}</td>
-                    <td className="mono">{winRate.toFixed(0)}%</td>
-                    <td className={`mono ${c.totalPnl >= 0 ? "cell-up" : "cell-down"}`}>
-                      {formatSigned(c.totalPnl)}
-                    </td>
-                    <td className={`mono ${roi >= 0 ? "cell-up" : "cell-down"}`}>
-                      {c.totalCost > 0 ? formatPct(roi, 1) : "-"}
-                    </td>
-                    <td className="mono">
-                      {c.n > 0 ? formatMoney(c.totalCost / c.n) : "-"}
-                    </td>
-                    <td className="mono">
-                      {c.avgConfidence != null ? c.avgConfidence.toFixed(2) : "-"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+      <CategoryPanel
+        categoryStats={categoryStats}
+        rows={rangedSettled}
+        loaded={loaded}
+      />
 
       <div className="panel">
         <div className="panel-head">
@@ -751,6 +716,229 @@ export default function PerformancePage() {
   );
 }
 
+/**
+ * Performance by category, with per-row drill-down. Click a category
+ * to expand a sub-table of every settled trade in that bucket so you
+ * can see EXACTLY which markets won and lost - not just the aggregate.
+ */
+function CategoryPanel({
+  categoryStats,
+  rows,
+  loaded,
+}: {
+  categoryStats: CategoryStats[];
+  rows: SettledPosition[];
+  loaded: boolean;
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Pre-bucket trades by category once so the drill-down render is O(1).
+  const byCategory = useMemo(() => {
+    const m = new Map<string, SettledPosition[]>();
+    for (const r of rows) {
+      const w = isWin(r);
+      if (w == null) continue;
+      const key = r.category ?? "Uncategorised";
+      const arr = m.get(key) ?? [];
+      arr.push(r);
+      m.set(key, arr);
+    }
+    // Sort each bucket: biggest wins first so the user can scan top
+    // contributors and worst hits quickly.
+    for (const [k, arr] of m) {
+      arr.sort((a, b) => (b.realized_pnl_usd ?? 0) - (a.realized_pnl_usd ?? 0));
+      m.set(k, arr);
+    }
+    return m;
+  }, [rows]);
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Performance by category</h2>
+        <span className="panel-meta">
+          {categoryStats.length} {categoryStats.length === 1 ? "category" : "categories"}
+          {categoryStats.length > 0 ? " · click to drill down" : ""}
+        </span>
+      </div>
+      {categoryStats.length === 0 ? (
+        <div className="empty-state" style={{ padding: 32 }}>
+          {loaded ? "No settled trades in this window yet." : "Loading..."}
+        </div>
+      ) : (
+        <table className="table-simple">
+          <thead>
+            <tr>
+              <th style={{ width: 24 }}></th>
+              <th>Category</th>
+              <th>Trades</th>
+              <th>Win rate</th>
+              <th>P&amp;L</th>
+              <th>ROI</th>
+              <th>Avg stake</th>
+              <th>Avg conf</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categoryStats.map((c) => {
+              const winRate = c.n > 0 ? (c.wins / c.n) * 100 : 0;
+              const roi = c.totalCost > 0 ? (c.totalPnl / c.totalCost) * 100 : 0;
+              const isOpen = expanded === c.category;
+              const trades = byCategory.get(c.category) ?? [];
+              return (
+                <React.Fragment key={c.category}>
+                  <tr
+                    onClick={() => setExpanded(isOpen ? null : c.category)}
+                    style={{ cursor: "pointer" }}
+                    aria-expanded={isOpen}
+                  >
+                    <td
+                      className="mono"
+                      style={{
+                        color: "rgba(255,255,255,0.55)",
+                        userSelect: "none",
+                        textAlign: "center",
+                      }}
+                    >
+                      {isOpen ? "▾" : "▸"}
+                    </td>
+                    <td>{c.category}</td>
+                    <td className="mono">{c.n}</td>
+                    <td className="mono">{winRate.toFixed(0)}%</td>
+                    <td className={`mono ${c.totalPnl >= 0 ? "cell-up" : "cell-down"}`}>
+                      {formatSigned(c.totalPnl)}
+                    </td>
+                    <td className={`mono ${roi >= 0 ? "cell-up" : "cell-down"}`}>
+                      {c.totalCost > 0 ? formatPct(roi, 1) : "-"}
+                    </td>
+                    <td className="mono">
+                      {c.n > 0 ? formatMoney(c.totalCost / c.n) : "-"}
+                    </td>
+                    <td className="mono">
+                      {c.avgConfidence != null ? c.avgConfidence.toFixed(2) : "-"}
+                    </td>
+                  </tr>
+                  {isOpen ? (
+                    <tr>
+                      <td
+                        colSpan={8}
+                        style={{
+                          padding: 0,
+                          background: "rgba(255,255,255,0.02)",
+                          borderTop: "1px solid rgba(255,255,255,0.06)",
+                        }}
+                      >
+                        <CategoryDrilldown trades={trades} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Per-trade table shown inline under an expanded category row. Displays
+ * every settled trade in that category sorted by P&L descending so the
+ * top contributors and worst hits are visible at a glance.
+ */
+function CategoryDrilldown({ trades }: { trades: SettledPosition[] }) {
+  if (trades.length === 0) {
+    return (
+      <div style={{ padding: 16, color: "rgba(255,255,255,0.55)", fontSize: 13 }}>
+        No settled trades in this bucket.
+      </div>
+    );
+  }
+  // Quick header summary: total $ won, total $ lost, biggest hit.
+  let won = 0;
+  let lost = 0;
+  for (const t of trades) {
+    const pnl = t.realized_pnl_usd ?? 0;
+    if (pnl >= 0) won += pnl; else lost += pnl;
+  }
+  const wins = trades.filter((t) => isWin(t) === true).length;
+  const losses = trades.length - wins;
+
+  return (
+    <div style={{ padding: "12px 16px 16px" }}>
+      <div
+        style={{
+          display: "flex",
+          gap: 24,
+          flexWrap: "wrap",
+          fontSize: 12,
+          color: "rgba(255,255,255,0.7)",
+          marginBottom: 12,
+          fontFamily: "ui-monospace, SFMono-Regular, monospace",
+        }}
+      >
+        <span>{wins} W / {losses} L</span>
+        <span className="cell-up">Won: {formatSigned(won)}</span>
+        <span className="cell-down">Lost: {formatSigned(lost)}</span>
+        <span>Net: <span className={won + lost >= 0 ? "cell-up" : "cell-down"}>
+          {formatSigned(won + lost)}
+        </span></span>
+      </div>
+      <table className="table-simple" style={{ marginTop: 0 }}>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Side</th>
+            <th>Entry</th>
+            <th>Stake</th>
+            <th>Outcome</th>
+            <th>P&amp;L</th>
+            <th>ROI</th>
+            <th>Conf</th>
+            <th>Settled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map((t) => {
+            const pnl = t.realized_pnl_usd ?? 0;
+            const outcomeLabel = t.settlement_outcome == null
+              ? null
+              : t.side === t.settlement_outcome ? "WIN" : "LOSS";
+            const outcomeClass = outcomeLabel === "WIN"
+              ? "cell-up"
+              : outcomeLabel === "LOSS" ? "cell-down" : "";
+            const roi = t.cost_usd > 0 ? (pnl / t.cost_usd) * 100 : null;
+            return (
+              <tr key={t.id}>
+                <td>{t.question}</td>
+                <td>
+                  <span className={t.side === "YES" ? "pill pill-yes" : "pill pill-no"}>
+                    {t.side}
+                  </span>
+                </td>
+                <td className="mono">{t.entry_price.toFixed(2)}</td>
+                <td className="mono">${t.cost_usd.toFixed(0)}</td>
+                <td className={`mono ${outcomeClass}`}>{outcomeLabel ?? "-"}</td>
+                <td className={`mono ${pnl >= 0 ? "cell-up" : "cell-down"}`}>
+                  {formatSigned(pnl)}
+                </td>
+                <td className={`mono ${roi != null && roi >= 0 ? "cell-up" : roi != null ? "cell-down" : ""}`}>
+                  {roi != null ? formatPct(roi, 0) : "-"}
+                </td>
+                <td className="mono">
+                  {t.confidence != null ? t.confidence.toFixed(2) : "-"}
+                </td>
+                <td className="mono">{formatDate(t.settled_at)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function ClosedTradesPanel({
   rows,
   loaded,
@@ -848,142 +1036,216 @@ function ClosedTradesPanel({
   );
 }
 
+/**
+ * Pick "nice" round-number ticks for the Y-axis. Given a (yMin, yMax)
+ * span, return roughly `count` evenly-spaced values that the eye reads
+ * cleanly (multiples of 1, 2, 5, 10, ...). Tick set always brackets the
+ * data range so the line never escapes the grid.
+ */
+function niceTicks(yMin: number, yMax: number, count: number): number[] {
+  const span = yMax - yMin;
+  if (!Number.isFinite(span) || span <= 0) return [yMin];
+  const rawStep = span / Math.max(1, count - 1);
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const norm = rawStep / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10) * mag;
+  const start = Math.floor(yMin / step) * step;
+  const end   = Math.ceil(yMax  / step) * step;
+  const out: number[] = [];
+  for (let v = start; v <= end + 1e-9; v += step) {
+    out.push(Number(v.toFixed(10)));
+  }
+  return out;
+}
+
+/**
+ * Pick `count` evenly-spaced timestamps across [tMin, tMax] for X-axis
+ * tick labels. Always includes both endpoints.
+ */
+function evenlySpacedTimes(tMin: number, tMax: number, count: number): number[] {
+  if (count <= 1 || tMax <= tMin) return [tMin];
+  const step = (tMax - tMin) / (count - 1);
+  return Array.from({ length: count }, (_, i) => tMin + i * step);
+}
+
 function EquityChart({ points, startingCash }: { points: BankrollPoint[]; startingCash: number }) {
   const w = 1000;
-  const h = 300;
+  const h = 320;
   const padL = 88;
   const padR = 24;
-  const padT = 24;
-  const padB = 44;
+  const padT = 28;
+  const padB = 56;
+
   // The incoming series is cumulative P&L (starts at 0). Equity is
   // starting cash plus cumulative P&L, so we render the actual dollar
   // equity the user holds at each point in time.
   const equity = points.map((p) => startingCash + p.bankroll);
-  const rawMin = Math.min(...equity);
-  const rawMax = Math.max(...equity);
-  // Always include the starting-cash line in the visible range so the
-  // user can see where they began. Add a small 8% pad above and below.
-  const baseMin = Math.min(startingCash, rawMin);
-  const baseMax = Math.max(startingCash, rawMax);
+
+  // Always include the starting-cash line in the visible range, plus a
+  // small pad above and below the data so the line never touches the
+  // top or bottom edge.
+  const dataMin = Math.min(...equity);
+  const dataMax = Math.max(...equity);
+  const baseMin = Math.min(startingCash, dataMin);
+  const baseMax = Math.max(startingCash, dataMax);
   const span = Math.max(1, baseMax - baseMin);
-  const yMin = baseMin - span * 0.08;
-  const yMax = baseMax + span * 0.08;
-  const range = yMax - yMin || 1;
+  const yMinRaw = baseMin - span * 0.10;
+  const yMaxRaw = baseMax + span * 0.10;
+  const yTickValues = niceTicks(yMinRaw, yMaxRaw, 5);
+  const yMin = yTickValues[0];
+  const yMax = yTickValues[yTickValues.length - 1];
+  const yRange = yMax - yMin || 1;
+
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
-  // X-axis is time-based so equal days produce equal horizontal spacing even
-  // when the underlying series has sparse settlement points.
+
+  // X-axis: time-based so equal days produce equal horizontal spacing.
   const xTimes = points.map((p) => {
-    const t = new Date(p.date).getTime();
+    const t = new Date(pointDate(p)).getTime();
     return Number.isFinite(t) ? t : 0;
   });
   const tMin = Math.min(...xTimes);
   const tMax = Math.max(...xTimes);
   const tSpan = tMax - tMin || 1;
-  const coords = points.map((p, i) => {
-    const x = padL + plotW * ((xTimes[i] - tMin) / tSpan);
-    const y = padT + plotH * (1 - (equity[i] - yMin) / range);
-    return [x, y] as const;
-  });
+
+  const xFor = (t: number): number => padL + plotW * ((t - tMin) / tSpan);
+  const yFor = (v: number): number => padT + plotH * (1 - (v - yMin) / yRange);
+
+  const coords = points.map((_, i) => [xFor(xTimes[i]), yFor(equity[i])] as const);
   const line = coords
     .map((p, i) => (i === 0 ? "M" : "L") + p[0].toFixed(1) + " " + p[1].toFixed(1))
     .join(" ");
 
-  // Y-axis: always include the starting cash as a labelled tick so the
-  // "$1,000 at start" baseline is unmissable.
-  const startY = padT + plotH * (1 - (startingCash - yMin) / range);
-  const yTicks = [
-    { v: yMax, y: padT, isStart: false },
-    { v: startingCash, y: startY, isStart: true },
-    { v: yMin, y: padT + plotH, isStart: false },
-  ];
+  // Filled area under the line, anchored to the starting-cash baseline
+  // so the visual mass below the start line reads as "below baseline"
+  // (loss territory) and above as gain.
+  const baseY = yFor(startingCash);
+  const area = `${line} L ${coords[coords.length - 1][0].toFixed(1)} ${baseY.toFixed(1)} L ${coords[0][0].toFixed(1)} ${baseY.toFixed(1)} Z`;
 
-  const lastIdx = points.length - 1;
-  const midIdx = Math.floor(lastIdx / 2);
-  const xTicks = [
-    { label: formatShortDate(points[0].date), x: coords[0][0], anchor: "start" as const, isStart: true },
-    { label: formatShortDate(points[midIdx].date), x: coords[midIdx][0], anchor: "middle" as const, isStart: false },
-    { label: formatShortDate(points[lastIdx].date), x: coords[lastIdx][0], anchor: "end" as const, isStart: false },
-  ];
+  // X-axis: 6 evenly-spaced labels across the time range (count adapts
+  // down for very narrow ranges).
+  const xTickCount = Math.min(6, Math.max(2, points.length));
+  const xTickTimes = evenlySpacedTimes(tMin, tMax, xTickCount);
 
-  const firstPoint = coords[0];
-  const lastPoint = coords[coords.length - 1];
   const lastEquity = equity[equity.length - 1];
+  const isUp       = lastEquity >= startingCash;
+  const lineColor  = isUp ? "var(--teal, #4bd0c4)" : "var(--red, #e56b6f)";
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} style={{ width: "100%", display: "block" }}>
-      {yTicks.map((t, i) => (
-        <line
-          key={`g${i}`}
-          x1={padL}
-          x2={w - padR}
-          y1={t.y}
-          y2={t.y}
-          stroke={t.isStart ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.06)"}
-          strokeDasharray={t.isStart ? "4 4" : "2 4"}
-        />
-      ))}
-      {yTicks.map((t, i) => (
-        <text
-          key={`y${i}`}
-          x={padL - 10}
-          y={t.y + 4}
-          fill={t.isStart ? "rgba(255,255,255,0.78)" : "rgba(255,255,255,0.5)"}
-          fontSize="11"
-          textAnchor="end"
-          fontFamily="ui-monospace, SFMono-Regular, monospace"
-        >
-          {formatMoney(t.v)}
-        </text>
-      ))}
-      {xTicks.map((t, i) => (
-        <text
-          key={`x${i}`}
-          x={t.x}
-          y={h - 14}
-          fill={t.isStart ? "rgba(255,255,255,0.78)" : "rgba(255,255,255,0.5)"}
-          fontSize="11"
-          textAnchor={t.anchor}
-          fontFamily="ui-monospace, SFMono-Regular, monospace"
-        >
-          {t.label}
-        </text>
-      ))}
-      {xTicks.map((t, i) =>
-        t.isStart ? (
-          <text
-            key={`x-start-${i}`}
-            x={t.x}
-            y={h - 28}
-            fill="rgba(255,255,255,0.45)"
-            fontSize="10"
-            textAnchor={t.anchor}
-            fontFamily="ui-monospace, SFMono-Regular, monospace"
-            letterSpacing="0.08em"
-          >
-            START
-          </text>
-        ) : null,
-      )}
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ width: "100%", display: "block" }}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <defs>
+        <linearGradient id="equity-area-fill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%"   stopColor={lineColor} stopOpacity="0.18" />
+          <stop offset="100%" stopColor={lineColor} stopOpacity="0.00" />
+        </linearGradient>
+      </defs>
+
+      {/* Horizontal gridlines + Y-axis tick labels. */}
+      {yTickValues.map((v, i) => {
+        const y       = yFor(v);
+        const isStart = Math.abs(v - startingCash) < 1e-6;
+        return (
+          <g key={`y-${i}`}>
+            <line
+              x1={padL}
+              x2={w - padR}
+              y1={y}
+              y2={y}
+              stroke={isStart ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.07)"}
+              strokeDasharray={isStart ? "5 4" : undefined}
+            />
+            <text
+              x={padL - 10}
+              y={y + 4}
+              fill={isStart ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.55)"}
+              fontSize="11"
+              textAnchor="end"
+              fontFamily="ui-monospace, SFMono-Regular, monospace"
+            >
+              {formatMoney(v)}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* X-axis baseline. */}
+      <line
+        x1={padL}
+        x2={w - padR}
+        y1={padT + plotH}
+        y2={padT + plotH}
+        stroke="rgba(255,255,255,0.18)"
+      />
+
+      {/* X-axis tick labels (evenly spaced across the time range). */}
+      {xTickTimes.map((t, i) => {
+        const x      = xFor(t);
+        const label  = formatShortDate(new Date(t).toISOString());
+        const anchor: "start" | "middle" | "end" =
+          i === 0 ? "start" : i === xTickTimes.length - 1 ? "end" : "middle";
+        return (
+          <g key={`x-${i}`}>
+            <line
+              x1={x}
+              x2={x}
+              y1={padT + plotH}
+              y2={padT + plotH + 5}
+              stroke="rgba(255,255,255,0.25)"
+            />
+            <text
+              x={x}
+              y={padT + plotH + 20}
+              fill="rgba(255,255,255,0.65)"
+              fontSize="11"
+              textAnchor={anchor}
+              fontFamily="ui-monospace, SFMono-Regular, monospace"
+            >
+              {label}
+            </text>
+          </g>
+        );
+      })}
+
+      {/* Filled area under the curve, then the line itself on top. */}
+      <path d={area} fill="url(#equity-area-fill)" stroke="none" />
       <path
         d={line}
         fill="none"
-        stroke="var(--gold)"
+        stroke={lineColor}
         strokeWidth="2"
         strokeLinejoin="round"
         strokeLinecap="round"
       />
-      <circle cx={firstPoint[0]} cy={firstPoint[1]} r="3.5" fill="var(--gold)" opacity="0.65" />
-      <circle cx={lastPoint[0]} cy={lastPoint[1]} r="3.5" fill="var(--gold)" />
+
+      {/* Endpoints + last-equity label. */}
+      <circle cx={coords[0][0]}                cy={coords[0][1]}                r="3.5" fill={lineColor} opacity="0.55" />
+      <circle cx={coords[coords.length - 1][0]} cy={coords[coords.length - 1][1]} r="4"   fill={lineColor} />
       <text
-        x={lastPoint[0] - 8}
-        y={lastPoint[1] - 10}
-        fill="var(--gold)"
-        fontSize="11"
+        x={coords[coords.length - 1][0] - 8}
+        y={coords[coords.length - 1][1] - 10}
+        fill={lineColor}
+        fontSize="12"
         textAnchor="end"
         fontFamily="ui-monospace, SFMono-Regular, monospace"
+        fontWeight="600"
       >
         {formatMoney(lastEquity)}
+      </text>
+
+      {/* Axis title for clarity. */}
+      <text
+        x={padL}
+        y={16}
+        fill="rgba(255,255,255,0.55)"
+        fontSize="10"
+        fontFamily="ui-monospace, SFMono-Regular, monospace"
+        letterSpacing="0.08em"
+      >
+        EQUITY (USD)
       </text>
     </svg>
   );
