@@ -6,9 +6,15 @@ Tracks three booleans that must persist across restarts:
   * first_loss_sent  - has the one-shot "First loss" message been delivered?
   * trading_paused   - is /pause currently in effect?
 
-Stored as JSON at data/notifier_state.json. Single-user deployment, so a
-file is plenty - we do not need a DB table. Writes are atomic via
-os.replace(); a missing or malformed file reads back as all-False.
+Stored as JSON at <app-data>/data/notifier_state.json. Anchored to the
+app-data directory (same place as the SQLite DB) so the file persists
+across launches under PyInstaller. Anchoring at __file__ would resolve
+to the per-launch _MEIxxxx tmp dir, which gets a fresh random name on
+every spawn - writes would succeed but never read back.
+
+Single-user deployment, so a file is plenty - we do not need a DB
+table. Writes are atomic via os.replace(); a missing or malformed
+file reads back as all-False.
 """
 
 from __future__ import annotations
@@ -17,11 +23,12 @@ import json
 import os
 import tempfile
 import threading
-from pathlib import Path
 from typing import Dict
 
+from db.engine import app_data_dir
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+_DATA_DIR = app_data_dir() / "data"
 _STATE_PATH = _DATA_DIR / "notifier_state.json"
 _LOCK = threading.Lock()
 
