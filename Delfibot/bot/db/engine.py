@@ -48,6 +48,25 @@ def _default_db_path() -> Path:
     return base / "Delfi" / "delfi.db"
 
 
+def app_data_dir() -> Path:
+    """Per-platform app-data directory (parent of `delfi.db`).
+
+    Used for any small local file the sidecar wants to persist alongside
+    the database (e.g. `data/macro_calendar.json`). The directory is
+    created if it does not exist.
+
+    Anchoring relative paths to this directory matters when the sidecar
+    is launched by Tauri from `/Applications/Delfi.app`: the GUI launch
+    sets cwd=/, and a relative path like `Path("data/foo.json").mkdir()`
+    would try to write `/data/foo.json`, which fails with `[Errno 30]
+    Read-only file system` and crashes the sidecar before it can bind
+    its HTTP port.
+    """
+    base = _default_db_path().parent
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def get_engine():
     """Return the lazily-built SQLAlchemy engine for the local SQLite DB."""
     global _engine

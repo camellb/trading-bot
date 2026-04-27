@@ -22,10 +22,14 @@ import aiohttp
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import config
+from db.engine import app_data_dir
 from feeds.feed_health_monitor import FeedHealthMonitor
 
-# Local storage path
-_CALENDAR_FILE = Path("data/macro_calendar.json")
+# Local storage path. Anchored to the app-data directory so it works
+# when the sidecar is launched by Tauri (cwd=/, where Path("data/...")
+# would resolve to a read-only system path and crash the sidecar
+# during MacroCalendar.__init__ before it can bind its HTTP port).
+_CALENDAR_FILE = app_data_dir() / "data" / "macro_calendar.json"
 
 # Source URLs
 _FOMC_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
