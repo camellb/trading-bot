@@ -141,6 +141,25 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
 
 ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)
 
+# V1 doctrine archetype defaults (locked 2026-04-27, see CLAUDE.md +
+# memory/doctrine_back_the_forecast.md). Hard skips on sport categories
+# the market itself prices well; partial-stake on tennis (the market is
+# accurate, we still take half-size); over-stake on basketball where
+# the forecaster has shown signal.
+#
+# Seeded into a fresh `user_config` row by `ensure_default_user_config`,
+# and conservatively backfilled into existing rows that still have the
+# pre-doctrine empty fingerprint (`archetype_skip_list IS NULL` AND
+# `archetype_stake_multipliers IN ('{}','')`). Once the user has touched
+# either field we never overwrite their choice.
+V1_DEFAULT_ARCHETYPE_SKIP_LIST: Tuple[str, ...] = (
+    "sports_other", "hockey", "cricket",
+)
+V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS: Dict[str, float] = {
+    "basketball": 1.5,
+    "tennis":     0.5,
+}
+
 USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "base_stake_pct":
         "Baseline stake as a fraction of bankroll, before per-archetype "
@@ -406,15 +425,43 @@ def _encode_csv(value) -> Optional[str]:
 
 # ── DB-backed accessors ─────────────────────────────────────────────────────
 def ensure_default_user_config() -> None:
-    """Insert the singleton 'local' row if missing. Idempotent."""
+    """Insert the singleton 'local' row if missing, and backfill V1
+    archetype defaults onto rows that have never been touched.
+
+    Future fresh installs hit the INSERT path and get the doctrine
+    values from the start. The UPDATE path only exists to backfill
+    pre-V1 local DBs that were seeded with empty defaults; it fires
+    iff the row still has the factory-state fingerprint AND the user
+    has not finished onboarding yet (`tour_completed_at IS NULL`).
+    Once the onboarding flow has been completed we never overwrite
+    the user's stored choice, even if it happens to look like the
+    factory state.
+
+    Idempotent: re-running on a row that already matches V1 defaults
+    is a no-op.
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
+        skip_csv = ",".join(V1_DEFAULT_ARCHETYPE_SKIP_LIST)
+        mult_json = json.dumps(V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS)
         with get_engine().begin() as conn:
             conn.execute(text(
-                "INSERT INTO user_config (user_id) VALUES (:uid) "
+                "INSERT INTO user_config "
+                "(user_id, archetype_skip_list, archetype_stake_multipliers) "
+                "VALUES (:uid, :skip, :mult) "
                 "ON CONFLICT (user_id) DO NOTHING"
-            ), {"uid": DEFAULT_USER_ID})
+            ), {"uid": DEFAULT_USER_ID, "skip": skip_csv, "mult": mult_json})
+            conn.execute(text(
+                "UPDATE user_config "
+                "SET archetype_skip_list = :skip, "
+                "    archetype_stake_multipliers = :mult "
+                "WHERE user_id = :uid "
+                "  AND archetype_skip_list IS NULL "
+                "  AND COALESCE(archetype_stake_multipliers, '{}') "
+                "      IN ('{}', '', 'null') "
+                "  AND tour_completed_at IS NULL"
+            ), {"uid": DEFAULT_USER_ID, "skip": skip_csv, "mult": mult_json})
     except Exception as exc:
         print(f"[user_config] ensure_default failed: {exc}", file=sys.stderr)
 
