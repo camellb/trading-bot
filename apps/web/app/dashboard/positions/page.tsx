@@ -61,7 +61,12 @@ function daysFromNow(iso: string | null): string {
   const d = new Date(iso).getTime();
   if (Number.isNaN(d)) return "-";
   const ms = d - Date.now();
-  if (ms <= 0) return "now";
+  // Past the resolution deadline but still status='open' means
+  // Polymarket has not yet flipped closed=true (or our settler
+  // has not yet swept). Show "resolving" instead of a misleading
+  // "now" so the user knows the market is in the resolution
+  // window, not still pending a future deadline.
+  if (ms <= 0) return "resolving";
   const days = Math.round(ms / 86_400_000);
   if (days === 0) {
     const hours = Math.max(1, Math.round(ms / 3_600_000));

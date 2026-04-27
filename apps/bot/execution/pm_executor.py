@@ -278,7 +278,17 @@ class PMExecutor:
                     "cp":    claude_p,
                     "ev_bps": decision.ev * 10_000.0,
                     "conf":  decision.confidence,
-                    "exp":   market.end_date_iso,
+                    # Persist the best-guess resolution time, not the
+                    # raw `endDate`. `endDate` is Polymarket's trading
+                    # window close - on sports it equals tip time and
+                    # on event markets it can be days off the actual
+                    # deadline. `resolution_at_estimate` blends
+                    # gameStartTime, events[0].endDate and endDate to
+                    # produce the value the dashboard should countdown
+                    # against. The settler refreshes this on every
+                    # sweep so a deadline shift or early resolution
+                    # does not leave a stale countdown on the UI.
+                    "exp":   market.resolution_at_estimate,
                     "reason": (reasoning or "")[:4000] or None,
                     "event_slug": getattr(market, "event_slug", None),
                     "arch":  market_archetype,

@@ -17,6 +17,28 @@ Selection heuristic for candidates:
 The heuristic deliberately excludes the ~70% of markets that trade at
 <5% or >95%; those are either decided or meme-priced longshots where a
 calibrated model has nothing to add.
+
+Resolution-time semantics. Polymarket does NOT publish a single reliable
+"the market resolves at this timestamp" field on open markets; the
+canonical fields all mean different things and any of them can be wrong:
+
+  * `endDate` / `endDateIso`  - trading-window close on the market row.
+                                Often a buffered or arbitrary date set
+                                at creation; the underlying outcome can
+                                resolve earlier (deadline-style markets:
+                                "X by April 30") or later (sports: end
+                                of game vs trading-close at tip).
+  * `events[0].endDate`       - resolution deadline at the event level.
+                                Usually a better proxy for "by when does
+                                this resolve at the latest".
+  * `gameStartTime`           - sports only. Tip / kickoff / first-pitch.
+                                Game finishes ~2-3h later.
+
+`resolution_at_estimate` blends these to produce the best static guess
+of when a market will actually settle. The settler refreshes this value
+on every sweep so a market whose deadline shifts (or which Polymarket
+has already marked closed) does not show a stale countdown on the
+dashboard.
 """
 
 from __future__ import annotations
@@ -25,7 +47,7 @@ import asyncio
 import json
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiohttp
@@ -36,6 +58,13 @@ DEFAULT_MAX_DAYS_OUT    = 120
 DEFAULT_MIN_DAYS_OUT    = 0
 DEFAULT_MIN_P           = 0.08
 DEFAULT_MAX_P           = 0.92
+
+# Sports games resolve roughly this long after `gameStartTime` (tip /
+# kickoff / first-pitch). 3h covers ~99% of NBA/NFL/MLB/EPL games plus
+# overtime and Polymarket's settlement lag. Tighter than this and we'd
+# show "now" on a still-running game; looser and we'd lie about how
+# long the user is waiting.
+SPORTS_RESOLUTION_BUFFER = timedelta(hours=3)
 
 
 @dataclass
@@ -51,16 +80,45 @@ class PolyMarket:
     no_price:          float
     volume_24h_clob:   float
     liquidity_num:     float
-    end_date_iso:      datetime
+    end_date_iso:      datetime  # trading-window close (NOT resolution time)
     slug:              str
     category_hint:     Optional[str]  # events[0].ticker when available
     neg_risk:          bool = False   # part of a multi-outcome group
     group_item_title:  Optional[str] = None  # specific option label (e.g. "Spain")
     event_slug:        Optional[str] = None  # event group slug for correlation caps
+    game_start_time:   Optional[datetime] = None  # sports only: tip/kickoff
+    event_end_date:    Optional[datetime] = None  # events[0].endDate, deadline
 
     @property
     def days_to_end(self) -> float:
         return (self.end_date_iso - datetime.now(timezone.utc)).total_seconds() / 86400.0
+
+    @property
+    def resolution_at_estimate(self) -> datetime:
+        """
+        Best static guess of when this market will actually resolve.
+
+        Order of preference:
+          1. Sports markets: `gameStartTime + 3h` (covers game length +
+             settlement lag). `endDate` on sports rows often equals tip
+             time, which lies about how long the user is waiting.
+          2. Events: `events[0].endDate` if it is later than `endDate`.
+             The event-level deadline is usually the resolution deadline;
+             a market whose `endDate` is earlier than its event deadline
+             is a buffered trading-close, not a resolution time.
+          3. Fallback: `endDate`. Used when no better signal exists.
+
+        This is a deadline, not a guarantee. Deadline-style markets
+        ("X by April 30") can resolve YES the moment the underlying
+        event happens. The settler watches for actual closure and
+        flips the position to settled when Polymarket marks the
+        market closed.
+        """
+        if self.game_start_time is not None:
+            return self.game_start_time + SPORTS_RESOLUTION_BUFFER
+        if self.event_end_date is not None and self.event_end_date > self.end_date_iso:
+            return self.event_end_date
+        return self.end_date_iso
 
 
 def _parse_price_list(raw: str | list | None) -> list[float]:
@@ -89,7 +147,14 @@ def _parse_iso(raw: str | None) -> Optional[datetime]:
     if not raw:
         return None
     try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # Gamma uses two slightly different shapes:
+        #   '2026-04-27T01:30:00Z'         (proper ISO-8601)
+        #   '2026-04-27 01:30:00+00'       (gameStartTime - space, not 'T')
+        # Normalise both before fromisoformat.
+        normalised = raw.replace("Z", "+00:00")
+        if " " in normalised and "T" not in normalised:
+            normalised = normalised.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(normalised)
         # Gamma sometimes returns naive ISO strings - force UTC so arithmetic
         # with tz-aware now() doesn't raise.
         if dt.tzinfo is None:
@@ -97,6 +162,30 @@ def _parse_iso(raw: str | None) -> Optional[datetime]:
         return dt
     except Exception:
         return None
+
+
+def extract_resolution_estimate(raw: dict) -> Optional[datetime]:
+    """
+    Best-guess "when does this market actually resolve" given a raw Gamma
+    row. Module-level so the settler can refresh existing positions
+    without reconstructing a full PolyMarket.
+
+    Mirrors `PolyMarket.resolution_at_estimate`:
+      1. sports: gameStartTime + 3h
+      2. events[0].endDate when later than market-level endDate
+      3. fallback: endDate / endDateIso
+    Returns None when no parseable date is present.
+    """
+    gst = _parse_iso(raw.get("gameStartTime"))
+    if gst is not None:
+        return gst + SPORTS_RESOLUTION_BUFFER
+    end = _parse_iso(raw.get("endDateIso") or raw.get("endDate"))
+    events = raw.get("events") or []
+    if isinstance(events, list) and events:
+        evt_end = _parse_iso((events[0] or {}).get("endDate"))
+        if evt_end is not None and (end is None or evt_end > end):
+            return evt_end
+    return end
 
 
 def _as_market(m: dict) -> Optional[PolyMarket]:
@@ -114,10 +203,13 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
         events = m.get("events") or []
         cat_hint = None
         event_slug = None
+        evt_end = None
         if isinstance(events, list) and events:
             e0 = events[0] or {}
             cat_hint = e0.get("ticker") or e0.get("title") or None
             event_slug = e0.get("slug") or None
+            evt_end = _parse_iso(e0.get("endDate"))
+        game_start = _parse_iso(m.get("gameStartTime"))
         return PolyMarket(
             id             = str(m.get("id") or ""),
             condition_id   = str(m.get("conditionId") or ""),
@@ -135,6 +227,8 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
             neg_risk       = bool(m.get("negRisk")),
             group_item_title = (m.get("groupItemTitle") or "").strip() or None,
             event_slug     = event_slug,
+            game_start_time = game_start,
+            event_end_date = evt_end,
         )
     except Exception as exc:
         print(f"[polymarket] parse failed for {m.get('id')}: {exc}",

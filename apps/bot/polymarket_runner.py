@@ -28,7 +28,7 @@ import config
 from db.engine import get_engine
 from engine.pm_analyst import PMAnalyst
 from execution.pm_executor import PMExecutor
-from feeds.polymarket_feed import PolymarketFeed
+from feeds.polymarket_feed import PolymarketFeed, extract_resolution_estimate
 
 
 SOURCE = "polymarket"
@@ -107,10 +107,25 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
         return ex
 
     # Phase A - pm_positions (fan out by row.user_id).
+    refresh_pairs: list[tuple[int, datetime]] = []
     for p in open_rows:
         result["positions_checked"] += 1
         raw = rows.get(p["market_id"])
-        if not raw or not raw.get("closed", False):
+        if not raw:
+            continue
+        # Refresh the dashboard's resolution-time estimate before
+        # deciding whether to settle. `endDate` on Polymarket is a
+        # trading-window close, often days off the actual deadline,
+        # and Polymarket revises it as events get clearer. Without
+        # this refresh the dashboard shows stale countdowns ("6d"
+        # on a market that resolves today). The settler is the only
+        # place that already fetches raw rows for every open
+        # position, so piggy-back the update here - no extra API
+        # cost.
+        new_resolution_at = extract_resolution_estimate(raw)
+        if new_resolution_at is not None:
+            refresh_pairs.append((int(p["id"]), new_resolution_at))
+        if not raw.get("closed", False):
             continue
         prices = _parse_price_list(raw.get("outcomePrices"))
         if len(prices) != 2:
@@ -155,6 +170,29 @@ async def resolve_positions(short_horizon_only: bool = False, notifier=None) -> 
                     pass
         else:
             result["errors"] += 1
+
+    # Flush any expected_resolution_at refreshes accumulated above.
+    # Done once at the end of Phase A so we issue a single round-trip
+    # per sweep instead of one UPDATE per position. Only updates rows
+    # whose value actually changed by more than 1 minute, to avoid
+    # rewriting timestamps every 15 minutes for stable markets.
+    if refresh_pairs:
+        try:
+            with get_engine().begin() as conn:
+                for pos_id, new_dt in refresh_pairs:
+                    conn.execute(text(
+                        "UPDATE pm_positions "
+                        "SET expected_resolution_at = :new_dt "
+                        "WHERE id = :id "
+                        "  AND status = 'open' "
+                        "  AND ("
+                        "    expected_resolution_at IS NULL OR "
+                        "    ABS(EXTRACT(EPOCH FROM (expected_resolution_at - :new_dt))) > 60"
+                        "  )"
+                    ), {"id": pos_id, "new_dt": new_dt})
+        except Exception as exc:
+            print(f"[resolve] expected_resolution_at refresh failed: {exc}",
+                  file=sys.stderr)
 
     # Phase B - legacy predictions without a pm_positions row.
     for p in legacy_rows:
