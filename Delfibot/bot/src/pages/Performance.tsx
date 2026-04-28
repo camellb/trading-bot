@@ -261,12 +261,15 @@ export default function Performance() {
         </div>
       )}
 
-      {calibration && calibration.by_archetype && calibration.by_archetype.length > 0 && (
+      {calibration && (
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">By archetype</h2>
-            <span className="panel-meta">{calibration.by_archetype.length} archetypes</span>
+            <span className="panel-meta">
+              {calibration.by_archetype?.length ?? 0} archetypes
+            </span>
           </div>
+          {calibration.by_archetype && calibration.by_archetype.length > 0 ? (
           <table className="table-simple">
             <thead>
               <tr>
@@ -300,15 +303,22 @@ export default function Performance() {
               })}
             </tbody>
           </table>
+          ) : (
+            <div className="empty-state">
+              No settled trades yet. Per-archetype P&amp;L, ROI, and win rate
+              appear here once Delfi opens and resolves positions.
+            </div>
+          )}
         </div>
       )}
 
-      {calibration && calibration.by_category.length > 0 && (
+      {calibration && (
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">By category</h2>
             <span className="panel-meta">{calibration.by_category.length} categories</span>
           </div>
+          {calibration.by_category.length > 0 ? (
           <table className="table-simple">
             <thead>
               <tr>
@@ -346,6 +356,12 @@ export default function Performance() {
               })}
             </tbody>
           </table>
+          ) : (
+            <div className="empty-state">
+              No settled trades yet. Per-category breakdown appears here once
+              Delfi opens and resolves positions.
+            </div>
+          )}
         </div>
       )}
 
