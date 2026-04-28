@@ -59,13 +59,35 @@ export default function App() {
     return () => clearInterval(id);
   }, [refresh]);
 
+  // Mode change. Independent of the on/off switch: changing mode just
+  // updates user_config.mode (which ledger trades go to). Whether the
+  // bot is actually opening trades is governed by `bot_enabled`, set
+  // separately via toggleBotEnabled.
   const setMode = async (next: "simulation" | "live") => {
     if (modeBusy) return;
     if (state?.mode === next) return;
     setModeBusy(true);
     try {
-      if (next === "live") await api.start();
-      else await api.stop();
+      await api.updateConfig({ mode: next });
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setModeBusy(false);
+    }
+  };
+
+  // Bot on/off. Calls /api/bot/start (sets bot_enabled=true; validates
+  // creds for the current mode) or /api/bot/stop (sets bot_enabled=false).
+  const toggleBotEnabled = async () => {
+    if (modeBusy) return;
+    setModeBusy(true);
+    try {
+      if (state?.bot_enabled) {
+        await api.stop();
+      } else {
+        await api.start();
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -100,7 +122,9 @@ export default function App() {
         setSettingsTab={setSettingsTab}
         mode={mode}
         canTradeLive={state?.can_trade_live ?? false}
+        botEnabled={state?.bot_enabled ?? false}
         setMode={setMode}
+        toggleBotEnabled={toggleBotEnabled}
         modeBusy={modeBusy}
       />
       <main className="app-main">
@@ -181,7 +205,9 @@ function Sidebar({
   setSettingsTab,
   mode,
   canTradeLive,
+  botEnabled,
   setMode,
+  toggleBotEnabled,
   modeBusy,
 }: {
   page: Page;
@@ -190,7 +216,9 @@ function Sidebar({
   setSettingsTab: (t: SettingsTab) => void;
   mode: "simulation" | "live";
   canTradeLive: boolean;
+  botEnabled: boolean;
   setMode: (m: "simulation" | "live") => void;
+  toggleBotEnabled: () => void;
   modeBusy: boolean;
 }) {
   return (
@@ -240,7 +268,9 @@ function Sidebar({
       <BotStatusPill
         mode={mode}
         canTradeLive={canTradeLive}
+        botEnabled={botEnabled}
         setMode={setMode}
+        toggleBotEnabled={toggleBotEnabled}
         modeBusy={modeBusy}
       />
 
@@ -254,22 +284,32 @@ function Sidebar({
 function BotStatusPill({
   mode,
   canTradeLive,
+  botEnabled,
   setMode,
+  toggleBotEnabled,
   modeBusy,
 }: {
   mode: "simulation" | "live";
   canTradeLive: boolean;
+  botEnabled: boolean;
   setMode: (m: "simulation" | "live") => void;
+  toggleBotEnabled: () => void;
   modeBusy: boolean;
 }) {
   const isLive = mode === "live";
   return (
-    <div className={`bot-pill ${isLive ? "on" : ""}`}>
+    <div className={`bot-pill ${botEnabled ? "on" : ""}`}>
       <div className="bot-pill-row">
         <span className="bot-pill-label">Status</span>
         <span className="bot-pill-status">
-          <span className={`bot-pill-dot ${isLive ? "on" : "off"}`} />
-          <span className="bot-pill-state">{isLive ? "LIVE" : "SIMULATION"}</span>
+          <span className={`bot-pill-dot ${botEnabled ? "on" : "off"}`} />
+          <span className="bot-pill-state">{botEnabled ? "ON" : "OFF"}</span>
+        </span>
+      </div>
+      <div className="bot-pill-row">
+        <span className="bot-pill-label">Mode</span>
+        <span className={`bot-pill-mode ${isLive ? "live" : "simulation"}`}>
+          {isLive ? "Live" : "Simulation"}
         </span>
       </div>
       <div className="bot-pill-modes" role="group" aria-label="Trading mode">
@@ -293,6 +333,25 @@ function BotStatusPill({
           Live
         </button>
       </div>
+      {botEnabled ? (
+        <button
+          type="button"
+          className="bot-pill-btn stop"
+          onClick={toggleBotEnabled}
+          disabled={modeBusy}
+        >
+          {modeBusy ? "Pausing..." : "Pause bot"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="bot-pill-btn start"
+          onClick={toggleBotEnabled}
+          disabled={modeBusy}
+        >
+          {modeBusy ? "Starting..." : "Start Delfi"}
+        </button>
+      )}
     </div>
   );
 }

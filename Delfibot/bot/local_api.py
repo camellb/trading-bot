@@ -321,6 +321,8 @@ class LocalAPI:
         cfg = get_user_config()
         return _ok({
             "mode": cfg.mode,
+            "bot_enabled": bool(getattr(cfg, "bot_enabled", False)),
+            "ready_to_trade": bool(getattr(cfg, "ready_to_trade", False)),
             "starting_cash": cfg.starting_cash,
             "wallet_address": cfg.wallet_address,
             "is_onboarded": cfg.is_onboarded,
@@ -452,29 +454,46 @@ class LocalAPI:
         return _ok({"events": rows})
 
     async def _bot_start(self, _req: web.Request) -> web.Response:
+        """Enable the bot (set user_config.bot_enabled = True).
+
+        Validates that the user has the credentials they actually need for
+        their current mode before flipping the switch. Live mode requires a
+        wallet, Polymarket private key, and Anthropic API key. Simulation
+        only needs the Anthropic key (we still call Claude to forecast even
+        when not trading real money). Mode-switching itself is a separate
+        operation: PUT /api/config with `{"mode": "live"}` or
+        `{"mode": "simulation"}`.
+        """
         cfg = get_user_config()
-        if not cfg.wallet_address:
-            return _err("wallet_address is not set", 400)
-        if _keyring_get(KEYRING_POLYMARKET_KEY) is None:
-            return _err("polymarket private key is not in the keychain", 400)
         if get_anthropic_api_key() is None:
             return _err("anthropic api key is not in the keychain", 400)
+        if cfg.mode == "live":
+            if not cfg.wallet_address:
+                return _err("wallet_address is not set", 400)
+            if _keyring_get(KEYRING_POLYMARKET_KEY) is None:
+                return _err("polymarket private key is not in the keychain", 400)
         try:
-            cfg = update_user_config(mode="live")
+            cfg = update_user_config(bot_enabled=True)
         except ValueError as exc:
             return _err(str(exc), 400)
         except Exception as exc:
             return _err(f"update failed: {exc}", 500)
-        return _ok({"mode": cfg.mode})
+        return _ok({"bot_enabled": True, "mode": cfg.mode})
 
     async def _bot_stop(self, _req: web.Request) -> web.Response:
+        """Disable the bot (set user_config.bot_enabled = False).
+
+        The scheduler keeps running scan/resolve jobs but the executor
+        refuses to open new positions while bot_enabled is False (see
+        UserConfig.ready_to_trade). Existing positions still settle.
+        """
         try:
-            cfg = update_user_config(mode="simulation")
+            cfg = update_user_config(bot_enabled=False)
         except ValueError as exc:
             return _err(str(exc), 400)
         except Exception as exc:
             return _err(f"update failed: {exc}", 500)
-        return _ok({"mode": cfg.mode})
+        return _ok({"bot_enabled": False, "mode": cfg.mode})
 
     async def _scan(self, _req: web.Request) -> web.Response:
         """Trigger pm_scan once, immediately, without waiting for it to finish."""

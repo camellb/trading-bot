@@ -94,6 +94,15 @@ export interface HealthSnapshot {
 
 export interface BotState {
   mode: string | null;
+  /**
+   * Whether the bot is currently allowed to take new trades. Toggled via
+   * POST /api/bot/start and /api/bot/stop. Independent of `mode`: the
+   * scheduler still runs scans when off, but the executor refuses to
+   * open positions. Older sidecars (pre-2026-04-28) don't surface this
+   * field, so it's optional and the UI defaults missing values to false.
+   */
+  bot_enabled?: boolean;
+  ready_to_trade?: boolean;
   starting_cash: number | null;
   wallet_address: string | null;
   is_onboarded: boolean;
