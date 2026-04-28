@@ -1158,3 +1158,22 @@ html, body { scroll-behavior: smooth; }
   .platform-card { flex-wrap: wrap; }
   .platform-cta { width: 100%; text-align: center; }
 }
+
+/* Disabled state: visual-only platform tile (no link target, no hover
+   accent). Used while the binary download is gated behind purchase so
+   the page can advertise platform support without exposing a fetch
+   path that pre-purchase visitors could grab. */
+.platform-card.disabled {
+  cursor: default;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.platform-card.disabled:hover {
+  border-color: var(--vellum-10);
+  background: var(--obsidian-raise);
+}
+.platform-card.disabled:hover .platform-icon {
+  color: var(--vellum);
+  border-color: var(--vellum-10);
+  box-shadow: none;
+}
