@@ -48,7 +48,9 @@ async function fetchPort(): Promise<number> {
     }
     await new Promise((r) => setTimeout(r, 250));
   }
-  throw new Error("sidecar did not become ready within 120s");
+  throw new Error(
+    "Delfi took too long to start. Please quit the app and try again.",
+  );
 }
 
 async function port(): Promise<number> {
@@ -62,13 +64,22 @@ async function request<T>(
   init?: RequestInit & { body?: BodyInit },
 ): Promise<T> {
   const p = await port();
-  const res = await fetch(`http://127.0.0.1:${p}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`http://127.0.0.1:${p}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch {
+    // WebKit raises a TypeError with .message = "Load failed" on any
+    // network-level failure (connection refused, DNS, etc). That string
+    // is meaningless to the user — translate it into something the boot
+    // screen can render directly.
+    throw new Error("Could not connect to Delfi. Please restart the app.");
+  }
   const text = await res.text();
   let data: unknown;
   try {

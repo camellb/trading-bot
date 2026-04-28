@@ -157,7 +157,7 @@ function BootScreen({ error }: { error: string | null }) {
       <img src="/brand/mark.svg" alt="" className="boot-mark" />
       <h1>DELFI</h1>
       <p className="boot-status">
-        {error ? "Could not reach the local engine" : "Launching..."}
+        {error ? "Delfi could not start" : "Launching..."}
       </p>
       {error ? (
         <p className="boot-detail">{error}</p>
