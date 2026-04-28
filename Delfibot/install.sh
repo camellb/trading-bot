@@ -55,6 +55,16 @@ touch "$INSTALLED"
 echo "[install] re-registering bundle with LaunchServices..."
 "$LSREGISTER" -f "$INSTALLED" >/dev/null 2>&1 || true
 
+echo "[install] killing Dock + cfprefsd before plist edit..."
+# Kill Dock with SIGKILL (not SIGTERM), otherwise Dock writes its
+# in-memory state on shutdown and overwrites our plist edit - which
+# brings back the duplicate Delfi entries we just removed. cfprefsd
+# also gets bounced so subsequent `defaults` reads don't replay the
+# pre-edit cached state. Both auto-respawn via launchd.
+pkill -KILL Dock 2>/dev/null || true
+pkill cfprefsd 2>/dev/null || true
+sleep 2
+
 echo "[install] stripping com.delfi.desktop from Dock recent-apps..."
 python3 - <<'PY'
 import plistlib, subprocess
@@ -83,8 +93,11 @@ with open("/tmp/dock_patched.plist", "wb") as f:
 subprocess.check_call(["defaults", "import", "com.apple.dock", "/tmp/dock_patched.plist"])
 PY
 
-echo "[install] restarting Dock..."
-killall Dock 2>/dev/null || true
+echo "[install] forcing Dock to re-read the cleaned plist..."
+# Second SIGKILL so the auto-respawned Dock from before re-reads the
+# freshly-written plist instead of using its still-cached in-memory
+# state.
+pkill -KILL Dock 2>/dev/null || true
 sleep 2
 
 echo "[install] launching Delfi..."
