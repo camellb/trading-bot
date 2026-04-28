@@ -20,7 +20,7 @@ export const metadata = {
 
 const CHECKOUT_URL =
   process.env.NEXT_PUBLIC_CHECKOUT_URL ||
-  "mailto:hello@delfi.app?subject=Delfi%20early%20access";
+  "mailto:info@delfibot.com?subject=Delfi%20early%20access";
 
 const PLATFORMS = [
   {
@@ -31,25 +31,11 @@ const PLATFORMS = [
     suffix: ".dmg",
   },
   {
-    id: "macos-x86_64",
-    name: "macOS",
-    detail: "Intel",
-    arch: "x86_64",
-    suffix: ".dmg",
-  },
-  {
     id: "windows-x64",
     name: "Windows",
     detail: "Windows 10 and 11",
     arch: "x64",
     suffix: ".msi",
-  },
-  {
-    id: "linux-x64",
-    name: "Linux",
-    detail: "AppImage, x86_64",
-    arch: "x64",
-    suffix: ".AppImage",
   },
 ];
 
@@ -142,9 +128,9 @@ export default function DownloadPage() {
             Delfi reads the key from your OS keychain only on your machine.
           </Item>
           <Item>
-            An Anthropic API key. You pay your provider directly for forecast
-            usage; Delfi caps how often it scans each market to keep that
-            spend predictable.
+            A model API key from any major provider. You pay your
+            provider directly for forecast usage; Delfi caps how often
+            it scans each market to keep that spend predictable.
           </Item>
           <Item>
             A reasonable starting bankroll. Delfi sizes every trade as a

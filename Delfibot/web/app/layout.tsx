@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   title: "Delfi. Autonomous Polymarket trader",
   description:
     "Delfi watches Polymarket, backs the side the market itself favours on every tradeable contract, and steps aside whenever its own forecast disagrees. Runs on your machine.",
-  metadataBase: new URL("https://delfi.app"),
+  metadataBase: new URL("https://delfibot.com"),
   openGraph: {
     title: "Delfi. Autonomous Polymarket trader",
     description:
