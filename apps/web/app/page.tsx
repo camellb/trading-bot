@@ -241,7 +241,6 @@ function CustodyPromise() {
     <section className="section custody" data-screen-label="07.5 Custody">
       <div className="container">
         <div className="sec-head">
-          <p className="sec-eyebrow">The local-first promise</p>
           <h2 className="t-display-l balanced">Your funds. Your keys.<br />Your machine.</h2>
         </div>
         <div className="custody-grid">
