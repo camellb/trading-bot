@@ -1,10 +1,10 @@
 """
-Tiny per-deploy state used by the Telegram notifier.
+Tiny per-deploy bot pause state.
 
-Tracks three booleans that must persist across restarts:
-  * first_win_sent   - has the one-shot "First win" message been delivered?
-  * first_loss_sent  - has the one-shot "First loss" message been delivered?
-  * trading_paused   - is /pause currently in effect?
+Originally fed the Telegram notifier's "first win" / "first loss"
+one-shot messages too; those were retired with the local-first pivot.
+The remaining responsibility is one boolean:
+  * trading_paused   - is the bot paused (no new positions opened)?
 
 Stored as JSON at <app-data>/data/notifier_state.json. Anchored to the
 app-data directory (same place as the SQLite DB) so the file persists

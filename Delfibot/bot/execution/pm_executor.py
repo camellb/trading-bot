@@ -415,29 +415,15 @@ class PMExecutor:
             trail in the position row makes paper vs. real fills clear
             in the Performance / Positions views.
 
-        US venue (`polymarket_us`):
-            Different signing scheme (QCEX API-key, not EIP-712 wallet).
-            Not part of this implementation; raises explicitly. Keep
-            `polymarket_us` users on simulation until that client lands.
+        Venue:
+            v1 is offshore Polymarket only (EIP-712 against the V2 CTF
+            Exchange on Polygon). The CFTC-regulated US venue (QCEX,
+            API-key signing) is not supported.
         """
         if not self.ready:
             print(f"[pm_executor] _open_live refused: user {self.user_id} not ready",
                   file=sys.stderr)
             return None
-
-        venue = getattr(self._user_config, "venue", "polymarket")
-        if venue == "polymarket_us":
-            raise NotImplementedError(
-                "Live execution on Polymarket US (CFTC-regulated DCM) is not "
-                "yet wired. The US venue uses QCEX API-key signing and USD "
-                "settlement (no Polygon wallet). Keep the user on "
-                "mode='simulation' until the US execution client is implemented."
-            )
-        if venue not in ("polymarket", None):
-            raise NotImplementedError(
-                f"Live execution not implemented for venue={venue!r}. "
-                f"Keep the user on mode='simulation'."
-            )
 
         # ── Kill-switch fallback ────────────────────────────────────────
         if not _live_killswitch_off():
@@ -662,6 +648,14 @@ class PMExecutor:
         Resolve a position. `winning_outcome` is the outcome that won on
         Polymarket. `settlement_price` defaults to $1.00 for winners /
         $0.00 for losers / $0.50 for invalid markets.
+
+        Live mode caveat (2026-04-28): this method only updates the DB.
+        It does NOT call `redeemPositions()` on the V2 CTF Exchange.
+        Polymarket's web UI auto-prompts winning users to redeem; until
+        on-chain redemption is wired up, users running with the kill
+        switch off must redeem winning positions through that UI to
+        actually convert held tokens into pUSD. The bot's P&L numbers
+        are correct regardless.
         """
         outcome = (winning_outcome or "").upper()
         if outcome not in ("YES", "NO", "INVALID"):

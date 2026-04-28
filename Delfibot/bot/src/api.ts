@@ -291,12 +291,6 @@ export interface MarketEvaluation {
   [k: string]: unknown;
 }
 
-export interface TelegramConfig {
-  has_telegram_token: boolean;
-  telegram_chat_id: string | null;
-  is_configured: boolean;
-}
-
 export interface NotificationsConfig {
   categories: string[];
   notification_prefs: Record<string, boolean>;
@@ -378,17 +372,7 @@ export const api = {
   // Archetypes
   archetypes: () => request<ArchetypeCatalogue>("/api/archetypes"),
 
-  // Telegram + notifications
-  telegram:        () => request<TelegramConfig>("/api/config/telegram"),
-  saveTelegram:    (changes: { telegram_bot_token?: string | null; telegram_chat_id?: string | null }) =>
-    request<TelegramConfig & { wrote: string[] }>("/api/config/telegram", {
-      method: "PUT",
-      body: JSON.stringify(changes),
-    }),
-  testTelegram:    () =>
-    request<{ ok: boolean; detail: string }>("/api/config/telegram/test", {
-      method: "POST",
-    }),
+  // Notifications (in-app only; Telegram support was dropped post local-first pivot)
   notifications:   () => request<NotificationsConfig>("/api/config/notifications"),
   saveNotifications: (prefs: Record<string, boolean>) =>
     request<NotificationsConfig>("/api/config/notifications", {

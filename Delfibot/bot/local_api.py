@@ -45,15 +45,12 @@ POST /api/suggestions/{id}/skip     reject a proposal
 POST /api/suggestions/{id}/snooze   snooze a proposal until N more settled trades
 GET  /api/learning-reports          50-trade narrative reviews (?limit)
 
-Archetypes + Telegram + Notifications + Reset
-=============================================
+Archetypes + Notifications + Reset
+==================================
 GET  /api/archetypes                canonical archetype catalogue with the
                                     user's current per-archetype skip flag
                                     and stake multiplier
 GET  /api/evaluations               recent market_evaluations rows
-GET  /api/config/telegram           presence of bot token + current chat id
-PUT  /api/config/telegram           write bot token (keychain) / chat id (DB)
-POST /api/config/telegram/test      send a one-off test message
 GET  /api/config/notifications      per-category notification prefs
 PUT  /api/config/notifications      replace per-category notification prefs
 POST /api/reset-simulation          wipe simulation-mode positions
@@ -88,7 +85,6 @@ from engine.user_config import (
     DEFAULT_USER_ID,
     KEYRING_ANTHROPIC_KEY,
     KEYRING_POLYMARKET_KEY,
-    KEYRING_TELEGRAM_TOKEN,
     NOTIFICATION_CATEGORIES,
     V1_DEFAULT_ARCHETYPE_SKIP_LIST,
     V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS,
@@ -97,19 +93,16 @@ from engine.user_config import (
     get_cryptopanic_key,
     get_llm_backup_key,
     get_newsapi_key,
-    get_telegram_bot_token,
     get_user_config,
     set_anthropic_api_key,
     set_cryptopanic_key,
     set_llm_backup_key,
     set_newsapi_key,
-    set_telegram_bot_token,
     set_user_polymarket_creds,
     update_user_config,
     validated_update_payload,
 )
 from execution.pm_executor import PMExecutor
-from feeds import telegram_notifier
 from process_health import health as proc_health
 
 
@@ -172,6 +165,57 @@ def _err(message: str, status: int = 400) -> web.Response:
     return _ok({"error": message}, status=status)
 
 
+def _validate_polymarket_private_key(private_key: str, wallet_address: Optional[str]) -> Optional[str]:
+    """
+    Returns an error string if the private key is malformed or doesn't
+    derive to the supplied wallet address. None on success.
+
+    Local-only check (no chain RPC). The key+wallet relationship is
+    deterministic so this catches typos and mismatched paste before the
+    user discovers it the hard way (an order signed by the wrong
+    wallet, rejected at fill time).
+    """
+    if not isinstance(private_key, str) or not private_key.strip():
+        return "Polymarket private key is empty."
+    raw = private_key.strip()
+    # Accept both 0x-prefixed and bare hex.
+    if raw.lower().startswith("0x"):
+        raw = raw[2:]
+    if len(raw) != 64 or any(c not in "0123456789abcdefABCDEF" for c in raw):
+        return "Polymarket private key must be 64 hex characters (32 bytes)."
+    try:
+        from eth_account import Account
+        derived = Account.from_key(bytes.fromhex(raw)).address
+    except Exception as exc:
+        return f"Polymarket private key did not parse: {exc}"
+    if wallet_address and wallet_address.strip():
+        # Compare normalised lower-case to dodge checksum casing issues.
+        if derived.lower() != wallet_address.strip().lower():
+            return (
+                f"Wallet address {wallet_address} does not match the "
+                f"address {derived} derived from the private key. "
+                f"Re-paste one of them."
+            )
+    return None
+
+
+def _validate_llm_key_shape(key: str, label: str = "LLM key") -> Optional[str]:
+    """
+    Cheap shape check on an LLM API key. Catches the obvious paste
+    mistakes (whitespace, wrong tab paste, key truncated). No network
+    call: an actual provider auth check costs latency we don't want on
+    every save, and can false-negative on transient provider 5xx.
+    """
+    if not isinstance(key, str) or not key.strip():
+        return f"{label} is empty."
+    raw = key.strip()
+    if " " in raw or "\n" in raw or "\t" in raw:
+        return f"{label} contains whitespace; re-paste without the surrounding text."
+    if len(raw) < 20:
+        return f"{label} looks too short ({len(raw)} chars); did the paste cut off?"
+    return None
+
+
 def _config_to_dict(cfg) -> dict:
     """Strip out keychain-only / non-serializable bits before sending to UI."""
     raw = cfg.__dict__.copy() if hasattr(cfg, "__dict__") else {}
@@ -179,14 +223,10 @@ def _config_to_dict(cfg) -> dict:
     for k, v in list(raw.items()):
         if isinstance(v, tuple):
             raw[k] = list(v)
-    # Never echo secrets back through GET /api/config. Keychain values are
-    # surfaced through GET /api/credentials as booleans only.
-    raw.pop("polymarket_api_key", None)
-    raw.pop("polymarket_api_secret", None)
-    raw.pop("polymarket_passphrase", None)
-    raw.pop("polymarket_us_api_key", None)
-    raw.pop("polymarket_us_api_secret", None)
-    raw.pop("polymarket_us_passphrase", None)
+    # Defensive: Polymarket private key + LLM keys never live on the
+    # dataclass (they're keychain-only), but pop them anyway in case a
+    # legacy dataclass shape still carries them. Boolean presence is
+    # surfaced via GET /api/credentials.
     return raw
 
 
@@ -297,10 +337,7 @@ class LocalAPI:
         # Recent market evaluations (feeds Intelligence + Positions detail)
         app.router.add_get("/api/evaluations",      self._get_evaluations)
 
-        # Telegram + notification prefs
-        app.router.add_get("/api/config/telegram",        self._get_telegram)
-        app.router.add_put("/api/config/telegram",        self._put_telegram)
-        app.router.add_post("/api/config/telegram/test",  self._post_telegram_test)
+        # Notification prefs (per-category toggles, in-app only)
         app.router.add_get("/api/config/notifications",   self._get_notifications)
         app.router.add_put("/api/config/notifications",   self._put_notifications)
 
@@ -394,8 +431,16 @@ class LocalAPI:
 
         # Polymarket private key + wallet address. The DB only stores the
         # wallet (the public 0x address); the private key is keychain-only.
+        # Validate locally before persisting so a typo can't end up in
+        # the keychain unnoticed.
         pm_key = payload.get("polymarket_private_key")
         wallet = payload.get("wallet_address")
+        # Treat empty string as "clear this slot" — only run the
+        # derivation check when the user actually pasted something.
+        if pm_key is not None and pm_key.strip():
+            err = _validate_polymarket_private_key(pm_key, wallet)
+            if err:
+                return _err(err, 400)
         if pm_key is not None or wallet is not None:
             try:
                 set_user_polymarket_creds(
@@ -417,6 +462,10 @@ class LocalAPI:
         if llm is None:
             llm = payload.get("anthropic_api_key")
         if llm is not None:
+            if llm.strip():
+                err = _validate_llm_key_shape(llm, "LLM API key")
+                if err:
+                    return _err(err, 400)
             try:
                 set_anthropic_api_key(llm)
                 wrote.append("llm_api_key")
@@ -426,6 +475,10 @@ class LocalAPI:
         # Optional secondary LLM (failover / hedge against rate limits).
         llm_backup = payload.get("llm_backup_key")
         if llm_backup is not None:
+            if llm_backup.strip():
+                err = _validate_llm_key_shape(llm_backup, "Backup LLM key")
+                if err:
+                    return _err(err, 400)
             try:
                 set_llm_backup_key(llm_backup)
                 wrote.append("llm_backup_key")
@@ -435,6 +488,10 @@ class LocalAPI:
         # Optional NewsAPI key (breaking news context).
         newsapi = payload.get("newsapi_key")
         if newsapi is not None:
+            if newsapi.strip():
+                err = _validate_llm_key_shape(newsapi, "NewsAPI key")
+                if err:
+                    return _err(err, 400)
             try:
                 set_newsapi_key(newsapi)
                 wrote.append("newsapi_key")
@@ -444,6 +501,10 @@ class LocalAPI:
         # Optional CryptoPanic key (crypto-specific news).
         cryptopanic = payload.get("cryptopanic_key")
         if cryptopanic is not None:
+            if cryptopanic.strip():
+                err = _validate_llm_key_shape(cryptopanic, "CryptoPanic key")
+                if err:
+                    return _err(err, 400)
             try:
                 set_cryptopanic_key(cryptopanic)
                 wrote.append("cryptopanic_key")
@@ -803,75 +864,6 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to read evaluations: {exc}", 500)
         return _ok({"evaluations": rows})
-
-    # ── Telegram bot config ──────────────────────────────────────────────
-    async def _get_telegram(self, _req: web.Request) -> web.Response:
-        """Return whether the bot token is set + the chat id (no token).
-
-        We never echo the bot token back through any API. The UI just
-        needs to know whether one is stored and what the chat id is.
-        """
-        cfg = get_user_config()
-        return _ok({
-            "has_telegram_token": _keyring_get(KEYRING_TELEGRAM_TOKEN) is not None,
-            "telegram_chat_id":   cfg.telegram_chat_id,
-            "is_configured":      telegram_notifier.is_configured(),
-        })
-
-    async def _put_telegram(self, req: web.Request) -> web.Response:
-        """Update the bot token (keychain) and/or the chat id (DB)."""
-        try:
-            payload = await req.json()
-        except Exception:
-            return _err("invalid json", 400)
-        if not isinstance(payload, dict):
-            return _err("body must be a JSON object", 400)
-
-        wrote: list[str] = []
-
-        # Token: only write if the field is present in the payload AND
-        # is a non-empty string. An empty string clears the keychain.
-        if "telegram_bot_token" in payload:
-            tok = payload.get("telegram_bot_token")
-            if tok is None or (isinstance(tok, str) and tok.strip() == ""):
-                set_telegram_bot_token(None)
-                wrote.append("telegram_bot_token (cleared)")
-            elif isinstance(tok, str):
-                set_telegram_bot_token(tok.strip())
-                wrote.append("telegram_bot_token")
-            else:
-                return _err("telegram_bot_token must be a string or null", 400)
-
-        if "telegram_chat_id" in payload:
-            chat = payload.get("telegram_chat_id")
-            if chat is None:
-                update_user_config(telegram_chat_id=None)
-                wrote.append("telegram_chat_id (cleared)")
-            elif isinstance(chat, (str, int)):
-                update_user_config(telegram_chat_id=str(chat))
-                wrote.append("telegram_chat_id")
-            else:
-                return _err("telegram_chat_id must be a string", 400)
-
-        cfg = get_user_config()
-        return _ok({
-            "wrote": wrote,
-            "has_telegram_token": _keyring_get(KEYRING_TELEGRAM_TOKEN) is not None,
-            "telegram_chat_id":   cfg.telegram_chat_id,
-            "is_configured":      telegram_notifier.is_configured(),
-        })
-
-    async def _post_telegram_test(self, _req: web.Request) -> web.Response:
-        """Fire a test message so the user can verify their setup end-to-end."""
-        try:
-            ok, detail = await asyncio.get_event_loop().run_in_executor(
-                None, telegram_notifier.send_test_message,
-            )
-        except Exception as exc:
-            return _err(f"telegram test failed: {exc}", 500)
-        if ok:
-            return _ok({"ok": True, "detail": "test message sent"})
-        return _ok({"ok": False, "detail": detail}, status=400)
 
     # ── Notification prefs (per-category toggles) ───────────────────────
     async def _get_notifications(self, _req: web.Request) -> web.Response:

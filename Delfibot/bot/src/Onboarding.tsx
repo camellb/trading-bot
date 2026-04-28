@@ -7,16 +7,15 @@ import { api, BotState, Credentials } from "./api";
  * Shown when /api/state reports is_onboarded === false. Walks the user
  * through the things Delfi needs:
  *   1. Welcome
- *   2. Anthropic API key (required)
+ *   2. LLM API key (required)
  *   3. Bankroll + simulation default (required)
  *   4. Polymarket key + wallet (optional, only for live mode)
- *   5. Telegram (optional)
- *   6. Done
+ *   5. Done
  */
 
-type Step = "welcome" | "llm" | "bankroll" | "polymarket" | "telegram" | "done";
+type Step = "welcome" | "llm" | "bankroll" | "polymarket" | "done";
 
-const ORDER: Step[] = ["welcome", "llm", "bankroll", "polymarket", "telegram", "done"];
+const ORDER: Step[] = ["welcome", "llm", "bankroll", "polymarket", "done"];
 
 interface Props {
   state: BotState | null;
@@ -30,8 +29,6 @@ export default function Onboarding({ creds, onComplete }: Props) {
   const [bankroll, setBankroll] = useState("1000");
   const [polymarketKey, setPolymarketKey] = useState("");
   const [wallet, setWallet] = useState("");
-  const [telegramToken, setTelegramToken] = useState("");
-  const [telegramChatId, setTelegramChatId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -80,21 +77,6 @@ export default function Onboarding({ creds, onComplete }: Props) {
     } finally { setBusy(false); }
   };
 
-  const saveTelegram = async () => {
-    if (!telegramToken.trim() && !telegramChatId.trim()) { next(); return; }
-    setBusy(true); setError(null);
-    try {
-      const payload: { telegram_bot_token?: string; telegram_chat_id?: string } = {};
-      if (telegramToken.trim()) payload.telegram_bot_token = telegramToken.trim();
-      if (telegramChatId.trim()) payload.telegram_chat_id = telegramChatId.trim();
-      await api.saveTelegram(payload);
-      setTelegramToken("");
-      next();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally { setBusy(false); }
-  };
-
   return (
     <div className="ob-shell">
       <div className="ob-progress">
@@ -130,14 +112,6 @@ export default function Onboarding({ creds, onComplete }: Props) {
             existingWallet={creds?.wallet_address ?? null}
             busy={busy} error={error}
             onBack={back} onSave={savePolymarket} onSkip={next}
-          />
-        )}
-        {step === "telegram" && (
-          <TelegramStep
-            token={telegramToken} chatId={telegramChatId}
-            onTokenChange={setTelegramToken} onChatIdChange={setTelegramChatId}
-            busy={busy} error={error}
-            onBack={back} onSave={saveTelegram} onSkip={next}
           />
         )}
         {step === "done" && (
@@ -202,7 +176,7 @@ function LlmKeyStep({
 }) {
   return (
     <>
-      <div className="ob-eyebrow">STEP 1 of 4 · Required</div>
+      <div className="ob-eyebrow">STEP 1 of 3 · Required</div>
       <h1 className="ob-title">LLM API key</h1>
       <p className="ob-sub">
         Delfi&apos;s forecaster reads each Polymarket market through an LLM
@@ -267,7 +241,7 @@ function BankrollStep({
   const valid = Number.isFinite(n) && n >= 10 && n <= 100_000;
   return (
     <>
-      <div className="ob-eyebrow">STEP 2 of 4 · Required</div>
+      <div className="ob-eyebrow">STEP 2 of 3 · Required</div>
       <h1 className="ob-title">Starting bankroll</h1>
       <p className="ob-sub">
         How much capital should Delfi treat as 100%? Stake size and
@@ -333,7 +307,7 @@ function PolymarketStep({
 }) {
   return (
     <>
-      <div className="ob-eyebrow">STEP 3 of 4 · Optional</div>
+      <div className="ob-eyebrow">STEP 3 of 3 · Optional</div>
       <h1 className="ob-title">Polymarket credentials</h1>
       <p className="ob-sub">
         Only needed for live trading. You can skip this and run in
@@ -382,75 +356,6 @@ function PolymarketStep({
   );
 }
 
-function TelegramStep({
-  token, chatId, onTokenChange, onChatIdChange,
-  busy, error, onBack, onSave, onSkip,
-}: {
-  token: string;
-  chatId: string;
-  onTokenChange: (v: string) => void;
-  onChatIdChange: (v: string) => void;
-  busy: boolean;
-  error: string | null;
-  onBack: () => void;
-  onSave: () => void;
-  onSkip: () => void;
-}) {
-  return (
-    <>
-      <div className="ob-eyebrow">STEP 4 of 4 · Optional</div>
-      <h1 className="ob-title">Telegram notifications</h1>
-      <p className="ob-sub">
-        Delfi can DM you every position open, every resolution, and a
-        daily summary. The desktop app shows everything in-app, so this
-        is purely for phone notifications.
-      </p>
-      <div className="ob-form">
-        <div className="ob-field">
-          <label>Bot token</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder="123456:ABC-..."
-            value={token}
-            onChange={(e) => onTokenChange(e.target.value)}
-          />
-          <div className="ob-hint">
-            Create a bot with <code>@BotFather</code> in Telegram, copy the token here.
-          </div>
-        </div>
-        <div className="ob-field">
-          <label>Chat ID</label>
-          <input
-            type="text"
-            autoComplete="off"
-            placeholder="e.g. 123456789"
-            value={chatId}
-            onChange={(e) => onChatIdChange(e.target.value)}
-          />
-          <div className="ob-hint">
-            Message your new bot once, then visit{" "}
-            <code>api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and
-            copy the chat ID.
-          </div>
-        </div>
-        {error && <div className="form-error">{error}</div>}
-      </div>
-      <div className="ob-actions">
-        <button className="ob-back" onClick={onBack} disabled={busy}>← Back</button>
-        <div className="ob-actions-right">
-          <button className="ob-skip" onClick={onSkip} disabled={busy}>
-            Skip for now
-          </button>
-          <button className="ob-next" onClick={onSave} disabled={busy}>
-            {busy ? "Saving..." : "Save and continue"} <span aria-hidden>→</span>
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
 function DoneStep({ onFinish }: { onFinish: () => void }) {
   return (
     <>
@@ -467,7 +372,6 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
         <ChecklistItem ok>LLM API key stored</ChecklistItem>
         <ChecklistItem ok>Bankroll set</ChecklistItem>
         <ChecklistItem>Polymarket key + wallet (for live mode)</ChecklistItem>
-        <ChecklistItem>Telegram (optional)</ChecklistItem>
       </div>
       <div className="ob-actions">
         <span />

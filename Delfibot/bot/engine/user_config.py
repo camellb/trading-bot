@@ -23,12 +23,11 @@ validated_update_payload, ensure_default_user_config, get_user_config,
 update_user_config, should_notify, is_admin, complete_user_onboarding,
 list_onboarded_user_ids, get_default_user_config, get_user_join_time,
 get_active_polymarket_creds, get_user_polymarket_creds,
-set_user_polymarket_creds, set_user_venue,
-get_user_polymarket_us_creds, set_user_polymarket_us_creds.
+set_user_polymarket_creds.
 
-Polymarket-US helpers are no-op stubs (US venue is deferred). Telegram
-helpers were removed entirely - notifications now flow through the
-SQLite event_log table the dashboard reads.
+Telegram helpers were removed entirely - notifications now flow through
+the SQLite event_log table the dashboard reads. Polymarket-US (QCEX) is
+not supported; v1 is offshore-only.
 """
 
 from __future__ import annotations
@@ -50,7 +49,6 @@ KEYRING_POLYMARKET_KEY = "polymarket_private_key"
 # stored key on upgrade.
 KEYRING_ANTHROPIC_KEY = "anthropic_api_key"           # primary LLM
 KEYRING_LLM_BACKUP_KEY = "llm_backup_api_key"          # optional secondary
-KEYRING_TELEGRAM_TOKEN = "telegram_bot_token"
 KEYRING_NEWSAPI_KEY = "newsapi_key"                    # optional, news headlines
 KEYRING_CRYPTOPANIC_KEY = "cryptopanic_api_key"        # optional, crypto news
 
@@ -82,26 +80,17 @@ class UserConfig:
     wallet_address:        Optional[str]   = None
     bot_enabled:           bool            = False
 
-    # Local v1 has no US venue. These dataclass fields stay so legacy
-    # callers (learning_cadence, dashboards, executor backstops) don't
-    # blow up at import. The persistence layer ignores writes to them.
+    # v1 is offshore Polymarket only. The `venue` field is kept as a
+    # constant so any legacy code that reads it (`getattr(cfg, "venue",
+    # "polymarket")`) continues to resolve. The other polymarket_* and
+    # polymarket_us_* SaaS-era credential fields were removed when the
+    # local-first pivot moved all secrets into the OS keychain.
     venue:                    str           = "polymarket"
-    polymarket_api_key:       Optional[str] = None
-    polymarket_api_secret:    Optional[str] = None
-    polymarket_passphrase:    Optional[str] = None
-    polymarket_us_api_key:    Optional[str] = None
-    polymarket_us_api_secret: Optional[str] = None
-    polymarket_us_passphrase: Optional[str] = None
-
-    # Telegram. Bot token lives in the OS keychain (secret), only the
-    # `has_telegram_token` boolean is exposed via the API. Chat id is
-    # the recipient address (the chat id of the user's own DM with their
-    # bot, fetched once via @BotFather setup) and lives in the DB.
-    telegram_chat_id:         Optional[str]  = None
 
     # Per-category notification toggles. Keys are NOTIFICATION_CATEGORIES.
-    # Missing keys default to True (everything fires until the user opts
-    # out).
+    # Notifications now flow through the SQLite event_log table the
+    # dashboard reads (no Telegram). Missing keys default to True so a
+    # fresh install gets every notification until the user opts out.
     notification_prefs:       Dict[str, bool] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -242,7 +231,6 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "starting_cash",
     "wallet_address",
     "bot_enabled",
-    "telegram_chat_id",
     "notification_prefs",
 })
 
@@ -337,11 +325,6 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
             return None
         s = str(raw).strip()
         return s or None
-    if key == "telegram_chat_id":
-        if raw is None:
-            return None
-        s = str(raw).strip()
-        return s or None
     if key == "bot_enabled":
         if isinstance(raw, bool):
             return raw
@@ -386,7 +369,7 @@ def validate_user_config_value(key: str, value) -> None:
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
-    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id"):
+    if key in ("mode", "wallet_address", "bot_enabled"):
         return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
@@ -531,7 +514,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       cost_assumption_override, archetype_skip_list, "
                 "       mode, starting_cash, wallet_address, "
                 "       bot_enabled, archetype_stake_multipliers, "
-                "       telegram_chat_id, notification_prefs "
+                "       notification_prefs "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -551,8 +534,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             wallet_address                = (str(row[11]) if row[11] is not None else None),
             bot_enabled                   = bool(row[12]) if row[12] is not None else False,
             archetype_stake_multipliers   = _decode_archetype_multipliers(row[13]),
-            telegram_chat_id              = (str(row[14]) if row[14] is not None else None),
-            notification_prefs            = _decode_notification_prefs(row[15]),
+            notification_prefs            = _decode_notification_prefs(row[14]),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -768,21 +750,6 @@ def get_default_user_config() -> UserConfig:
     return UserConfig()
 
 
-# ── Telegram bot token (keychain) ───────────────────────────────────────────
-def get_telegram_bot_token() -> Optional[str]:
-    """Read the Telegram bot HTTP token from the OS keychain.
-
-    Returns None if the user has not pasted a token yet. The token is
-    `<bot-id>:<auth-key>` shape from BotFather; we never validate the
-    format ourselves, just pass it through to api.telegram.org.
-    """
-    return _keyring_get(KEYRING_TELEGRAM_TOKEN)
-
-
-def set_telegram_bot_token(value: Optional[str]) -> None:
-    _keyring_set(KEYRING_TELEGRAM_TOKEN, value)
-
-
 # ── Notification prefs ──────────────────────────────────────────────────────
 def should_notify(user_id: str = DEFAULT_USER_ID, category: str = "") -> bool:
     """Whether `category` is enabled for `user_id`.
@@ -806,20 +773,3 @@ def is_admin(user_id: str = DEFAULT_USER_ID) -> bool:
     return user_id == DEFAULT_USER_ID
 
 
-# ── Polymarket-US + venue (deferred / no-op stubs) ──────────────────────────
-def set_user_venue(user_id: str = DEFAULT_USER_ID, venue: str = "polymarket") -> None:
-    return None
-
-
-def get_user_polymarket_us_creds(user_id: str = DEFAULT_USER_ID) -> dict:
-    return {"api_key": None, "api_secret": None, "passphrase": None}
-
-
-def set_user_polymarket_us_creds(
-    user_id: str = DEFAULT_USER_ID,
-    *,
-    api_key: Optional[str] = None,
-    api_secret: Optional[str] = None,
-    passphrase: Optional[str] = None,
-) -> None:
-    return None

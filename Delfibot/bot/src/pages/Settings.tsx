@@ -5,7 +5,6 @@ import {
   ArchetypeEntry,
   Credentials,
   NotificationsConfig,
-  TelegramConfig,
 } from "../api";
 import type { SettingsTab } from "../App";
 
@@ -63,11 +62,11 @@ const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   },
   risk: {
     h1: "Risk and sizing",
-    sub: "Stake size, loss limits, and per-archetype multipliers. Applied immediately, no Telegram confirmation.",
+    sub: "Stake size, loss limits, and per-archetype multipliers. Applied immediately.",
   },
   notifications: {
     h1: "Notifications",
-    sub: "Telegram bot setup and per-category notification toggles. Optional, the desktop dashboard shows everything in-app.",
+    sub: "Per-category toggles for what Delfi surfaces in the dashboard activity feed.",
   },
 };
 
@@ -439,30 +438,8 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   },
 };
 
-function humanizeTelegramError(raw: string): string {
-  const s = raw.toLowerCase();
-  if (s.includes("chat not found")) {
-    return "Telegram cannot find that chat. Open your bot in Telegram, tap Start, then copy the chat ID again from https://api.telegram.org/bot<TOKEN>/getUpdates.";
-  }
-  if (s.includes("unauthorized")) {
-    return "Telegram rejected the bot token. Double-check you copied the full token from @BotFather (including the colon).";
-  }
-  if (s.includes("bot was blocked") || s.includes("blocked by the user")) {
-    return "You have blocked this bot in Telegram. Unblock it and send /start, then retry.";
-  }
-  if (s.includes("forbidden")) {
-    return "Telegram refused delivery. For groups, make sure the bot is a member. For personal chats, message the bot first.";
-  }
-  return raw;
-}
-
 function NotificationsPanel() {
-  const [tg, setTg] = useState<TelegramConfig | null>(null);
   const [notif, setNotif] = useState<NotificationsConfig | null>(null);
-  const [botToken, setBotToken] = useState("");
-  const [chatId, setChatId] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [prefSavingKey, setPrefSavingKey] = useState<string | null>(null);
 
@@ -470,12 +447,8 @@ function NotificationsPanel() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [t, n] = await Promise.all([api.telegram(), api.notifications()]);
-        if (!cancelled) {
-          setTg(t);
-          setNotif(n);
-          if (t.telegram_chat_id) setChatId(t.telegram_chat_id);
-        }
+        const n = await api.notifications();
+        if (!cancelled) setNotif(n);
       } catch (err) {
         if (!cancelled) {
           setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
@@ -485,63 +458,6 @@ function NotificationsPanel() {
     load();
     return () => { cancelled = true; };
   }, []);
-
-  const saveTelegram = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setMsg(null);
-    try {
-      const payload: { telegram_bot_token?: string | null; telegram_chat_id?: string | null } = {};
-      if (botToken.trim()) payload.telegram_bot_token = botToken.trim();
-      if (chatId.trim() !== (tg?.telegram_chat_id ?? "")) {
-        payload.telegram_chat_id = chatId.trim() || null;
-      }
-      if (Object.keys(payload).length === 0) {
-        setMsg({ kind: "err", text: "Nothing to save." });
-        return;
-      }
-      const res = await api.saveTelegram(payload);
-      setTg(res);
-      setBotToken("");
-      setMsg({ kind: "ok", text: "Saved." });
-    } catch (err) {
-      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const disconnect = async () => {
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await api.saveTelegram({
-        telegram_bot_token: null,
-        telegram_chat_id: null,
-      });
-      setTg(res);
-      setBotToken("");
-      setChatId("");
-      setMsg({ kind: "ok", text: "Disconnected." });
-    } catch (err) {
-      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const sendTest = async () => {
-    setTesting(true);
-    setMsg(null);
-    try {
-      const r = await api.testTelegram();
-      setMsg({ kind: r.ok ? "ok" : "err", text: r.detail || (r.ok ? "Test message sent." : "Test failed.") });
-    } catch (err) {
-      setMsg({ kind: "err", text: humanizeTelegramError(err instanceof Error ? err.message : String(err)) });
-    } finally {
-      setTesting(false);
-    }
-  };
 
   const togglePref = async (key: string) => {
     if (!notif || prefSavingKey) return;
@@ -579,75 +495,7 @@ function NotificationsPanel() {
     <>
       <div className="panel">
         <div className="panel-head">
-          <h2 className="panel-title">Telegram</h2>
-          <span className="panel-meta">
-            {tg == null ? "Loading..." : tg.is_configured ? "Connected" : "Not connected"}
-          </span>
-        </div>
-        <p className="page-sub" style={{ marginBottom: 16 }}>
-          Delfi sends every new position, every resolution, and daily and
-          weekly summaries straight to your Telegram. Create a bot with{" "}
-          <code>@BotFather</code>, paste its token below, message the bot
-          once, then grab your chat ID from{" "}
-          <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>.
-        </p>
-        <form className="form-row" onSubmit={saveTelegram}>
-          <div className="form-field">
-            <label>Bot token</label>
-            <input
-              type="password"
-              autoComplete="off"
-              placeholder={tg?.has_telegram_token ? "(stored)" : "123456:ABC-..."}
-              value={botToken}
-              onChange={(e) => setBotToken(e.target.value)}
-            />
-          </div>
-          <div className="form-field">
-            <label>Chat ID</label>
-            <input
-              type="text"
-              autoComplete="off"
-              placeholder="e.g. 123456789"
-              value={chatId}
-              onChange={(e) => setChatId(e.target.value)}
-            />
-          </div>
-          <div className="form-actions">
-            <button type="submit" className="btn small" disabled={busy}>
-              {busy ? "Saving..." : "Save"}
-            </button>
-            {tg?.is_configured && (
-              <>
-                <button
-                  type="button"
-                  className="btn ghost small"
-                  onClick={sendTest}
-                  disabled={testing}
-                >
-                  {testing ? "Sending..." : "Send test message"}
-                </button>
-                <button
-                  type="button"
-                  className="btn ghost small"
-                  onClick={disconnect}
-                  disabled={busy}
-                >
-                  Disconnect
-                </button>
-              </>
-            )}
-            {msg && (
-              <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
-                {msg.text}
-              </span>
-            )}
-          </div>
-        </form>
-      </div>
-
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">What Delfi will send</h2>
+          <h2 className="panel-title">What Delfi will surface</h2>
           <span className="panel-meta">Changes apply immediately</span>
         </div>
         <div>
@@ -674,6 +522,12 @@ function NotificationsPanel() {
             );
           })}
         </div>
+        {msg && (
+          <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+             style={{ marginTop: 12 }}>
+            {msg.text}
+          </p>
+        )}
       </div>
     </>
   );
