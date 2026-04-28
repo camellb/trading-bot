@@ -14,7 +14,6 @@ export default function NotFound() {
       </p>
       <div className="nf-ctas">
         <Link href="/" className="btn-primary">Back to home</Link>
-        <Link href="/dashboard" className="btn-ghost">Open dashboard →</Link>
       </div>
     </div>
   );
