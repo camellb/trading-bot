@@ -587,9 +587,9 @@ export default function HomePage() {
       <Pillars />
       <Versus />
       <CustodyPromise />
-      <Platforms />
       <Simulation />
       <NewHere />
+      <Platforms />
       <FAQ />
       <FinalCTA />
       <Footer />
