@@ -38,15 +38,9 @@ function TopNav() {
             <img src="/brand/mark.svg" alt="" className="wordmark-mark" />
             <span className="wordmark-text">DELFI</span>
           </Link>
-          <ul className="nav-links">
-            <li><a href="#how">How It Works</a></li>
-            <li><a href="#versus">Us vs Them</a></li>
-            <li><a href="#platforms">Platforms</a></li>
-            <li><a href="#faq">FAQ</a></li>
-          </ul>
         </div>
         <div className="nav-right">
-          <a className="btn-primary" href={CHECKOUT_URL}>Buy</a>
+          <a className="btn-primary" href={CHECKOUT_URL}>Get Delfi</a>
         </div>
       </div>
     </nav>
