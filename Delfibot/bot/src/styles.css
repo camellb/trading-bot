@@ -1,3 +1,88 @@
+/* ─── Auto-updater banner (top of app shell) ─────────────────── */
+.update-banner {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: linear-gradient(
+    180deg,
+    rgba(218, 170, 76, 0.14) 0%,
+    rgba(218, 170, 76, 0.08) 100%
+  );
+  border-bottom: 1px solid rgba(218, 170, 76, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.update-banner-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 10px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.update-banner-text {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-family: var(--font-body, -apple-system, sans-serif);
+  font-size: 13px;
+  color: var(--vellum, #e8e4d8);
+}
+.update-banner-title {
+  font-weight: 600;
+  color: var(--gold, #daaa4c);
+  letter-spacing: 0.04em;
+}
+.update-banner-version {
+  color: var(--vellum-60, rgba(232, 228, 216, 0.6));
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 12px;
+}
+.update-banner-error {
+  margin-left: auto;
+  color: #f87171;
+  font-size: 12px;
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+}
+.update-banner-buttons {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.update-banner-btn {
+  font-family: var(--font-body, -apple-system, sans-serif);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 7px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
+}
+.update-banner-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.update-banner-btn.ghost {
+  background: transparent;
+  color: var(--vellum-60, rgba(232, 228, 216, 0.6));
+  border: 1px solid rgba(232, 228, 216, 0.2);
+}
+.update-banner-btn.ghost:hover:not(:disabled) {
+  border-color: rgba(232, 228, 216, 0.5);
+  color: var(--vellum, #e8e4d8);
+}
+.update-banner-btn.primary {
+  background: var(--gold, #daaa4c);
+  color: var(--obsidian, #0a0a0c);
+  border: 1px solid var(--gold, #daaa4c);
+}
+.update-banner-btn.primary:hover:not(:disabled) {
+  box-shadow: 0 0 14px rgba(218, 170, 76, 0.4);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    DELFI DESIGN SYSTEM (desktop, SaaS-parity)
    Obsidian + Oracle Gold + Neon Teal + Vellum.

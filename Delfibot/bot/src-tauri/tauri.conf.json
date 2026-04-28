@@ -51,6 +51,16 @@
       "wix": {
         "language": "en-US"
       }
+    },
+    "createUpdaterArtifacts": true
+  },
+
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/camellb/trading-bot/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU4MzMyNTBCODU2NTVGMUQKUldRZFgyV0ZDeVV6NktiTWpsODNncXFOZ3RHUGx3L1p2Rkt0ZUZEQXVDclk1SjRqOU11bGFKU20K"
     }
   }
 }

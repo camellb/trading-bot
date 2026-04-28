@@ -24,6 +24,16 @@ tauri        = { version = "2", features = [] }
 tauri-plugin-shell  = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Auto-updater. App polls a `latest.json` manifest hosted on the
+# repo's GitHub Releases; if the manifest's version is newer than
+# the running app, the user gets an in-app "Update available" prompt.
+# Bundles are Ed25519-signed at CI time with the private key stored
+# as a GH Actions secret; matching public key embedded in
+# tauri.conf.json so the plugin verifies signatures locally before
+# replacing the binary. macOS unsigned-app updates require code
+# signing for in-place replacement; without it the mac update flow
+# falls back to surfacing the latest .dmg URL for manual reinstall.
+tauri-plugin-updater = "2"
 
 # Standard async / serde stack.
 tokio   = { version = "1", features = ["full"] }

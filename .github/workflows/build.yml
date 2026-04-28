@@ -158,7 +158,15 @@ jobs:
 
       - name: Build Tauri app
         # The Tauri build re-runs the frontend build (vite) via its
-        # beforeBuildCommand and then bundles per-platform.
+        # beforeBuildCommand and then bundles per-platform. When
+        # TAURI_SIGNING_PRIVATE_KEY is set, the bundler signs each
+        # artifact (Ed25519 minisign), emits a .sig file alongside,
+        # and produces the per-platform updater bundle
+        # (.app.tar.gz on mac, .nsis.zip on Windows) so the
+        # tauri-plugin-updater can verify before in-place install.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --bundles ${{ matrix.tauri_bundles }}
 
       - name: List build output
@@ -175,6 +183,8 @@ jobs:
           path: |
             Delfibot/bot/src-tauri/target/release/bundle/dmg/*.dmg
             Delfibot/bot/src-tauri/target/release/bundle/macos/*.app
+            Delfibot/bot/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            Delfibot/bot/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
           if-no-files-found: warn
           retention-days: 14
 
@@ -185,7 +195,11 @@ jobs:
           name: delfi-windows
           path: |
             Delfibot/bot/src-tauri/target/release/bundle/nsis/*.exe
+            Delfibot/bot/src-tauri/target/release/bundle/nsis/*.exe.sig
+            Delfibot/bot/src-tauri/target/release/bundle/nsis/*.nsis.zip
+            Delfibot/bot/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
             Delfibot/bot/src-tauri/target/release/bundle/msi/*.msi
+            Delfibot/bot/src-tauri/target/release/bundle/msi/*.msi.sig
           if-no-files-found: warn
           retention-days: 14
 
@@ -220,21 +234,89 @@ jobs:
       - name: Inventory release assets
         run: |
           # `.app` is a directory bundle, not a release-ready single
-          # file. For Releases we only want the user-facing installers:
-          # the .dmg for macOS, the .msi + NSIS .exe for Windows.
+          # file. For Releases we want the user-facing installers
+          # (.dmg / .msi / NSIS -setup.exe), plus the auto-updater
+          # bundles (.app.tar.gz on mac, .nsis.zip on Windows) and
+          # their .sig files.
           find dist -maxdepth 4 -type f \
-            \( -name "*.dmg" -o -name "*.msi" -o -name "*-setup.exe" \) \
+            \( -name "*.dmg" -o -name "*.msi" -o -name "*-setup.exe" \
+               -o -name "*.app.tar.gz" -o -name "*.nsis.zip" \
+               -o -name "*.sig" \) \
             -print
+
+      - name: Generate latest.json (Tauri updater manifest)
+        # The desktop app's `tauri-plugin-updater` checks
+        # https://github.com/<repo>/releases/latest/download/latest.json
+        # at startup. The manifest binds each platform target to a
+        # signed bundle URL. The `signature` field is the verbatim
+        # contents of the corresponding `.sig` file emitted by the
+        # bundler when TAURI_SIGNING_PRIVATE_KEY is set.
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+
+          MAC_TAR=$(find dist -name "*.app.tar.gz" ! -name "*.sig" | head -1 || true)
+          MAC_SIG=$(find dist -name "*.app.tar.gz.sig" | head -1 || true)
+          # Windows updater bundle: prefer .nsis.zip (the Tauri 2
+          # canonical updater format), fall back to the bare
+          # -setup.exe if Tauri produced one without the zip.
+          WIN_BUNDLE=$(find dist -name "*.nsis.zip" ! -name "*.sig" | head -1 || true)
+          WIN_SIG=$(find dist -name "*.nsis.zip.sig" | head -1 || true)
+          if [[ -z "$WIN_BUNDLE" ]]; then
+            WIN_BUNDLE=$(find dist -name "*-setup.exe" ! -name "*.sig" | head -1 || true)
+            WIN_SIG=$(find dist -name "*-setup.exe.sig" | head -1 || true)
+          fi
+
+          if [[ -z "$MAC_SIG" ]] || [[ -z "$WIN_SIG" ]]; then
+            echo "::warning::missing signatures (mac=$MAC_SIG, win=$WIN_SIG)"
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY may not be set as a GH secret yet"
+            find dist -type f | head -50
+            # Skip manifest generation rather than failing the release;
+            # the artifacts still ship, just without auto-update support.
+            exit 0
+          fi
+
+          MAC_SIG_CONTENT=$(cat "$MAC_SIG")
+          WIN_SIG_CONTENT=$(cat "$WIN_SIG")
+          MAC_NAME=$(basename "$MAC_TAR")
+          WIN_NAME=$(basename "$WIN_BUNDLE")
+
+          mkdir -p dist
+          cat > dist/latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "See the GitHub Release page for change notes.",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${MAC_SIG_CONTENT}",
+                "url": "${BASE}/${MAC_NAME}"
+              },
+              "windows-x86_64": {
+                "signature": "${WIN_SIG_CONTENT}",
+                "url": "${BASE}/${WIN_NAME}"
+              }
+            }
+          }
+          JSON
+          echo "[manifest] generated dist/latest.json:"
+          cat dist/latest.json
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          # Glob expansion at shell time. -- is required because some
-          # asset filenames contain hyphens.
+          # User-facing installers + updater bundles + manifest +
+          # signatures. Anything end-users or the auto-updater
+          # might need.
           mapfile -t assets < <(find dist -maxdepth 4 -type f \
-            \( -name "*.dmg" -o -name "*.msi" -o -name "*-setup.exe" \))
+            \( -name "*.dmg" -o -name "*.msi" -o -name "*-setup.exe" \
+               -o -name "*.app.tar.gz" -o -name "*.nsis.zip" \
+               -o -name "*.sig" -o -name "latest.json" \))
           if [[ ${#assets[@]} -eq 0 ]]; then
             echo "::error::no release-ready assets found under dist/"
             ls -la dist || true

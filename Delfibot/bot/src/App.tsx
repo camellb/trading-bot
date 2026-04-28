@@ -6,6 +6,7 @@ import PerformancePage from "./pages/Performance";
 import Intelligence from "./pages/Intelligence";
 import Settings from "./pages/Settings";
 import Onboarding from "./Onboarding";
+import { UpdatePrompt } from "./components/UpdatePrompt";
 
 /**
  * Root component for the Delfi desktop app.
@@ -115,6 +116,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      <UpdatePrompt />
       <Sidebar
         page={page}
         settingsTab={settingsTab}

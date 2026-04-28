@@ -164,6 +164,12 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Updater. The front-end calls `check()` from JS on app
+        // start; this plugin handles the manifest fetch, Ed25519
+        // signature verification, download, and in-place install.
+        // Config (GitHub Releases manifest URL + public verifying
+        // key) lives in tauri.conf.json under plugins.updater.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(ApiState {
             port: Mutex::new(None),
             child: Mutex::new(None),
