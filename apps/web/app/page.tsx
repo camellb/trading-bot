@@ -63,7 +63,7 @@ function Hero() {
           The first autonomous Polymarket trader that runs entirely on your computer. Your wallet key never leaves it. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
-          <a className="btn-primary" href={CHECKOUT_URL}>Buy for $250</a>
+          <a className="btn-primary" href={CHECKOUT_URL}>Get Delfi for $250</a>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
       </div>
@@ -486,7 +486,7 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">Install Delfi in three minutes. It will take care of the rest.</p>
-        <a className="btn-primary large" href={CHECKOUT_URL}>Buy for $250</a>
+        <a className="btn-primary large" href={CHECKOUT_URL}>Get Delfi for $250</a>
       </div>
     </section>
   );
