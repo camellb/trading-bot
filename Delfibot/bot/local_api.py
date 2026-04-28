@@ -136,8 +136,8 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
                            "description": "Counts of public activity (executive orders, posts, hires, layoffs) by date."},
     "geopolitical_event": {"label": "Geopolitical event",
                            "description": "Wars, sanctions, ceasefires, elections, and other state-level outcomes."},
-    "binary_event":       {"label": "Binary event",
-                           "description": "Other yes/no markets that don't fit the categories above."},
+    "binary_event":       {"label": "Other event",
+                           "description": "Yes/no markets that don't fit the categories above."},
 }
 
 

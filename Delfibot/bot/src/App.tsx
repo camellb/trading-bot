@@ -133,17 +133,13 @@ function BootScreen({ error }: { error: string | null }) {
       <img src="/brand/mark.svg" alt="" className="boot-mark" />
       <h1>DELFI</h1>
       <p className="boot-status">
-        {error
-          ? "Could not reach the local engine"
-          : "Starting the local engine..."}
+        {error ? "Could not reach the local engine" : "Launching..."}
       </p>
       {error ? (
         <p className="boot-detail">{error}</p>
       ) : (
         <>
-          <p className="boot-detail">
-            First launch can take up to 30 seconds while the sidecar unpacks.
-          </p>
+          <p className="boot-detail">This may take up to 30 seconds</p>
           <div className="boot-progress" aria-hidden="true" />
         </>
       )}

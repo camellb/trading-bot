@@ -176,6 +176,22 @@ export interface CalibrationBin {
   mean_actual: number | null;
 }
 
+/**
+ * Shared shape for breakdown buckets returned by the calibration report.
+ * Sidecar-side `get_report` populates pnl_usd / cost_usd / wins from
+ * 2026-04-28 onward. Older sidecars omit them, so they're optional and
+ * the Performance page guards with `?? 0`.
+ */
+export interface CalibrationBucket {
+  n: number;
+  brier: number | null;
+  mean_pred: number | null;
+  mean_actual: number | null;
+  pnl_usd?: number;
+  cost_usd?: number;
+  wins?: number;
+}
+
 export interface CalibrationReport {
   source: string | null;
   since_days: number | null;
@@ -187,19 +203,9 @@ export interface CalibrationReport {
   mean_outcome: number | null;
   realized_pnl_usd: number | null;
   bins: CalibrationBin[];
-  by_category: Array<{
-    category: string | null;
-    n: number;
-    brier: number | null;
-    win_rate?: number | null;
-  }>;
-  by_horizon: Array<{
-    bucket: string;
-    n: number;
-    brier: number | null;
-    mean_pred: number | null;
-    mean_actual: number | null;
-  }>;
+  by_category: Array<CalibrationBucket & { category: string | null; win_rate?: number | null }>;
+  by_archetype: Array<CalibrationBucket & { archetype: string | null }>;
+  by_horizon: Array<CalibrationBucket & { bucket: string }>;
 }
 
 export interface PendingSuggestion {

@@ -57,7 +57,7 @@ const BUILTIN_ARCHETYPES: ArchetypeItem[] = [
   { id: "price_threshold",     label: "Price threshold",        group: "Markets" },
   { id: "activity_count",      label: "Activity count",         group: "Markets" },
   { id: "geopolitical_event",  label: "Geopolitical event",     group: "Markets" },
-  { id: "binary_event",        label: "Binary event",           group: "Markets" },
+  { id: "binary_event",        label: "Other event",            group: "Markets" },
 ];
 
 type ArchetypesPayload = { canonical: string[]; discovered: string[] };

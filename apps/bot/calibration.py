@@ -173,6 +173,7 @@ def _empty_report(source: Optional[str], since_days: Optional[int]) -> dict:
                           "mean_pred": None, "mean_actual": None}
                          for lo, hi in RELIABILITY_BINS],
         "by_category":  [],
+        "by_archetype": [],
         "by_horizon":   [{"bucket": label, "n": 0, "brier": None,
                           "mean_pred": None, "mean_actual": None}
                          for label, _, _ in HORIZON_BUCKETS],
@@ -295,12 +296,18 @@ def get_report(
                     "mean_actual": float(row[2]) if row[2] is not None else None,
                 })
 
+            # Per-category breakdown.
+            # Returns: n, brier, mean_pred, mean_actual, pnl_usd, cost_usd, wins.
+            # Frontend can derive ROI = pnl_usd/cost_usd and win_rate = wins/n.
             cat_rows = conn.execute(text(
                 f"SELECT category, "
                 f"       COUNT(*) AS n, "
                 f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
                 f"       AVG(claude_probability) AS mp, "
-                f"       AVG({outcome_expr}) AS ma "
+                f"       AVG({outcome_expr}) AS ma, "
+                f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
+                f"       COALESCE(SUM(cost_usd), 0) AS cost, "
+                f"       SUM(CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END) AS wins "
                 f"FROM pm_positions {res_where} "
                 f"  AND category IS NOT NULL "
                 f"GROUP BY category "
@@ -312,7 +319,37 @@ def get_report(
                 "brier":       float(r[2]) if r[2] is not None else None,
                 "mean_pred":   float(r[3]) if r[3] is not None else None,
                 "mean_actual": float(r[4]) if r[4] is not None else None,
+                "pnl_usd":     float(r[5]) if r[5] is not None else 0.0,
+                "cost_usd":    float(r[6]) if r[6] is not None else 0.0,
+                "wins":        int(r[7] or 0),
             } for r in cat_rows]
+
+            # Per-archetype breakdown. Same shape as by_category but grouped
+            # on the canonical flat-taxonomy `market_archetype` column.
+            arch_rows = conn.execute(text(
+                f"SELECT market_archetype, "
+                f"       COUNT(*) AS n, "
+                f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                f"       AVG(claude_probability) AS mp, "
+                f"       AVG({outcome_expr}) AS ma, "
+                f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
+                f"       COALESCE(SUM(cost_usd), 0) AS cost, "
+                f"       SUM(CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END) AS wins "
+                f"FROM pm_positions {res_where} "
+                f"  AND market_archetype IS NOT NULL "
+                f"GROUP BY market_archetype "
+                f"ORDER BY n DESC"
+            ), params).fetchall()
+            by_archetype = [{
+                "archetype":   r[0],
+                "n":           int(r[1] or 0),
+                "brier":       float(r[2]) if r[2] is not None else None,
+                "mean_pred":   float(r[3]) if r[3] is not None else None,
+                "mean_actual": float(r[4]) if r[4] is not None else None,
+                "pnl_usd":     float(r[5]) if r[5] is not None else 0.0,
+                "cost_usd":    float(r[6]) if r[6] is not None else 0.0,
+                "wins":        int(r[7] or 0),
+            } for r in arch_rows]
 
             # Horizon = hours between created_at and expected_resolution_at.
             # Rows missing expected_resolution_at are excluded from buckets.
@@ -358,6 +395,7 @@ def get_report(
             "realized_pnl_usd": realized_pnl,
             "bins":         bins,
             "by_category":  by_category,
+            "by_archetype": by_archetype,
             "by_horizon":   by_horizon,
         }
     except Exception as exc:

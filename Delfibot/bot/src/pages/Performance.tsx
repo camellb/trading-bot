@@ -38,6 +38,44 @@ function fmtPct(v: number, digits = 1): string {
   const sign = v >= 0 ? "+" : "";
   return `${sign}${v.toFixed(digits)}%`;
 }
+function fmtSignedPnl(v: number): string {
+  const sign = v >= 0 ? "+" : "-";
+  const abs = Math.abs(v);
+  if (abs >= 1000) return `${sign}$${abs.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  return `${sign}$${abs.toFixed(2)}`;
+}
+
+/**
+ * Friendly label per archetype id. Mirrors `_ARCHETYPE_INFO` in
+ * `bot/local_api.py` so the Performance page can render the same name
+ * the user sees in Settings -> Risk and sizing without a second API
+ * round-trip. If the id isn't in the map (e.g. a freshly added
+ * archetype that hasn't been documented here yet), we humanize the id
+ * itself by replacing underscores and title-casing.
+ */
+const ARCHETYPE_LABELS: Record<string, string> = {
+  tennis:              "Tennis",
+  basketball:          "Basketball",
+  baseball:            "Baseball",
+  football:            "Football",
+  hockey:              "Hockey",
+  cricket:             "Cricket",
+  esports:             "Esports",
+  soccer:              "Soccer",
+  sports_other:        "Other sports",
+  price_threshold:     "Price threshold",
+  activity_count:      "Activity count",
+  geopolitical_event:  "Geopolitical event",
+  binary_event:        "Other event",
+};
+function archetypeLabel(id: string | null): string {
+  if (!id) return "Unknown";
+  if (ARCHETYPE_LABELS[id]) return ARCHETYPE_LABELS[id];
+  return id
+    .split("_")
+    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ");
+}
 
 export default function Performance() {
   const [summary, setSummary] = useState<PerformanceSummary | null>(null);
@@ -223,30 +261,89 @@ export default function Performance() {
         </div>
       )}
 
+      {calibration && calibration.by_archetype && calibration.by_archetype.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">By archetype</h2>
+            <span className="panel-meta">{calibration.by_archetype.length} archetypes</span>
+          </div>
+          <table className="table-simple">
+            <thead>
+              <tr>
+                <th>Archetype</th>
+                <th>Trades</th>
+                <th>Win rate</th>
+                <th>P&amp;L</th>
+                <th>ROI</th>
+                <th>Brier</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calibration.by_archetype.map((a, i) => {
+                const pnl = a.pnl_usd ?? 0;
+                const cost = a.cost_usd ?? 0;
+                const wins = a.wins ?? 0;
+                const winRate = a.n > 0 ? (wins / a.n) * 100 : null;
+                const roi = cost > 0 ? (pnl / cost) * 100 : null;
+                const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
+                const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
+                return (
+                  <tr key={i}>
+                    <td>{archetypeLabel(a.archetype)}</td>
+                    <td className="mono">{a.n}</td>
+                    <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
+                    <td className={`mono ${pnlClass}`}>{a.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
+                    <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
+                    <td className="mono">{a.brier?.toFixed(3) ?? "-"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {calibration && calibration.by_category.length > 0 && (
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">By category</h2>
-            <span className="panel-meta">{calibration.by_category.length} archetypes</span>
+            <span className="panel-meta">{calibration.by_category.length} categories</span>
           </div>
           <table className="table-simple">
             <thead>
               <tr>
                 <th>Category</th>
                 <th>Trades</th>
-                <th>Brier</th>
                 <th>Win rate</th>
+                <th>P&amp;L</th>
+                <th>ROI</th>
+                <th>Brier</th>
               </tr>
             </thead>
             <tbody>
-              {calibration.by_category.map((c, i) => (
-                <tr key={i}>
-                  <td>{c.category ?? "Uncategorised"}</td>
-                  <td className="mono">{c.n}</td>
-                  <td className="mono">{c.brier?.toFixed(3) ?? "-"}</td>
-                  <td className="mono">{c.win_rate != null ? `${(c.win_rate * 100).toFixed(0)}%` : "-"}</td>
-                </tr>
-              ))}
+              {calibration.by_category.map((c, i) => {
+                const pnl = c.pnl_usd ?? 0;
+                const cost = c.cost_usd ?? 0;
+                const wins = c.wins ?? 0;
+                // Prefer derived win rate from wins/n when available; fall back
+                // to the legacy server-computed `win_rate` (older sidecars).
+                const winRate = wins > 0 || c.win_rate == null
+                  ? (c.n > 0 ? (wins / c.n) * 100 : null)
+                  : (c.win_rate ?? 0) * 100;
+                const roi = cost > 0 ? (pnl / cost) * 100 : null;
+                const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
+                const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
+                return (
+                  <tr key={i}>
+                    <td>{c.category ?? "Uncategorised"}</td>
+                    <td className="mono">{c.n}</td>
+                    <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
+                    <td className={`mono ${pnlClass}`}>{c.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
+                    <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
+                    <td className="mono">{c.brier?.toFixed(3) ?? "-"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
