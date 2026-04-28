@@ -40,7 +40,7 @@ function TopNav() {
           </Link>
         </div>
         <div className="nav-right">
-          <a className="btn-primary" href={CHECKOUT_URL}>Get Delfi</a>
+          <a className="btn-primary" href={CHECKOUT_URL}>Try it today</a>
         </div>
       </div>
     </nav>
@@ -63,7 +63,7 @@ function Hero() {
           The first autonomous Polymarket trader that runs entirely on your computer. Your wallet key never leaves it. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
-          <a className="btn-primary" href={CHECKOUT_URL}>Get Delfi for $250</a>
+          <a className="btn-primary" href={CHECKOUT_URL}>Try it today</a>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
       </div>
@@ -99,9 +99,6 @@ function Problem() {
         <p className="problem-close">
           The problem isn&apos;t what you know.<br className="br-keep" />
           <span>It&apos;s how fast you can act on it.</span>
-        </p>
-        <p className="problem-body" style={{ marginTop: 24, opacity: 0.85 }}>
-          Delfi runs that same kind of bot. The difference: it runs on your machine, with your keys, and shows you every reasoning step before any dollar moves.
         </p>
       </div>
     </section>
@@ -248,9 +245,6 @@ function CustodyPromise() {
             <li><span className="custody-tick">✓</span> We could go offline tomorrow and your bot would keep running.</li>
           </ul>
         </div>
-        <p className="custody-foot">
-          The trade-off: you bring your own Polymarket key and your own model API key. Delfi caps how often it scans each market so your API spend stays predictable. The dashboard shows every cost in real time.
-        </p>
       </div>
     </section>
   );
@@ -326,7 +320,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <a className="sim-cta" href={CHECKOUT_URL}>Get Delfi →</a>
+            <a className="sim-cta" href={CHECKOUT_URL}>Try it today →</a>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -419,7 +413,7 @@ function NewHere() {
             <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
             <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade, and acts when the forecast clears every gate.</p>
             <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need a machine to run Delfi on.</p>
-            <a className="newhere-cta" href={CHECKOUT_URL}>Get Delfi →</a>
+            <a className="newhere-cta" href={CHECKOUT_URL}>Try it today →</a>
           </div>
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
@@ -446,7 +440,7 @@ function FAQ() {
     { q: "Where do my private keys live?", a: "In your operating system's keychain (macOS Keychain, Windows Credential Locker). Delfi reads them only inside your own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
     { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It's a reasoning-based agent that evaluates each market the way a sharp human trader would: research, probability modeling, calibrated risk sizing, and full transparency on every trade." },
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
-    { q: "How much does it cost?", a: "$250 once. No subscription, no monthly fee. Lifetime updates included; every future release is yours. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
+    { q: "How much does it cost?", a: "$199 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
     { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key stays in your OS keychain. Delfi reads the key only inside your own process, only when it needs to sign a trade. We can't withdraw funds, transfer them, or even see them. You can pause Delfi or delete the app at any time." },
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
@@ -485,8 +479,8 @@ function FinalCTA() {
       <div className="quantum-grid" />
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
-        <p className="final-sub">Install Delfi in three minutes. It will take care of the rest.</p>
-        <a className="btn-primary large" href={CHECKOUT_URL}>Get Delfi for $250</a>
+        <p className="final-sub">$199 once. All future updates included.</p>
+        <a className="btn-primary large" href={CHECKOUT_URL}>Try it today</a>
       </div>
     </section>
   );
