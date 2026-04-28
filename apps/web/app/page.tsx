@@ -518,6 +518,7 @@ function Footer() {
               <ul className="foot-legal">
                 <li><Link href="/legal/terms">Terms of Service</Link></li>
                 <li><Link href="/legal/privacy">Privacy Policy</Link></li>
+                <li><Link href="/legal/cookies">Cookies Policy</Link></li>
                 <li><Link href="/legal/risk">Risk Disclosure</Link></li>
               </ul>
             </div>

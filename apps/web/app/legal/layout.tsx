@@ -19,6 +19,7 @@ export default function LegalLayout({ children }: { children: React.ReactNode })
         <div className="content-footer-links">
           <Link href="/legal/terms">Terms</Link>
           <Link href="/legal/privacy">Privacy</Link>
+          <Link href="/legal/cookies">Cookies</Link>
           <Link href="/legal/risk">Risk</Link>
         </div>
       </footer>

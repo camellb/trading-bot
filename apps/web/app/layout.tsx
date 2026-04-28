@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { SpeedInsights } from "@vercel/speed-insights/next";
-import { Analytics } from "@/lib/analytics";
+import { ConsentGate } from "./components/ConsentGate";
+import { CookieBanner } from "./components/CookieBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -36,8 +36,8 @@ export default function RootLayout({
       </head>
       <body>
         {children}
-        <SpeedInsights />
-        <Analytics />
+        <CookieBanner />
+        <ConsentGate />
       </body>
     </html>
   );

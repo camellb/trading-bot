@@ -1,5 +1,48 @@
 /* Delfi content pages - legal, onboarding, 404, inner dashboard */
 
+/* ─── Cookies policy: consent state + reset button ─── */
+.consent-control {
+  margin: 16px 0 24px;
+  padding: 20px 24px;
+  border: 1px solid var(--vellum-10);
+  border-radius: 4px;
+  background: rgba(255,255,255,0.03);
+}
+.consent-state {
+  margin: 0 0 14px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vellum);
+}
+.consent-reset {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 9px 20px;
+  border-radius: 4px;
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  background: transparent;
+  cursor: pointer;
+  transition: box-shadow var(--dur-base) var(--ease);
+}
+.consent-reset:hover:not(:disabled) {
+  box-shadow: 0 0 12px rgba(218, 170, 76, 0.3);
+}
+.consent-reset:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.consent-hint {
+  margin: 14px 0 0;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--vellum-60);
+}
+
 .content-page {
   min-height: 100vh;
   color: var(--vellum);
