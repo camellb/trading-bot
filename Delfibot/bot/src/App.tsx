@@ -245,7 +245,7 @@ function Sidebar({
       />
 
       <div className="side-foot">
-        <div className="side-footnote">Local · v0.1.0</div>
+        <div className="side-footnote">V1.5</div>
       </div>
     </aside>
   );
