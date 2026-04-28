@@ -46,9 +46,10 @@ bundled_pkgs = [
     "eth_abi",
     "eth_typing",
 
-    # py-clob-client is the Polymarket SDK. Imports order/sign helpers
-    # by string in places.
-    "py_clob_client",
+    # py-clob-client-v2 is the Polymarket V2 SDK (post-2026-04-28
+    # cutover). Imports order/sign helpers by string in places, so
+    # explicit collection avoids "module not found" at runtime.
+    "py_clob_client_v2",
 
     # Google GenAI is a namespace package; the loader walks google.*.
     "google",

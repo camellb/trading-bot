@@ -88,6 +88,13 @@ class PolyMarket:
     event_slug:        Optional[str] = None  # event group slug for correlation caps
     game_start_time:   Optional[datetime] = None  # sports only: tip/kickoff
     event_end_date:    Optional[datetime] = None  # events[0].endDate, deadline
+    # ERC-1155 token IDs the CLOB exchange uses to identify the YES and
+    # NO sides of this market. Required for live order placement;
+    # optional in simulation. Tuple ordering mirrors `outcome_yes` /
+    # `outcome_no` above - index 0 is the YES token, 1 is the NO token.
+    # None when gamma doesn't return clobTokenIds (rare, mostly on
+    # still-pending markets).
+    clob_token_ids:    Optional[tuple[str, str]] = None
 
     @property
     def days_to_end(self) -> float:
@@ -210,6 +217,13 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
             event_slug = e0.get("slug") or None
             evt_end = _parse_iso(e0.get("endDate"))
         game_start = _parse_iso(m.get("gameStartTime"))
+        # `clobTokenIds` is a JSON-encoded list of two strings (the YES
+        # and NO ERC-1155 token IDs). Reuse the str-list parser since
+        # it handles both the JSON-string and already-decoded-list cases.
+        token_id_list = _parse_str_list(m.get("clobTokenIds"))
+        clob_tokens: Optional[tuple[str, str]] = None
+        if len(token_id_list) == 2 and all(token_id_list):
+            clob_tokens = (token_id_list[0], token_id_list[1])
         return PolyMarket(
             id             = str(m.get("id") or ""),
             condition_id   = str(m.get("conditionId") or ""),
@@ -229,6 +243,7 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
             event_slug     = event_slug,
             game_start_time = game_start,
             event_end_date = evt_end,
+            clob_token_ids  = clob_tokens,
         )
     except Exception as exc:
         print(f"[polymarket] parse failed for {m.get('id')}: {exc}",

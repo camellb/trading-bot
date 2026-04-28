@@ -24,8 +24,11 @@ dependencies = [
     # OS keychain for Polymarket private key + Anthropic API key.
     "keyring>=25",
 
-    # Polymarket signing (offshore Polygon EIP-712).
-    "py-clob-client>=0.20",
+    # Polymarket V2 signing (offshore Polygon EIP-712 against the V2
+    # CTF Exchange `0xE111180000d2663C0091e4f400237545B87B996B`). The
+    # original `py-clob-client` was V1-only and stopped working on
+    # 2026-04-28 when Polymarket cut over to V2.
+    "py-clob-client-v2>=1.0.0",
     "eth-account>=0.11",
     "web3>=6.20",
 
