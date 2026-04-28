@@ -239,6 +239,72 @@ fn main() {
                 if let Some(child) = child_slot.take() {
                     let _ = child.kill();
                 }
+
+                // macOS only: dedupe Delfi entries in the user's Dock
+                // recent-apps list. macOS's Dock occasionally inserts
+                // a second tile pointing at the same /Applications
+                // path during long sessions; this fires once on quit
+                // so the duplicate auto-resolves without the user
+                // having to remember `bash dock-clean.sh`.
+                #[cfg(target_os = "macos")]
+                cleanup_dock_on_exit_macos();
             }
         });
+}
+
+/// Best-effort Dock dedupe on macOS, runs once at app exit.
+///
+/// Spawns `python3 -c "<script>"` fire-and-forget; the spawned
+/// process inherits no parent-blocking and runs to completion after
+/// the Tauri shell has already exited. The script reads the Dock
+/// plist via `defaults export`, removes duplicate Delfi entries
+/// from recent-apps and persistent-apps, writes the patched plist
+/// back, and `pkill`s Dock so it re-reads. No-op (no plist write,
+/// no Dock kill) when no duplicates exist, which is the common
+/// case.
+///
+/// Conservative scope: this only collapses duplicate entries whose
+/// bundle-identifier is `com.delfi.desktop`. Other apps' tiles pass
+/// through untouched, so a user who has intentionally pinned the
+/// same app twice (rare but valid) is not surprised.
+#[cfg(target_os = "macos")]
+fn cleanup_dock_on_exit_macos() {
+    const SCRIPT: &str = r#"
+import plistlib, subprocess, tempfile, os
+try:
+    xml = subprocess.check_output(["defaults", "export", "com.apple.dock", "-"])
+except Exception:
+    raise SystemExit(0)
+data = plistlib.loads(xml)
+changed = False
+for key in ("recent-apps", "persistent-apps"):
+    arr = data.get(key)
+    if not isinstance(arr, list):
+        continue
+    seen_delfi = set()
+    out = []
+    for entry in arr:
+        td = entry.get("tile-data", {}) or {}
+        bid = td.get("bundle-identifier")
+        url = (td.get("file-data", {}) or {}).get("_CFURLString") or ""
+        if bid == "com.delfi.desktop":
+            k = (bid, url)
+            if k in seen_delfi:
+                changed = True
+                continue
+            seen_delfi.add(k)
+        out.append(entry)
+    data[key] = out
+if changed:
+    fd, tmp = tempfile.mkstemp(suffix=".plist")
+    os.close(fd)
+    with open(tmp, "wb") as f:
+        plistlib.dump(data, f)
+    subprocess.check_call(["defaults", "import", "com.apple.dock", tmp])
+    subprocess.run(["pkill", "-KILL", "Dock"], check=False)
+"#;
+    let _ = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(SCRIPT)
+        .spawn();
 }
