@@ -38,7 +38,12 @@ import config
 from db.models import create_all_tables
 from engine.markout_tracker import check_markouts
 from engine.pm_analyst import PMAnalyst
-from engine.user_config import ensure_default_user_config
+from engine.user_config import (
+    ensure_default_user_config,
+    get_anthropic_api_key,
+    get_cryptopanic_key,
+    get_newsapi_key,
+)
 from feeds.feed_health_monitor import monitor
 from feeds.news_feed import NewsFeed
 from feeds.macro_calendar import MacroCalendar
@@ -96,13 +101,6 @@ async def main() -> None:
     create_all_tables()
     ensure_default_user_config()
     print("[delfi] DB ready", flush=True)
-
-    # Pull optional API keys out of the OS keychain into os.environ so
-    # the legacy env-reading code in feeds/news_feed.py and
-    # research/fetcher.py picks them up without further refactor. Each
-    # is optional - missing values just mean those research feeds run
-    # in degraded mode (raw RSS instead of filtered headlines, etc.).
-    _seed_env_from_keychain()
 
     # Pull optional API keys out of the OS keychain into os.environ so
     # the legacy env-reading code in feeds/news_feed.py and
