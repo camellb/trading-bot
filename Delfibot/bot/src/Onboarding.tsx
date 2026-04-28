@@ -14,9 +14,9 @@ import { api, BotState, Credentials } from "./api";
  *   6. Done
  */
 
-type Step = "welcome" | "anthropic" | "bankroll" | "polymarket" | "telegram" | "done";
+type Step = "welcome" | "llm" | "bankroll" | "polymarket" | "telegram" | "done";
 
-const ORDER: Step[] = ["welcome", "anthropic", "bankroll", "polymarket", "telegram", "done"];
+const ORDER: Step[] = ["welcome", "llm", "bankroll", "polymarket", "telegram", "done"];
 
 interface Props {
   state: BotState | null;
@@ -26,7 +26,7 @@ interface Props {
 
 export default function Onboarding({ creds, onComplete }: Props) {
   const [step, setStep] = useState<Step>("welcome");
-  const [anthropic, setAnthropic] = useState("");
+  const [llmKey, setLlmKey] = useState("");
   const [bankroll, setBankroll] = useState("1000");
   const [polymarketKey, setPolymarketKey] = useState("");
   const [wallet, setWallet] = useState("");
@@ -39,12 +39,12 @@ export default function Onboarding({ creds, onComplete }: Props) {
   const next = () => setStep(ORDER[Math.min(ORDER.length - 1, idx + 1)]);
   const back = () => setStep(ORDER[Math.max(0, idx - 1)]);
 
-  const saveAnthropic = async () => {
-    if (!anthropic.trim()) { next(); return; }
+  const saveLlmKey = async () => {
+    if (!llmKey.trim()) { next(); return; }
     setBusy(true); setError(null);
     try {
-      await api.saveCredentials({ anthropic_api_key: anthropic.trim() });
-      setAnthropic("");
+      await api.saveCredentials({ llm_api_key: llmKey.trim() });
+      setLlmKey("");
       next();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -107,12 +107,12 @@ export default function Onboarding({ creds, onComplete }: Props) {
         {step === "welcome" && (
           <WelcomeStep onNext={next} />
         )}
-        {step === "anthropic" && (
-          <AnthropicStep
-            value={anthropic} onChange={setAnthropic}
-            hasStored={creds?.has_anthropic_key ?? false}
+        {step === "llm" && (
+          <LlmKeyStep
+            value={llmKey} onChange={setLlmKey}
+            hasStored={(creds?.has_llm_key ?? creds?.has_anthropic_key) ?? false}
             busy={busy} error={error}
-            onBack={back} onSave={saveAnthropic} onSkip={next}
+            onBack={back} onSave={saveLlmKey} onSkip={next}
           />
         )}
         {step === "bankroll" && (
@@ -188,7 +188,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
   );
 }
 
-function AnthropicStep({
+function LlmKeyStep({
   value, onChange, hasStored, busy, error, onBack, onSave, onSkip,
 }: {
   value: string;
@@ -203,11 +203,11 @@ function AnthropicStep({
   return (
     <>
       <div className="ob-eyebrow">STEP 1 of 4 · Required</div>
-      <h1 className="ob-title">Anthropic API key</h1>
+      <h1 className="ob-title">LLM API key</h1>
       <p className="ob-sub">
-        Delfi&apos;s forecaster runs on Anthropic. Bring your own key so
-        you control the spend and the rate limits. Stored in your OS
-        keychain, never on disk.
+        Delfi&apos;s forecaster reads each Polymarket market through an LLM
+        and returns a probability. Bring your own key so you control the
+        spend and the rate limits. Stored in your OS keychain, never on disk.
       </p>
       <div className="ob-form">
         <div className="ob-field">
@@ -221,8 +221,12 @@ function AnthropicStep({
             autoFocus
           />
           <div className="ob-hint">
-            Get one at <code>console.anthropic.com</code>. Cost is roughly
-            $0.01–$0.05 per market evaluation.
+            Recommended: Claude (Anthropic). Get one at{" "}
+            <code>console.anthropic.com</code> for ~$0.01–$0.05 per market
+            evaluation. OpenAI / ChatGPT support is on the roadmap; the
+            field accepts that key today and stores it for the
+            multi-provider rollout. You can add a backup LLM and optional
+            news feeds later in Settings → Connections.
           </div>
         </div>
         {error && <div className="form-error">{error}</div>}
@@ -460,7 +464,7 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
         ten to twenty minutes.
       </p>
       <div className="ob-checklist">
-        <ChecklistItem ok>Anthropic key stored</ChecklistItem>
+        <ChecklistItem ok>LLM API key stored</ChecklistItem>
         <ChecklistItem ok>Bankroll set</ChecklistItem>
         <ChecklistItem>Polymarket key + wallet (for live mode)</ChecklistItem>
         <ChecklistItem>Telegram (optional)</ChecklistItem>

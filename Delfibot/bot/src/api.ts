@@ -115,7 +115,15 @@ export interface BotState {
 export interface Credentials {
   wallet_address: string | null;
   has_polymarket_key: boolean;
+  // Primary LLM key. The bot's `/api/state` returns both
+  // `has_anthropic_key` (legacy alias) and `has_llm_key` (new vendor-neutral
+  // name). UI reads `has_llm_key` and falls back to `has_anthropic_key` if
+  // an older sidecar predates the rename.
   has_anthropic_key: boolean;
+  has_llm_key?: boolean;
+  has_llm_backup_key?: boolean;
+  has_newsapi_key?: boolean;
+  has_cryptopanic_key?: boolean;
 }
 
 export interface PMPosition {
@@ -307,7 +315,12 @@ export const api = {
   saveCredentials: (creds: {
     polymarket_private_key?: string;
     wallet_address?: string;
+    /** Legacy field name; the bot still accepts it. Prefer `llm_api_key`. */
     anthropic_api_key?: string;
+    llm_api_key?: string;
+    llm_backup_key?: string;
+    newsapi_key?: string;
+    cryptopanic_key?: string;
   }) =>
     request<Credentials & { wrote: string[] }>("/api/credentials", {
       method: "PUT",

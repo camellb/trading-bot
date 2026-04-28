@@ -236,7 +236,10 @@ function ConnectionsPanel({
 }) {
   const [pmKey, setPmKey] = useState("");
   const [wallet, setWallet] = useState("");
-  const [anthropic, setAnthropic] = useState("");
+  const [llmKey, setLlmKey] = useState("");
+  const [llmBackup, setLlmBackup] = useState("");
+  const [newsapi, setNewsapi] = useState("");
+  const [cryptopanic, setCryptopanic] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -244,22 +247,36 @@ function ConnectionsPanel({
     if (creds) setWallet(creds.wallet_address ?? "");
   }, [creds]);
 
+  // Older sidecars don't return `has_llm_key`; fall back to the legacy
+  // `has_anthropic_key` so the "(stored)" placeholder is correct on
+  // either version.
+  const hasLlm = creds?.has_llm_key ?? creds?.has_anthropic_key ?? false;
+  const hasLlmBackup = creds?.has_llm_backup_key ?? false;
+  const hasNewsapi = creds?.has_newsapi_key ?? false;
+  const hasCryptopanic = creds?.has_cryptopanic_key ?? false;
+
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setMsg(null);
     try {
-      const payload: Record<string, string> = {};
-      if (pmKey.trim())     payload.polymarket_private_key = pmKey.trim();
-      if (wallet.trim())    payload.wallet_address = wallet.trim();
-      if (anthropic.trim()) payload.anthropic_api_key = anthropic.trim();
+      const payload: Parameters<typeof api.saveCredentials>[0] = {};
+      if (pmKey.trim())       payload.polymarket_private_key = pmKey.trim();
+      if (wallet.trim())      payload.wallet_address = wallet.trim();
+      if (llmKey.trim())      payload.llm_api_key = llmKey.trim();
+      if (llmBackup.trim())   payload.llm_backup_key = llmBackup.trim();
+      if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
+      if (cryptopanic.trim()) payload.cryptopanic_key = cryptopanic.trim();
       if (Object.keys(payload).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
         return;
       }
       const res = await api.saveCredentials(payload);
       setPmKey("");
-      setAnthropic("");
+      setLlmKey("");
+      setLlmBackup("");
+      setNewsapi("");
+      setCryptopanic("");
       setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
     } catch (err) {
@@ -276,10 +293,9 @@ function ConnectionsPanel({
         <span className="panel-meta">Stored in OS keychain</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Private keys are stored in your operating system keychain, never on
-        disk. The wallet address is the public 0x address that pairs with
-        your Polymarket private key. Leaving a field blank keeps the
-        existing value.
+        All keys live in your operating system keychain — never on disk and
+        never sent to Delfi servers. Leaving a field blank keeps the existing
+        value.
       </p>
       <form className="form-row" onSubmit={save}>
         <div className="form-field">
@@ -291,6 +307,10 @@ function ConnectionsPanel({
             value={pmKey}
             onChange={(e) => setPmKey(e.target.value)}
           />
+          <p className="form-hint">
+            Signs Polymarket orders for live trading. Required only when you
+            switch the bot to Live mode.
+          </p>
         </div>
         <div className="form-field">
           <label>Wallet address</label>
@@ -301,17 +321,80 @@ function ConnectionsPanel({
             value={wallet}
             onChange={(e) => setWallet(e.target.value)}
           />
+          <p className="form-hint">
+            The public 0x address paired with the private key above.
+          </p>
         </div>
+
         <div className="form-field">
-          <label>Anthropic API key</label>
+          <label>LLM API key</label>
           <input
             type="password"
             autoComplete="off"
-            placeholder={creds?.has_anthropic_key ? "(stored)" : "sk-ant-..."}
-            value={anthropic}
-            onChange={(e) => setAnthropic(e.target.value)}
+            placeholder={hasLlm ? "(stored)" : "sk-ant-..."}
+            value={llmKey}
+            onChange={(e) => setLlmKey(e.target.value)}
           />
+          <p className="form-hint">
+            The model that reads each Polymarket market and produces Delfi&apos;s
+            forecast. Without this, Delfi can&apos;t decide whether to trade.
+            Recommended: Claude (Anthropic). OpenAI / ChatGPT support is on
+            the roadmap; the field accepts that key today and stores it for
+            the multi-provider rollout. Get a Claude key at console.anthropic.com.
+          </p>
         </div>
+
+        <div className="form-field">
+          <label>Backup LLM API key (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasLlmBackup ? "(stored)" : "sk-..."}
+            value={llmBackup}
+            onChange={(e) => setLlmBackup(e.target.value)}
+          />
+          <p className="form-hint">
+            A second LLM Delfi falls back to if the primary is rate-limited
+            or returns an error. Useful at higher trading volume or as a
+            hedge against provider outages. Stored now; failover wiring lands
+            with multi-provider support.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <label>NewsAPI key (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasNewsapi ? "(stored)" : "..."}
+            value={newsapi}
+            onChange={(e) => setNewsapi(e.target.value)}
+          />
+          <p className="form-hint">
+            Pulls breaking news headlines around event-resolution windows.
+            Adds context to forecasts on geopolitical, economic, and
+            current-event markets. Free tier at newsapi.org. Without it
+            Delfi falls back to RSS feeds and may miss late-breaking context.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <label>CryptoPanic key (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasCryptopanic ? "(stored)" : "..."}
+            value={cryptopanic}
+            onChange={(e) => setCryptopanic(e.target.value)}
+          />
+          <p className="form-hint">
+            Pulls crypto-specific news (tokens, regulators, exchange events)
+            into Delfi&apos;s research feed. Useful for Polymarket&apos;s
+            crypto-themed markets (BTC threshold, ETH ETF, exchange events).
+            Free at cryptopanic.com.
+          </p>
+        </div>
+
         <div className="form-actions">
           <button type="submit" className="btn small" disabled={busy}>
             {busy ? "Saving..." : "Save credentials"}

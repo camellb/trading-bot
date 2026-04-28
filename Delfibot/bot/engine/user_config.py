@@ -44,8 +44,15 @@ DEFAULT_USER_ID = "local"
 
 KEYRING_SERVICE = "delfi"
 KEYRING_POLYMARKET_KEY = "polymarket_private_key"
-KEYRING_ANTHROPIC_KEY = "anthropic_api_key"
+# `anthropic_api_key` is the historical name; the UI now calls this the
+# "LLM API key" since support for other providers is on the roadmap. The
+# keychain entry name is preserved so existing installs don't lose their
+# stored key on upgrade.
+KEYRING_ANTHROPIC_KEY = "anthropic_api_key"           # primary LLM
+KEYRING_LLM_BACKUP_KEY = "llm_backup_api_key"          # optional secondary
 KEYRING_TELEGRAM_TOKEN = "telegram_bot_token"
+KEYRING_NEWSAPI_KEY = "newsapi_key"                    # optional, news headlines
+KEYRING_CRYPTOPANIC_KEY = "cryptopanic_api_key"        # optional, crypto news
 
 
 @dataclass
@@ -655,9 +662,14 @@ def get_active_polymarket_creds(cfg: UserConfig) -> dict:
     }
 
 
-# ── Anthropic API key ───────────────────────────────────────────────────────
+# ── LLM API keys ────────────────────────────────────────────────────────────
+# `get_anthropic_api_key` / `set_anthropic_api_key` are kept under their
+# original names because that's what every existing caller imports. The UI
+# surfaces this as "LLM API key" (primary). The backup helpers below are
+# optional - they're stored regardless of provider so when the multi-LLM
+# router lands they can be used for failover without further migration.
 def get_anthropic_api_key() -> Optional[str]:
-    """Read from keychain first; fall back to env var (dev / sidecar override)."""
+    """Read primary LLM key from keychain first; fall back to env var."""
     v = _keyring_get(KEYRING_ANTHROPIC_KEY)
     if v:
         return v
@@ -667,6 +679,40 @@ def get_anthropic_api_key() -> Optional[str]:
 
 def set_anthropic_api_key(value: Optional[str]) -> None:
     _keyring_set(KEYRING_ANTHROPIC_KEY, value)
+
+
+def get_llm_backup_key() -> Optional[str]:
+    """Read backup LLM key from keychain. None if user hasn't set one."""
+    return _keyring_get(KEYRING_LLM_BACKUP_KEY) or None
+
+
+def set_llm_backup_key(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_LLM_BACKUP_KEY, value)
+
+
+# ── Optional research feed keys ─────────────────────────────────────────────
+def get_newsapi_key() -> Optional[str]:
+    v = _keyring_get(KEYRING_NEWSAPI_KEY)
+    if v:
+        return v
+    import os
+    return os.environ.get("NEWS_API_KEY") or os.environ.get("NEWSAPI_KEY") or None
+
+
+def set_newsapi_key(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_NEWSAPI_KEY, value)
+
+
+def get_cryptopanic_key() -> Optional[str]:
+    v = _keyring_get(KEYRING_CRYPTOPANIC_KEY)
+    if v:
+        return v
+    import os
+    return os.environ.get("CRYPTOPANIC_API_KEY") or None
+
+
+def set_cryptopanic_key(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_CRYPTOPANIC_KEY, value)
 
 
 # ── Onboarding ──────────────────────────────────────────────────────────────

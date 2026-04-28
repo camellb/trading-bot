@@ -55,6 +55,32 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1)
 
 
+def _seed_env_from_keychain() -> None:
+    """
+    Copy keychain-stored API keys into os.environ at startup.
+
+    Existing research code (feeds/news_feed.py, research/fetcher.py)
+    reads these keys via os.environ.get(...) - that path predates the
+    keychain. Rather than refactor every reader, we hydrate the env
+    once here so the existing code Just Works with whatever the user
+    saved in Settings → Connections. Missing keys are no-ops; their
+    consumers degrade gracefully (e.g. news_feed falls back to raw
+    RSS titles when GEMINI_API_KEY is unset).
+    """
+    pairs = (
+        ("ANTHROPIC_API_KEY",  get_anthropic_api_key()),
+        ("NEWS_API_KEY",       get_newsapi_key()),
+        ("CRYPTOPANIC_API_KEY", get_cryptopanic_key()),
+    )
+    seeded = []
+    for env_name, value in pairs:
+        if value and not os.environ.get(env_name):
+            os.environ[env_name] = value
+            seeded.append(env_name)
+    if seeded:
+        print(f"[delfi] seeded env from keychain: {', '.join(seeded)}", flush=True)
+
+
 async def main() -> None:
     from concurrent.futures import ThreadPoolExecutor
     loop = asyncio.get_running_loop()
@@ -70,6 +96,20 @@ async def main() -> None:
     create_all_tables()
     ensure_default_user_config()
     print("[delfi] DB ready", flush=True)
+
+    # Pull optional API keys out of the OS keychain into os.environ so
+    # the legacy env-reading code in feeds/news_feed.py and
+    # research/fetcher.py picks them up without further refactor. Each
+    # is optional - missing values just mean those research feeds run
+    # in degraded mode (raw RSS instead of filtered headlines, etc.).
+    _seed_env_from_keychain()
+
+    # Pull optional API keys out of the OS keychain into os.environ so
+    # the legacy env-reading code in feeds/news_feed.py and
+    # research/fetcher.py picks them up without further refactor. Each
+    # is optional - missing values just mean those research feeds run
+    # in degraded mode (raw RSS instead of filtered headlines, etc.).
+    _seed_env_from_keychain()
 
     news_feed = NewsFeed(monitor)
     macro_calendar = MacroCalendar(monitor)

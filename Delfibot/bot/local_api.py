@@ -363,10 +363,17 @@ class LocalAPI:
 
     async def _get_credentials(self, _req: web.Request) -> web.Response:
         cfg = get_user_config()
+        has_llm = get_anthropic_api_key() is not None
         return _ok({
-            "wallet_address": cfg.wallet_address,
-            "has_polymarket_key": _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
-            "has_anthropic_key": get_anthropic_api_key() is not None,
+            "wallet_address":         cfg.wallet_address,
+            "has_polymarket_key":     _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
+            # Both names returned: `has_anthropic_key` for back-compat,
+            # `has_llm_key` for the new vendor-neutral UI.
+            "has_anthropic_key":      has_llm,
+            "has_llm_key":            has_llm,
+            "has_llm_backup_key":     get_llm_backup_key() is not None,
+            "has_newsapi_key":        get_newsapi_key() is not None,
+            "has_cryptopanic_key":    get_cryptopanic_key() is not None,
         })
 
     async def _put_credentials(self, req: web.Request) -> web.Response:
@@ -396,21 +403,58 @@ class LocalAPI:
             except Exception as exc:
                 return _err(f"failed to write polymarket creds: {exc}", 500)
 
-        # Anthropic API key (keychain only).
-        anthro = payload.get("anthropic_api_key")
-        if anthro is not None:
+        # Primary LLM key (keychain only). Accepts both the new
+        # `llm_api_key` field and the legacy `anthropic_api_key` field;
+        # the keychain entry name itself stays `anthropic_api_key` so
+        # existing installs don't lose their stored key.
+        llm = payload.get("llm_api_key")
+        if llm is None:
+            llm = payload.get("anthropic_api_key")
+        if llm is not None:
             try:
-                set_anthropic_api_key(anthro)
-                wrote.append("anthropic_api_key")
+                set_anthropic_api_key(llm)
+                wrote.append("llm_api_key")
             except Exception as exc:
-                return _err(f"failed to write anthropic key: {exc}", 500)
+                return _err(f"failed to write llm key: {exc}", 500)
+
+        # Optional secondary LLM (failover / hedge against rate limits).
+        llm_backup = payload.get("llm_backup_key")
+        if llm_backup is not None:
+            try:
+                set_llm_backup_key(llm_backup)
+                wrote.append("llm_backup_key")
+            except Exception as exc:
+                return _err(f"failed to write llm backup key: {exc}", 500)
+
+        # Optional NewsAPI key (breaking news context).
+        newsapi = payload.get("newsapi_key")
+        if newsapi is not None:
+            try:
+                set_newsapi_key(newsapi)
+                wrote.append("newsapi_key")
+            except Exception as exc:
+                return _err(f"failed to write newsapi key: {exc}", 500)
+
+        # Optional CryptoPanic key (crypto-specific news).
+        cryptopanic = payload.get("cryptopanic_key")
+        if cryptopanic is not None:
+            try:
+                set_cryptopanic_key(cryptopanic)
+                wrote.append("cryptopanic_key")
+            except Exception as exc:
+                return _err(f"failed to write cryptopanic key: {exc}", 500)
 
         cfg = get_user_config()
+        has_llm = get_anthropic_api_key() is not None
         return _ok({
-            "wrote": wrote,
-            "wallet_address": cfg.wallet_address,
-            "has_polymarket_key": _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
-            "has_anthropic_key": get_anthropic_api_key() is not None,
+            "wrote":                  wrote,
+            "wallet_address":         cfg.wallet_address,
+            "has_polymarket_key":     _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
+            "has_anthropic_key":      has_llm,
+            "has_llm_key":            has_llm,
+            "has_llm_backup_key":     get_llm_backup_key() is not None,
+            "has_newsapi_key":        get_newsapi_key() is not None,
+            "has_cryptopanic_key":    get_cryptopanic_key() is not None,
         })
 
     async def _get_positions(self, req: web.Request) -> web.Response:
