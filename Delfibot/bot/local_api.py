@@ -567,17 +567,17 @@ class LocalAPI:
     async def _bot_start(self, _req: web.Request) -> web.Response:
         """Enable the bot (set user_config.bot_enabled = True).
 
-        Validates that the user has the credentials they actually need for
-        their current mode before flipping the switch. Live mode requires a
-        wallet, Polymarket private key, and Anthropic API key. Simulation
-        only needs the Anthropic key (we still call Claude to forecast even
-        when not trading real money). Mode-switching itself is a separate
-        operation: PUT /api/config with `{"mode": "live"}` or
-        `{"mode": "simulation"}`.
+        Validates that the user has the credentials they actually need
+        for their current mode before flipping the switch. Live mode
+        requires a wallet, a Polymarket private key, and an LLM API
+        key. Simulation only needs the LLM key (Delfi still forecasts
+        each market, just doesn't fund the trade). Mode-switching
+        itself is a separate operation: PUT /api/config with
+        `{"mode": "live"}` or `{"mode": "simulation"}`.
         """
         cfg = get_user_config()
         if get_anthropic_api_key() is None:
-            return _err("anthropic api key is not in the keychain", 400)
+            return _err("LLM API key is not set", 400)
         if cfg.mode == "live":
             if not cfg.wallet_address:
                 return _err("wallet_address is not set", 400)

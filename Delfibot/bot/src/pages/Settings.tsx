@@ -58,7 +58,7 @@ const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   },
   connections: {
     h1: "Connections",
-    sub: "Polymarket private key, wallet address, and Anthropic API key. Stored in your OS keychain, never on disk.",
+    sub: "Polymarket private key, wallet address, and LLM API key. Stored in your OS keychain, never on disk.",
   },
   risk: {
     h1: "Risk and sizing",
@@ -330,16 +330,15 @@ function ConnectionsPanel({
           <input
             type="password"
             autoComplete="off"
-            placeholder={hasLlm ? "(stored)" : "sk-ant-..."}
+            placeholder={hasLlm ? "(stored)" : "Paste your LLM API key"}
             value={llmKey}
             onChange={(e) => setLlmKey(e.target.value)}
           />
           <p className="form-hint">
-            The model that reads each Polymarket market and produces Delfi&apos;s
-            forecast. Without this, Delfi can&apos;t decide whether to trade.
-            Recommended: Claude (Anthropic). OpenAI / ChatGPT support is on
-            the roadmap; the field accepts that key today and stores it for
-            the multi-provider rollout. Get a Claude key at console.anthropic.com.
+            The model that reads each Polymarket market and produces
+            Delfi&apos;s forecast. Without this, Delfi can&apos;t decide
+            whether to trade. Bring your own key from any major LLM
+            provider.
           </p>
         </div>
 

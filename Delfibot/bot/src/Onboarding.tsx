@@ -189,18 +189,15 @@ function LlmKeyStep({
           <input
             type="password"
             autoComplete="off"
-            placeholder={hasStored ? "(stored, paste a new one to replace)" : "sk-ant-..."}
+            placeholder={hasStored ? "(stored, paste a new one to replace)" : "Paste your LLM API key"}
             value={value}
             onChange={(e) => onChange(e.target.value)}
             autoFocus
           />
           <div className="ob-hint">
-            Recommended: Claude (Anthropic). Get one at{" "}
-            <code>console.anthropic.com</code> for ~$0.01–$0.05 per market
-            evaluation. OpenAI / ChatGPT support is on the roadmap; the
-            field accepts that key today and stores it for the
-            multi-provider rollout. You can add a backup LLM and optional
-            news feeds later in Settings → Connections.
+            Bring your own key from any major LLM provider. You can add
+            a backup LLM and optional news feeds later in Settings →
+            Connections.
           </div>
         </div>
         {error && <div className="form-error">{error}</div>}
