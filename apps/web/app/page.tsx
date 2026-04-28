@@ -452,10 +452,10 @@ function FAQ() {
     { q: "Where do my private keys live?", a: "In your operating system's keychain (macOS Keychain, Windows Credential Locker). Delfi reads them only inside your own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
     { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It's a reasoning-based agent that evaluates each market the way a sharp human trader would: research, probability modeling, calibrated risk sizing, and full transparency on every trade." },
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
-    { q: "How much does it cost?", a: "$250 once. No subscription, no monthly fee. Lifetime updates included; every future release is yours. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades. Most users see a few dollars per day in API costs at default settings." },
+    { q: "How much does it cost?", a: "$250 once. No subscription, no monthly fee. Lifetime updates included; every future release is yours. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
     { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key stays in your OS keychain. Delfi reads the key only inside your own process, only when it needs to sign a trade. We can't withdraw funds, transfer them, or even see them. You can pause Delfi or delete the app at any time." },
-    { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. The license check is a yearly online verification; if our verification endpoint is down for an extended period, Delfi falls back to an offline grace mode and keeps trading." },
+    { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
     { q: "Can I turn Delfi off?", a: "Any time. The dashboard has an emergency stop button. Open positions stay open until they resolve. No new trades are placed until you turn it back on." },
     { q: "Is this legal?", a: "Polymarket and prediction markets are regulated differently in every jurisdiction. Some permit it, some restrict it, some prohibit it. Confirm legality in your own region before trading. If in doubt, consult a local advisor." },
     { q: "What's the refund policy?", a: "14 days, no questions asked, provided you have not yet placed a live trade through the app." },
@@ -464,7 +464,7 @@ function FAQ() {
     <section className="section faq" id="faq" data-screen-label="11 FAQ">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">Q&amp;A before you sign up</h2>
+          <h2 className="t-display-l balanced">Common questions</h2>
         </div>
         <div className="faq-list">
           {items.map((item, i) => (
