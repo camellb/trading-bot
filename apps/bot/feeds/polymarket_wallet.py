@@ -1,17 +1,25 @@
 """
 Polymarket wallet helpers.
 
-Query the user's on-chain USDC balance on Polygon so the dashboard can
-show the real bankroll when the bot is in live mode. Polymarket runs on
-Polygon (chain id 137); balances live in the user's wallet address
-which is stored in user_config.wallet_address.
+Query the user's on-chain USDC-equivalent balance on Polygon so the
+dashboard can show the real bankroll when the bot is in live mode.
+Polymarket runs on Polygon (chain id 137); balances live in the user's
+wallet address which is stored in user_config.wallet_address.
 
-Two USDC variants exist on Polygon and both have been used by
-Polymarket over the years:
+After the 2026-04-28 V2 exchange upgrade, Polymarket's collateral token
+is pUSD - an ERC-20 wrapper that represents a 1:1 USDC claim and uses
+the same 6-decimal precision. Pre-migration users still hold native
+USDC or bridged USDC.e until their first V2 trade triggers the
+Collateral Onramp wrap. We query all three tokens and sum so a wallet
+shows the right number whether the user has migrated, is mid-migration,
+or hasn't started:
+
+    pUSD            0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB  (V2 collateral)
     native USDC     0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359
     bridged USDC.e  0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
-Both are 6-decimal ERC-20. We query each, sum the results, and return
-the total so a user holding either variant sees the right number.
+
+All three are 6-decimal, 1:1 USD-pegged ERC-20 on Polygon, so summing
+their balances and dividing by 1e6 yields a single bankroll figure.
 
 Balances are cached per wallet for 60s so a dashboard refresh loop
 doesn't hammer public RPC.
@@ -31,18 +39,31 @@ import aiohttp
 # Public Polygon RPC - override via env for paid providers.
 POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
 
-# USDC contracts on Polygon. Polymarket currently uses native USDC but
-# bridged USDC.e is still held in many older wallets, so we query both
-# and sum to avoid missing funds.
-_USDC_CONTRACTS: Tuple[str, ...] = (
+# USDC-equivalent collateral contracts on Polygon.
+#
+# pUSD is the active collateral after Polymarket's 2026-04-28 V2 exchange
+# upgrade. Native USDC and bridged USDC.e still appear in wallets that
+# haven't migrated yet (the Collateral Onramp wraps to pUSD on first V2
+# trade, not on schedule). Querying all three and summing means we read
+# the right bankroll regardless of where the user is in the migration.
+#
+# All three are 6-decimal, 1:1 USD-pegged. If Polymarket adds another
+# collateral surface, append it here.
+_COLLATERAL_CONTRACTS: Tuple[str, ...] = (
+    "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",  # pUSD (V2 collateral)
     "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",  # native USDC
     "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",  # bridged USDC.e
 )
 
+# Back-compat alias: prior code referenced `_USDC_CONTRACTS`. Keep a
+# pointer so any forgotten in-tree caller doesn't break; new code reads
+# `_COLLATERAL_CONTRACTS`.
+_USDC_CONTRACTS = _COLLATERAL_CONTRACTS
+
 # ERC-20 balanceOf(address) selector
 _BALANCE_OF_SELECTOR = "0x70a08231"
 
-# USDC is 6 decimals on Polygon (both variants)
+# All three collateral tokens are 6 decimals on Polygon.
 _USDC_DECIMALS = 6
 
 # Cache: wallet_lower -> (balance_usd, monotonic_ts)
@@ -119,7 +140,7 @@ async def get_live_usdc_balance(wallet_address: str) -> Optional[float]:
         async with aiohttp.ClientSession() as session:
             results = await asyncio.gather(*[
                 _rpc_balance_of(session, contract, data)
-                for contract in _USDC_CONTRACTS
+                for contract in _COLLATERAL_CONTRACTS
             ])
     except Exception as exc:
         print(
