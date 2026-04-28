@@ -5,6 +5,7 @@ import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
 import Intelligence from "./pages/Intelligence";
 import Settings from "./pages/Settings";
+import Onboarding from "./Onboarding";
 
 /**
  * Root component for the Delfi desktop app.
@@ -80,6 +81,12 @@ export default function App() {
 
   if (!connected) {
     return <BootScreen error={error} />;
+  }
+
+  // First-launch wizard: gate the main shell behind onboarding so a fresh
+  // install can't end up on the Dashboard before bankroll + creds exist.
+  if (state && state.is_onboarded === false) {
+    return <Onboarding state={state} creds={creds} onComplete={refresh} />;
   }
 
   const mode = (state?.mode as "simulation" | "live") ?? "simulation";
