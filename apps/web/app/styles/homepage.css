@@ -1077,3 +1077,84 @@ html, body { scroll-behavior: smooth; }
   .versus-head { font-size: 22px !important; }
   .proof-head { font-size: 28px !important; }
 }
+
+/* ─── Custody promise (local-first pitch) ─── */
+.custody { border-top: 1px solid var(--vellum-10); background: var(--obsidian); }
+.sec-eyebrow {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.32em;
+  text-transform: uppercase; color: var(--gold); margin: 0 0 16px;
+}
+.custody-grid {
+  display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px;
+  max-width: 1080px; margin: 0 auto;
+  padding: 48px; border: 1px solid var(--gold); border-radius: 4px;
+  background: var(--obsidian-raise);
+}
+.custody-body {
+  font-family: var(--font-body); font-size: 16px; line-height: 1.75;
+  color: var(--vellum); margin: 0;
+}
+.custody-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 14px; }
+.custody-list li {
+  display: flex; gap: 12px; align-items: baseline;
+  font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+  color: var(--vellum);
+}
+.custody-tick { color: var(--teal); font-weight: 600; flex-shrink: 0; }
+.custody-foot {
+  font-family: var(--font-body); font-size: 13px; line-height: 1.6;
+  color: var(--vellum-60); max-width: 760px; margin: 32px auto 0; text-align: center;
+}
+
+/* ─── Platforms (macOS + Windows) ─── */
+.platforms { border-top: 1px solid var(--vellum-10); background: var(--obsidian-sink); }
+.platforms-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px;
+  max-width: 880px; margin: 0 auto;
+}
+.platform-card {
+  display: flex; align-items: center; gap: 24px;
+  padding: 28px; border: 1px solid var(--vellum-10); border-radius: 4px;
+  background: var(--obsidian-raise);
+  text-decoration: none; color: var(--vellum);
+  transition: border-color var(--dur-base) var(--ease), background var(--dur-base) var(--ease);
+}
+.platform-card:hover { border-color: var(--teal); background: var(--obsidian); }
+.platform-icon {
+  width: 56px; height: 56px; flex-shrink: 0;
+  display: grid; place-items: center;
+  border-radius: 4px; background: var(--obsidian);
+  border: 1px solid var(--vellum-10);
+  color: var(--vellum);
+  transition: color var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease);
+}
+.platform-card:hover .platform-icon { color: var(--teal); border-color: var(--teal-line); }
+.platform-icon svg { width: 28px; height: 28px; }
+.platform-body { flex: 1; }
+.platform-name {
+  font-family: var(--font-display); font-size: 22px; font-weight: 400;
+  color: var(--vellum); letter-spacing: -0.01em; margin-bottom: 4px;
+}
+.platform-detail { font-family: var(--font-body); font-size: 14px; color: var(--vellum-60); margin-bottom: 6px; }
+.platform-arch {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--vellum-60);
+}
+.platform-cta {
+  font-family: var(--font-body); font-size: 12px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--gold);
+  border: 1px solid var(--gold); border-radius: 4px;
+  padding: 10px 18px; flex-shrink: 0;
+}
+.platform-card:hover .platform-cta { box-shadow: 0 0 12px rgba(218,170,76,0.3); }
+.platforms-foot {
+  font-family: var(--font-body); font-size: 13px; line-height: 1.6;
+  color: var(--vellum-60); max-width: 600px; margin: 32px auto 0; text-align: center;
+}
+
+@media (max-width: 720px) {
+  .custody-grid { grid-template-columns: 1fr; padding: 32px; gap: 32px; }
+  .platforms-grid { grid-template-columns: 1fr; }
+  .platform-card { flex-wrap: wrap; }
+  .platform-cta { width: 100%; text-align: center; }
+}

@@ -6,44 +6,6 @@ import "./styles/homepage.css";
 
 import { createClient } from "@/lib/supabase/client";
 
-// ─── CountUp ─────────────────────────────────────────────
-function CountUp({ target, duration = 2200, className = "" }: { target: number; duration?: number; className?: string }) {
-  const [val, setVal] = useState(0);
-  const [finished, setFinished] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
-  const [started, setStarted] = useState(false);
-  useEffect(() => {
-    if (!ref.current) return;
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach((e) => { if (e.isIntersecting && !started) setStarted(true); });
-    }, { threshold: 0.3 });
-    io.observe(ref.current);
-    return () => io.disconnect();
-  }, [started]);
-  useEffect(() => {
-    if (!started) return;
-    const start = performance.now();
-    let raf: number;
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      const eased = t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
-      setVal(Math.floor(eased * target));
-      if (t < 1) raf = requestAnimationFrame(tick);
-      else { setVal(target); setFinished(true); }
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [started, target, duration]);
-  useEffect(() => {
-    if (!finished) return;
-    const id = setInterval(() => {
-      setVal((v) => v + Math.floor(1 + Math.random() * 3));
-    }, 2400);
-    return () => clearInterval(id);
-  }, [finished]);
-  return <span ref={ref} className={className}>{val.toLocaleString("en-US")}</span>;
-}
-
 // ─── Top nav ─────────────────────────────────────────────
 function TopNav() {
   const [scrolled, setScrolled] = useState(false);
@@ -81,7 +43,7 @@ function TopNav() {
           <ul className="nav-links">
             <li><a href="#how">How It Works</a></li>
             <li><a href="#versus">Us vs Them</a></li>
-            <li><a href="#proof">Performance</a></li>
+            <li><a href="#platforms">Download</a></li>
             <li><a href="#faq">FAQ</a></li>
           </ul>
         </div>
@@ -91,7 +53,7 @@ function TopNav() {
           ) : (
             <>
               <Link className="nav-login" href="/auth#login">Log In</Link>
-              <Link className="btn-primary" href="/auth#signup">Get Started</Link>
+              <Link className="btn-primary" href="/download">Download</Link>
             </>
           )}
         </div>
@@ -113,56 +75,11 @@ function Hero() {
           The future is <br />no longer <span className="hero-accent">a guess</span>
         </h1>
         <p className="hero-sub">
-          The first autonomous, self-improving forecasting AI agent for Polymarket.
+          The first autonomous Polymarket trader that runs entirely on your machine. Your wallet key never leaves your laptop. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
-          <Link className="btn-primary" href="/auth#signup">Get Started</Link>
+          <Link className="btn-primary" href="/download">Download for $250</Link>
           <a className="btn-ghost" href="#how">See How It Works →</a>
-        </div>
-        <HeroPress />
-      </div>
-    </section>
-  );
-}
-
-// ─── Hero press strip ───────────────────────────────────
-function HeroPress() {
-  const names = ["Bloomberg", "TechCrunch", "CoinDesk", "The Block", "Decrypt", "Wired"];
-  return (
-    <div className="hero-press">
-      <div className="hero-press-label">As Seen In</div>
-      <div className="hero-press-row">
-        <div className="hero-press-track">
-          {names.map((n) => (
-            <span className="hero-press-item" key={`a-${n}`}>{n}</span>
-          ))}
-          {names.map((n) => (
-            <span className="hero-press-item" aria-hidden="true" key={`b-${n}`}>{n}</span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Social proof ribbon (stats only) ────────────────────
-function Ribbon() {
-  return (
-    <section className="ribbon" aria-label="Social proof">
-      <div className="ribbon-inner">
-        <div className="ribbon-stats">
-          <div className="ribbon-stat">
-            <div className="ribbon-num gold t-num">11,500+</div>
-            <div className="ribbon-sub">active users</div>
-          </div>
-          <div className="ribbon-stat">
-            <div className="ribbon-num vellum t-num">$50M+</div>
-            <div className="ribbon-sub">in trades</div>
-          </div>
-          <div className="ribbon-stat">
-            <div className="ribbon-num teal t-num">99.2%</div>
-            <div className="ribbon-sub">uptime</div>
-          </div>
         </div>
       </div>
     </section>
@@ -198,6 +115,9 @@ function Problem() {
           The problem isn&apos;t what you know.<br className="br-keep" />
           <span>It&apos;s how fast you can act on it.</span>
         </p>
+        <p className="problem-body" style={{ marginTop: 24, opacity: 0.85 }}>
+          Delfi runs that same kind of bot. The difference: it runs on your machine, with your keys, and shows you every reasoning step before any dollar moves.
+        </p>
       </div>
     </section>
   );
@@ -213,7 +133,7 @@ const SOL_ICONS: Record<string, React.ReactElement> = {
 function Solution() {
   const cards = [
     { icon: "brain", title: "Thinks", desc: "Reads the news. Checks historical base rates. Weighs structured data. Produces its own probability estimate for every market." },
-    { icon: "shield", title: "Calculates", desc: "Flat 1-3% position sizing, scaled by confidence in the call. Drawdown circuit breakers, daily loss caps, and event correlation guards. Never over-exposed. Never emotional." },
+    { icon: "shield", title: "Calculates", desc: "Flat fractional position sizing, scaled by per-archetype tuning you control. Drawdown circuit breakers, daily and weekly loss caps. Never over-exposed. Never emotional." },
     { icon: "cycle", title: "Learns", desc: "Tracks its own accuracy by category and Brier score. Every 50 resolved trades it proposes calibrations for you to approve. Delfi gets sharper the longer it runs." },
     { icon: "eye", title: "Explains", desc: "Every trade comes with its full reasoning: the probability estimate, the research sources, the gates it cleared, and the risk logic. You see what Delfi saw. You see why it traded." },
   ];
@@ -221,8 +141,8 @@ function Solution() {
     <section className="section solution" data-screen-label="05 Solution">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced">An AI agent with four minds.</h2>
-          <p>Everything a good trader does. Running for you 24/7.</p>
+          <h2 className="t-display-l balanced">An agent with four minds.</h2>
+          <p>Everything a good trader does. Running for you, on your machine, 24/7.</p>
         </div>
         <div className="solution-grid">
           {cards.map((c) => (
@@ -242,8 +162,8 @@ function Solution() {
 function Pillars() {
   const items = [
     { n: "01", title: "Probability Engine", desc: "Delfi reads every active market and produces its own probability estimate, grounded in news, historical base rates, and structured data." },
-    { n: "02", title: "Position Sizer", desc: "Every trade is sized flat at 1-3% of bankroll, scaled by Delfi's confidence in the call. Two independent gates, direction agreement and minimum win probability, must clear before a dollar moves. Low-confidence calls get a smaller stake, not a skip." },
-    { n: "03", title: "Risk Manager", desc: "Before any trade executes, Delfi checks the portfolio: daily loss caps, drawdown circuit breakers, event correlation guards. If the book is already stressed, Delfi passes." },
+    { n: "02", title: "Position Sizer", desc: "Every trade is sized as a small flat fraction of bankroll, scaled by per-archetype multipliers you control. The single gate: Delfi's forecast must agree with the market's pick. If they disagree, Delfi skips the trade." },
+    { n: "03", title: "Risk Manager", desc: "Before any trade executes, Delfi checks the portfolio: daily loss cap, weekly loss cap, drawdown halt, streak cooldown, dry-powder reserve. If the book is already stressed, Delfi passes." },
   ];
   const nodes = ["Scan", "Estimate", "Size", "Verify", "Execute"];
   return (
@@ -278,6 +198,8 @@ function Versus() {
     ["No coding required", "✓", "x", "✓", "✓"],
     ["Full control of risk parameters", "✓", "x", "partial", "✓"],
     ["Works across all market categories", "partial", "x", "partial", "✓"],
+    ["Runs on your machine", "✓", "x", "x", "✓"],
+    ["Your private key never leaves", "✓", "x", "x", "✓"],
   ];
   const cell = (v: string) => {
     if (v === "✓") return <span className="vs-check">✓</span>;
@@ -316,112 +238,76 @@ function Versus() {
             </tbody>
           </table>
         </div>
-        <p className="vs-foot">Delfi is the only AI agent on Polymarket that combines deep reasoning with institutional-grade risk math. Everything else is a subset.</p>
+        <p className="vs-foot">Delfi is the only Polymarket trader that combines deep reasoning with institutional risk math while leaving custody entirely with you. Everything else is a subset.</p>
       </div>
     </section>
   );
 }
 
-// ─── Proof ───────────────────────────────────────────────
-const TRADE_LOG = [
-  { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · M YES 58% · D YES 78% · D CONF 81%", cls: "" },
-  { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 mkts - no forecasts cleared gates", meta: "", cls: "" },
-  { ts: "14:19", type: "RESOLVE", typeCls: "resolve", mkt: "ETH > $6000?", meta: "correct · +$47", cls: "pos" },
-  { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · M YES 41% · D YES 23% · D CONF 74%", cls: "" },
-  { ts: "13:44", type: "RESOLVE", typeCls: "resolve", mkt: "NFL Week 12 MIA", meta: "incorrect · −$31", cls: "neg" },
-  { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · M YES 55% · D YES 72% · D CONF 68%", cls: "" },
-  { ts: "12:58", type: "RESOLVE", typeCls: "resolve", mkt: "Warriors beat Suns?", meta: "correct · +$22", cls: "pos" },
-  { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 mkts - 3 forecasts cleared gates", meta: "", cls: "" },
-  { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · M YES 32% · D YES 19% · D CONF 70%", cls: "" },
-  { ts: "11:54", type: "RESOLVE", typeCls: "resolve", mkt: "OPEC production cut?", meta: "correct · +$38", cls: "pos" },
-];
-
-function CalibrationChart() {
-  const pts: [number, number][] = [
-    [0.05, 0.06], [0.15, 0.17], [0.25, 0.24], [0.35, 0.36],
-    [0.45, 0.43], [0.55, 0.57], [0.65, 0.63], [0.75, 0.76],
-    [0.85, 0.84], [0.95, 0.94],
-  ];
-  const w = 400, h = 240, pad = 32;
-  const x = (v: number) => pad + v * (w - pad * 2);
-  const y = (v: number) => h - pad - v * (h - pad * 2);
-  const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${x(p[0])} ${y(p[1])}`).join(" ");
-
+// ─── Custody promise (the local-first pitch) ─────────────
+function CustodyPromise() {
   return (
-    <svg className="chart-svg" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet">
-      {[0.25, 0.5, 0.75].map((v) => (
-        <g key={v}>
-          <line x1={x(v)} y1={pad} x2={x(v)} y2={h - pad} stroke="rgba(232,228,216,0.05)" />
-          <line x1={pad} y1={y(v)} x2={w - pad} y2={y(v)} stroke="rgba(232,228,216,0.05)" />
-        </g>
-      ))}
-      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="rgba(232,228,216,0.2)" />
-      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="rgba(232,228,216,0.2)" />
-      <line x1={x(0)} y1={y(0)} x2={x(1)} y2={y(1)} stroke="rgba(232,228,216,0.3)" strokeDasharray="4 4" />
-      <path d={path} fill="none" stroke="var(--teal)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" style={{ filter: "drop-shadow(0 0 4px rgba(0,255,255,0.5))" }} />
-      {pts.map((p, i) => (
-        <circle key={i} cx={x(p[0])} cy={y(p[1])} r="2.5" fill="var(--teal)" />
-      ))}
-      <text x={x(0.5)} y={h - 6} fill="rgba(232,228,216,0.4)" fontSize="9" fontFamily="monospace" textAnchor="middle" letterSpacing="1.5">PREDICTED PROBABILITY</text>
-      <text x={10} y={y(0.5)} fill="rgba(232,228,216,0.4)" fontSize="9" fontFamily="monospace" textAnchor="middle" transform={`rotate(-90, 10, ${y(0.5)})`} letterSpacing="1.5">ACTUAL OUTCOME RATE</text>
-    </svg>
+    <section className="section custody" data-screen-label="07.5 Custody">
+      <div className="container">
+        <div className="sec-head">
+          <p className="sec-eyebrow">The local-first promise</p>
+          <h2 className="t-display-l balanced">Your funds. Your keys.<br />Your machine.</h2>
+        </div>
+        <div className="custody-grid">
+          <p className="custody-body">
+            Delfi installs and runs entirely on your laptop. Your Polymarket private key sits in your operating system&apos;s keychain, where it has always lived. Delfi reads it only when it places a trade, and only inside your own process. Nothing about your wallet ever leaves the machine you&apos;re reading this on.
+          </p>
+          <ul className="custody-list">
+            <li><span className="custody-tick">✓</span> We never see your wallet address.</li>
+            <li><span className="custody-tick">✓</span> We never custody your capital.</li>
+            <li><span className="custody-tick">✓</span> We never know which trades you make.</li>
+            <li><span className="custody-tick">✓</span> We could go offline tomorrow and your bot would keep running.</li>
+          </ul>
+        </div>
+        <p className="custody-foot">
+          The trade-off: you bring your own Polymarket key and your own model API key. Delfi caps how often it scans each market so your API spend stays predictable. The dashboard shows every cost in real time.
+        </p>
+      </div>
+    </section>
   );
 }
 
-function Proof() {
-  const loop = [...TRADE_LOG, ...TRADE_LOG];
+// ─── Platforms (macOS + Windows) ─────────────────────────
+function Platforms() {
   return (
-    <section className="section proof" id="proof" data-screen-label="08 Proof">
+    <section className="section platforms" id="platforms" data-screen-label="07.6 Platforms">
       <div className="container">
         <div className="sec-head">
-          <h2 className="t-display-l balanced proof-head">Sharper than the crowd.<br className="br-keep" /> Measurably.</h2>
+          <h2 className="t-display-l balanced">Available for macOS<br />and Windows</h2>
+          <p>Same license. Same dashboard. Same engine. Install on every machine you own; run wherever your laptop is awake.</p>
         </div>
-
-        <div className="proof-stats">
-          <div className="proof-stat">
-            <div className="proof-num vellum t-num"><CountUp target={34788} /></div>
-            <div className="proof-label">Predictions Resolved</div>
-          </div>
-          <div className="proof-stat">
-            <div className="proof-num gold t-num">0.087</div>
-            <div className="proof-label">30-Day Brier Score</div>
-          </div>
-          <div className="proof-stat">
-            <div className="proof-num teal t-num">68%</div>
-            <div className="proof-label">Win Rate, Last 30 Days</div>
-          </div>
-          <div className="proof-stat">
-            <div className="proof-num teal t-num">+47%</div>
-            <div className="proof-label">Avg ROI Across Positions</div>
-          </div>
-        </div>
-
-        <div className="proof-grid">
-          <div className="chart-panel">
-            <div className="panel-label">Calibration Curve</div>
-            <CalibrationChart />
-            <p className="chart-caption">Delfi&apos;s estimates closely match real-world outcomes. That is the definition of calibration. The dashed line is perfect calibration; the teal line is Delfi.</p>
-          </div>
-          <div className="terminal-panel">
-            <div className="term-head">
-              <span className="dot r"></span><span className="dot y"></span><span className="dot g"></span>
-              <span className="term-title">delfi · recent trades</span>
-              <span className="term-live"><span className="live-dot"></span> Live</span>
+        <div className="platforms-grid">
+          <Link className="platform-card" href="/download">
+            <div className="platform-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.6 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8s1.8.8 3 .8 2-1.2 2.8-2.3c.9-1.3 1.2-2.6 1.2-2.7 0 0-2.3-.9-2.3-3.6zM14.4 5.7c.6-.7 1-1.7.9-2.7-.9.1-2 .6-2.6 1.3-.6.6-1.1 1.6-.9 2.6.9.1 1.9-.5 2.6-1.2z"/></svg>
             </div>
-            <div className="term-body">
-              <div className="term-scroll">
-                {loop.map((t, i) => (
-                  <div className="term-line" key={i}>
-                    <span className="term-ts">{t.ts}</span>
-                    <span className={`term-type ${t.typeCls}`}>{t.type}</span>
-                    <span className="term-mkt">{t.mkt}</span>
-                    <span className="term-meta"><span className={t.cls}>{t.meta}</span></span>
-                  </div>
-                ))}
-              </div>
+            <div className="platform-body">
+              <div className="platform-name">macOS</div>
+              <div className="platform-detail">Apple Silicon. M1, M2, M3, M4.</div>
+              <div className="platform-arch">arm64 · .dmg</div>
             </div>
-          </div>
+            <span className="platform-cta">Download</span>
+          </Link>
+          <Link className="platform-card" href="/download">
+            <div className="platform-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5L11 4v8H3V5.5zm0 13L11 20v-8H3v6.5zM12 4l9-1.5V12h-9V4zm0 16l9 1.5V12h-9v8z"/></svg>
+            </div>
+            <div className="platform-body">
+              <div className="platform-name">Windows</div>
+              <div className="platform-detail">Windows 10 and 11.</div>
+              <div className="platform-arch">x64 · .msi</div>
+            </div>
+            <span className="platform-cta">Download</span>
+          </Link>
         </div>
+        <p className="platforms-foot">
+          Delfi is not yet code-signed by Apple or Microsoft. First launch will show a Gatekeeper or SmartScreen warning; click through once and the app installs normally.
+        </p>
       </div>
     </section>
   );
@@ -458,11 +344,11 @@ function Simulation() {
                 <span className="sim-bullet-dot"></span>
                 <div>
                   <div className="sim-bullet-title">Switch to Live when the numbers convince you.</div>
-                  <div className="sim-bullet-desc">Connect your wallet and toggle to Live. Delfi keeps running at the same settings. Only the capital is real now.</div>
+                  <div className="sim-bullet-desc">Paste your Polymarket private key into the OS keychain and toggle to Live. Delfi keeps running at the same settings. Only the capital is real now.</div>
                 </div>
               </li>
             </ul>
-            <Link className="sim-cta" href="/auth#signup">Try it now →</Link>
+            <Link className="sim-cta" href="/download">Try it now →</Link>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -553,9 +439,9 @@ function NewHere() {
             <h2 className="newhere-head balanced">New to Polymarket?</h2>
             <p className="newhere-body">Polymarket is a marketplace for real-world questions. Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question trading at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
             <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
-            <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade to its confidence, and acts when the forecast clears every gate.</p>
-            <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need an account with Delfi.</p>
-            <Link className="newhere-cta" href="/auth#signup">Start for free today →</Link>
+            <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade, and acts when the forecast clears every gate.</p>
+            <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need a machine to run Delfi on.</p>
+            <Link className="newhere-cta" href="/download">Download Delfi →</Link>
           </div>
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
@@ -574,52 +460,21 @@ function NewHere() {
   );
 }
 
-// ─── Testimonials ─────────────────────────────────────────
-function Testimonials() {
-  const quotes = [
-    { body: "Before Delfi I was scrolling Polymarket at 2am like an idiot. Now I scroll it once a week and check P&L. Got higher returns and less anxiety.", name: "Marcus K.", role: "Amsterdam, NL" },
-    { body: "Every Polymarket bot I looked at was a black box with marketing attached. No probability model, no sources, no sizing logic. Delfi shows all three on every trade. I can still disagree with a call, but I can't accuse the thing of being opaque. That's rare.", name: "Jenna R.", role: "Cape Coral, USA" },
-    { body: "I'd never placed a Polymarket trade before. I connected a wallet with $400, picked the conservative risk profile, and let Delfi run. Three weeks in, I'm up roughly $150 and I check the Telegram summary over coffee. I still don't really understand prediction markets.", name: "Daniel O.", role: "Singapore, SG" },
-    { body: "I tried three other Polymarket bots before Delfi. One was a copy-trading tool, one was an arbitrage scanner, one just didn't work. Delfi is the only one that actually thinks about each market.", name: "Alex T.", role: "Manchester, UK" },
-  ];
-  return (
-    <section className="section testimonials" data-screen-label="10 Testimonials">
-      <div className="container">
-        <div className="sec-head">
-          <h2 className="t-display-l balanced">Traders who stopped <br />trading by hand</h2>
-        </div>
-        <div className="test-grid">
-          {quotes.map((q) => (
-            <div className="test-card" key={q.name}>
-              <span className="test-quote-mark">&quot;</span>
-              <p className="test-body">{q.body}</p>
-              <div className="test-author">
-                <span className="test-author-dot"></span>
-                <div>
-                  <div className="test-author-name">{q.name}</div>
-                  <div className="test-author-role">{q.role}</div>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 // ─── FAQ ──────────────────────────────────────────────────
 function FAQ() {
   const [open, setOpen] = useState(0);
   const items = [
-    { q: "What exactly is Delfi?", a: "Delfi is an autonomous AI agent that trades on Polymarket for you. It continuously scans every active prediction market, produces its own probability forecasts, and backs those forecasts with small, confidence-scaled stakes, all within the risk limits you set." },
-    { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It's a reasoning-based AI agent that evaluates each market the way a sharp human trader would, with research, probability modeling, and calibrated risk sizing." },
-    { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than it is wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. On any single trade, anything can happen. All losses are capped by the daily and weekly risk limits you set during onboarding." },
-    { q: "Do I need a Polymarket account first?", a: "No. You can sign up for Delfi free today and explore the product without a Polymarket account. When you're ready to trade live, Delfi will guide you through connecting a wallet. If you're new to Polymarket entirely, Delfi is actually one of the easiest ways in. You get the benefits of active trading without having to become an active trader." },
-    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Delfi only has execution permission. It can place trades within the limits you set, but it cannot withdraw funds or transfer them anywhere. You can pause trading or revoke permissions at any time." },
-    { q: "How much does it cost?", a: "You can register for free and explore every feature: watch Delfi evaluate markets, read its reasoning, and review its live performance. When you're ready to trade live, subscriptions start at $69 per month, or $45 per month on the annual plan (a 35% saving)." },
-    { q: "Is this legal?", a: "In the United States, Polymarket is regulated under the CFTC following its QCX acquisition and amended order of designation. Delfi operates as an automated trading tool on top of a regulated exchange. In the United Kingdom, the European Union, Canada, Australia, and many other jurisdictions, prediction market rules vary widely. Some countries permit it, some restrict it, some prohibit it outright. Confirm legality in your own region before trading. If in doubt, consult a local regulator or legal advisor." },
-    { q: "Can I turn Delfi off?", a: "Yes, any time. Use the /stop command in Telegram or the emergency stop button in the dashboard. Open positions remain open until resolution. No new trades will be placed until you resume." },
+    { q: "What exactly is Delfi?", a: "Delfi is an autonomous Polymarket trader that runs entirely on your machine. It continuously scans every active prediction market, produces its own probability forecasts, and backs those forecasts with small, flat-sized stakes, all within the risk limits you set. You install it once like any other desktop app." },
+    { q: "Where do my private keys live?", a: "In your operating system's keychain (macOS Keychain, Windows Credential Locker). Delfi reads them only inside your own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
+    { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It's a reasoning-based agent that evaluates each market the way a sharp human trader would: research, probability modeling, calibrated risk sizing, and full transparency on every trade." },
+    { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
+    { q: "How much does it cost?", a: "$250 once. No subscription, no monthly fee. Lifetime updates included; every future release is yours. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades. Most users see a few dollars per day in API costs at default settings." },
+    { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
+    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key stays in your OS keychain. Delfi reads the key only inside your own process, only when it needs to sign a trade. We can't withdraw funds, transfer them, or even see them. You can pause Delfi or delete the app at any time." },
+    { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. The license check is a yearly online verification; if our verification endpoint is down for an extended period, Delfi falls back to an offline grace mode and keeps trading." },
+    { q: "Can I turn Delfi off?", a: "Any time. The dashboard has an emergency stop button. Open positions stay open until they resolve. No new trades are placed until you turn it back on." },
+    { q: "Is this legal?", a: "Polymarket and prediction markets are regulated differently in every jurisdiction. Some permit it, some restrict it, some prohibit it. Confirm legality in your own region before trading. If in doubt, consult a local advisor." },
+    { q: "What's the refund policy?", a: "14 days, no questions asked, provided you have not yet placed a live trade through the app." },
   ];
   return (
     <section className="section faq" id="faq" data-screen-label="11 FAQ">
@@ -652,8 +507,8 @@ function FinalCTA() {
       <div className="quantum-grid" />
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
-        <p className="final-sub">Sign up in three minutes. Delfi will take care of the rest.</p>
-        <Link className="btn-primary large" href="/auth#signup">Get Started</Link>
+        <p className="final-sub">Install Delfi in three minutes. It will take care of the rest.</p>
+        <Link className="btn-primary large" href="/download">Download for $250</Link>
       </div>
     </section>
   );
@@ -670,7 +525,7 @@ function Footer() {
               <img src="/brand/mark.svg" alt="" className="wordmark-mark" />
               <span className="wordmark-text">DELFI</span>
             </Link>
-            <p className="foot-tag">Autonomous AI agent for Polymarket. Deep reasoning meets institutional risk math.</p>
+            <p className="foot-tag">Autonomous Polymarket trader. Runs on your machine. Your keys never leave.</p>
             <span className="foot-contact">info@delfibot.com</span>
           </div>
           <div className="foot-meta">
@@ -742,15 +597,14 @@ export default function HomePage() {
     <>
       <TopNav />
       <Hero />
-      <Ribbon />
       <Problem />
       <Solution />
       <Pillars />
       <Versus />
-      <Proof />
+      <CustodyPromise />
+      <Platforms />
       <Simulation />
       <NewHere />
-      <Testimonials />
       <FAQ />
       <FinalCTA />
       <Footer />
