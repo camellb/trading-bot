@@ -6,8 +6,8 @@ export default function TermsPage() {
       <div className="content-eyebrow">Legal</div>
       <h1 className="content-h1">Terms of Service</h1>
       <p className="content-lede">
-        These terms govern your use of Delfi. By creating an account or connecting a wallet, you agree to the
-        terms below. Please read them carefully.
+        These terms govern your use of Delfi. By installing the desktop app, activating a license key, or
+        connecting a wallet, you agree to the terms below. Please read them carefully.
       </p>
       <div className="content-meta">Effective 2026-04-01 · Last updated 2026-04-21</div>
 
@@ -27,15 +27,16 @@ export default function TermsPage() {
           not available in jurisdictions where prediction market trading is prohibited.
         </p>
 
-        <h2>3. Your account</h2>
+        <h2>3. License and credentials</h2>
         <p>
-          You are responsible for maintaining the confidentiality of your account credentials and any private
-          keys used to authorize trades. Delfi will never ask you for your seed phrase. If you suspect your
-          account has been compromised, contact support immediately.
+          You are responsible for maintaining the confidentiality of your license key and any private keys
+          used to authorize trades. Delfi runs entirely on your computer; we never receive your wallet
+          private key or seed phrase, and we will never ask for them. If you suspect a license key has been
+          compromised, contact support so we can reissue it.
         </p>
         <ul>
-          <li>Keep your email, two-factor secrets, and wallet keys private.</li>
-          <li>You may not share access to your account.</li>
+          <li>Keep your license key and wallet keys private.</li>
+          <li>You may not share or resell your license key.</li>
           <li>You must not use Delfi to evade sanctions or conduct illegal trading.</li>
         </ul>
 
@@ -57,9 +58,10 @@ export default function TermsPage() {
 
         <h2>5. Fees</h2>
         <p>
-          Delfi charges a subscription fee based on your plan and, separately, a performance fee on net profits
-          realized during the billing period. Current pricing is published on the billing page. We may change
-          pricing with at least 30 days notice.
+          Delfi is sold as a one-time purchase. The price at time of order is the price you pay; there is no
+          recurring subscription and no performance fee. Forecasting API usage is billed by your model provider
+          directly, and Polymarket trading fees are paid on-chain. We may change the one-time purchase price
+          for new orders with notice on the homepage; existing orders are unaffected.
         </p>
 
         <h2>6. Autonomous execution</h2>
@@ -85,9 +87,10 @@ export default function TermsPage() {
 
         <h2>9. Termination</h2>
         <p>
-          You may cancel your subscription at any time from the billing page. We may suspend or terminate your
-          account if you breach these terms or if we are required to do so by law. On termination, live
-          positions will be closed or transferred to your wallet and access to the dashboard will end.
+          You may stop using Delfi at any time by uninstalling the desktop app from your computer. Open
+          positions remain in your Polymarket wallet under your sole control. We may revoke a license key
+          if you breach these terms or if we are required to do so by law. Refunds for the one-time purchase
+          are available within 14 days of order, provided no live trade has been placed through the app.
         </p>
 
         <h2>10. Changes</h2>
