@@ -4,13 +4,19 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import "./styles/homepage.css";
 
-import { createClient } from "@/lib/supabase/client";
+// Checkout destination. Wired to Stripe / Lemon Squeezy / Polar via
+// the NEXT_PUBLIC_CHECKOUT_URL env var when that lands; falls back to
+// a mailto so a buyer can still reach the maintainer in the meantime.
+// The actual download link is delivered in the post-purchase email,
+// never embedded in this page.
+const CHECKOUT_URL =
+  process.env.NEXT_PUBLIC_CHECKOUT_URL ||
+  "mailto:info@delfibot.com?subject=Delfi%20order";
 
 // ─── Top nav ─────────────────────────────────────────────
 function TopNav() {
   const [scrolled, setScrolled] = useState(false);
   const [pastHero, setPastHero] = useState(false);
-  const [signedIn, setSignedIn] = useState<boolean | null>(null);
   useEffect(() => {
     const on = () => {
       setScrolled(window.scrollY > 20);
@@ -24,14 +30,6 @@ function TopNav() {
       window.removeEventListener("resize", on);
     };
   }, []);
-  useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data }) => setSignedIn(!!data.user));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSignedIn(!!session?.user);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
   return (
     <nav className={`top-nav ${scrolled ? "scrolled" : ""} ${pastHero ? "past-hero" : ""}`}>
       <div className="nav-inner">
@@ -43,19 +41,12 @@ function TopNav() {
           <ul className="nav-links">
             <li><a href="#how">How It Works</a></li>
             <li><a href="#versus">Us vs Them</a></li>
-            <li><a href="#platforms">Download</a></li>
+            <li><a href="#platforms">Platforms</a></li>
             <li><a href="#faq">FAQ</a></li>
           </ul>
         </div>
         <div className="nav-right">
-          {signedIn ? (
-            <Link className="btn-primary" href="/dashboard">Dashboard</Link>
-          ) : (
-            <>
-              <Link className="nav-login" href="/auth#login">Log In</Link>
-              <Link className="btn-primary" href="/download">Download</Link>
-            </>
-          )}
+          <a className="btn-primary" href={CHECKOUT_URL}>Buy</a>
         </div>
       </div>
     </nav>
@@ -78,7 +69,7 @@ function Hero() {
           The first autonomous Polymarket trader that runs entirely on your machine. Your wallet key never leaves your laptop. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
-          <Link className="btn-primary" href="/download">Download for $250</Link>
+          <a className="btn-primary" href={CHECKOUT_URL}>Buy for $250</a>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
       </div>
@@ -342,7 +333,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <Link className="sim-cta" href="/download">Try it now →</Link>
+            <a className="sim-cta" href={CHECKOUT_URL}>Get Delfi →</a>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -435,7 +426,7 @@ function NewHere() {
             <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
             <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade, and acts when the forecast clears every gate.</p>
             <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need a machine to run Delfi on.</p>
-            <Link className="newhere-cta" href="/download">Download Delfi →</Link>
+            <a className="newhere-cta" href={CHECKOUT_URL}>Get Delfi →</a>
           </div>
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
@@ -502,7 +493,7 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">Install Delfi in three minutes. It will take care of the rest.</p>
-        <Link className="btn-primary large" href="/download">Download for $250</Link>
+        <a className="btn-primary large" href={CHECKOUT_URL}>Buy for $250</a>
       </div>
     </section>
   );
