@@ -66,7 +66,7 @@ function Hero() {
           The future is <br />no longer <span className="hero-accent">a guess</span>
         </h1>
         <p className="hero-sub">
-          The first autonomous Polymarket trader that runs entirely on your machine. Your wallet key never leaves your laptop. Your reasoning is yours alone.
+          The first autonomous Polymarket trader that runs entirely on your computer. Your wallet key never leaves it. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
           <a className="btn-primary" href={CHECKOUT_URL}>Buy for $250</a>
@@ -245,7 +245,7 @@ function CustodyPromise() {
         </div>
         <div className="custody-grid">
           <p className="custody-body">
-            Delfi installs and runs entirely on your laptop. Your Polymarket private key sits in your operating system&apos;s keychain, where it has always lived. Delfi reads it only when it places a trade, and only inside your own process. Nothing about your wallet ever leaves the machine you&apos;re reading this on.
+            Delfi installs and runs entirely on your computer. Your Polymarket private key sits in your operating system&apos;s keychain, where it has always lived. Delfi reads it only when it places a trade, and only inside your own process. Nothing about your wallet ever leaves the computer you&apos;re reading this on.
           </p>
           <ul className="custody-list">
             <li><span className="custody-tick">✓</span> We never see your wallet address.</li>
