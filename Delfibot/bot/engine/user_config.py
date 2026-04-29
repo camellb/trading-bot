@@ -607,29 +607,181 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
     return get_user_config(user_id)
 
 
-# ── OS keychain helpers ─────────────────────────────────────────────────────
+# ── Secret storage ──────────────────────────────────────────────────────────
+#
+# Secrets used to live in the macOS keychain. They no longer do.
+#
+# Why we moved off keychain (2026-04-29):
+#   - Each rebuild produces a binary with a new code signature.
+#   - macOS keychain ACLs are per-binary-signature.
+#   - Reading entries written by an earlier signature triggers a
+#     SecurityAgent password prompt.
+#   - On a fresh install with 7 stored secrets that meant the user
+#     typed their login password 7 times in a row before the app
+#     became usable.
+#   - Worse, while a SecurityAgent prompt is on screen the macOS
+#     Security framework holds an internal mutex; Python's keyring
+#     binding doesn't release the GIL during that wait, which wedges
+#     the sidecar's asyncio event loop. Every endpoint times out
+#     until the user clears the prompt cascade. (Sample(1) trace
+#     showed the main thread in `_pthread_mutex_firstfit_lock_slow`
+#     while keyring threads sat in SecurityAgent.)
+#
+# Where they live now: <app-data>/data/secrets.json
+#   - Flat JSON `{key: value}` map.
+#   - chmod 600 so only the running user can read.
+#   - Atomic write via tempfile + os.replace.
+#   - Cached in-process so subsequent reads don't touch the disk.
+#
+# Practical security comparison:
+#   - macOS already access-controls $HOME (other users can't read).
+#   - chmod 600 narrows that to "only this user".
+#   - Keychain ACLs don't add real protection on an unlocked Mac
+#     where a malicious user-process can read either store.
+#   - Tradeoff is small; UX gain is enormous.
+#
+# Migration: every legacy keychain entry is read AT MOST ONCE per
+# process, copied to the file, then deleted from keychain. So the
+# old prompt cascade fires one last time during the upgrade boot,
+# then never again.
+
+import threading as _threading  # noqa: E402
+_SECRETS_LOCK: _threading.Lock = _threading.Lock()
+_SECRETS_CACHE: Optional[dict] = None
+
+
+def _secrets_path():
+    """Path to secrets.json. Lazy-imports app_data_dir to keep this
+    module's import graph small."""
+    from db.engine import app_data_dir
+    p = app_data_dir() / "data"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "secrets.json"
+
+
+def _read_secrets() -> dict:
+    """Return the current secrets map. Cached in-process; first call
+    after process start hits disk, subsequent calls are free."""
+    global _SECRETS_CACHE
+    with _SECRETS_LOCK:
+        if _SECRETS_CACHE is not None:
+            return dict(_SECRETS_CACHE)
+        path = _secrets_path()
+        if not path.exists():
+            _SECRETS_CACHE = {}
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+            _SECRETS_CACHE = data
+            return dict(data)
+        except Exception as exc:
+            print(f"[user_config] secrets file read failed: {exc}",
+                  file=sys.stderr)
+            _SECRETS_CACHE = {}
+            return {}
+
+
+def _write_secrets(data: dict) -> None:
+    """Atomic write of the secrets map. Updates the in-process cache
+    so subsequent reads see the new value without re-hitting disk."""
+    global _SECRETS_CACHE
+    with _SECRETS_LOCK:
+        path = _secrets_path()
+        import tempfile
+        import os as _os
+        fd, tmp = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=".secrets.",
+            suffix=".json",
+        )
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            _os.chmod(tmp, 0o600)
+            _os.replace(tmp, str(path))
+            _SECRETS_CACHE = dict(data)
+        except Exception:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
+# Track which legacy keychain entries we've already attempted to
+# migrate during this process. Stops repeated SecurityAgent prompts
+# for keys that genuinely don't exist (the legacy read still costs
+# us a keychain syscall even when the entry is absent).
+_MIGRATED_KEYS: set[str] = set()
+
+
 def _keyring_get(key: str) -> Optional[str]:
+    """Read a secret. File-first; legacy keychain only as a one-time
+    migration fallback."""
+    secrets = _read_secrets()
+    val = secrets.get(key)
+    if val:
+        return val
+
+    if key in _MIGRATED_KEYS:
+        return None
+    _MIGRATED_KEYS.add(key)
+
+    # Migration: try the legacy keychain entry exactly once.
     try:
         import keyring
-        v = keyring.get_password(KEYRING_SERVICE, key)
-        return v or None
+        legacy = keyring.get_password(KEYRING_SERVICE, key)
     except Exception as exc:
-        print(f"[user_config] keyring get({key}) failed: {exc}", file=sys.stderr)
+        print(f"[user_config] legacy keyring get({key}) failed: {exc}",
+              file=sys.stderr)
         return None
+
+    if not legacy:
+        return None
+
+    # Found a legacy value. Copy it to the file and wipe the keychain
+    # entry so future reads bypass keychain entirely.
+    secrets[key] = legacy
+    try:
+        _write_secrets(secrets)
+        try:
+            import keyring as _kr
+            _kr.delete_password(KEYRING_SERVICE, key)
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"[user_config] secrets migrate({key}) failed: {exc}",
+              file=sys.stderr)
+    return legacy
 
 
 def _keyring_set(key: str, value: Optional[str]) -> None:
+    """Write/clear a secret. Always file-backed. Best-effort wipes the
+    legacy keychain entry too so a stale value can't shadow the file."""
+    secrets = _read_secrets()
+    if value is None or value == "":
+        secrets.pop(key, None)
+    else:
+        secrets[key] = value
+    try:
+        _write_secrets(secrets)
+    except Exception as exc:
+        print(f"[user_config] secrets file write failed: {exc}",
+              file=sys.stderr)
+    # Best-effort: clear any legacy keychain entry. Cheap on a clean
+    # install (entry doesn't exist, delete is a no-op); on upgrade
+    # this purges the legacy copy so reads short-circuit at the file.
     try:
         import keyring
-        if value is None or value == "":
-            try:
-                keyring.delete_password(KEYRING_SERVICE, key)
-            except Exception:
-                pass
-            return
-        keyring.set_password(KEYRING_SERVICE, key, value)
-    except Exception as exc:
-        print(f"[user_config] keyring set({key}) failed: {exc}", file=sys.stderr)
+        try:
+            keyring.delete_password(KEYRING_SERVICE, key)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 # ── Polymarket creds (offshore Polygon EIP-712) ─────────────────────────────

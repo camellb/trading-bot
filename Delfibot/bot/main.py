@@ -77,6 +77,92 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1)
 
 
+def _migrate_legacy_keychain_secrets() -> None:
+    """One-time migration: copy every legacy macOS keychain entry to
+    the file-backed secrets store, then delete the keychain entry.
+
+    Why this exists: secrets used to live in the OS keychain. Each
+    sidecar rebuild produced a new code signature, and macOS keychain
+    ACLs are per-binary-signature, so every rebuild made the user
+    type their login password 7 times to re-grant access. While the
+    SecurityAgent prompts were on screen the keychain mutex was held
+    and any other thread hitting Security.framework wedged the
+    asyncio event loop. We've moved storage to a chmod-600 JSON file.
+
+    This function reads each known legacy key once, copies whatever
+    it finds to the file, and deletes the keychain entry. After it
+    runs, future boots find the secrets in the file and never touch
+    keychain again.
+
+    Called BEFORE the aiohttp server starts so handler requests can't
+    race with an in-flight prompt. Runs synchronously on the main
+    thread for the same reason - if we did it in a background thread
+    the rest of boot would race.
+
+    Idempotent: a second call (or an already-migrated key) is a no-op
+    because the file values short-circuit the legacy read.
+    """
+    from engine.user_config import (
+        KEYRING_SERVICE,
+        KEYRING_POLYMARKET_KEY,
+        KEYRING_ANTHROPIC_KEY,
+        KEYRING_LLM_BACKUP_KEY,
+        KEYRING_NEWSAPI_KEY,
+        KEYRING_CRYPTOPANIC_KEY,
+        KEYRING_LICENSE_KEY,
+        KEYRING_TELEGRAM_TOKEN,
+        _read_secrets,
+        _write_secrets,
+    )
+    keys = (
+        KEYRING_POLYMARKET_KEY,
+        KEYRING_ANTHROPIC_KEY,
+        KEYRING_LLM_BACKUP_KEY,
+        KEYRING_NEWSAPI_KEY,
+        KEYRING_CRYPTOPANIC_KEY,
+        KEYRING_LICENSE_KEY,
+        KEYRING_TELEGRAM_TOKEN,
+    )
+    secrets = _read_secrets()
+    if all(secrets.get(k) for k in keys):
+        return  # everything already in file - nothing to do
+
+    try:
+        import keyring
+    except Exception as exc:
+        print(f"[delfi] keychain migration: keyring import failed: {exc}",
+              flush=True)
+        return
+
+    migrated = 0
+    for k in keys:
+        if secrets.get(k):
+            continue
+        try:
+            v = keyring.get_password(KEYRING_SERVICE, k)
+        except Exception as exc:
+            print(f"[delfi] keychain migration: read({k}) failed: {exc}",
+                  flush=True)
+            continue
+        if not v:
+            continue
+        secrets[k] = v
+        migrated += 1
+        try:
+            keyring.delete_password(KEYRING_SERVICE, k)
+        except Exception:
+            pass
+
+    if migrated:
+        try:
+            _write_secrets(secrets)
+            print(f"[delfi] migrated {migrated} secret(s) from keychain to file",
+                  flush=True)
+        except Exception as exc:
+            print(f"[delfi] keychain migration: write failed: {exc}",
+                  flush=True)
+
+
 def _seed_env_from_keychain() -> None:
     """
     Copy keychain-stored API keys into os.environ at startup.
@@ -119,8 +205,16 @@ async def main() -> None:
     ensure_default_user_config()
     print("[delfi] DB ready", flush=True)
 
-    # Pull optional API keys out of the OS keychain into os.environ so
-    # the legacy env-reading code in feeds/news_feed.py and
+    # One-time migration: copy any legacy macOS keychain secrets to
+    # the new file-backed store. This fires the SecurityAgent prompt
+    # cascade ONCE per upgrade boot, then never again - subsequent
+    # reads short-circuit at the file. Runs synchronously here, BEFORE
+    # the aiohttp server starts, so handler requests never race with
+    # an in-flight prompt and the event loop never wedges.
+    _migrate_legacy_keychain_secrets()
+
+    # Pull optional API keys out of the new file store into os.environ
+    # so the legacy env-reading code in feeds/news_feed.py and
     # research/fetcher.py picks them up without further refactor. Each
     # is optional - missing values just mean those research feeds run
     # in degraded mode (raw RSS instead of filtered headlines, etc.).
