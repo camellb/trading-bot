@@ -150,12 +150,20 @@ export default function Dashboard({ state, goto }: Props) {
   const closed = summary?.settled_total ?? 0;
   const brier = summary?.brier ?? null;
 
-  const deployed = open.reduce((s, p) => s + (p.cost_usd || 0), 0);
-  // Total equity = bankroll + locked capital. The bankroll number
-  // already nets out open cost (starting + realized - open_cost),
-  // so adding deployed back gets us starting + realized - which is
-  // the user's actual equity before any trades resolve.
-  const totalEquity = bankroll + deployed;
+  // Source the totals from /api/summary, NOT from the limit-50
+  // positions array. The positions endpoint is paginated (capped at
+  // 50 by default for the dashboard) so any user with more than 50
+  // total positions would see locked capital + open trades silently
+  // truncated. summary aggregates over the full pm_positions table
+  // server-side and always reflects ground truth.
+  const lockedCapital = numberOr(summary?.open_cost, 0);
+  const totalEquity = numberOr(
+    summary?.equity,
+    // Fallback if the sidecar predates `equity` on the summary
+    // payload: derive from bankroll + open_cost.
+    bankroll + lockedCapital,
+  );
+  const openTrades = Math.round(numberOr(summary?.open_positions, open.length));
 
   // Skipped count from the recent evaluations feed. Mirrors the
   // filter the Positions page uses (recommendation neither BUY_YES
@@ -176,13 +184,13 @@ export default function Dashboard({ state, goto }: Props) {
       <DashHero
         mode={mode}
         bankroll={bankroll}
-        lockedCapital={deployed}
+        lockedCapital={lockedCapital}
         totalEquity={totalEquity}
         realizedPnl={pnl}
         realizedPct={pnlPct}
         winRate={winRate}
         closedTrades={closed}
-        openTrades={open.length}
+        openTrades={openTrades}
         skippedTrades={skippedTrades}
         loaded={loaded}
       />
@@ -192,9 +200,9 @@ export default function Dashboard({ state, goto }: Props) {
           <CardHead
             title="Open positions"
             meta={
-              open.length === 0
+              openTrades === 0
                 ? "0 active"
-                : `${open.length} active · $${deployed.toFixed(0)} deployed`
+                : `${openTrades} active · $${lockedCapital.toFixed(0)} deployed`
             }
             onLink={() => goto("positions")}
           />
@@ -576,7 +584,13 @@ function buildRisk(
 ): { dailyLoss: RiskItem; drawdown: RiskItem; exposure: RiskItem } {
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? bankroll ?? 0;
-  const exposure = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
+  // Pull exposure from summary.open_cost (server-side aggregate over
+  // the full pm_positions table) instead of summing the limit-50
+  // positions array. With >50 positions the array sum was silently
+  // truncated and the gauge under-counted.
+  const exposure = summary?.open_cost != null
+    ? Number(summary.open_cost)
+    : open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
   const ddPct = starting > 0 ? Math.max(0, ((starting - bankroll) / starting) * 100) : 0;
   const dailyLoss = Math.max(0, -((summary?.realized_pnl ?? 0)));
   const dailyCap = Math.max(1, bankroll * (config.daily_loss_limit_pct ?? 0.10));
