@@ -454,12 +454,29 @@ class PMAnalyst:
             f"bankroll ${bankroll_after:.2f}, mode {mode}, "
             f"position={position_id})"
         )
+        # Telegram rendering follows the SaaS Messages Spec v1.
+        telegram_html: str | None = None
+        try:
+            from feeds import telegram_messages as _tm
+            telegram_html = _tm.new_position(
+                question=market.question,
+                side=decision.side,
+                stake_usd=float(decision.stake_usd),
+                forecast_pct=forecast_pct,
+                confidence=float(evaluation.confidence or 0.0),
+                bankroll_after=bankroll_after,
+                mode=mode,
+            )
+        except Exception as exc:
+            print(f"[pm_analyst] telegram render failed: {exc}",
+                  file=sys.stderr)
         try:
             log_event(
                 event_type="position_opened",
                 severity=20,
                 description=description,
                 source="pm_analyst",
+                telegram_html=telegram_html,
             )
         except Exception as exc:
             print(f"[pm_analyst] event log write failed: {exc}",

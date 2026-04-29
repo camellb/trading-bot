@@ -38,6 +38,14 @@ dependencies = [
     "ddgs>=8.0",
     "trafilatura>=1.10",
     "yfinance>=0.2.40",
+
+    # Live crypto spot prices via OKX public endpoints. WITHOUT THIS,
+    # research/live_crypto.py silently disables itself and crypto
+    # markets get evaluated with no live price - the LLM hallucinates
+    # one from training data (e.g. "BTC at $95k") and the bot makes
+    # decisions on stale numbers. ccxt is heavy (~30 MB bundled) but
+    # the alternative is wrong trades.
+    "ccxt>=4.4",
 ]
 
 [project.optional-dependencies]

@@ -164,11 +164,41 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                     f"mode {p.get('mode') or 'simulation'}, "
                     f"position={p['id']}"
                 )
+                # Telegram rendering follows the SaaS Messages Spec v1.
+                # tm.settled_win / tm.settled_loss differ in glyph and
+                # P&L line wording, picked off the win/loss boolean.
+                telegram_html: str | None = None
+                try:
+                    from feeds import telegram_messages as _tm
+                    bankroll_after = float(executor.get_bankroll())
+                    cost = float(p.get("cost_usd", 0.0) or 0.0)
+                    roi = (pnl / cost) if cost > 0 else 0.0
+                    # Equity = realized bankroll (no open positions for
+                    # this market - it just settled). Same number as
+                    # bankroll for the moment.
+                    common = dict(
+                        question=(p.get("question") or ""),
+                        side=side,
+                        outcome=outcome,
+                        pnl=pnl,
+                        roi=roi,
+                        bankroll=bankroll_after,
+                        equity=bankroll_after,
+                        mode=p.get("mode") or "simulation",
+                    )
+                    if outcome == side:
+                        telegram_html = _tm.settled_win(**common)
+                    else:
+                        telegram_html = _tm.settled_loss(**common)
+                except Exception as exc:
+                    print(f"[pm_runner] telegram render failed: {exc}",
+                          file=sys.stderr)
                 log_event(
                     event_type="position_settled",
                     severity=20,
                     description=description,
                     source="polymarket_runner",
+                    telegram_html=telegram_html,
                 )
             except Exception as exc:
                 print(f"[pm_runner] event log write failed: {exc}",

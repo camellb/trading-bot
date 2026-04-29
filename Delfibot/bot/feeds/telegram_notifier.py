@@ -183,40 +183,32 @@ def notify(
 
 # ── Inbound commands ────────────────────────────────────────────────────────
 
-_HELP_TEXT = (
-    "<b>Delfi commands</b>\n"
-    "/status  Portfolio summary + open positions\n"
-    "/pause   Halt new trades (open positions still settle)\n"
-    "/resume  Undo /pause\n"
-    "/apply   Apply ALL pending learning-cycle suggestions\n"
-    "/reject  Skip the oldest pending suggestion\n"
-    "/help    Show this list"
-)
+# All user-facing copy is rendered via feeds.telegram_messages so
+# Telegram output matches the SaaS Messages Spec v1 verbatim. Local
+# import to keep module import time small (and avoid a circular at
+# module-load if telegram_messages ever grows engine deps).
+def _tm():
+    from feeds import telegram_messages as _mod
+    return _mod
 
 
 def _handle_help(token: str, chat_id: str) -> None:
     _post(token, "sendMessage",
-          {"chat_id": chat_id, "text": _HELP_TEXT, "parse_mode": "HTML"},
+          {"chat_id": chat_id, "text": _tm().help_text(), "parse_mode": "HTML"},
           timeout=_DEFAULT_TIMEOUT)
 
 
 def _handle_start(token: str, chat_id: str) -> None:
-    msg = (
-        "Delfi connected. Send /help to see what I can do.\n\n"
-        "Tip: most things you do here are also visible in the desktop app."
-    )
     _post(token, "sendMessage",
-          {"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+          {"chat_id": chat_id, "text": _tm().welcome(), "parse_mode": "HTML"},
           timeout=_DEFAULT_TIMEOUT)
 
 
 def _handle_status(token: str, chat_id: str) -> None:
-    """Pull portfolio stats + open positions and render a one-shot
-    status block. Mirrors the SaaS /status copy."""
+    """Pull portfolio stats + render via tm.status (SaaS-spec copy)."""
     try:
         from engine.notifier_state import is_trading_paused
         from execution.pm_executor import PMExecutor
-        cfg = get_user_config()
         executor = PMExecutor(DEFAULT_USER_ID)
         stats = executor.get_portfolio_stats()
         open_rows = executor.get_open_positions()
@@ -228,7 +220,7 @@ def _handle_status(token: str, chat_id: str) -> None:
                 f"• {p.get('side','?')} ${float(p.get('cost_usd',0)):.2f}  {q}"
             )
         if len(open_rows) > 10:
-            pos_lines.append(f"... and {len(open_rows) - 10} more.")
+            pos_lines.append(f"...and {len(open_rows) - 10} more.")
         positions_block = "\n".join(pos_lines) or "(none)"
 
         settled_total = int(stats.get("settled_total", 0))
@@ -236,25 +228,21 @@ def _handle_status(token: str, chat_id: str) -> None:
         losses = max(0, settled_total - wins)
         win_pct = (wins / settled_total * 100.0) if settled_total else 0.0
 
-        mode = str(stats.get("mode", cfg.mode or "simulation"))
-        paused = is_trading_paused()
-        bot_on = bool(cfg.bot_enabled)
-        running = bot_on and not paused
-
-        text = (
-            f"<b>Delfi status</b>\n"
-            f"Mode: {mode}\n"
-            f"State: {'paused' if paused else ('running' if running else 'idle')}\n"
-            f"Bankroll: ${float(stats.get('bankroll', 0.0)):.2f}\n"
-            f"Open: {int(stats.get('open_positions', 0))} "
-            f"(${float(stats.get('open_cost', 0.0)):.2f} at risk)\n"
-            f"Settled: {settled_total}  W {wins} / L {losses}  ({win_pct:.1f}%)\n"
-            f"Realized P&amp;L: ${float(stats.get('realized_pnl', 0.0)):+.2f}\n"
-            f"\n<b>Positions</b>\n{positions_block}"
+        text = _tm().status(
+            paused=is_trading_paused(),
+            mode=str(stats.get("mode", "simulation")),
+            bankroll=float(stats.get("bankroll", 0.0)),
+            open_positions=int(stats.get("open_positions", 0)),
+            open_cost=float(stats.get("open_cost", 0.0)),
+            wins=wins,
+            losses=losses,
+            win_pct=win_pct,
+            realized_pnl=float(stats.get("realized_pnl", 0.0)),
+            positions_block=positions_block,
         )
     except Exception as exc:
         print(f"[telegram_notifier] /status error: {exc}", file=sys.stderr)
-        text = f"Could not load status: {exc}"
+        text = _tm().generic_error(context="Status", detail=str(exc))
     _post(token, "sendMessage",
           {"chat_id": chat_id, "text": text, "parse_mode": "HTML",
            "disable_web_page_preview": True},
@@ -264,23 +252,25 @@ def _handle_status(token: str, chat_id: str) -> None:
 def _handle_pause(token: str, chat_id: str) -> None:
     from engine.notifier_state import is_trading_paused, set_trading_paused
     if is_trading_paused():
-        text = "Already paused. Send /resume to un-pause."
+        text = _tm().already_paused()
     else:
         set_trading_paused(True)
-        text = "Paused. New trades blocked. Open positions keep settling. Send /resume to un-pause."
+        text = _tm().paused()
     _post(token, "sendMessage",
-          {"chat_id": chat_id, "text": text}, timeout=_DEFAULT_TIMEOUT)
+          {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+          timeout=_DEFAULT_TIMEOUT)
 
 
 def _handle_resume(token: str, chat_id: str) -> None:
     from engine.notifier_state import is_trading_paused, set_trading_paused
     if not is_trading_paused():
-        text = "Not paused. Send /pause to halt new trades."
+        text = _tm().already_running()
     else:
         set_trading_paused(False)
-        text = "Resumed. New trades allowed."
+        text = _tm().resumed()
     _post(token, "sendMessage",
-          {"chat_id": chat_id, "text": text}, timeout=_DEFAULT_TIMEOUT)
+          {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+          timeout=_DEFAULT_TIMEOUT)
 
 
 def _handle_apply(token: str, chat_id: str) -> None:
@@ -299,26 +289,25 @@ def _handle_apply(token: str, chat_id: str) -> None:
     except Exception as exc:
         print(f"[telegram_notifier] /apply error: {exc}", file=sys.stderr)
         _post(token, "sendMessage",
-              {"chat_id": chat_id, "text": f"Apply failed: {exc}"},
+              {"chat_id": chat_id,
+               "text": _tm().generic_error(context="Applying change", detail=str(exc)),
+               "parse_mode": "HTML"},
               timeout=_DEFAULT_TIMEOUT)
         return
     if result.get("status") == "none":
-        text = "No pending suggestions."
+        text = _tm().nothing_pending()
     else:
-        applied = result.get("applied") or []
-        failed = result.get("failed") or []
-        parts = [f"Applied {len(applied)} suggestion(s)."]
-        if failed:
-            parts.append(f"{len(failed)} failed: {', '.join(str(f) for f in failed[:5])}")
-        text = " ".join(parts)
+        text = _tm().calibration_applied_all(
+            applied=result.get("applied") or [],
+            failed=result.get("failed") or [],
+        )
     _post(token, "sendMessage",
-          {"chat_id": chat_id, "text": text}, timeout=_DEFAULT_TIMEOUT)
+          {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+          timeout=_DEFAULT_TIMEOUT)
 
 
 def _handle_reject(token: str, chat_id: str) -> None:
-    """Skip the oldest pending suggestion. Multi-row rejections are
-    rare enough that we don't expose a /reject_all - the dashboard has
-    one-click skip per row."""
+    """Skip the oldest pending suggestion. Same SaaS copy."""
     try:
         from engine.learning_cadence import skip_next_pending_suggestion
         result = skip_next_pending_suggestion(
@@ -327,15 +316,15 @@ def _handle_reject(token: str, chat_id: str) -> None:
     except Exception as exc:
         print(f"[telegram_notifier] /reject error: {exc}", file=sys.stderr)
         _post(token, "sendMessage",
-              {"chat_id": chat_id, "text": f"Reject failed: {exc}"},
+              {"chat_id": chat_id,
+               "text": _tm().generic_error(context="Declining change", detail=str(exc)),
+               "parse_mode": "HTML"},
               timeout=_DEFAULT_TIMEOUT)
         return
-    if result.get("status") == "skipped":
-        text = "Skipped."
-    else:
-        text = "No pending suggestions."
+    text = _tm().calibration_declined() if result.get("status") == "skipped" else _tm().nothing_pending()
     _post(token, "sendMessage",
-          {"chat_id": chat_id, "text": text}, timeout=_DEFAULT_TIMEOUT)
+          {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+          timeout=_DEFAULT_TIMEOUT)
 
 
 _COMMANDS = {

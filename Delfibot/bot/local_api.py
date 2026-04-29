@@ -430,19 +430,57 @@ class LocalAPI:
         return _ok(_config_to_dict(cfg))
 
     async def _get_credentials(self, _req: web.Request) -> web.Response:
+        """Return existence booleans for each keychain credential.
+
+        Two reasons this is more involved than it should be:
+          1. We do six keychain reads. Without code signing, every
+             rebuild forces macOS to prompt for permission per entry
+             ("delfi-sidecar wants to use confidential information").
+             A user who's slow to click Always Allow blocks the
+             aiohttp event loop here for tens of seconds; the
+             frontend then trips its 30s fetch timeout.
+          2. keyring's `get_password` is sync. Running it inline in an
+             async handler blocks the loop even when prompts don't
+             fire.
+
+        Fix: offload all six reads to the default ThreadPoolExecutor
+        in one shot, then cache the booleans on the instance so the
+        next call short-circuits without ever touching keychain again.
+        Cache is per-process (lives until sidecar exit). PUT
+        /api/credentials invalidates it after a successful write.
+        """
         cfg = get_user_config()
-        has_llm = get_anthropic_api_key() is not None
-        return _ok({
-            "wallet_address":         cfg.wallet_address,
-            "has_polymarket_key":     _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
-            # Both names returned: `has_anthropic_key` for back-compat,
-            # `has_llm_key` for the new vendor-neutral UI.
-            "has_anthropic_key":      has_llm,
-            "has_llm_key":            has_llm,
-            "has_llm_backup_key":     get_llm_backup_key() is not None,
-            "has_newsapi_key":        get_newsapi_key() is not None,
-            "has_cryptopanic_key":    get_cryptopanic_key() is not None,
-        })
+
+        cache = getattr(self, "_creds_cache", None)
+        if cache is not None:
+            return _ok({"wallet_address": cfg.wallet_address, **cache})
+
+        def _read_all() -> dict:
+            return {
+                "has_polymarket_key":   _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
+                "has_anthropic_key":    get_anthropic_api_key()  is not None,
+                "has_llm_backup_key":   get_llm_backup_key()     is not None,
+                "has_newsapi_key":      get_newsapi_key()        is not None,
+                "has_cryptopanic_key":  get_cryptopanic_key()    is not None,
+            }
+
+        try:
+            booleans = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(None, _read_all),
+                timeout=20,
+            )
+        except asyncio.TimeoutError:
+            return _err(
+                "keychain access is blocked. macOS may be waiting for you to "
+                "click Always Allow in the keychain prompt — check for a "
+                "password dialog and try again.",
+                503,
+            )
+
+        # Vendor-neutral alias surfaced alongside the back-compat name.
+        booleans["has_llm_key"] = booleans["has_anthropic_key"]
+        self._creds_cache = booleans
+        return _ok({"wallet_address": cfg.wallet_address, **booleans})
 
     async def _put_credentials(self, req: web.Request) -> web.Response:
         try:
@@ -535,6 +573,11 @@ class LocalAPI:
                 wrote.append("cryptopanic_key")
             except Exception as exc:
                 return _err(f"failed to write cryptopanic key: {exc}", 500)
+
+        # Invalidate the cached existence booleans so the next
+        # /api/credentials read picks up whatever just got written.
+        if hasattr(self, "_creds_cache"):
+            self._creds_cache = None
 
         cfg = get_user_config()
         has_llm = get_anthropic_api_key() is not None
