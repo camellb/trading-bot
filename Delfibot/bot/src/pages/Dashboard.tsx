@@ -151,6 +151,23 @@ export default function Dashboard({ state, goto }: Props) {
   const brier = summary?.brier ?? null;
 
   const deployed = open.reduce((s, p) => s + (p.cost_usd || 0), 0);
+  // Total equity = bankroll + locked capital. The bankroll number
+  // already nets out open cost (starting + realized - open_cost),
+  // so adding deployed back gets us starting + realized - which is
+  // the user's actual equity before any trades resolve.
+  const totalEquity = bankroll + deployed;
+
+  // Skipped count from the recent evaluations feed. Mirrors the
+  // filter the Positions page uses (recommendation neither BUY_YES
+  // nor BUY_NO -> skip). Capped at whatever the evaluations endpoint
+  // returns (default 25, plenty for the dashboard tile).
+  const skippedTrades = useMemo(
+    () => evaluations.filter((e) => {
+      const r = (e.recommendation ?? "").toUpperCase();
+      return r !== "BUY_YES" && r !== "YES" && r !== "BUY_NO" && r !== "NO";
+    }).length,
+    [evaluations],
+  );
 
   return (
     <div className="dash">
@@ -159,10 +176,14 @@ export default function Dashboard({ state, goto }: Props) {
       <DashHero
         mode={mode}
         bankroll={bankroll}
+        lockedCapital={deployed}
+        totalEquity={totalEquity}
         realizedPnl={pnl}
         realizedPct={pnlPct}
         winRate={winRate}
         closedTrades={closed}
+        openTrades={open.length}
+        skippedTrades={skippedTrades}
         loaded={loaded}
       />
 
@@ -221,20 +242,28 @@ export default function Dashboard({ state, goto }: Props) {
 }
 
 function DashHero({
-  mode, bankroll, realizedPnl, realizedPct, winRate, closedTrades, loaded,
+  mode, bankroll, lockedCapital, totalEquity,
+  realizedPnl, realizedPct, winRate,
+  closedTrades, openTrades, skippedTrades, loaded,
 }: {
   mode: string;
   bankroll: number;
+  lockedCapital: number;
+  totalEquity: number;
   realizedPnl: number;
   realizedPct: number;
   winRate: number | null;
   closedTrades: number;
+  openTrades: number;
+  skippedTrades: number;
   loaded: boolean;
 }) {
   const isSim = mode === "simulation";
   const pnlSign = realizedPnl > 0 ? "+" : realizedPnl < 0 ? "-" : "";
   const pctSign = realizedPct > 0 ? "+" : realizedPct < 0 ? "-" : "";
   const pnlTone = !loaded ? "" : realizedPnl > 0 ? "profit" : realizedPnl < 0 ? "loss" : "";
+  const fmtUsd = (n: number) =>
+    `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return (
     <section className="dash-hero">
       <div className="hero-balance">
@@ -244,13 +273,27 @@ function DashHero({
             {isSim ? "Simulation" : "Live"}
           </div>
         </div>
-        <div className="hero-balance-value t-num">
-          {loaded ? (
-            <>
-              <span className="hero-balance-cur">$</span>
-              {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </>
-          ) : "-"}
+        <div className="hero-balance-row">
+          <div className="hero-balance-cell">
+            <div className="hero-balance-cell-value t-num">
+              {loaded ? (
+                <>
+                  <span className="hero-balance-cur">$</span>
+                  {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </>
+              ) : "-"}
+            </div>
+          </div>
+          <div className="hero-delta-div" />
+          <div className="hero-balance-cell">
+            <div className="hero-delta-label">Locked capital</div>
+            <div className="hero-delta-val t-num">{loaded ? fmtUsd(lockedCapital) : "-"}</div>
+          </div>
+          <div className="hero-delta-div" />
+          <div className="hero-balance-cell">
+            <div className="hero-delta-label">Total equity</div>
+            <div className="hero-delta-val t-num">{loaded ? fmtUsd(totalEquity) : "-"}</div>
+          </div>
         </div>
         <div className="hero-deltas">
           <div className="hero-delta">
@@ -277,6 +320,16 @@ function DashHero({
           <div className="hero-delta">
             <div className="hero-delta-label">Closed trades</div>
             <div className="hero-delta-val t-num">{loaded ? `${closedTrades}` : "-"}</div>
+          </div>
+          <div className="hero-delta-div" />
+          <div className="hero-delta">
+            <div className="hero-delta-label">Open trades</div>
+            <div className="hero-delta-val t-num">{loaded ? `${openTrades}` : "-"}</div>
+          </div>
+          <div className="hero-delta-div" />
+          <div className="hero-delta">
+            <div className="hero-delta-label">Skipped trades</div>
+            <div className="hero-delta-val t-num">{loaded ? `${skippedTrades}` : "-"}</div>
           </div>
         </div>
       </div>
