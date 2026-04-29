@@ -290,9 +290,12 @@ export default function Positions() {
               <thead>
                 <tr>
                   <th>Market</th>
+                  <th>Category</th>
                   <th>Side</th>
                   <th>Outcome</th>
                   <th>Entry</th>
+                  <th>M YES %</th>
+                  <th>D YES %</th>
                   <th>P&amp;L</th>
                   <th>Settled</th>
                 </tr>
@@ -303,12 +306,23 @@ export default function Positions() {
                   const outcome = s.settlement_outcome as string | null | undefined;
                   const settledAt = s.settled_at as string | null | undefined;
                   const won = outcome ? outcome === s.side : pnl >= 0;
+                  const category = (s.category as string | null | undefined) ?? null;
+                  // Market implied probability YES at entry. entry_price is
+                  // the price paid for the chosen side, so for a NO entry
+                  // we flip it to derive the implied YES probability.
+                  const marketYes = s.side === "YES" ? s.entry_price : 1 - s.entry_price;
+                  const mYesPct = Math.round(marketYes * 100);
+                  const cp = (s.claude_probability as number | null | undefined) ?? null;
+                  const dYesPct = cp != null ? Math.round(cp * 100) : null;
                   return (
                     <tr key={s.id} className="row-hover">
                       <td>{s.question}</td>
+                      <td>{category ?? "-"}</td>
                       <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
                       <td><span className={won ? "pill pill-won" : "pill pill-lost"}>{won ? "WON" : "LOST"}</span></td>
                       <td className="mono">{s.entry_price.toFixed(3)}</td>
+                      <td className="mono">{mYesPct}%</td>
+                      <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                       <td className={`mono ${pnl >= 0 ? "cell-up" : "cell-down"}`}>
                         {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
                       </td>
