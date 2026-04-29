@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   ArchetypeCatalogue,
@@ -888,8 +888,17 @@ function RiskPanel({
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Sync the form from `config` ONCE, on first non-null arrival. App's
+  // 5-second poll re-renders this component with a fresh `config` object
+  // every tick; without this guard the user's typed-but-not-yet-saved
+  // values get clobbered every 5s, and clicking Save then writes back
+  // the (just-clobbered) old values - the exact bug the user reported as
+  // "showed saved but nothing changed".
+  const syncedRef = useRef(false);
   useEffect(() => {
     if (!config) return;
+    if (syncedRef.current) return;
+    syncedRef.current = true;
     setRisk({
       base_stake_pct:         config.base_stake_pct         != null ? String(config.base_stake_pct)         : "",
       max_stake_pct:          config.max_stake_pct          != null ? String(config.max_stake_pct)          : "",

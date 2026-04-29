@@ -122,6 +122,7 @@ from process_health import health as proc_health
 # this module rather than the classifier so editing copy doesn't churn
 # the engine. Description copy mirrors the SaaS Risk page.
 ARCHETYPE_META: dict[str, dict[str, str]] = {
+    # Sports.
     "tennis":             {"label": "Tennis",
                            "description": "Singles and doubles matches across all tours and qualifiers."},
     "basketball":         {"label": "Basketball",
@@ -140,12 +141,36 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
                            "description": "Domestic leagues, internationals, props, full-time results."},
     "sports_other":       {"label": "Other sports",
                            "description": "Anything sport-shaped not listed above (boxing, MMA, golf, motorsport, etc.)."},
-    "price_threshold":    {"label": "Price threshold",
-                           "description": "Will an asset cross a price by a date (BTC, equities, FX, commodities)?"},
+    # Finance / markets.
+    "crypto":             {"label": "Crypto",
+                           "description": "BTC, ETH, SOL, altcoins. Price moves, exchange events, token unlocks."},
+    "stocks":             {"label": "Stocks",
+                           "description": "Equity prices, IPOs, earnings, S&P / NASDAQ / index moves."},
+    "macro":              {"label": "Macro",
+                           "description": "Fed decisions, rate cuts, CPI, GDP, unemployment, monetary policy."},
+    "fx_commodities":     {"label": "FX & commodities",
+                           "description": "Currency pairs, gold, oil, natural gas, agricultural commodities."},
+    # Politics / society.
+    "election":           {"label": "Election",
+                           "description": "Presidential, senate, house, governor, primary races. Vote shares and outcomes."},
+    "policy_event":       {"label": "Policy event",
+                           "description": "Bills, executive orders, court rulings, impeachments, tariffs, sanctions."},
+    "geopolitical_event": {"label": "Geopolitical event",
+                           "description": "Wars, treaties, ceasefires, coups, diplomatic accords."},
+    # Tech / culture.
+    "tech_release":       {"label": "Tech release",
+                           "description": "AI model launches, product releases, SpaceX flights, new APIs."},
+    "awards":             {"label": "Awards",
+                           "description": "Oscars, Emmys, Grammys, Cannes, Nobel, Pulitzer, MVP races."},
+    "entertainment":      {"label": "Entertainment",
+                           "description": "Box office, streaming, music charts, album releases, tour numbers."},
+    # Catch-alls.
+    "weather_event":      {"label": "Weather event",
+                           "description": "Hurricanes, tornadoes, snowfall thresholds, temperature records."},
+    "price_threshold":    {"label": "Price threshold (other)",
+                           "description": "Generic 'will X cross $Y by Z' markets that aren't crypto/stocks/macro/FX."},
     "activity_count":     {"label": "Activity count",
                            "description": "Counts of public activity (executive orders, posts, hires, layoffs) by date."},
-    "geopolitical_event": {"label": "Geopolitical event",
-                           "description": "Wars, sanctions, ceasefires, elections, and other state-level outcomes."},
     "binary_event":       {"label": "Other event",
                            "description": "Yes/no markets that don't fit the categories above."},
 }

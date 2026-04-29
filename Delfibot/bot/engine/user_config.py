@@ -730,8 +730,29 @@ def set_license_key(value: Optional[str]) -> None:
     _keyring_set(KEYRING_LICENSE_KEY, value)
 
 
+def _license_meta_path():
+    """Path to the license-meta JSON file. Imported lazily because
+    `db.engine.app_data_dir` pulls in the SQLAlchemy engine, and we
+    don't want that as a side-effect of importing user_config."""
+    from db.engine import app_data_dir
+    p = app_data_dir() / "data"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "license_meta.json"
+
+
 def get_license_meta() -> dict:
     """Read the cached validation metadata for the stored license.
+
+    Lives in <app-data>/data/license_meta.json (NOT the keychain).
+    Moved out of keychain 2026-04-29 because:
+      - it's not a secret (status flag + ISO timestamp + LS instance id)
+      - keeping it in keychain meant one extra macOS access prompt
+        per binary rebuild (per-binary ACLs)
+
+    Migration: if the file doesn't exist, falls back to the legacy
+    keychain entry. The next `set_license_meta` write will create the
+    file and clear the keychain entry, so each install pays the
+    migration cost exactly once.
 
     Shape:
       {"status": "valid" | "invalid" | "revoked",
@@ -741,23 +762,70 @@ def get_license_meta() -> dict:
     Returns an empty dict when no license has been activated yet, or
     when the stored JSON is corrupted (treated as "never validated").
     """
+    try:
+        path = _license_meta_path()
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        print(f"[user_config] license_meta file read failed: {exc}",
+              file=sys.stderr)
+
+    # Legacy fallback: keychain. Only hit on the FIRST read after
+    # upgrade; subsequent set_license_meta wipes the keychain entry.
     raw = _keyring_get(KEYRING_LICENSE_META)
     if not raw:
         return {}
     try:
         data = json.loads(raw)
-        if isinstance(data, dict):
-            return data
+        return data if isinstance(data, dict) else {}
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def set_license_meta(meta: Optional[dict]) -> None:
-    if meta is None:
+    """Persist license meta to the JSON file. Clearing (meta=None)
+    removes both the file and the legacy keychain entry."""
+    try:
+        path = _license_meta_path()
+        if meta is None:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            # Atomic write so a crash mid-write can't corrupt the file.
+            import tempfile
+            import os as _os
+            fd, tmp = tempfile.mkstemp(
+                dir=str(path.parent),
+                prefix=".license_meta.",
+                suffix=".json",
+            )
+            try:
+                with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(meta, f)
+                _os.chmod(tmp, 0o600)  # owner-only readable
+                _os.replace(tmp, str(path))
+            except Exception:
+                try:
+                    _os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+    except Exception as exc:
+        print(f"[user_config] license_meta file write failed: {exc}",
+              file=sys.stderr)
+
+    # Always clear the legacy keychain entry. Cheap on a clean install
+    # (the entry doesn't exist, _keyring_set noops); on upgrade this
+    # purges the legacy copy so the next get_license_meta short-circuits
+    # at the file read and never touches keychain again.
+    try:
         _keyring_set(KEYRING_LICENSE_META, None)
-        return
-    _keyring_set(KEYRING_LICENSE_META, json.dumps(meta))
+    except Exception:
+        pass
 
 
 # ── Telegram (outbound notifications) ───────────────────────────────────────
