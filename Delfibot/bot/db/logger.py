@@ -41,7 +41,14 @@ def log_event(
     description: str,
     source: str,
 ) -> None:
-    """Insert a row into event_log."""
+    """Insert a row into event_log + best-effort push to Telegram.
+
+    Telegram side-effect: when the user has both a bot token in the
+    keychain and a chat id in user_config, every event_type that is
+    enabled in `notification_prefs` also gets sent as a Telegram
+    message. The push is best-effort (silent return on any failure)
+    so a Telegram outage never affects in-app event surfacing.
+    """
     try:
         engine = get_engine()
         with engine.begin() as conn:
@@ -57,3 +64,14 @@ def log_event(
             )
     except Exception as exc:
         print(f"[logger] log_event error: {exc}", file=sys.stderr)
+
+    # Outbound Telegram push. Imports are local so a fresh install with
+    # the keychain entry empty doesn't pay the urllib import cost on
+    # every event_log write.
+    try:
+        from engine.user_config import should_notify
+        if should_notify(category=event_type):
+            from feeds.telegram_notifier import notify as _tg_notify
+            _tg_notify(description)
+    except Exception as exc:
+        print(f"[logger] telegram push error: {exc}", file=sys.stderr)

@@ -296,6 +296,13 @@ export interface NotificationsConfig {
   notification_prefs: Record<string, boolean>;
 }
 
+/** Telegram outbound config. The bot token is never returned by the
+ *  backend (it's keychain-only); the UI sees only whether it's set. */
+export interface TelegramConfig {
+  bot_token_configured: boolean;
+  chat_id: string | null;
+}
+
 /** Lemon Squeezy license gate state, returned by /api/license/status
  *  and /api/license/activate. */
 export interface LicenseStatus {
@@ -396,11 +403,23 @@ export const api = {
   deactivateLicense: () =>
     request<LicenseStatus>("/api/license/deactivate", { method: "POST" }),
 
-  // Notifications (in-app only; Telegram support was dropped post local-first pivot)
+  // Notifications: in-app per-category toggles + Telegram outbound.
   notifications:   () => request<NotificationsConfig>("/api/config/notifications"),
   saveNotifications: (prefs: Record<string, boolean>) =>
     request<NotificationsConfig>("/api/config/notifications", {
       method: "PUT",
       body: JSON.stringify({ notification_prefs: prefs }),
+    }),
+
+  // Telegram. testTelegram both probes and persists on success.
+  telegram:        () => request<TelegramConfig>("/api/config/telegram"),
+  testTelegram:    (bot_token: string, chat_id: string) =>
+    request<TelegramConfig>("/api/config/telegram/test", {
+      method: "POST",
+      body: JSON.stringify({ bot_token, chat_id }),
+    }),
+  disconnectTelegram: () =>
+    request<TelegramConfig>("/api/config/telegram/disconnect", {
+      method: "POST",
     }),
 };

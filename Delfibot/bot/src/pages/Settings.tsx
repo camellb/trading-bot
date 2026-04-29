@@ -6,6 +6,7 @@ import {
   Credentials,
   LicenseStatus,
   NotificationsConfig,
+  TelegramConfig,
 } from "../api";
 import type { SettingsTab } from "../App";
 
@@ -611,6 +612,7 @@ function NotificationsPanel() {
 
   return (
     <>
+      <TelegramConnectorPanel />
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">What Delfi will surface</h2>
@@ -648,6 +650,186 @@ function NotificationsPanel() {
         )}
       </div>
     </>
+  );
+}
+
+// ── Telegram connector ──────────────────────────────────────────────────
+
+/**
+ * Telegram connector card.
+ *
+ * Push-only outbound connection to a user-supplied Telegram bot.
+ * Setup is BYO:
+ *   1. User creates a bot via @BotFather on Telegram, gets a token.
+ *   2. User starts a chat with their new bot and sends /start.
+ *   3. User finds their numeric chat id (e.g. via @userinfobot, or
+ *      by visiting `https://api.telegram.org/bot<TOKEN>/getUpdates`).
+ *   4. User pastes both into this card and clicks "Test + save". The
+ *      sidecar sends a probe message; on success it persists the
+ *      pair (token to keychain, chat id to user_config). On failure
+ *      nothing is persisted and the user sees Telegram's error.
+ *
+ * The token is treated as a secret: the GET endpoint returns only
+ * `bot_token_configured: boolean`, never the token itself. Disconnect
+ * wipes both.
+ */
+function TelegramConnectorPanel() {
+  const [tg, setTg] = useState<TelegramConfig | null>(null);
+  const [token, setToken] = useState("");
+  const [chat, setChat] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.telegram()
+      .then((s) => {
+        if (!alive) return;
+        setTg(s);
+        if (s.chat_id) setChat(s.chat_id);
+      })
+      .catch(() => alive && setTg(null));
+    return () => { alive = false; };
+  }, []);
+
+  const isConnected = !!tg?.bot_token_configured && !!tg?.chat_id;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setMsg(null);
+    if (!token.trim()) {
+      setMsg({ kind: "err", text: "Paste your bot token from @BotFather." });
+      return;
+    }
+    if (!chat.trim()) {
+      setMsg({ kind: "err", text: "Paste your numeric chat id." });
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = await api.testTelegram(token.trim(), chat.trim());
+      setTg(next);
+      setToken("");
+      setMsg({ kind: "ok", text: "Connected. Check Telegram for the test message." });
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const next = await api.disconnectTelegram();
+      setTg(next);
+      setToken("");
+      setChat("");
+      setMsg({ kind: "ok", text: "Telegram disconnected." });
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+      setConfirmDisconnect(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Telegram</h2>
+        <span className="panel-meta">
+          {isConnected ? "Connected" : "Not connected"}
+        </span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Push trades, settlements, and risk events to your phone.
+        Create a bot via{" "}
+        <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
+          @BotFather
+        </a>{" "}
+        to get a token, then send any message to your bot so it has a
+        chat id. Find your chat id via{" "}
+        <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer">
+          @userinfobot
+        </a>.
+      </p>
+
+      <form className="form-row" onSubmit={submit}>
+        <div className="form-field">
+          <label>Bot token</label>
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={
+              tg?.bot_token_configured
+                ? "•••••• (saved)"
+                : "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+            }
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        </div>
+        <div className="form-field">
+          <label>Chat id</label>
+          <input
+            type="text"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="123456789"
+            value={chat}
+            onChange={(e) => setChat(e.target.value)}
+          />
+        </div>
+        <div className="form-actions">
+          <button type="submit" className="btn small" disabled={busy}>
+            {busy ? "Sending test..." : "Test + save"}
+          </button>
+          {isConnected && (
+            !confirmDisconnect ? (
+              <button
+                type="button"
+                className="btn ghost small"
+                onClick={() => setConfirmDisconnect(true)}
+                disabled={busy}
+              >
+                Disconnect
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="btn danger small"
+                  onClick={disconnect}
+                  disabled={busy}
+                >
+                  Yes, disconnect
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  onClick={() => setConfirmDisconnect(false)}
+                  disabled={busy}
+                >
+                  Cancel
+                </button>
+              </>
+            )
+          )}
+        </div>
+      </form>
+
+      {msg && (
+        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+           style={{ marginTop: 12 }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
   );
 }
 

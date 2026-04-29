@@ -53,6 +53,7 @@ KEYRING_NEWSAPI_KEY = "newsapi_key"                    # optional, news headline
 KEYRING_CRYPTOPANIC_KEY = "cryptopanic_api_key"        # optional, crypto news
 KEYRING_LICENSE_KEY = "license_key"                    # Lemon Squeezy license
 KEYRING_LICENSE_META = "license_meta"                  # JSON: status + last_validated_at + instance_id
+KEYRING_TELEGRAM_TOKEN = "telegram_bot_token"          # @BotFather token for outbound notifications
 
 
 @dataclass
@@ -90,10 +91,19 @@ class UserConfig:
     venue:                    str           = "polymarket"
 
     # Per-category notification toggles. Keys are NOTIFICATION_CATEGORIES.
-    # Notifications now flow through the SQLite event_log table the
-    # dashboard reads (no Telegram). Missing keys default to True so a
-    # fresh install gets every notification until the user opts out.
+    # In-app notifications flow through the SQLite event_log table the
+    # dashboard reads. Telegram outbound piggy-backs on log_event when
+    # a chat_id + bot token are configured. Missing keys default to
+    # True so a fresh install gets every notification until the user
+    # opts out.
     notification_prefs:       Dict[str, bool] = field(default_factory=dict)
+
+    # Telegram. The bot token (a secret) lives in the OS keychain at
+    # KEYRING_TELEGRAM_TOKEN; this is just the recipient chat id (a
+    # numeric string from @userinfobot or the user's own chat). Empty
+    # string / None means "Telegram is not configured, suppress all
+    # outbound pushes".
+    telegram_chat_id:         Optional[str]   = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -234,6 +244,7 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "wallet_address",
     "bot_enabled",
     "notification_prefs",
+    "telegram_chat_id",
 })
 
 
@@ -327,6 +338,11 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
             return None
         s = str(raw).strip()
         return s or None
+    if key == "telegram_chat_id":
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
     if key == "bot_enabled":
         if isinstance(raw, bool):
             return raw
@@ -371,7 +387,7 @@ def validate_user_config_value(key: str, value) -> None:
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
-    if key in ("mode", "wallet_address", "bot_enabled"):
+    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id"):
         return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
@@ -516,7 +532,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       cost_assumption_override, archetype_skip_list, "
                 "       mode, starting_cash, wallet_address, "
                 "       bot_enabled, archetype_stake_multipliers, "
-                "       notification_prefs "
+                "       notification_prefs, telegram_chat_id "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -537,6 +553,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             bot_enabled                   = bool(row[12]) if row[12] is not None else False,
             archetype_stake_multipliers   = _decode_archetype_multipliers(row[13]),
             notification_prefs            = _decode_notification_prefs(row[14]),
+            telegram_chat_id              = (str(row[15]).strip() if row[15] is not None and str(row[15]).strip() else None),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -741,6 +758,65 @@ def set_license_meta(meta: Optional[dict]) -> None:
         _keyring_set(KEYRING_LICENSE_META, None)
         return
     _keyring_set(KEYRING_LICENSE_META, json.dumps(meta))
+
+
+# ── Telegram (outbound notifications) ───────────────────────────────────────
+# The bot token (a secret, format `123456:AA...` from @BotFather) lives
+# in the OS keychain. The chat_id (a numeric string identifying where
+# to send) lives in user_config because it's not sensitive on its own
+# and the dashboard reads it back to render the connection state.
+def get_telegram_bot_token() -> Optional[str]:
+    return _keyring_get(KEYRING_TELEGRAM_TOKEN)
+
+
+def set_telegram_bot_token(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_TELEGRAM_TOKEN, value)
+
+
+def get_user_telegram_config(user_id: str = DEFAULT_USER_ID) -> dict:
+    """Return {'bot_token_configured', 'chat_id'} for the dashboard.
+
+    The token itself is never returned; only whether one is set. This
+    keeps the secret out of any HTTP response and matches how the
+    Polymarket private-key getter works.
+    """
+    cfg = get_user_config(user_id)
+    return {
+        "bot_token_configured": bool(get_telegram_bot_token()),
+        "chat_id":              cfg.telegram_chat_id,
+    }
+
+
+def set_user_telegram_config(
+    user_id: str = DEFAULT_USER_ID,
+    *,
+    bot_token: Optional[str] = None,
+    chat_id:   Optional[str] = None,
+    clear:     bool = False,
+) -> dict:
+    """Persist a Telegram config update.
+
+    Args:
+      bot_token: new bot token; pass None to leave the existing value
+        untouched. Empty string clears.
+      chat_id:   new chat id; pass None to leave existing value
+        untouched. Empty string clears.
+      clear:     when True, wipes both regardless of the other args.
+        Used by the disconnect flow.
+    """
+    if clear:
+        _keyring_set(KEYRING_TELEGRAM_TOKEN, None)
+        update_user_config(user_id, telegram_chat_id=None)
+        return get_user_telegram_config(user_id)
+
+    if bot_token is not None:
+        token = bot_token.strip() or None
+        _keyring_set(KEYRING_TELEGRAM_TOKEN, token)
+    if chat_id is not None:
+        cid = chat_id.strip() or None
+        update_user_config(user_id, telegram_chat_id=cid)
+
+    return get_user_telegram_config(user_id)
 
 
 # ── Onboarding ──────────────────────────────────────────────────────────────

@@ -96,6 +96,7 @@ from engine.user_config import (
     get_llm_backup_key,
     get_newsapi_key,
     get_user_config,
+    get_user_telegram_config,
     set_anthropic_api_key,
     set_cryptopanic_key,
     set_license_key,
@@ -103,9 +104,11 @@ from engine.user_config import (
     set_llm_backup_key,
     set_newsapi_key,
     set_user_polymarket_creds,
+    set_user_telegram_config,
     update_user_config,
     validated_update_payload,
 )
+from feeds.telegram_notifier import send_test as telegram_send_test
 from engine.license import (
     LICENSE_OFFLINE_GRACE_DAYS,
     deactivate_license,
@@ -349,6 +352,13 @@ class LocalAPI:
         # Notification prefs (per-category toggles, in-app only)
         app.router.add_get("/api/config/notifications",   self._get_notifications)
         app.router.add_put("/api/config/notifications",   self._put_notifications)
+
+        # Telegram outbound notifications (BYO bot via @BotFather).
+        app.router.add_get("/api/config/telegram",        self._get_telegram_config)
+        app.router.add_put("/api/config/telegram",        self._put_telegram_config)
+        app.router.add_post("/api/config/telegram/test",  self._post_telegram_test)
+        app.router.add_post("/api/config/telegram/disconnect",
+                            self._post_telegram_disconnect)
 
         # License (Lemon Squeezy hard gate). The React shell calls
         # /api/license/status on every mount and shows the
@@ -931,6 +941,89 @@ class LocalAPI:
             "categories":         list(NOTIFICATION_CATEGORIES),
             "notification_prefs": full,
         })
+
+    # ── Telegram outbound notifications ─────────────────────────────────
+    async def _get_telegram_config(self, _req: web.Request) -> web.Response:
+        """Return whether Telegram is configured + the chat id.
+
+        We never return the bot token. The UI cares only about the
+        binary state (configured or not); the actual token is read by
+        the notifier from the keychain on each send.
+        """
+        return _ok(get_user_telegram_config())
+
+    async def _put_telegram_config(self, req: web.Request) -> web.Response:
+        """Save the bot token + chat id without testing first.
+
+        Most callers go through POST /api/config/telegram/test which
+        validates by sending a real message and only persists on
+        success. This raw PUT is here for power-users / scripted setup.
+        """
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+        token = payload.get("bot_token")
+        chat_id = payload.get("chat_id")
+        if token is not None and not isinstance(token, str):
+            return _err("bot_token must be a string", 400)
+        if chat_id is not None and not isinstance(chat_id, str):
+            return _err("chat_id must be a string", 400)
+        try:
+            set_user_telegram_config(bot_token=token, chat_id=chat_id)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        except Exception as exc:
+            return _err(f"update failed: {exc}", 500)
+        return _ok(get_user_telegram_config())
+
+    async def _post_telegram_test(self, req: web.Request) -> web.Response:
+        """Send a real probe message via the supplied (token, chat_id).
+
+        Persists the pair on success. On failure, returns the Telegram
+        error string so the UI can surface "Bot was blocked by user",
+        "chat not found", etc., and leaves both keychain + DB
+        untouched.
+        """
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+        token = (payload.get("bot_token") or "").strip()
+        chat_id = (payload.get("chat_id") or "").strip()
+        if not token:
+            return _err("bot_token is required", 400)
+        if not chat_id:
+            return _err("chat_id is required", 400)
+
+        ok, err = await asyncio.get_event_loop().run_in_executor(
+            None, telegram_send_test, token, chat_id,
+        )
+        if not ok:
+            return _err(err or "telegram test failed", 400)
+
+        try:
+            set_user_telegram_config(bot_token=token, chat_id=chat_id)
+        except Exception as exc:
+            return _err(f"could not persist telegram config: {exc}", 500)
+        return _ok(get_user_telegram_config())
+
+    async def _post_telegram_disconnect(self, _req: web.Request) -> web.Response:
+        """Wipe the Telegram bot token + chat id.
+
+        Idempotent: if nothing was configured we still return 200 with
+        the empty status payload so the UI can flip to "Not connected"
+        without special-casing an error.
+        """
+        try:
+            set_user_telegram_config(clear=True)
+        except Exception as exc:
+            return _err(f"disconnect failed: {exc}", 500)
+        return _ok(get_user_telegram_config())
 
     # ── License (LS hard gate) ──────────────────────────────────────────
     def _license_status_payload(self) -> dict:
