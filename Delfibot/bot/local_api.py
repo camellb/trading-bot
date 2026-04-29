@@ -816,8 +816,19 @@ class LocalAPI:
             p = p_yes if side == "YES" else (1.0 - p_yes)
             o = int(r[3])
             running += (p - o) ** 2
+            # SQLite returns DATETIME columns as strings under raw
+            # `text()` queries (no type adapter applied), so calling
+            # .isoformat() on r[0] raises AttributeError and the
+            # handler 500s. hasattr() handles both: real datetime
+            # objects (future SQLAlchemy versions or other backends)
+            # and the string form SQLite gives us today.
+            settled = r[0]
+            settled_str = (
+                settled.isoformat() if hasattr(settled, "isoformat")
+                else (str(settled) if settled else None)
+            )
             points.append({
-                "date":  r[0].isoformat() if r[0] else None,
+                "date":  settled_str,
                 "brier": round(running / i, 4),
                 "n":     i,
             })
