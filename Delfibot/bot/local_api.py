@@ -979,25 +979,42 @@ class LocalAPI:
         return _ok(get_user_telegram_config())
 
     async def _post_telegram_test(self, req: web.Request) -> web.Response:
-        """Send a real probe message via the supplied (token, chat_id).
+        """Send a real probe message. NEVER persists.
 
-        Persists the pair on success. On failure, returns the Telegram
-        error string so the UI can surface "Bot was blocked by user",
-        "chat not found", etc., and leaves both keychain + DB
-        untouched.
+        Resolves the (token, chat_id) pair as follows:
+          - Use whatever the request body contains, if non-empty.
+          - Otherwise fall back to the currently saved keychain +
+            user_config values.
+
+        That lets the UI offer two flows:
+          - "Save and then Test" (form empty after save → uses saved)
+          - "Test before saving" (form filled → uses form)
+
+        Returns 200 on success or 400 with the Telegram error string.
         """
         try:
             payload = await req.json()
         except Exception:
-            return _err("invalid json", 400)
+            payload = {}
         if not isinstance(payload, dict):
-            return _err("body must be a JSON object", 400)
+            payload = {}
         token = (payload.get("bot_token") or "").strip()
         chat_id = (payload.get("chat_id") or "").strip()
+
+        # Fall back to saved values when the form fields are blank.
+        # The token field is masked when one is saved, so an empty
+        # `bot_token` in the body just means "use the saved one".
         if not token:
-            return _err("bot_token is required", 400)
+            from engine.user_config import get_telegram_bot_token
+            token = (get_telegram_bot_token() or "").strip()
         if not chat_id:
-            return _err("chat_id is required", 400)
+            cfg = get_user_config()
+            chat_id = (cfg.telegram_chat_id or "").strip()
+
+        if not token:
+            return _err("no bot token configured", 400)
+        if not chat_id:
+            return _err("no chat id configured", 400)
 
         # Use aiohttp directly so the timeout is enforced inside the
         # event loop and the request can't wedge an executor thread on
@@ -1007,7 +1024,7 @@ class LocalAPI:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         body = {
             "chat_id":    chat_id,
-            "text":       "Delfi connected. You'll see trades, settlements, and risk events here.",
+            "text":       "Delfi test message. You'll see trades, settlements, and risk events here.",
             "parse_mode": "HTML",
         }
         ok = False
@@ -1029,11 +1046,7 @@ class LocalAPI:
         if not ok:
             return _err(err or "telegram test failed", 400)
 
-        try:
-            set_user_telegram_config(bot_token=token, chat_id=chat_id)
-        except Exception as exc:
-            return _err(f"could not persist telegram config: {exc}", 500)
-        return _ok(get_user_telegram_config())
+        return _ok({"ok": True})
 
     async def _post_telegram_disconnect(self, _req: web.Request) -> web.Response:
         """Wipe the Telegram bot token + chat id.

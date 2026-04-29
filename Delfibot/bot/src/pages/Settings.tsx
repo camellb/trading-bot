@@ -695,24 +695,50 @@ function TelegramConnectorPanel() {
 
   const isConnected = !!tg?.bot_token_configured && !!tg?.chat_id;
 
-  const submit = async (e: React.FormEvent) => {
+  const save = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setMsg(null);
-    if (!token.trim()) {
-      setMsg({ kind: "err", text: "Paste your bot token from @BotFather." });
-      return;
-    }
-    if (!chat.trim()) {
-      setMsg({ kind: "err", text: "Paste your numeric chat id." });
+    // Save permits a partial update: empty token leaves the saved one
+    // alone (the placeholder shows "saved"), empty chat id is the
+    // same. Both empty + nothing already saved is a no-op error.
+    if (!token.trim() && !chat.trim() && !tg?.bot_token_configured && !tg?.chat_id) {
+      setMsg({ kind: "err", text: "Paste your bot token and chat id first." });
       return;
     }
     setBusy(true);
     try {
-      const next = await api.testTelegram(token.trim(), chat.trim());
+      const next = await api.saveTelegram(token.trim(), chat.trim());
       setTg(next);
       setToken("");
-      setMsg({ kind: "ok", text: "Connected. Check Telegram for the test message." });
+      setMsg({ kind: "ok", text: "Saved. Click Test to send a probe message." });
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const test = async () => {
+    if (busy) return;
+    setMsg(null);
+    // Form values take priority; if the user is testing creds before
+    // saving, those flow to the sidecar. If both are blank, the
+    // sidecar falls back to whatever's saved.
+    const formToken = token.trim();
+    const formChat  = chat.trim();
+    if (!formToken && !tg?.bot_token_configured) {
+      setMsg({ kind: "err", text: "No bot token saved yet. Paste one and click Save first." });
+      return;
+    }
+    if (!formChat && !tg?.chat_id) {
+      setMsg({ kind: "err", text: "No chat id saved yet. Paste one and click Save first." });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.testTelegram(formToken, formChat);
+      setMsg({ kind: "ok", text: "Test sent. Check Telegram." });
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -758,7 +784,7 @@ function TelegramConnectorPanel() {
         </a>.
       </p>
 
-      <form className="form-row" onSubmit={submit}>
+      <form className="form-row" onSubmit={save}>
         <div className="form-field">
           <label>Bot token</label>
           <input
@@ -787,7 +813,15 @@ function TelegramConnectorPanel() {
         </div>
         <div className="form-actions">
           <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Sending test..." : "Test + save"}
+            {busy ? "Saving..." : "Save"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost small"
+            onClick={test}
+            disabled={busy}
+          >
+            {busy ? "..." : "Test"}
           </button>
           {isConnected && (
             !confirmDisconnect ? (

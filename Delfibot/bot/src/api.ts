@@ -428,12 +428,20 @@ export const api = {
       body: JSON.stringify({ notification_prefs: prefs }),
     }),
 
-  // Telegram. testTelegram both probes and persists on success.
+  // Telegram. Save persists, Test probes (never persists). Test
+  // accepts an optional override of (bot_token, chat_id) — when the
+  // form fields are empty, the sidecar falls back to the saved values
+  // so "Save then Test" works without having to re-paste the token.
   telegram:        () => request<TelegramConfig>("/api/config/telegram"),
-  testTelegram:    (bot_token: string, chat_id: string) =>
-    request<TelegramConfig>("/api/config/telegram/test", {
-      method: "POST",
+  saveTelegram:    (bot_token: string, chat_id: string) =>
+    request<TelegramConfig>("/api/config/telegram", {
+      method: "PUT",
       body: JSON.stringify({ bot_token, chat_id }),
+    }),
+  testTelegram:    (bot_token?: string, chat_id?: string) =>
+    request<{ ok: boolean }>("/api/config/telegram/test", {
+      method: "POST",
+      body: JSON.stringify({ bot_token: bot_token ?? "", chat_id: chat_id ?? "" }),
     }),
   disconnectTelegram: () =>
     request<TelegramConfig>("/api/config/telegram/disconnect", {
