@@ -88,7 +88,6 @@ export default function Performance() {
 
   const refresh = useCallback(async () => {
     try {
-      setError(null);
       const [s, t, c, p] = await Promise.all([
         api.summary(),
         api.brierTrend().then((x) => x.points),
@@ -104,6 +103,9 @@ export default function Performance() {
       setCalibration(c);
       setClosed(p);
       setLoaded(true);
+      // Clear error only on confirmed success (anti-flash pattern,
+      // see App.tsx::refresh).
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

@@ -56,13 +56,15 @@ export default function Intelligence() {
 
   const refresh = useCallback(async () => {
     try {
-      setError(null);
       const [r1, r2] = await Promise.all([
         api.learningReports(20).then((x) => x.reports),
         api.suggestions().then((x) => x.suggestions),
       ]);
       setReports(r1);
       setSuggestions(r2);
+      // Clear error only on confirmed success (anti-flash pattern,
+      // see App.tsx::refresh).
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

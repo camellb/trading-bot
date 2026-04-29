@@ -93,7 +93,6 @@ export default function Dashboard({ state, goto }: Props) {
 
   const refresh = useCallback(async () => {
     try {
-      setError(null);
       const [s, p, ev, cfg] = await Promise.all([
         api.summary(),
         api.positions(50).then((r) => r.positions),
@@ -109,6 +108,9 @@ export default function Dashboard({ state, goto }: Props) {
         dry_powder_reserve_pct: numberOr(cfg.dry_powder_reserve_pct, 0.20),
       });
       setLoaded(true);
+      // Only clear error after a confirmed successful refresh - same
+      // anti-flash pattern as App.tsx's poll loop.
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

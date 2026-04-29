@@ -75,7 +75,6 @@ export default function Positions() {
 
   const refresh = useCallback(async () => {
     try {
-      setError(null);
       const [p, e] = await Promise.all([
         api.positions(100).then((r) => r.positions),
         api.evaluations(50).then((r) => r.evaluations),
@@ -83,6 +82,10 @@ export default function Positions() {
       setPositions(p);
       setEvals(e);
       setLoaded(true);
+      // Clear error only on confirmed success - prevents the 0.3s
+      // flash where a stale error vanishes pre-await and then the
+      // refresh fails again, re-showing the banner.
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

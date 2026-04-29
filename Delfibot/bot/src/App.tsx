@@ -40,7 +40,6 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     try {
-      setError(null);
       const [s, c, cfg] = await Promise.all([
         api.state(),
         api.credentials(),
@@ -50,6 +49,14 @@ export default function App() {
       setCreds(c);
       setConfig(cfg);
       setConnected(true);
+      // Only clear the error AFTER a confirmed successful refresh.
+      // Pre-clearing (setError(null) before Promise.all resolves)
+      // caused a ~0.3s visual flash: a stale error from a prior
+      // poll would commit-clear synchronously, the banner would
+      // disappear, then Promise.all rejected ~300ms later and
+      // setError fired again, banner re-appeared. Users read that
+      // blink as "an issue appearing for 0.3s and disappearing."
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
