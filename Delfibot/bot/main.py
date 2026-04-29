@@ -209,6 +209,16 @@ async def main() -> None:
         flush=True,
     )
 
+    # Start the Telegram inbound command listener. No-op when Telegram
+    # isn't configured. Restartable: local_api routes call this again
+    # after save/test/disconnect so the listener picks up new creds.
+    try:
+        from feeds.telegram_notifier import start_command_listener as _tg_start
+        if _tg_start():
+            print("[delfi] telegram command listener started", flush=True)
+    except Exception as exc:
+        print(f"[delfi] telegram listener init failed: {exc}", flush=True)
+
     # ── Shutdown ─────────────────────────────────────────────────────────────
     shutdown_event = asyncio.Event()
 

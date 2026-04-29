@@ -954,9 +954,8 @@ class LocalAPI:
     async def _put_telegram_config(self, req: web.Request) -> web.Response:
         """Save the bot token + chat id without testing first.
 
-        Most callers go through POST /api/config/telegram/test which
-        validates by sending a real message and only persists on
-        success. This raw PUT is here for power-users / scripted setup.
+        Restarts the inbound command listener so /help, /status etc
+        start working against the new creds without an app restart.
         """
         try:
             payload = await req.json()
@@ -976,6 +975,13 @@ class LocalAPI:
             return _err(str(exc), 400)
         except Exception as exc:
             return _err(f"update failed: {exc}", 500)
+        # Best-effort: pick up the new creds. Failures are non-fatal -
+        # outbound notifications still work, just not commands.
+        try:
+            from feeds.telegram_notifier import start_command_listener
+            start_command_listener()
+        except Exception as exc:
+            print(f"[telegram] listener restart failed: {exc}", file=sys.stderr)
         return _ok(get_user_telegram_config())
 
     async def _post_telegram_test(self, req: web.Request) -> web.Response:
@@ -1051,14 +1057,18 @@ class LocalAPI:
     async def _post_telegram_disconnect(self, _req: web.Request) -> web.Response:
         """Wipe the Telegram bot token + chat id.
 
-        Idempotent: if nothing was configured we still return 200 with
-        the empty status payload so the UI can flip to "Not connected"
-        without special-casing an error.
+        Stops the inbound command listener too - otherwise it'd keep
+        long-polling Telegram with stale creds until process exit.
         """
         try:
             set_user_telegram_config(clear=True)
         except Exception as exc:
             return _err(f"disconnect failed: {exc}", 500)
+        try:
+            from feeds.telegram_notifier import stop_command_listener
+            stop_command_listener()
+        except Exception as exc:
+            print(f"[telegram] listener stop failed: {exc}", file=sys.stderr)
         return _ok(get_user_telegram_config())
 
     # ── License (LS hard gate) ──────────────────────────────────────────
