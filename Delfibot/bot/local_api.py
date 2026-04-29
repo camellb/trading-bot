@@ -108,7 +108,6 @@ from engine.user_config import (
     update_user_config,
     validated_update_payload,
 )
-from feeds.telegram_notifier import send_test as telegram_send_test
 from engine.license import (
     LICENSE_OFFLINE_GRACE_DAYS,
     deactivate_license,
@@ -1000,9 +999,33 @@ class LocalAPI:
         if not chat_id:
             return _err("chat_id is required", 400)
 
-        ok, err = await asyncio.get_event_loop().run_in_executor(
-            None, telegram_send_test, token, chat_id,
-        )
+        # Use aiohttp directly so the timeout is enforced inside the
+        # event loop and the request can't wedge an executor thread on
+        # a slow TLS handshake (the urllib path was hanging on certain
+        # PyInstaller builds, even with timeout= set).
+        import aiohttp
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        body = {
+            "chat_id":    chat_id,
+            "text":       "Delfi connected. You'll see trades, settlements, and risk events here.",
+            "parse_mode": "HTML",
+        }
+        ok = False
+        err: Optional[str] = None
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=8)) as sess:
+                async with sess.post(url, json=body) as resp:
+                    data = await resp.json(content_type=None)
+                    if data.get("ok"):
+                        ok = True
+                    else:
+                        err = str(data.get("description") or f"HTTP {resp.status}")
+        except aiohttp.ClientConnectorError as exc:
+            err = f"could not reach Telegram: {exc}"
+        except asyncio.TimeoutError:
+            err = "Telegram took too long to respond (timeout)"
+        except Exception as exc:
+            err = f"send failed: {exc}"
         if not ok:
             return _err(err or "telegram test failed", 400)
 

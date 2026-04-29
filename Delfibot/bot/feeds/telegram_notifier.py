@@ -40,7 +40,13 @@ _DEFAULT_TIMEOUT = 6.0  # short on purpose, we never want to block a hot path
 
 
 def _post(token: str, method: str, payload: dict, *, timeout: float) -> Tuple[bool, Optional[str]]:
-    """POST to Telegram's bot API. Returns (ok, error_str_or_None)."""
+    """POST to Telegram's bot API. Returns (ok, error_str_or_None).
+
+    Defence in depth: we set a per-call socket-level timeout AND pass
+    `timeout=` to urlopen. Some PyInstaller-frozen Pythons have been
+    seen to ignore the urlopen timeout during the TLS handshake, so
+    the socket default acts as a hard ceiling.
+    """
     url = f"{_API_BASE}/bot{token}/{method}"
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -52,20 +58,28 @@ def _post(token: str, method: str, payload: dict, *, timeout: float) -> Tuple[bo
             "Accept":       "application/json",
         },
     )
+    import socket as _socket
+    _prev_default = _socket.getdefaulttimeout()
+    _socket.setdefaulttimeout(timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
-    except urllib.error.HTTPError as exc:
-        # Telegram returns a JSON body with `description` on errors.
         try:
-            data = json.loads(exc.read())
-            return False, str(data.get("description") or f"HTTP {exc.code}")
-        except Exception:
-            return False, f"HTTP {exc.code}"
-    except urllib.error.URLError as exc:
-        return False, f"could not reach Telegram: {exc.reason}"
-    except Exception as exc:
-        return False, f"send failed: {exc}"
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            # Telegram returns a JSON body with `description` on errors.
+            try:
+                data = json.loads(exc.read())
+                return False, str(data.get("description") or f"HTTP {exc.code}")
+            except Exception:
+                return False, f"HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            return False, f"could not reach Telegram: {exc.reason}"
+        except _socket.timeout:
+            return False, "Telegram took too long to respond (timeout)"
+        except Exception as exc:
+            return False, f"send failed: {exc}"
+    finally:
+        _socket.setdefaulttimeout(_prev_default)
 
     try:
         data = json.loads(raw)

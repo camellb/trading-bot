@@ -61,24 +61,41 @@ async function port(): Promise<number> {
 
 async function request<T>(
   path: string,
-  init?: RequestInit & { body?: BodyInit },
+  init?: RequestInit & { body?: BodyInit; timeoutMs?: number },
 ): Promise<T> {
   const p = await port();
+  // Hard ceiling so a wedged sidecar can't hang the UI forever. Most
+  // calls finish in milliseconds; outbound-network handlers (Telegram
+  // test, LS license activate) take a couple of seconds. 30s covers
+  // both with margin.
+  const timeoutMs = init?.timeoutMs ?? 30_000;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
   let res: Response;
   try {
     res = await fetch(`http://127.0.0.1:${p}${path}`, {
       ...init,
+      signal: ctl.signal,
       headers: {
         "Content-Type": "application/json",
         ...(init?.headers ?? {}),
       },
     });
-  } catch {
-    // WebKit raises a TypeError with .message = "Load failed" on any
-    // network-level failure (connection refused, DNS, etc). That string
-    // is meaningless to the user — translate it into something the boot
-    // screen can render directly.
+  } catch (err) {
+    // AbortError = our own timeout fired. WebKit raises a TypeError
+    // with .message = "Load failed" on any network-level failure
+    // (connection refused, DNS, etc). Translate both into something
+    // the UI can render directly.
+    const isAbort = err instanceof DOMException && err.name === "AbortError";
+    if (isAbort) {
+      throw new Error(
+        `${path}: timed out after ${Math.round(timeoutMs / 1000)}s. ` +
+          "The sidecar may be stuck — restart Delfi if this keeps happening.",
+      );
+    }
     throw new Error("Could not connect to Delfi. Please restart the app.");
+  } finally {
+    clearTimeout(timer);
   }
   const text = await res.text();
   let data: unknown;
