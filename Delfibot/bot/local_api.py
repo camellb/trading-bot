@@ -108,6 +108,7 @@ from engine.user_config import (
 )
 from engine.license import (
     LICENSE_OFFLINE_GRACE_DAYS,
+    deactivate_license,
     validate_license,
 )
 from execution.pm_executor import PMExecutor
@@ -1031,13 +1032,46 @@ class LocalAPI:
         return _ok(self._license_status_payload())
 
     async def _post_license_deactivate(self, _req: web.Request) -> web.Response:
-        """Wipe the local license. Used for support flows / handing
-        the machine to someone else. Does not call LS to deactivate
-        the instance — LS still counts it until they revoke.
+        """Sign this device out of its license.
+
+        Order of operations:
+          1. If we have an LS-issued instance_id from activation, call
+             `/v1/licenses/deactivate` to free the slot. This is what
+             makes "move to a new machine" work without spending
+             another activation against `activation_limit`.
+          2. Wipe the local keychain regardless of LS outcome — the
+             user pressed the button to leave this machine; we honour
+             that locally even if LS is unreachable.
+          3. Surface a warning string when LS rejected the
+             deactivation so the user knows their slot may still be
+             consumed (e.g. they're offline). Status payload itself
+             still flips to `valid: false, has_key: false`.
         """
+        key = get_license_key() or ""
+        meta = get_license_meta() or {}
+        instance_id = (meta.get("instance_id") or "").strip()
+
+        warning: Optional[str] = None
+        if key and instance_id:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, deactivate_license, key, instance_id,
+            )
+            if not result.deactivated:
+                warning = (
+                    f"could not free the license slot on the server "
+                    f"({result.error or 'unknown error'}). The local "
+                    f"key has been cleared, but if you hit your "
+                    f"activation limit on a new machine, email "
+                    f"info@delfibot.com to release the orphan slot."
+                )
+
         set_license_key(None)
         set_license_meta(None)
-        return _ok(self._license_status_payload())
+
+        payload = self._license_status_payload()
+        if warning:
+            payload["warning"] = warning
+        return _ok(payload)
 
     # ── Reset simulation ────────────────────────────────────────────────
     async def _reset_simulation(self, _req: web.Request) -> web.Response:

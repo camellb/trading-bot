@@ -304,6 +304,10 @@ export interface LicenseStatus {
   has_key: boolean;
   last_validated_at: string | null;
   instance_id: string | null;
+  /** Set by /api/license/deactivate when LS rejected the call but we
+   *  cleared the local key anyway. UI shows it as a one-time warning
+   *  toast: "your slot may still be consumed, contact support". */
+  warning?: string;
 }
 
 export const api = {

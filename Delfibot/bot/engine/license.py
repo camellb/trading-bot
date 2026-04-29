@@ -40,7 +40,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
-LS_VALIDATE_URL = "https://api.lemonsqueezy.com/v1/licenses/validate"
+LS_VALIDATE_URL   = "https://api.lemonsqueezy.com/v1/licenses/validate"
+LS_DEACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/deactivate"
 LICENSE_REVALIDATE_DAYS = 7
 LICENSE_OFFLINE_GRACE_DAYS = 30
 
@@ -166,3 +167,105 @@ def validate_license(
     return LicenseValidationResult(
         valid=True, error=None, instance_id=instance.get("id")
     )
+
+
+@dataclass
+class LicenseDeactivationResult:
+    """What the caller in local_api.py needs to know after a deactivate."""
+
+    deactivated: bool
+    """True if LS confirmed the instance was freed. False on revoked /
+    unknown / network-error / malformed. The caller still wipes the
+    local keychain on False so the user can re-paste, but warns them
+    that the LS-side activation slot may still be consumed."""
+
+    error: Optional[str]
+    """Human-readable failure reason. None on success."""
+
+
+def deactivate_license(
+    key: str,
+    instance_id: str,
+    *,
+    timeout: float = 8.0,
+) -> LicenseDeactivationResult:
+    """Call Lemon Squeezy's `/v1/licenses/deactivate` to free the
+    activation slot for this machine.
+
+    Used by the device-transfer flow: when the user clicks "Sign out
+    of this device" in Settings, we hit LS first to release the slot,
+    THEN wipe the local keychain. If LS fails, the caller still wipes
+    locally — but warns the user the slot may still count, in case
+    they hit `activation_limit` on a new machine and need to contact
+    support to release the orphan.
+
+    Args:
+      key:         the license key currently in the keychain.
+      instance_id: the LS-issued instance id stored alongside the key
+                   at activation time.
+      timeout:     seconds before the HTTPS call gives up.
+
+    Returns:
+      LicenseDeactivationResult.
+    """
+    if not key or not key.strip():
+        return LicenseDeactivationResult(
+            deactivated=False, error="license key is empty"
+        )
+    if not instance_id or not instance_id.strip():
+        # No instance recorded = nothing to deactivate on LS's side.
+        # Treat as a no-op success so the local wipe still proceeds.
+        return LicenseDeactivationResult(deactivated=True, error=None)
+
+    body = json.dumps(
+        {"license_key": key.strip(), "instance_id": instance_id.strip()}
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        LS_DEACTIVATE_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            data = json.loads(exc.read())
+        except Exception:
+            return LicenseDeactivationResult(
+                deactivated=False, error=f"license server returned {exc.code}"
+            )
+        return LicenseDeactivationResult(
+            deactivated=False,
+            error=str(data.get("error") or data.get("message") or f"HTTP {exc.code}"),
+        )
+    except urllib.error.URLError as exc:
+        return LicenseDeactivationResult(
+            deactivated=False,
+            error=f"could not reach license server: {exc.reason}",
+        )
+    except Exception as exc:
+        return LicenseDeactivationResult(
+            deactivated=False, error=f"deactivation failed: {exc}"
+        )
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return LicenseDeactivationResult(
+            deactivated=False, error="malformed response from license server"
+        )
+
+    if not data.get("deactivated"):
+        return LicenseDeactivationResult(
+            deactivated=False,
+            error=str(data.get("error") or "deactivation rejected"),
+        )
+
+    return LicenseDeactivationResult(deactivated=True, error=None)

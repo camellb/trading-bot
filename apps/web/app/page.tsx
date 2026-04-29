@@ -13,6 +13,117 @@ const CHECKOUT_URL =
   process.env.NEXT_PUBLIC_CHECKOUT_URL ||
   "mailto:info@delfibot.com?subject=Delfi%20order";
 
+// ─── Landing-page analytics ──────────────────────────────
+//
+// The Lemon Squeezy sales dashboard tells us only the bottom of the
+// funnel (orders, refunds, MRR). To iterate on the page itself we
+// need the top of the funnel: how many people see each CTA, click
+// it, and reach checkout.
+//
+// We push two events per CTA click:
+//   gtag('event', 'cta_click', { cta_location })   → GA4 funnel + reports
+//   fbq('trackCustom', 'CtaClick', { cta_location }) → Meta Pixel
+//
+// Plus an `IntersectionObserver` per section to record `section_view`
+// once when 50% of it scrolls into view — that gives us scroll-depth
+// and a per-section heatmap inside Clarity's segments. UTM params
+// are appended to CHECKOUT_URL so LS records the originating CTA on
+// the order itself; combining LS orders + GA4 events gives us CVR
+// per CTA.
+//
+// Providers are loaded by `lib/analytics.tsx` and gated by the
+// cookie banner (`ConsentGate`). Before consent, `window.gtag` and
+// `window.fbq` are undefined and these calls are no-ops.
+type GtagFn = (...args: unknown[]) => void;
+type FbqFn  = (...args: unknown[]) => void;
+declare global {
+  interface Window {
+    gtag?: GtagFn;
+    fbq?:  FbqFn;
+  }
+}
+
+function trackCta(location: string) {
+  try {
+    window.gtag?.("event", "cta_click", {
+      cta_location: location,
+      cta_text:     "Try it today",
+    });
+    window.fbq?.("trackCustom", "CtaClick", { cta_location: location });
+  } catch {
+    /* analytics failures must never break the click */
+  }
+}
+
+function trackSectionView(section: string) {
+  try {
+    window.gtag?.("event", "section_view", { section });
+  } catch {
+    /* ditto */
+  }
+}
+
+function withUtm(url: string, location: string): string {
+  // Don't decorate mailto: fallback — would break the address.
+  if (!url.startsWith("http")) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  const params = new URLSearchParams({
+    utm_source:  "delfi-site",
+    utm_medium:  "cta",
+    utm_content: location,
+  });
+  return `${url}${sep}${params.toString()}`;
+}
+
+/** Tracked checkout CTA. Use everywhere on the landing page. */
+function CtaLink({
+  location,
+  className,
+  children,
+}: {
+  location: string;
+  className: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      className={className}
+      href={withUtm(CHECKOUT_URL, location)}
+      onClick={() => trackCta(location)}
+    >
+      {children}
+    </a>
+  );
+}
+
+/** One IntersectionObserver per page that fires `section_view` once
+ *  per `[data-screen-label]` section as it scrolls past 50% visible.
+ *  Cheaper than a hook-per-section: existing `data-screen-label` tags
+ *  on every section already provide the natural opt-in list. */
+function useScrollDepthTracking() {
+  useEffect(() => {
+    const sections = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-screen-label]"),
+    );
+    if (sections.length === 0) return;
+    const fired = new Set<string>();
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const label = (e.target as HTMLElement).dataset.screenLabel;
+          if (e.isIntersecting && label && !fired.has(label)) {
+            fired.add(label);
+            trackSectionView(label);
+          }
+        }
+      },
+      { threshold: 0.5 },
+    );
+    sections.forEach((el) => obs.observe(el));
+    return () => obs.disconnect();
+  }, []);
+}
+
 // ─── Top nav ─────────────────────────────────────────────
 function TopNav() {
   const [scrolled, setScrolled] = useState(false);
@@ -40,7 +151,7 @@ function TopNav() {
           </Link>
         </div>
         <div className="nav-right">
-          <a className="btn-primary" href={CHECKOUT_URL}>Try it today</a>
+          <CtaLink className="btn-primary" location="topnav">Try it today</CtaLink>
         </div>
       </div>
     </nav>
@@ -63,7 +174,7 @@ function Hero() {
           The first autonomous Polymarket trader that runs entirely on your computer. Your wallet key never leaves it. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
-          <a className="btn-primary" href={CHECKOUT_URL}>Try it today</a>
+          <CtaLink className="btn-primary" location="hero">Try it today</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
       </div>
@@ -320,7 +431,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <a className="sim-cta" href={CHECKOUT_URL}>Try it today →</a>
+            <CtaLink className="sim-cta" location="sim">Try it today →</CtaLink>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -413,7 +524,7 @@ function NewHere() {
             <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
             <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade, and acts when the forecast clears every gate.</p>
             <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need a machine to run Delfi on.</p>
-            <a className="newhere-cta" href={CHECKOUT_URL}>Try it today →</a>
+            <CtaLink className="newhere-cta" location="newhere">Try it today →</CtaLink>
           </div>
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
@@ -480,7 +591,7 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">$199 once. All future updates included.</p>
-        <a className="btn-primary large" href={CHECKOUT_URL}>Try it today</a>
+        <CtaLink className="btn-primary large" location="final">Try it today</CtaLink>
       </div>
     </section>
   );
@@ -566,6 +677,7 @@ function AnimatedPipeline({ nodes }: { nodes: string[] }) {
 
 // ─── Page ────────────────────────────────────────────────
 export default function HomePage() {
+  useScrollDepthTracking();
   return (
     <>
       <TopNav />

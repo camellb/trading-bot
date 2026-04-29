@@ -4,6 +4,7 @@ import {
   ArchetypeCatalogue,
   ArchetypeEntry,
   Credentials,
+  LicenseStatus,
   NotificationsConfig,
 } from "../api";
 import type { SettingsTab } from "../App";
@@ -220,7 +221,125 @@ function AccountPanel({
           </div>
         )}
       </div>
+
+      <LicensePanel />
     </>
+  );
+}
+
+// ── License ──────────────────────────────────────────────────────────────
+
+/**
+ * License panel inside Account.
+ *
+ * Lets the user see the license currently activated on this machine
+ * and sign out of it. "Sign out" calls /api/license/deactivate which
+ * (a) tells Lemon Squeezy to free the activation slot for this
+ * instance, then (b) wipes the local keychain. After that the
+ * LicenseGate re-mounts and the user can paste a different key.
+ *
+ * Used for: moving Delfi to a new computer, handing the machine to
+ * someone else, recovering from a billing error after a refund.
+ */
+function LicensePanel() {
+  const [status, setStatus] = useState<LicenseStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err" | "warn"; text: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.license()
+      .then((s) => alive && setStatus(s))
+      .catch(() => alive && setStatus(null));
+    return () => { alive = false; };
+  }, []);
+
+  const signOut = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const next = await api.deactivateLicense();
+      setStatus(next);
+      if (next.warning) {
+        setMsg({ kind: "warn", text: next.warning });
+      } else {
+        setMsg({ kind: "ok", text: "Signed out. Restarting will show the license screen." });
+      }
+      // Re-mounts the LicenseGate the next time it polls.
+      window.dispatchEvent(new CustomEvent("delfi:license-changed"));
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  };
+
+  const lastValidated = status?.last_validated_at
+    ? new Date(status.last_validated_at).toLocaleString()
+    : null;
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">License</h2>
+      </div>
+      {status?.has_key ? (
+        <p className="page-sub" style={{ marginBottom: 16 }}>
+          This machine is activated. Last validated {lastValidated || "never"}.
+        </p>
+      ) : (
+        <p className="page-sub" style={{ marginBottom: 16 }}>
+          No license activated on this machine.
+        </p>
+      )}
+      {status?.has_key && (
+        !confirm ? (
+          <div className="form-actions">
+            <button
+              type="button"
+              className="btn ghost small"
+              onClick={() => setConfirm(true)}
+              disabled={busy}
+            >
+              Sign out from this device
+            </button>
+          </div>
+        ) : (
+          <div className="form-actions">
+            <button
+              type="button"
+              className="btn danger small"
+              onClick={signOut}
+              disabled={busy}
+            >
+              {busy ? "Signing out..." : "Yes, sign out"}
+            </button>
+            <button
+              type="button"
+              className="btn ghost small"
+              onClick={() => setConfirm(false)}
+              disabled={busy}
+            >
+              Cancel
+            </button>
+          </div>
+        )
+      )}
+      {msg && (
+        <p
+          className={
+            msg.kind === "ok"   ? "form-success" :
+            msg.kind === "warn" ? "form-error"   :
+            "form-error"
+          }
+          style={{ marginTop: 12 }}
+        >
+          {msg.text}
+        </p>
+      )}
+    </div>
   );
 }
 
