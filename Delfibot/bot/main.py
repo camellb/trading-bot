@@ -77,6 +77,119 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1)
 
 
+def _start_parent_death_watchdog() -> None:
+    """Exit the sidecar when the Tauri shell dies.
+
+    Without this, a Tauri crash leaves the sidecar re-parented to
+    launchd where it survives across subsequent app launches. Two
+    sidecars on the same SQLite DB then contend for the writer lock
+    and the GIL on shared state, which manifests in the UI as
+    `/api/state` and `/api/summary` timing out at 30s.
+
+    Tauri passes its own PID via `DELFI_PARENT_PID` because watching
+    `os.getppid()` is wrong here: the immediate parent of the running
+    Python interpreter is the PyInstaller bootstrapper, not the Tauri
+    shell. The bootstrapper survives a Tauri crash because nothing
+    closes its stdio, so polling getppid() would never see PPID=1
+    and the sidecar would stay alive as an orphan.
+
+    We poll once every two seconds via `os.kill(pid, 0)`, which
+    raises ProcessLookupError when the PID no longer exists. On the
+    first lookup miss we hard-exit. Daemon thread so it doesn't block
+    normal shutdown.
+
+    Falls back to `os.getppid()` watching when DELFI_PARENT_PID is
+    unset (running outside Tauri, e.g. dev mode via `python main.py`).
+    """
+    import threading as _threading
+
+    parent_pid_env = os.environ.get("DELFI_PARENT_PID")
+    target_pid: Optional[int]
+    target_kind: str
+    if parent_pid_env and parent_pid_env.isdigit():
+        target_pid = int(parent_pid_env)
+        target_kind = "DELFI_PARENT_PID"
+    else:
+        target_pid = os.getppid()
+        target_kind = "getppid()"
+        if target_pid <= 1:
+            return  # already orphaned at boot
+
+    def _watch() -> None:
+        import time as _t
+        while True:
+            try:
+                # signal 0 = "does this PID exist?". Raises if not.
+                os.kill(target_pid, 0)
+            except ProcessLookupError:
+                print(
+                    f"[delfi] parent ({target_kind}={target_pid}) died - "
+                    f"exiting sidecar",
+                    flush=True,
+                )
+                os._exit(0)
+            except Exception:
+                # Permission errors etc - ignore, try again next tick.
+                pass
+            try:
+                _t.sleep(2)
+            except Exception:
+                return
+
+    t = _threading.Thread(
+        target=_watch, name="delfi-parent-watchdog", daemon=True,
+    )
+    t.start()
+
+
+def _acquire_singleton_lock() -> Optional[object]:
+    """Take an exclusive flock so a second sidecar can't start.
+
+    The lock file lives in the app data directory next to the SQLite
+    DB. We keep the file descriptor open for the lifetime of the
+    process; the kernel releases the lock when the FD is closed (or
+    the process dies). If another sidecar already holds the lock, we
+    exit immediately rather than try to share a DB with an orphan.
+
+    Returns the file descriptor (None on failure to acquire). Caller
+    keeps the reference alive so the lock stays held.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return None  # Windows: no fcntl, skip the lock
+    try:
+        from db.engine import app_data_dir
+        lock_path = app_data_dir() / "sidecar.lock"
+        # Open for write so multiple bootstrappers can each open the
+        # file; only the flock determines who actually wins.
+        fd = open(str(lock_path), "w")
+    except Exception as exc:
+        print(f"[delfi] singleton lock open failed: {exc}", flush=True)
+        return None
+    try:
+        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(
+            "[delfi] another sidecar already holds the lock - exiting. "
+            "If this is wrong, run: pkill -9 -f delfi-sidecar",
+            flush=True,
+        )
+        try:
+            fd.close()
+        except Exception:
+            pass
+        os._exit(0)
+    except Exception as exc:
+        print(f"[delfi] singleton lock acquire failed: {exc}", flush=True)
+        try:
+            fd.close()
+        except Exception:
+            pass
+        return None
+    return fd
+
+
 def _migrate_legacy_keychain_secrets() -> None:
     """One-time migration: copy every legacy macOS keychain entry to
     the file-backed secrets store, then delete the keychain entry.
@@ -190,6 +303,15 @@ def _seed_env_from_keychain() -> None:
 
 
 async def main() -> None:
+    # Refuse to start if another sidecar is already running. Holds
+    # the lock for the lifetime of this process. Stops orphan
+    # sidecars from contending with a fresh launch on the SQLite DB.
+    _SINGLETON_LOCK_FD = _acquire_singleton_lock()  # noqa: F841 - keep ref
+
+    # Watch the parent (Tauri shell). Exit if it dies, so a Tauri
+    # crash can't leave us re-parented to launchd as an orphan.
+    _start_parent_death_watchdog()
+
     from concurrent.futures import ThreadPoolExecutor
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(

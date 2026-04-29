@@ -111,6 +111,11 @@ fn spawn_sidecar(
     let cmd = cmd
         .env("DELFI_PORT", port.to_string())
         .env("DELFI_DB_PATH", db_path.to_string_lossy().into_owned())
+        // The sidecar's parent-death watchdog watches THIS PID.
+        // Without it the watchdog would watch the immediate parent
+        // (the PyInstaller bootstrapper), which keeps running after
+        // a Tauri shell crash and would leave the worker orphaned.
+        .env("DELFI_PARENT_PID", std::process::id().to_string())
         .env("PYTHONUNBUFFERED", "1");
 
     let (mut rx, child) = cmd
