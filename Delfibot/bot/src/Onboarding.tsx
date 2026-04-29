@@ -53,7 +53,7 @@ export default function Onboarding({ creds, onComplete }: Props) {
     try {
       const n = Number(bankroll);
       if (!Number.isFinite(n) || n < 10 || n > 100_000) {
-        throw new Error("Bankroll must be between $10 and $100,000.");
+        throw new Error("Capital must be between $10 and $100,000.");
       }
       await api.updateConfig({ starting_cash: n, mode: "simulation" });
       next();
@@ -139,7 +139,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
           <div className="ob-callout-eyebrow">SIMULATION MODE</div>
           <div className="ob-callout-title">Default. Risk-free.</div>
           <div className="ob-callout-body">
-            Delfi trades against a synthetic bankroll. Same forecasts, same
+            Delfi trades against synthetic capital. Same forecasts, same
             sizing, same risk caps. Use this until you trust the numbers.
           </div>
         </div>
@@ -239,7 +239,7 @@ function BankrollStep({
   return (
     <>
       <div className="ob-eyebrow">STEP 2 of 3 · Required</div>
-      <h1 className="ob-title">Starting bankroll</h1>
+      <h1 className="ob-title">Starting capital</h1>
       <p className="ob-sub">
         How much capital should Delfi treat as 100%? Stake size and
         circuit breakers are computed against this number. In simulation
@@ -248,7 +248,7 @@ function BankrollStep({
       </p>
       <div className="ob-form">
         <div className="ob-field">
-          <label>Bankroll (USD)</label>
+          <label>Capital (USD)</label>
           <input
             type="number"
             min={10}
@@ -367,7 +367,7 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
       </p>
       <div className="ob-checklist">
         <ChecklistItem ok>LLM API key stored</ChecklistItem>
-        <ChecklistItem ok>Bankroll set</ChecklistItem>
+        <ChecklistItem ok>Capital set</ChecklistItem>
         <ChecklistItem>Polymarket key + wallet (for live mode)</ChecklistItem>
       </div>
       <div className="ob-actions">

@@ -6,6 +6,7 @@ import {
   PerformanceSummary,
   PMPosition,
 } from "../api";
+import { EquityChart } from "../components/EquityChart";
 
 /**
  * Performance - SaaS-parity layout.
@@ -195,7 +196,7 @@ export default function Performance() {
 
       <div className="stat-row">
         <div className="stat-cell">
-          <div className="stat-cell-label">Bankroll</div>
+          <div className="stat-cell-label">Capital</div>
           <div className="stat-cell-val t-num">
             {summary ? fmtMoney(summary.bankroll ?? summary.starting_cash ?? 0) : "-"}
           </div>
@@ -416,67 +417,9 @@ export default function Performance() {
   );
 }
 
-function EquityChart({ series }: { series: { ts: string; v: number }[] }) {
-  if (series.length < 2) return null;
-  const W = 800, H = 180, PAD = 8;
-  const xs = series.map((_, i) => i);
-  const ys = series.map((p) => p.v);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const sx = (i: number) => PAD + ((W - PAD * 2) * i) / Math.max(1, xs.length - 1);
-  const sy = (v: number) => H - PAD - ((H - PAD * 2) * (v - minY)) / Math.max(1, maxY - minY);
-  const d = series.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i)},${sy(p.v)}`).join(" ");
-  const lastV = series[series.length - 1].v;
-  const firstV = series[0].v;
-  const positive = lastV >= firstV;
-  const color = positive ? "var(--profit)" : "var(--ember)";
-  const fill = positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)";
-  const area = `${d} L${sx(series.length - 1)},${H - PAD} L${sx(0)},${H - PAD} Z`;
-
-  // Date labels: first non-empty timestamp + last non-empty timestamp.
-  const firstTs = series.find((p) => p.ts)?.ts ?? "";
-  const lastTs = [...series].reverse().find((p) => p.ts)?.ts ?? "";
-  const fmtDate = (s: string) => {
-    if (!s) return "";
-    try {
-      const d = new Date(s);
-      if (Number.isFinite(d.getTime())) {
-        return d.toLocaleDateString(undefined,
-          { month: "short", day: "numeric" });
-      }
-    } catch { /* fall through */ }
-    return s.slice(0, 10);
-  };
-  const fmtUsd = (n: number) =>
-    `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
-
-  return (
-    <div className="eq-chart-wrap">
-      <svg viewBox={`0 0 ${W} ${H}`} className="eq-svg" preserveAspectRatio="none">
-        <path d={area} fill={fill} />
-        <path d={d} fill="none" stroke={color} strokeWidth="1.6" />
-        <line x1={sx(0)} y1={sy(firstV)} x2={sx(series.length - 1)} y2={sy(firstV)}
-              stroke="var(--vellum-10)" strokeDasharray="2 4" />
-      </svg>
-      <div className="eq-axis">
-        <div className="eq-axis-y">
-          <span className="eq-axis-y-max">{fmtUsd(maxY)}</span>
-          <span className="eq-axis-y-baseline">
-            start {fmtUsd(firstV)}
-          </span>
-          <span className="eq-axis-y-min">{fmtUsd(minY)}</span>
-        </div>
-        <div className="eq-axis-x">
-          <span>{fmtDate(firstTs)}</span>
-          <span className={positive ? "eq-end-profit" : "eq-end-loss"}>
-            {fmtUsd(lastV)}
-          </span>
-          <span>{fmtDate(lastTs)}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
+// (Equity chart now lives in src/components/EquityChart.tsx and is
+//  shared with the Dashboard so both views render identical hover
+//  behaviour and tick math.)
 
 function BrierSpark({ points }: { points: BrierTrendPoint[] }) {
   if (points.length < 2) return null;

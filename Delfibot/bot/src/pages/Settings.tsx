@@ -56,7 +56,7 @@ interface Props {
 const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   account: {
     h1: "Account",
-    sub: "Bankroll and starting capital. The number Delfi treats as 100% of your trading capital.",
+    sub: "Starting capital. The number Delfi treats as 100% of your trading capital.",
   },
   connections: {
     h1: "Connections",
@@ -124,7 +124,7 @@ function AccountPanel({
       const [lo, hi] = BOUNDS.starting_cash;
       if (n < lo || n > hi) throw new Error(`Starting cash must be between ${lo} and ${hi}.`);
       await api.updateConfig({ starting_cash: n });
-      setMsg({ kind: "ok", text: `Bankroll set to $${n.toFixed(2)}.` });
+      setMsg({ kind: "ok", text: `Capital set to $${n.toFixed(2)}.` });
       onSaved();
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
@@ -152,10 +152,10 @@ function AccountPanel({
     <>
       <div className="panel">
         <div className="panel-head">
-          <h2 className="panel-title">Bankroll</h2>
+          <h2 className="panel-title">Capital</h2>
         </div>
         <p className="page-sub" style={{ marginBottom: 16 }}>
-          The starting cash Delfi treats as 100% of bankroll. Stake size and
+          The starting cash Delfi treats as 100% of capital. Stake size and
           circuit breakers are computed against this number.
         </p>
         <form className="form-row" onSubmit={save}>
@@ -172,7 +172,7 @@ function AccountPanel({
           </div>
           <div className="form-actions">
             <button type="submit" className="btn small" disabled={busy}>
-              {busy ? "Saving..." : "Save bankroll"}
+              {busy ? "Saving..." : "Save capital"}
             </button>
             {msg && (
               <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
@@ -188,7 +188,7 @@ function AccountPanel({
           <h2 className="panel-title">Simulation reset</h2>
         </div>
         <p className="page-sub" style={{ marginBottom: 16 }}>
-          Clears all simulation positions and resets the synthetic bankroll
+          Clears all simulation positions and resets the synthetic capital
           to your starting cash. Live trading is untouched.
         </p>
         {!confirm ? (
@@ -537,7 +537,7 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   },
   position_settled: {
     title: "Position resolutions",
-    description: "Every win or loss when a market resolves, with P&L and running bankroll.",
+    description: "Every win or loss when a market resolves, with P&L and running capital.",
   },
   daily_summary: {
     title: "Daily summary",
@@ -956,10 +956,10 @@ function RiskPanel({
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Sizing and limits</h2>
-          <span className="panel-meta">% of bankroll</span>
+          <span className="panel-meta">% of capital</span>
         </div>
         <p className="page-sub" style={{ marginBottom: 16 }}>
-          Stake = bankroll × base stake × archetype multiplier, capped at
+          Stake = capital × base stake × archetype multiplier, capped at
           max stake. Loss limits halt new trades when the threshold is
           crossed.
         </p>
