@@ -34,6 +34,23 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+# Force aiohttp's DNS resolver onto a thread pool BEFORE any
+# ClientSession is constructed anywhere else in the codebase.
+# Background: when ccxt was added as a dep it pulled aiodns in
+# transitively. aiohttp auto-detects aiodns at import time and
+# switches its default resolver from ThreadedResolver (socket-based,
+# runs in a thread, can never block the loop) to AsyncResolver
+# (c-ares, runs ON the event loop). A single slow / dropped DNS
+# packet from c-ares would then wedge the entire sidecar event loop
+# in `_cffi_f_ares_getaddrinfo` and every aiohttp endpoint
+# (/api/state, /api/summary, /api/archetypes, etc.) would time out
+# at 30s even though the handler bodies don't touch DNS at all.
+# Pinning the default back to ThreadedResolver keeps DNS off the
+# loop. Verified by sample(1): without this patch a wedged sidecar
+# showed the main thread stuck inside _cffi_f_ares_getaddrinfo.
+import aiohttp.resolver as _aiohttp_resolver  # noqa: E402
+_aiohttp_resolver.DefaultResolver = _aiohttp_resolver.ThreadedResolver
+
 import config
 from db.models import create_all_tables
 from engine.markout_tracker import check_markouts
