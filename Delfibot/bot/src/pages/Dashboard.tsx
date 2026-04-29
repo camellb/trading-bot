@@ -127,9 +127,33 @@ export default function Dashboard({ state, goto }: Props) {
     [positions],
   );
   const settled = useMemo(
-    () => positions.filter((p) => p.status === "settled" || p.status === "closed"),
+    () => positions.filter((p) =>
+      p.status === "settled"
+      || p.status === "invalid"
+      || p.status === "closed",
+    ),
     [positions],
   );
+
+  // Equity time-series for the dashboard chart. Same shape Performance
+  // uses: start at starting_cash, then a step at each settlement equal
+  // to the cumulative realized P&L. Sort ascending by settled_at so
+  // the chart reads left-to-right oldest-to-newest.
+  const equitySeries = useMemo(() => {
+    const start = summary?.starting_cash ?? 0;
+    if (settled.length === 0) return [] as { ts: string; v: number }[];
+    const sorted = [...settled].sort((a, b) =>
+      ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1),
+    );
+    let cum = start;
+    return [
+      { ts: "", v: start },
+      ...sorted.map((r) => {
+        cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
+        return { ts: (r.settled_at as string | null | undefined) ?? "", v: cum };
+      }),
+    ];
+  }, [summary, settled]);
 
   const activity = useMemo(
     () => buildActivity(evaluations, open, settled),
@@ -192,6 +216,7 @@ export default function Dashboard({ state, goto }: Props) {
         closedTrades={closed}
         openTrades={openTrades}
         skippedTrades={skippedTrades}
+        equitySeries={equitySeries}
         loaded={loaded}
       />
 
@@ -252,7 +277,8 @@ export default function Dashboard({ state, goto }: Props) {
 function DashHero({
   mode, bankroll, lockedCapital, totalEquity,
   realizedPnl, realizedPct, winRate,
-  closedTrades, openTrades, skippedTrades, loaded,
+  closedTrades, openTrades, skippedTrades,
+  equitySeries, loaded,
 }: {
   mode: string;
   bankroll: number;
@@ -264,6 +290,7 @@ function DashHero({
   closedTrades: number;
   openTrades: number;
   skippedTrades: number;
+  equitySeries: { ts: string; v: number }[];
   loaded: boolean;
 }) {
   const isSim = mode === "simulation";
@@ -346,9 +373,13 @@ function DashHero({
         <div className="hero-chart-head">
           <div className="hero-chart-label">Equity history</div>
         </div>
-        <div className="hero-chart-placeholder">
-          Daily snapshots will appear here as trades settle.
-        </div>
+        {equitySeries.length >= 2 ? (
+          <DashEquityChart series={equitySeries} />
+        ) : (
+          <div className="hero-chart-placeholder">
+            Daily snapshots will appear here as trades settle.
+          </div>
+        )}
       </div>
     </section>
   );
@@ -743,4 +774,69 @@ function SummaryCard({
 
 function Empty({ label }: { label: string }) {
   return <div className="empty-state" style={{ padding: "32px 16px" }}>{label}</div>;
+}
+
+/**
+ * Equity-history chart for the dashboard hero. Same shape as the one
+ * on the Performance page (`src/pages/Performance.tsx::EquityChart`)
+ * so the two charts use identical math and the user sees the same
+ * curve in both places. Renders the SVG path AND a small axis row
+ * with date + value labels so the chart is actually readable.
+ */
+function DashEquityChart({ series }: { series: { ts: string; v: number }[] }) {
+  if (series.length < 2) return null;
+  const W = 800, H = 220, PAD = 8;
+  const ys = series.map((p) => p.v);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const sx = (i: number) => PAD + ((W - PAD * 2) * i) / Math.max(1, series.length - 1);
+  const sy = (v: number) => H - PAD - ((H - PAD * 2) * (v - minY)) / Math.max(1, maxY - minY);
+  const d = series.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i)},${sy(p.v)}`).join(" ");
+  const lastV = series[series.length - 1].v;
+  const firstV = series[0].v;
+  const positive = lastV >= firstV;
+  const color = positive ? "var(--profit)" : "var(--ember)";
+  const fill = positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)";
+  const area = `${d} L${sx(series.length - 1)},${H - PAD} L${sx(0)},${H - PAD} Z`;
+
+  const firstTs = series.find((p) => p.ts)?.ts ?? "";
+  const lastTs = [...series].reverse().find((p) => p.ts)?.ts ?? "";
+  const fmtDate = (s: string) => {
+    if (!s) return "";
+    try {
+      const d = new Date(s);
+      if (Number.isFinite(d.getTime())) {
+        return d.toLocaleDateString(undefined,
+          { month: "short", day: "numeric" });
+      }
+    } catch { /* fall through */ }
+    return s.slice(0, 10);
+  };
+  const fmtUsd = (n: number) =>
+    `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+  return (
+    <div className="eq-chart-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} className="eq-svg" preserveAspectRatio="none">
+        <path d={area} fill={fill} />
+        <path d={d} fill="none" stroke={color} strokeWidth="1.6" />
+        <line x1={sx(0)} y1={sy(firstV)} x2={sx(series.length - 1)} y2={sy(firstV)}
+              stroke="var(--vellum-10)" strokeDasharray="2 4" />
+      </svg>
+      <div className="eq-axis">
+        <div className="eq-axis-y">
+          <span className="eq-axis-y-max">{fmtUsd(maxY)}</span>
+          <span className="eq-axis-y-baseline">start {fmtUsd(firstV)}</span>
+          <span className="eq-axis-y-min">{fmtUsd(minY)}</span>
+        </div>
+        <div className="eq-axis-x">
+          <span>{fmtDate(firstTs)}</span>
+          <span className={positive ? "eq-end-profit" : "eq-end-loss"}>
+            {fmtUsd(lastV)}
+          </span>
+          <span>{fmtDate(lastTs)}</span>
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -840,6 +840,52 @@ button { font: inherit; }
 
 .eq-svg { width: 100%; height: 180px; display: block; }
 
+/* Equity chart wrapper: SVG curve on top, axis labels (value range
+   on the y-axis, date range + final value on the x-axis) underneath.
+   Without these labels the chart was just a line with no scale,
+   which the user (rightly) flagged as uninformative. */
+.eq-chart-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.eq-axis {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vellum-40);
+  letter-spacing: 0.04em;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+.eq-axis-y {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+.eq-axis-y-max {
+  color: var(--vellum-60);
+}
+.eq-axis-y-baseline {
+  color: var(--vellum-40);
+  font-style: italic;
+}
+.eq-axis-y-min {
+  color: var(--vellum-40);
+}
+.eq-axis-x {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  flex: 1;
+  margin-left: 24px;
+}
+.eq-end-profit { color: var(--profit); font-weight: 500; }
+.eq-end-loss   { color: var(--ember);  font-weight: 500; }
+
 .hero-chart-placeholder {
   height: 180px;
   display: grid; place-items: center;

@@ -94,7 +94,12 @@ export default function Performance() {
         api.calibration({ source: "polymarket" }),
         api.positions(500).then((r) =>
           r.positions
-            .filter((x) => x.status === "settled")
+            // Include 'invalid' alongside 'settled' - both are
+            // closed trades the bot actually entered. Excluding
+            // invalid (markets that resolved ambiguously, settled at
+            // 0.50) made the Performance page disagree with the
+            // dashboard's summary numbers.
+            .filter((x) => x.status === "settled" || x.status === "invalid")
             .sort((a, b) => ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1)),
         ),
       ]);
@@ -134,14 +139,24 @@ export default function Performance() {
       const outcome = r.settlement_outcome as string | null | undefined;
       if (outcome == null) continue;
       trades++;
-      if (outcome === r.side) wins++; else losses++;
+      // Wins/losses count clear YES/NO outcomes. Invalid markets
+      // (outcome neither matches nor mirrors `side` because they
+      // settled at 0.50) are trades but neither wins nor losses.
+      if (outcome === r.side) wins++;
+      else if (outcome === "YES" || outcome === "NO") losses++;
       totalPnl += pnl;
       totalCost += r.cost_usd ?? 0;
     }
     const winRate = trades > 0 ? (wins / trades) * 100 : 0;
-    const roi = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+    // ROI on BANKROLL, not on cost - matches CLAUDE.md doctrine
+    // ("Maximize ROI on bankroll across all trades") and the
+    // dashboard's `pnl/starting * 100` calculation. The cost-based
+    // ROI used to display +21% while the dashboard showed +2.24%
+    // for the same trades, which was confusing.
+    const starting = summary?.starting_cash ?? 0;
+    const roi = starting > 0 ? (totalPnl / starting) * 100 : 0;
     return { trades, wins, losses, totalPnl, totalCost, winRate, roi };
-  }, [filtered]);
+  }, [filtered, summary]);
 
   const equitySeries = useMemo(() => {
     const start = summary?.starting_cash ?? 0;
@@ -417,13 +432,49 @@ function EquityChart({ series }: { series: { ts: string; v: number }[] }) {
   const color = positive ? "var(--profit)" : "var(--ember)";
   const fill = positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)";
   const area = `${d} L${sx(series.length - 1)},${H - PAD} L${sx(0)},${H - PAD} Z`;
+
+  // Date labels: first non-empty timestamp + last non-empty timestamp.
+  const firstTs = series.find((p) => p.ts)?.ts ?? "";
+  const lastTs = [...series].reverse().find((p) => p.ts)?.ts ?? "";
+  const fmtDate = (s: string) => {
+    if (!s) return "";
+    try {
+      const d = new Date(s);
+      if (Number.isFinite(d.getTime())) {
+        return d.toLocaleDateString(undefined,
+          { month: "short", day: "numeric" });
+      }
+    } catch { /* fall through */ }
+    return s.slice(0, 10);
+  };
+  const fmtUsd = (n: number) =>
+    `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="eq-svg" preserveAspectRatio="none">
-      <path d={area} fill={fill} />
-      <path d={d} fill="none" stroke={color} strokeWidth="1.6" />
-      <line x1={sx(0)} y1={sy(firstV)} x2={sx(series.length - 1)} y2={sy(firstV)}
-            stroke="var(--vellum-10)" strokeDasharray="2 4" />
-    </svg>
+    <div className="eq-chart-wrap">
+      <svg viewBox={`0 0 ${W} ${H}`} className="eq-svg" preserveAspectRatio="none">
+        <path d={area} fill={fill} />
+        <path d={d} fill="none" stroke={color} strokeWidth="1.6" />
+        <line x1={sx(0)} y1={sy(firstV)} x2={sx(series.length - 1)} y2={sy(firstV)}
+              stroke="var(--vellum-10)" strokeDasharray="2 4" />
+      </svg>
+      <div className="eq-axis">
+        <div className="eq-axis-y">
+          <span className="eq-axis-y-max">{fmtUsd(maxY)}</span>
+          <span className="eq-axis-y-baseline">
+            start {fmtUsd(firstV)}
+          </span>
+          <span className="eq-axis-y-min">{fmtUsd(minY)}</span>
+        </div>
+        <div className="eq-axis-x">
+          <span>{fmtDate(firstTs)}</span>
+          <span className={positive ? "eq-end-profit" : "eq-end-loss"}>
+            {fmtUsd(lastV)}
+          </span>
+          <span>{fmtDate(lastTs)}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
