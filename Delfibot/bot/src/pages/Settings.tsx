@@ -956,44 +956,44 @@ function RiskPanel({
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Sizing and limits</h2>
-          <span className="panel-meta">Fractions of bankroll</span>
+          <span className="panel-meta">% of bankroll</span>
         </div>
         <p className="page-sub" style={{ marginBottom: 16 }}>
           Stake = bankroll × base stake × archetype multiplier, capped at
-          max stake. Loss limits halt new trades when realized loss crosses
-          the threshold.
+          max stake. Loss limits halt new trades when the threshold is
+          crossed.
         </p>
         <form onSubmit={saveRisk}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
-            <NumField
-              label="Base stake (fraction)" step="0.001"
-              range={BOUNDS.base_stake_pct}
-              value={risk.base_stake_pct}
-              onChange={(v) => setRisk({ ...risk, base_stake_pct: v })}
+            <PercentField
+              label="Base stake" step="0.1"
+              fractionRange={BOUNDS.base_stake_pct}
+              fractionValue={risk.base_stake_pct}
+              onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
             />
-            <NumField
-              label="Max stake (fraction)" step="0.001"
-              range={BOUNDS.max_stake_pct}
-              value={risk.max_stake_pct}
-              onChange={(v) => setRisk({ ...risk, max_stake_pct: v })}
+            <PercentField
+              label="Max stake" step="0.1"
+              fractionRange={BOUNDS.max_stake_pct}
+              fractionValue={risk.max_stake_pct}
+              onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
             />
-            <NumField
-              label="Daily loss limit" step="0.01"
-              range={BOUNDS.daily_loss_limit_pct}
-              value={risk.daily_loss_limit_pct}
-              onChange={(v) => setRisk({ ...risk, daily_loss_limit_pct: v })}
+            <PercentField
+              label="Daily loss limit" step="1"
+              fractionRange={BOUNDS.daily_loss_limit_pct}
+              fractionValue={risk.daily_loss_limit_pct}
+              onChangeFraction={(v) => setRisk({ ...risk, daily_loss_limit_pct: v })}
             />
-            <NumField
-              label="Weekly loss limit" step="0.01"
-              range={BOUNDS.weekly_loss_limit_pct}
-              value={risk.weekly_loss_limit_pct}
-              onChange={(v) => setRisk({ ...risk, weekly_loss_limit_pct: v })}
+            <PercentField
+              label="Weekly loss limit" step="1"
+              fractionRange={BOUNDS.weekly_loss_limit_pct}
+              fractionValue={risk.weekly_loss_limit_pct}
+              onChangeFraction={(v) => setRisk({ ...risk, weekly_loss_limit_pct: v })}
             />
-            <NumField
-              label="Drawdown halt" step="0.01"
-              range={BOUNDS.drawdown_halt_pct}
-              value={risk.drawdown_halt_pct}
-              onChange={(v) => setRisk({ ...risk, drawdown_halt_pct: v })}
+            <PercentField
+              label="Drawdown halt" step="1"
+              fractionRange={BOUNDS.drawdown_halt_pct}
+              fractionValue={risk.drawdown_halt_pct}
+              onChangeFraction={(v) => setRisk({ ...risk, drawdown_halt_pct: v })}
             />
             <NumField
               label="Streak cooldown (losses)" step="1"
@@ -1001,11 +1001,11 @@ function RiskPanel({
               value={risk.streak_cooldown_losses}
               onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
             />
-            <NumField
-              label="Dry powder reserve" step="0.01"
-              range={BOUNDS.dry_powder_reserve_pct}
-              value={risk.dry_powder_reserve_pct}
-              onChange={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
+            <PercentField
+              label="Dry powder reserve" step="1"
+              fractionRange={BOUNDS.dry_powder_reserve_pct}
+              fractionValue={risk.dry_powder_reserve_pct}
+              onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
             />
           </div>
           <div className="form-actions" style={{ marginTop: 18 }}>
@@ -1051,6 +1051,79 @@ function NumField({
   );
 }
 
+/**
+ * Percent display wrapper around NumField.
+ *
+ * The DB stores fractions (0.10 = 10%) because the engine's risk
+ * manager expects fractions. The UI shows percentages because that's
+ * how humans read risk parameters.
+ *
+ * `fractionValue` is the form state string (which is still a fraction,
+ * e.g. "0.10"). We multiply by 100 for display, format to one decimal
+ * to keep the number from displaying as 9.999999999, and convert the
+ * percent back to a fraction string before passing to onChangeFraction.
+ *
+ * `step` is in PERCENT units (e.g. step="1" steps by 1 percentage
+ * point, step="0.1" steps by 0.1pp). `fractionRange` is in fraction
+ * units (so [0.005, 0.05] is 0.5%-5%); we multiply by 100 for display.
+ */
+function PercentField({
+  label, step, fractionRange, fractionValue, onChangeFraction,
+}: {
+  label: string;
+  step: string;
+  fractionRange: readonly [number, number];
+  fractionValue: string;
+  onChangeFraction: (fractionStr: string) => void;
+}) {
+  const percentValue = fractionValue === ""
+    ? ""
+    : (() => {
+        const n = Number(fractionValue);
+        if (!Number.isFinite(n)) return fractionValue;
+        // Round to 4 decimal places to avoid 0.1*100 = 10.000000000000002.
+        return String(Math.round(n * 10000) / 100);
+      })();
+  const minPct = fractionRange[0] * 100;
+  const maxPct = fractionRange[1] * 100;
+  return (
+    <div className="form-field">
+      <label>{label}</label>
+      <div style={{ position: "relative" }}>
+        <input
+          type="number"
+          step={step}
+          min={minPct}
+          max={maxPct}
+          value={percentValue}
+          onChange={(e) => {
+            const raw = e.target.value;
+            if (raw === "") {
+              onChangeFraction("");
+              return;
+            }
+            const n = Number(raw);
+            if (!Number.isFinite(n)) return;
+            // Round to 6 decimal places to avoid float drift on save.
+            const fraction = Math.round(n / 100 * 1_000_000) / 1_000_000;
+            onChangeFraction(String(fraction));
+          }}
+          style={{ paddingRight: 28 }}
+        />
+        <span style={{
+          position: "absolute", right: 10, top: "50%",
+          transform: "translateY(-50%)", color: "var(--text-muted, #888)",
+          pointerEvents: "none", fontSize: "0.9em",
+        }}>%</span>
+      </div>
+      <span className="form-hint">
+        Range: {minPct % 1 === 0 ? minPct : minPct.toFixed(1)}% -
+        {' '}{maxPct % 1 === 0 ? maxPct : maxPct.toFixed(1)}%
+      </span>
+    </div>
+  );
+}
+
 // ── Archetype grid ───────────────────────────────────────────────────────
 
 function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
@@ -1071,25 +1144,41 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
 
   const groups = useMemo(() => {
     if (!data) return [] as Array<{ title: string; items: ArchetypeEntry[] }>;
-    const sportIds = new Set([
-      "tennis", "basketball", "baseball", "football", "hockey",
-      "cricket", "esports", "soccer", "sports_other",
-    ]);
-    const marketIds = new Set([
-      "price_threshold", "activity_count", "geopolitical_event", "binary_event",
-    ]);
-    const sports: ArchetypeEntry[] = [];
-    const markets: ArchetypeEntry[] = [];
-    const other:   ArchetypeEntry[] = [];
-    for (const a of data.archetypes) {
-      if (sportIds.has(a.id)) sports.push(a);
-      else if (marketIds.has(a.id)) markets.push(a);
-      else other.push(a);
-    }
+    // Group buckets aligned with the categories in
+    // `engine/archetype_classifier.py`. Order matters - this is also
+    // the render order, top-to-bottom.
+    const groupOrder: Array<{ title: string; ids: string[] }> = [
+      { title: "Sports", ids: [
+        "tennis", "basketball", "baseball", "football", "hockey",
+        "cricket", "esports", "soccer", "sports_other",
+      ]},
+      { title: "Finance and markets", ids: [
+        "crypto", "stocks", "macro", "fx_commodities",
+      ]},
+      { title: "Politics and society", ids: [
+        "election", "policy_event", "geopolitical_event",
+      ]},
+      { title: "Tech and culture", ids: [
+        "tech_release", "awards", "entertainment",
+      ]},
+      { title: "Other markets", ids: [
+        "weather_event", "price_threshold", "activity_count", "binary_event",
+      ]},
+    ];
+    const byId = new Map(data.archetypes.map((a) => [a.id, a]));
+    const seen = new Set<string>();
     const out: Array<{ title: string; items: ArchetypeEntry[] }> = [];
-    if (sports.length)  out.push({ title: "Sports",  items: sports  });
-    if (markets.length) out.push({ title: "Markets", items: markets });
-    if (other.length)   out.push({ title: "Other",   items: other   });
+    for (const g of groupOrder) {
+      const items = g.ids
+        .map((id) => byId.get(id))
+        .filter((a): a is ArchetypeEntry => a != null);
+      items.forEach((a) => seen.add(a.id));
+      if (items.length) out.push({ title: g.title, items });
+    }
+    // Belt-and-suspenders: any future archetype not in groupOrder
+    // still renders, just lumped at the end so it's never invisible.
+    const stragglers = data.archetypes.filter((a) => !seen.has(a.id));
+    if (stragglers.length) out.push({ title: "Uncategorized", items: stragglers });
     return out;
   }, [data]);
 
