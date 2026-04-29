@@ -51,6 +51,8 @@ KEYRING_ANTHROPIC_KEY = "anthropic_api_key"           # primary LLM
 KEYRING_LLM_BACKUP_KEY = "llm_backup_api_key"          # optional secondary
 KEYRING_NEWSAPI_KEY = "newsapi_key"                    # optional, news headlines
 KEYRING_CRYPTOPANIC_KEY = "cryptopanic_api_key"        # optional, crypto news
+KEYRING_LICENSE_KEY = "license_key"                    # Lemon Squeezy license
+KEYRING_LICENSE_META = "license_meta"                  # JSON: status + last_validated_at + instance_id
 
 
 @dataclass
@@ -695,6 +697,50 @@ def get_cryptopanic_key() -> Optional[str]:
 
 def set_cryptopanic_key(value: Optional[str]) -> None:
     _keyring_set(KEYRING_CRYPTOPANIC_KEY, value)
+
+
+# ── License (Lemon Squeezy hard gate) ───────────────────────────────────────
+# The desktop app will not boot past `<LicenseGate>` until a key has
+# been activated against LS at least once. Activation result is
+# cached in the keychain; subsequent boots trust the cache for a
+# bounded window (see engine/license.py LICENSE_REVALIDATE_DAYS and
+# LICENSE_OFFLINE_GRACE_DAYS).
+def get_license_key() -> Optional[str]:
+    return _keyring_get(KEYRING_LICENSE_KEY)
+
+
+def set_license_key(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_LICENSE_KEY, value)
+
+
+def get_license_meta() -> dict:
+    """Read the cached validation metadata for the stored license.
+
+    Shape:
+      {"status": "valid" | "invalid" | "revoked",
+       "last_validated_at": "<ISO 8601 UTC>",
+       "instance_id": "<string from LS>"}
+
+    Returns an empty dict when no license has been activated yet, or
+    when the stored JSON is corrupted (treated as "never validated").
+    """
+    raw = _keyring_get(KEYRING_LICENSE_META)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def set_license_meta(meta: Optional[dict]) -> None:
+    if meta is None:
+        _keyring_set(KEYRING_LICENSE_META, None)
+        return
+    _keyring_set(KEYRING_LICENSE_META, json.dumps(meta))
 
 
 # ── Onboarding ──────────────────────────────────────────────────────────────

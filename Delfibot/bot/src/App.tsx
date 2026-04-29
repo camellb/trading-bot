@@ -7,6 +7,7 @@ import Intelligence from "./pages/Intelligence";
 import Settings from "./pages/Settings";
 import Onboarding from "./Onboarding";
 import { UpdatePrompt } from "./components/UpdatePrompt";
+import { LicenseGate } from "./components/LicenseGate";
 
 /**
  * Root component for the Delfi desktop app.
@@ -106,15 +107,24 @@ export default function App() {
     return <BootScreen error={error} />;
   }
 
-  // First-launch wizard: gate the main shell behind onboarding so a fresh
-  // install can't end up on the Dashboard before bankroll + creds exist.
+  // First-launch wizard: gate the main shell behind onboarding so a
+  // fresh install can't end up on the Dashboard before bankroll +
+  // creds exist. Both onboarding AND the main shell sit behind the
+  // LicenseGate (the user pastes their LS license key first, the
+  // sidecar verifies it against Lemon Squeezy, only then do we let
+  // them past the gate to the rest of the app).
   if (state && state.is_onboarded === false) {
-    return <Onboarding state={state} creds={creds} onComplete={refresh} />;
+    return (
+      <LicenseGate>
+        <Onboarding state={state} creds={creds} onComplete={refresh} />
+      </LicenseGate>
+    );
   }
 
   const mode = (state?.mode as "simulation" | "live") ?? "simulation";
 
   return (
+    <LicenseGate>
     <div className="app-shell">
       <UpdatePrompt />
       <Sidebar
@@ -148,6 +158,7 @@ export default function App() {
         )}
       </main>
     </div>
+    </LicenseGate>
   );
 }
 

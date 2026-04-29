@@ -296,6 +296,16 @@ export interface NotificationsConfig {
   notification_prefs: Record<string, boolean>;
 }
 
+/** Lemon Squeezy license gate state, returned by /api/license/status
+ *  and /api/license/activate. */
+export interface LicenseStatus {
+  valid: boolean;
+  reason: string | null;
+  has_key: boolean;
+  last_validated_at: string | null;
+  instance_id: string | null;
+}
+
 export const api = {
   // Process / config
   health:        () => request<HealthSnapshot>("/api/health"),
@@ -371,6 +381,16 @@ export const api = {
 
   // Archetypes
   archetypes: () => request<ArchetypeCatalogue>("/api/archetypes"),
+
+  // License (Lemon Squeezy hard gate)
+  license:           () => request<LicenseStatus>("/api/license/status"),
+  activateLicense:   (license_key: string) =>
+    request<LicenseStatus>("/api/license/activate", {
+      method: "POST",
+      body: JSON.stringify({ license_key }),
+    }),
+  deactivateLicense: () =>
+    request<LicenseStatus>("/api/license/deactivate", { method: "POST" }),
 
   // Notifications (in-app only; Telegram support was dropped post local-first pivot)
   notifications:   () => request<NotificationsConfig>("/api/config/notifications"),

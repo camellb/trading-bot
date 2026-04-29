@@ -91,16 +91,24 @@ from engine.user_config import (
     _keyring_get,
     get_anthropic_api_key,
     get_cryptopanic_key,
+    get_license_key,
+    get_license_meta,
     get_llm_backup_key,
     get_newsapi_key,
     get_user_config,
     set_anthropic_api_key,
     set_cryptopanic_key,
+    set_license_key,
+    set_license_meta,
     set_llm_backup_key,
     set_newsapi_key,
     set_user_polymarket_creds,
     update_user_config,
     validated_update_payload,
+)
+from engine.license import (
+    LICENSE_OFFLINE_GRACE_DAYS,
+    validate_license,
 )
 from execution.pm_executor import PMExecutor
 from process_health import health as proc_health
@@ -341,6 +349,13 @@ class LocalAPI:
         app.router.add_get("/api/config/notifications",   self._get_notifications)
         app.router.add_put("/api/config/notifications",   self._put_notifications)
 
+        # License (Lemon Squeezy hard gate). The React shell calls
+        # /api/license/status on every mount and shows the
+        # LicenseGate until status reports valid=true.
+        app.router.add_get("/api/license/status",         self._get_license_status)
+        app.router.add_post("/api/license/activate",      self._post_license_activate)
+        app.router.add_post("/api/license/deactivate",    self._post_license_deactivate)
+
         # Simulation reset (zeros out simulation positions + bankroll)
         app.router.add_post("/api/reset-simulation",      self._reset_simulation)
 
@@ -575,6 +590,15 @@ class LocalAPI:
         itself is a separate operation: PUT /api/config with
         `{"mode": "live"}` or `{"mode": "simulation"}`.
         """
+        # License is a hard gate — any non-valid status here means
+        # the LicenseGate should be re-shown by the React shell. We
+        # still return a clear error string so curl users see the
+        # reason.
+        license_status = self._license_status_payload()
+        if not license_status.get("valid"):
+            reason = license_status.get("reason") or "license is not valid"
+            return _err(f"license check failed: {reason}", 403)
+
         cfg = get_user_config()
         if get_anthropic_api_key() is None:
             return _err("LLM API key is not set", 400)
@@ -906,6 +930,114 @@ class LocalAPI:
             "categories":         list(NOTIFICATION_CATEGORIES),
             "notification_prefs": full,
         })
+
+    # ── License (LS hard gate) ──────────────────────────────────────────
+    def _license_status_payload(self) -> dict:
+        """Pack the cached state into a small dict for the LicenseGate.
+
+        The component cares about three things:
+          - is the app gated right now (`valid` boolean)
+          - if not, why ("reason" string for inline display)
+          - was a key ever activated ("has_key" — controls whether to
+            show "Paste your license key" or "Re-activate")
+        """
+        from datetime import datetime, timedelta, timezone
+
+        key = get_license_key() or ""
+        meta = get_license_meta() or {}
+        status = meta.get("status")
+        last_validated_iso = meta.get("last_validated_at")
+
+        valid = False
+        reason: Optional[str] = None
+        if not key:
+            reason = "no license key activated"
+        elif status == "revoked":
+            reason = "license has been revoked"
+        elif status == "invalid":
+            reason = meta.get("error") or "license is invalid"
+        elif status == "valid" and last_validated_iso:
+            try:
+                last = datetime.fromisoformat(last_validated_iso)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                age = datetime.now(timezone.utc) - last
+                if age <= timedelta(days=LICENSE_OFFLINE_GRACE_DAYS):
+                    valid = True
+                else:
+                    reason = "license needs re-validation (offline grace expired)"
+            except Exception:
+                reason = "cached license metadata is unparseable"
+        else:
+            reason = "license never validated"
+
+        return {
+            "valid": valid,
+            "reason": reason,
+            "has_key": bool(key),
+            "last_validated_at": last_validated_iso,
+            "instance_id": meta.get("instance_id"),
+        }
+
+    async def _get_license_status(self, _req: web.Request) -> web.Response:
+        return _ok(self._license_status_payload())
+
+    async def _post_license_activate(self, req: web.Request) -> web.Response:
+        """Store + validate a license key against Lemon Squeezy.
+
+        First-paste flow:
+          1. POST /api/license/activate {"license_key": "..."}
+          2. Sidecar calls LS /v1/licenses/validate.
+          3. On valid: store key + meta in keychain, return 200.
+          4. On invalid: return 400 with the LS error message; do NOT
+             store the key (a stored bad key would block the gate
+             without recourse).
+        """
+        from datetime import datetime, timezone
+        import platform as _platform
+
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+
+        key = (payload.get("license_key") or "").strip()
+        if not key:
+            return _err("license_key is required", 400)
+
+        # Stable per-machine identifier so LS can attribute
+        # activations to the right machine in their dashboard. Uses
+        # node + system; not collected anywhere else.
+        instance_name = f"delfi-{_platform.node()}-{_platform.system()}"
+
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, validate_license, key, instance_name,
+        )
+
+        if not result.valid:
+            # Don't persist a known-bad key — it would just keep the
+            # gate open with no path forward. The user can paste a
+            # different key.
+            return _err(result.error or "license is not valid", 400)
+
+        set_license_key(key)
+        set_license_meta({
+            "status":             "valid",
+            "last_validated_at":  datetime.now(timezone.utc).isoformat(),
+            "instance_id":        result.instance_id,
+        })
+        return _ok(self._license_status_payload())
+
+    async def _post_license_deactivate(self, _req: web.Request) -> web.Response:
+        """Wipe the local license. Used for support flows / handing
+        the machine to someone else. Does not call LS to deactivate
+        the instance — LS still counts it until they revoke.
+        """
+        set_license_key(None)
+        set_license_meta(None)
+        return _ok(self._license_status_payload())
 
     # ── Reset simulation ────────────────────────────────────────────────
     async def _reset_simulation(self, _req: web.Request) -> web.Response:

@@ -1,3 +1,120 @@
+/* ─── License gate (blocks app until LS activation) ─────────── */
+.license-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: var(--obsidian, #0a0a0c);
+  padding: 32px;
+}
+.license-gate-card {
+  width: 100%;
+  max-width: 440px;
+  text-align: center;
+  padding: 40px 32px;
+  border: 1px solid var(--vellum-10, rgba(232,228,216,0.1));
+  border-radius: 6px;
+  background: var(--obsidian-raise, #15151a);
+}
+.license-gate-mark {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  opacity: 0.9;
+}
+.license-gate-title {
+  font-family: var(--font-display, "Newsreader", serif);
+  font-size: 28px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--gold, #daaa4c);
+  margin: 0 0 8px;
+}
+.license-gate-eyebrow {
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--vellum-60, rgba(232, 228, 216, 0.6));
+  margin: 0 0 24px;
+}
+.license-gate-reason {
+  font-family: var(--font-body, -apple-system, sans-serif);
+  font-size: 13px;
+  color: var(--vellum-60, rgba(232, 228, 216, 0.6));
+  margin: 0 0 28px;
+  line-height: 1.55;
+}
+.license-gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+.license-gate-label {
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--vellum-60, rgba(232, 228, 216, 0.6));
+}
+.license-gate-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-family: var(--font-mono, "JetBrains Mono", monospace);
+  font-size: 13px;
+  color: var(--vellum, #e8e4d8);
+  background: var(--obsidian, #0a0a0c);
+  border: 1px solid var(--vellum-20, rgba(232,228,216,0.2));
+  border-radius: 4px;
+  outline: none;
+  transition: border-color 200ms ease;
+}
+.license-gate-input:focus {
+  border-color: var(--gold, #daaa4c);
+}
+.license-gate-error {
+  font-family: var(--font-body, -apple-system, sans-serif);
+  font-size: 12px;
+  color: #f87171;
+  margin: 0;
+}
+.license-gate-submit {
+  margin-top: 8px;
+  padding: 12px 22px;
+  font-family: var(--font-body, -apple-system, sans-serif);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--obsidian, #0a0a0c);
+  background: var(--gold, #daaa4c);
+  border: 1px solid var(--gold, #daaa4c);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: box-shadow 200ms ease;
+}
+.license-gate-submit:hover:not(:disabled) {
+  box-shadow: 0 0 14px rgba(218, 170, 76, 0.4);
+}
+.license-gate-submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.license-gate-help {
+  margin-top: 24px;
+  font-family: var(--font-body, -apple-system, sans-serif);
+  font-size: 12px;
+  color: var(--vellum-60, rgba(232, 228, 216, 0.6));
+  line-height: 1.55;
+}
+.license-gate-help a {
+  color: var(--teal, #6ee7e7);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* ─── Auto-updater banner (top of app shell) ─────────────────── */
 .update-banner {
   position: sticky;
