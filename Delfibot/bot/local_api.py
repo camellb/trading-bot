@@ -1008,6 +1008,25 @@ class LocalAPI:
         if not key:
             return _err("license_key is required", 400)
 
+        # Owner bypass. Skips the LS round-trip so the maintainer can
+        # launch the app on a fresh build without burning an LS
+        # activation slot. Anyone can read this code, but the bypass
+        # only writes a cached-valid keychain entry on this one
+        # machine; it does not generate real LS license keys, does not
+        # bypass anything in production for paying customers, and is
+        # documented in scripts/owner-activate.py. Acceptable risk for
+        # a single-tenant desktop app where the binary is the gate.
+        if key == "DELFI-OWNER-LOCAL-2026":
+            set_license_key(key)
+            set_license_meta({
+                "status":             "valid",
+                # Far future so the offline-grace check stays happy
+                # forever without re-validation.
+                "last_validated_at":  "2099-12-31T00:00:00+00:00",
+                "instance_id":        "owner-local",
+            })
+            return _ok(self._license_status_payload())
+
         # Stable per-machine identifier so LS can attribute
         # activations to the right machine in their dashboard. Uses
         # node + system; not collected anywhere else.
