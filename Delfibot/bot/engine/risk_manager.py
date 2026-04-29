@@ -63,28 +63,50 @@ def evaluate(
     try:
         today_pnl = _pnl_since(user_id, mode, hours=24)
         weekly_pnl = _pnl_since(user_id, mode, hours=24 * 7)
-        peak_equity = _peak_equity(user_id, mode, starting_cash)
         consecutive_losses = _consecutive_losses(user_id, mode)
+        open_cost = _open_cost(user_id, mode)
     except Exception as exc:
         print(f"[risk_manager] stat load failed: {exc}", file=sys.stderr)
         return _permissive_verdict(user_config, bankroll)
 
-    current_equity = starting_cash + _realized_total(user_id, mode)
-
-    # Drawdown halt - manual review required.
-    if peak_equity > 0:
-        drawdown = max(0.0, 1.0 - (current_equity / peak_equity))
+    # Drawdown halt. Metric matches what the dashboard's Risk Today
+    # panel displays: drop of current bankroll vs starting cash. The
+    # passed-in `bankroll` already nets out open_cost so unrealised
+    # losses count. The previous realised-only definition let a user
+    # tie up half their bankroll in losing open positions while the
+    # halt thought everything was fine because no settlement had
+    # recorded the loss yet.
+    if starting_cash > 0:
+        drawdown = max(0.0, 1.0 - (bankroll / starting_cash))
         if drawdown >= user_config.drawdown_halt_pct:
             return RiskVerdict(
                 halt_reason=(
-                    f"drawdown {drawdown*100:.1f}% ≥ halt threshold "
+                    f"drawdown {drawdown*100:.1f}% >= halt threshold "
                     f"{user_config.drawdown_halt_pct*100:.0f}% "
-                    f"(equity ${current_equity:.2f} vs peak ${peak_equity:.2f})"
+                    f"(bankroll ${bankroll:.2f} vs starting ${starting_cash:.2f})"
                 ),
                 effective_bankroll=0.0,
                 stake_multiplier=0.0,
                 notes="drawdown halt engaged - manual review required",
             )
+
+    # Gross exposure cap. Total cost of open positions vs
+    # starting_cash * (1 - dry_powder_reserve). Hard cap that doesn't
+    # shrink as positions accumulate; the prior bankroll-relative
+    # computation made the cap drop with every new trade and let the
+    # user breach without the bot noticing.
+    exposure_cap = starting_cash * (1.0 - user_config.dry_powder_reserve_pct)
+    if exposure_cap > 0 and open_cost >= exposure_cap:
+        return RiskVerdict(
+            halt_reason=(
+                f"gross exposure ${open_cost:.2f} >= cap ${exposure_cap:.2f} "
+                f"({(1.0 - user_config.dry_powder_reserve_pct)*100:.0f}% "
+                f"of starting ${starting_cash:.2f})"
+            ),
+            effective_bankroll=0.0,
+            stake_multiplier=0.0,
+            notes="gross exposure cap reached - close positions or raise dry powder reserve",
+        )
 
     # Daily loss limit.
     daily_limit = -user_config.daily_loss_limit_pct * starting_cash
@@ -160,6 +182,27 @@ def _realized_total(user_id: str, mode: str) -> float:
             "FROM pm_positions "
             "WHERE user_id = :uid "
             "  AND mode = :m AND status IN ('settled', 'invalid')"
+        ), {"uid": user_id, "m": mode}).scalar()
+    return float(val or 0.0)
+
+
+def _open_cost(user_id: str, mode: str) -> float:
+    """Sum of cost_usd over currently-open positions in this mode.
+
+    Used by the gross-exposure cap check. Cost (entry stake) is the
+    most-conservative valuation - assumes every open position could
+    settle to zero. Better than tracking live mark-to-market because
+    Polymarket prices on long-tail markets are too thin to use as
+    reliable valuations.
+    """
+    from sqlalchemy import text
+    from db.engine import get_engine
+    with get_engine().begin() as conn:
+        val = conn.execute(text(
+            "SELECT COALESCE(SUM(cost_usd), 0) "
+            "FROM pm_positions "
+            "WHERE user_id = :uid "
+            "  AND mode = :m AND status = 'open'"
         ), {"uid": user_id, "m": mode}).scalar()
     return float(val or 0.0)
 
