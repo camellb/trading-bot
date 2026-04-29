@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   api,
   BotState,
@@ -414,9 +415,14 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                   <a
                     className="pos-detail-link"
                     href={polyUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      // Tauri webview swallows target="_blank" - route
+                      // through the opener plugin to launch the OS browser.
+                      try { void openUrl(polyUrl); }
+                      catch { window.open(polyUrl, "_blank", "noopener,noreferrer"); }
+                    }}
                   >
                     View on Polymarket →
                   </a>

@@ -1,5 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, MarketEvaluation, PMPosition } from "../api";
+
+// Tauri webviews swallow `target="_blank"` clicks by default - the link
+// just does nothing because the new window can't open inside the
+// embedded WKWebView. Route external URLs through the opener plugin
+// (already wired in tauri.conf + capabilities/default.json) so they
+// open in the user's actual browser. Falls back to window.open in dev
+// mode (vite preview outside Tauri) where the plugin isn't injected.
+function openExternal(url: string): void {
+  try {
+    void openUrl(url);
+  } catch {
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch {
+      /* swallow - external link failures are non-fatal UX */
+    }
+  }
+}
 
 /**
  * Positions - SaaS-parity layout.
@@ -235,9 +254,11 @@ export default function Positions() {
                               <a
                                 className="pos-detail-link"
                                 href={polyUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                onClick={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  openExternal(polyUrl);
+                                }}
                               >
                                 View on Polymarket →
                               </a>

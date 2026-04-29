@@ -44,7 +44,26 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Framewo
 echo "[install] quitting any running Delfi..."
 osascript -e 'quit app "Delfi"' 2>/dev/null || true
 sleep 2
-pkill -KILL -f "Delfi.app/Contents/MacOS" 2>/dev/null || true
+
+# Hard kill loop. A single `pkill -KILL` doesn't always reap the
+# sidecar when it's blocked inside SecItemCopyMatching waiting for a
+# macOS keychain prompt - SIGKILL is enqueued but the process stays
+# alive holding the keychain mutex until the syscall returns. If a
+# zombie sidecar sticks around the next install's sidecar gets blocked
+# behind the same keychain mutex and every API endpoint times out
+# (the user has hit this with /api/archetypes timing out).
+# Loop SIGKILL + pgrep until nothing matches, then a final settle.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  pkill -KILL -f "Delfi.app/Contents/MacOS" 2>/dev/null || true
+  pkill -KILL -x "delfi-sidecar" 2>/dev/null || true
+  pkill -KILL -x "delfi" 2>/dev/null || true
+  sleep 0.5
+  pgrep -f "Delfi.app/Contents/MacOS" >/dev/null 2>&1 || break
+done
+if pgrep -f "Delfi.app/Contents/MacOS" >/dev/null 2>&1; then
+  echo "[install] WARNING: a Delfi process is still alive after 5s of kills." >&2
+  echo "[install] If this rebuild misbehaves, run 'pkill -9 -f delfi' manually." >&2
+fi
 sleep 1
 
 echo "[install] syncing bundle into $INSTALLED (preserving directory inode)..."
