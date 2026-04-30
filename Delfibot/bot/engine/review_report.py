@@ -31,6 +31,7 @@ import re
 import sys
 from typing import Any, Optional
 
+from db.engine import iso_utc
 from engine import diagnostics as _diag
 from engine import learning_cadence as _cadence
 
@@ -196,10 +197,7 @@ def list_learning_reports(user_id: str,
     for r in rows:
         item = {
             "id":            int(r[0]),
-            "created_at":    (
-                r[1].isoformat() if hasattr(r[1], "isoformat")
-                else (str(r[1]) if r[1] else None)
-            ),
+            "created_at":    iso_utc(r[1]),
             "mode":          r[2],
             "settled_count": int(r[3] or 0),
             "thesis":        r[4],
@@ -474,10 +472,7 @@ def _fetch_settled_rows(user_id: str, mode: str,
             "outcome":     r[9],
             "p_win":       p_win,
             "confidence":  float(r[11]) if r[11] is not None else None,
-            "settled_at":  (
-                r[12].isoformat() if hasattr(r[12], "isoformat")
-                else (str(r[12]) if r[12] else None)
-            ),
+            "settled_at":  iso_utc(r[12]),
             "reasoning":   (r[14] or r[13] or "").strip(),
             "brier":       brier,
         })

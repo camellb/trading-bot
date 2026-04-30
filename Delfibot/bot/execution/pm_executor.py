@@ -42,7 +42,7 @@ from typing import Optional
 from sqlalchemy import text
 
 import calibration
-from db.engine import get_engine
+from db.engine import get_engine, iso_utc
 from execution.pm_sizer import SizingDecision
 from feeds.polymarket_feed import PolyMarket
 from engine.user_config import (
@@ -765,20 +765,12 @@ class PMExecutor:
                         "claude_probability": float(r[8]) if r[8] is not None else None,
                         "ev_bps":            float(r[9]) if r[9] is not None else None,
                         "confidence":        float(r[10]) if r[10] is not None else None,
-                        # SQLite returns DATETIME columns as strings under raw
-                        # text() queries (no type adapter applied). Calling
-                        # .isoformat() on a str raises AttributeError, which
-                        # used to take down the whole list-comprehension and
-                        # silently return [] - which is why /status was
-                        # showing nothing under Open. Handle both shapes.
-                        "expected_resolution_at": (
-                            r[11].isoformat() if hasattr(r[11], "isoformat")
-                            else (str(r[11]) if r[11] else None)
-                        ),
-                        "created_at": (
-                            r[12].isoformat() if hasattr(r[12], "isoformat")
-                            else (str(r[12]) if r[12] else None)
-                        ),
+                        # iso_utc anchors the SQLite-returned datetime
+                        # string with an explicit UTC offset so the JS
+                        # Date parser doesn't fall back to local-time
+                        # interpretation. See db.engine.iso_utc.
+                        "expected_resolution_at": iso_utc(r[11]),
+                        "created_at":             iso_utc(r[12]),
                         "prediction_id":     r[13],
                         "reasoning":         r[14],
                         "slug":              r[15],

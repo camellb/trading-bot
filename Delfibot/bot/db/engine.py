@@ -67,6 +67,49 @@ def app_data_dir() -> Path:
     return base
 
 
+def iso_utc(v) -> "str | None":
+    """Format a SQLite-returned datetime value as a UTC-anchored ISO
+    8601 string.
+
+    SQLite returns DATETIME columns as naive strings under raw text()
+    queries (e.g. `"2026-04-30 01:07:00"`). When that string crosses
+    the wire and reaches `new Date(...)` in JavaScript, it gets
+    interpreted as LOCAL time, not UTC - which is why the equity
+    chart's hover tooltip used to read 8 hours behind the real
+    settlement time. Anchoring with `+00:00` makes the timestamp
+    unambiguous to the JS Date parser.
+
+    Accepts:
+      - datetime.datetime (with or without tzinfo)
+      - SQLite string `"YYYY-MM-DD HH:MM:SS"` or `"YYYY-MM-DDTHH:MM:SS"`
+      - None / empty
+    """
+    from datetime import timezone
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        # Real datetime. Default-tag naive values as UTC because
+        # `CURRENT_TIMESTAMP` in SQLite stores UTC by spec.
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        return v.isoformat()
+    s = str(v).strip()
+    if not s:
+        return None
+    # Promote SQLite "YYYY-MM-DD HH:MM:SS" -> ISO 8601.
+    if "T" not in s and " " in s:
+        s = s.replace(" ", "T", 1)
+    # Append UTC offset if there isn't already a TZ designator.
+    has_tz = (
+        s.endswith("Z")
+        or "+" in s[10:]      # offset starts after the date portion
+        or "-" in s[10:]      # negative offset
+    )
+    if not has_tz:
+        s += "+00:00"
+    return s
+
+
 def get_engine():
     """Return the lazily-built SQLAlchemy engine for the local SQLite DB."""
     global _engine

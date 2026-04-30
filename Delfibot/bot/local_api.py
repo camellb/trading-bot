@@ -70,7 +70,7 @@ from aiohttp import web
 from sqlalchemy import desc, select, text
 
 import calibration
-from db.engine import get_engine
+from db.engine import get_engine, iso_utc
 from db.models import event_log, market_evaluations, pm_positions
 from engine.archetype_classifier import ARCHETYPES
 from engine.learning_cadence import (
@@ -179,6 +179,15 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
 def _json_default(obj: Any) -> Any:
     """JSON encoder fallback for datetime / set / bytes."""
     if isinstance(obj, datetime):
+        # Anchor naive datetimes to UTC. SQLite's CURRENT_TIMESTAMP
+        # is UTC by spec, and SQLAlchemy returns naive Python datetime
+        # objects from those columns. Without the explicit offset, JS
+        # `new Date(...)` interprets the bare ISO string as LOCAL
+        # time, which puts the equity chart's hover tooltip 8 hours
+        # behind the real settlement time for users in UTC+8.
+        from datetime import timezone
+        if obj.tzinfo is None:
+            obj = obj.replace(tzinfo=timezone.utc)
         return obj.isoformat()
     if isinstance(obj, set):
         return sorted(obj)
@@ -817,18 +826,12 @@ class LocalAPI:
             o = int(r[3])
             running += (p - o) ** 2
             # SQLite returns DATETIME columns as strings under raw
-            # `text()` queries (no type adapter applied), so calling
-            # .isoformat() on r[0] raises AttributeError and the
-            # handler 500s. hasattr() handles both: real datetime
-            # objects (future SQLAlchemy versions or other backends)
-            # and the string form SQLite gives us today.
-            settled = r[0]
-            settled_str = (
-                settled.isoformat() if hasattr(settled, "isoformat")
-                else (str(settled) if settled else None)
-            )
+            # iso_utc anchors the SQLite-returned datetime string with
+            # an explicit UTC offset so the JS Date parser doesn't
+            # fall back to local-time interpretation. See
+            # db.engine.iso_utc.
             points.append({
-                "date":  settled_str,
+                "date":  iso_utc(r[0]),
                 "brier": round(running / i, 4),
                 "n":     i,
             })

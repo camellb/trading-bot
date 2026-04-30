@@ -96,7 +96,11 @@ export default function Dashboard({ state, goto }: Props) {
     try {
       const [s, p, ev, cfg] = await Promise.all([
         api.summary(),
-        api.positions(50).then((r) => r.positions),
+        // Match Performance's limit so the equity chart on both
+        // pages renders the SAME line from the SAME data. With 50
+        // the chart was missing older settled trades and the curve
+        // ended below the actual realized P&L.
+        api.positions(500).then((r) => r.positions),
         api.evaluations(25).then((r) => r.evaluations),
         api.config(),
       ]);
