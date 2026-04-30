@@ -708,7 +708,10 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
     for r in rows:
         out.append({
             "id":             int(r[0]),
-            "created_at":     r[1].isoformat() if r[1] else None,
+            "created_at":     (
+                r[1].isoformat() if hasattr(r[1], "isoformat")
+                else (str(r[1]) if r[1] else None)
+            ),
             "param_name":     r[2],
             "current_value":  float(r[3]) if r[3] is not None else None,
             "proposed_value": float(r[4]) if r[4] is not None else None,

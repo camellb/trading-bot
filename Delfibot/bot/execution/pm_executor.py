@@ -765,9 +765,20 @@ class PMExecutor:
                         "claude_probability": float(r[8]) if r[8] is not None else None,
                         "ev_bps":            float(r[9]) if r[9] is not None else None,
                         "confidence":        float(r[10]) if r[10] is not None else None,
-                        "expected_resolution_at":
-                            r[11].isoformat() if r[11] else None,
-                        "created_at":        r[12].isoformat() if r[12] else None,
+                        # SQLite returns DATETIME columns as strings under raw
+                        # text() queries (no type adapter applied). Calling
+                        # .isoformat() on a str raises AttributeError, which
+                        # used to take down the whole list-comprehension and
+                        # silently return [] - which is why /status was
+                        # showing nothing under Open. Handle both shapes.
+                        "expected_resolution_at": (
+                            r[11].isoformat() if hasattr(r[11], "isoformat")
+                            else (str(r[11]) if r[11] else None)
+                        ),
+                        "created_at": (
+                            r[12].isoformat() if hasattr(r[12], "isoformat")
+                            else (str(r[12]) if r[12] else None)
+                        ),
                         "prediction_id":     r[13],
                         "reasoning":         r[14],
                         "slug":              r[15],
