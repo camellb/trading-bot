@@ -133,9 +133,6 @@ export default function Positions() {
         <div className="page-head-row">
           <div>
             <h1 className="page-h1">Positions</h1>
-            <p className="page-sub">
-              Every position Delfi is managing right now, plus the markets it&apos;s watching.
-            </p>
           </div>
         </div>
       </div>

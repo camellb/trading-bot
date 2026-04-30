@@ -174,9 +174,6 @@ export default function Performance() {
         <div className="page-head-row">
           <div>
             <h1 className="page-h1">Performance</h1>
-            <p className="page-sub">
-              ROI, calibration, and category-level breakdowns. Numbers count only positions Delfi actually entered.
-            </p>
           </div>
           <div className="page-head-right">
             {RANGES.map((r) => (

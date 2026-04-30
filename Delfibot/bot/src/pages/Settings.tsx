@@ -54,22 +54,10 @@ interface Props {
 }
 
 const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
-  account: {
-    h1: "Account",
-    sub: "Starting capital. The number Delfi treats as 100% of your trading capital.",
-  },
-  connections: {
-    h1: "Connections",
-    sub: "Polymarket private key, wallet address, and LLM API key. Stored in your OS keychain, never on disk.",
-  },
-  risk: {
-    h1: "Risk and sizing",
-    sub: "Stake size, loss limits, and per-archetype multipliers. Applied immediately.",
-  },
-  notifications: {
-    h1: "Notifications",
-    sub: "Per-category toggles for what Delfi surfaces in the dashboard activity feed.",
-  },
+  account:       { h1: "Account",         sub: "" },
+  connections:   { h1: "Connections",     sub: "" },
+  risk:          { h1: "Risk and sizing", sub: "" },
+  notifications: { h1: "Notifications",   sub: "" },
 };
 
 export default function Settings({ tab, creds, config, onSaved }: Props) {
@@ -82,7 +70,7 @@ export default function Settings({ tab, creds, config, onSaved }: Props) {
         <div className="page-head-row">
           <div>
             <h1 className="page-h1">{t.h1}</h1>
-            <p className="page-sub">{t.sub}</p>
+            {t.sub && <p className="page-sub">{t.sub}</p>}
           </div>
         </div>
       </div>

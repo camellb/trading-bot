@@ -114,12 +114,6 @@ export default function Intelligence() {
         <div className="page-head-row">
           <div>
             <h1 className="page-h1">Intelligence</h1>
-            <p className="page-sub">
-              Every 50 closed trades Delfi writes a review: what moved the book,
-              where calibration held or drifted, and what the next cycle will
-              focus on. Proposed config changes land below each review with
-              evidence and inline Apply / Snooze / Skip controls.
-            </p>
           </div>
         </div>
       </div>
