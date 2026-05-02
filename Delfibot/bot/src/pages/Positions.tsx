@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, isConnectionError, MarketEvaluation, PMPosition } from "../api";
+import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt } from "../lib/format";
+import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
 // Tauri webviews swallow `target="_blank"` clicks by default - the link
 // just does nothing because the new window can't open inside the
@@ -30,38 +32,93 @@ function openExternal(url: string): void {
 
 type Filter = "all" | "open" | "closed" | "skipped";
 
-function fmt(iso: string | null | undefined): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-function fmtDateTime(iso: string | null | undefined): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
-  return `${date} · ${time}`;
-}
+// Local aliases that delegate to the central tz-aware formatters
+// (src/lib/format.ts). Kept as small wrappers so the rest of the
+// file reads the same as before.
+const fmt = formatDate;
+const fmtDateTime = formatDateTime;
 function daysFromNow(iso: string | null | undefined): string {
   if (!iso) return "-";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "-";
-  const ms = t - Date.now();
-  if (ms <= 0) return "resolving";
-  const days = Math.round(ms / 86_400_000);
-  if (days === 0) {
-    const hours = Math.max(1, Math.round(ms / 3_600_000));
-    return `${hours}h`;
-  }
-  return `${days}d`;
+  if (t - Date.now() <= 0) return "resolving";
+  // The lib version returns "Xd Yh" / "Xh Ym"; this page likes a
+  // single-token form for the table. Fall through to that when we
+  // have a positive future delta.
+  return daysFromNowFmt(iso);
 }
 function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
   const up = (raw ?? "").toUpperCase();
   if (up === "BUY_YES" || up === "YES") return "BUY YES";
   if (up === "BUY_NO" || up === "NO") return "BUY NO";
   return "SKIP";
+}
+
+// ── Sortable column keys + getters ──────────────────────────────────────
+//
+// Each table has its own enum of sortable columns. The getKpi
+// functions return the raw scalar each click should sort by - never
+// the formatted string, so "+10%" sorts after "+9%" not before it.
+
+type OpenSk    = "market" | "category" | "side" | "size"
+                | "myes"  | "dyes"     | "dconf" | "closes";
+type ClosedSk  = "market" | "category" | "side" | "outcome"
+                | "entry" | "myes"     | "dyes"  | "pnl" | "settled";
+type SkippedSk = "market" | "category" | "myes" | "dyes"
+                | "dconf" | "evaluated";
+
+function openKpi(p: PMPosition, f: OpenSk): SortKey {
+  switch (f) {
+    case "market":   return p.question;
+    case "category": return (p.category as string | null) ?? "";
+    case "side":     return p.side;
+    case "size":     return p.cost_usd;
+    case "myes": {
+      const m = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+      return m;
+    }
+    case "dyes":     return (p.claude_probability as number | null) ?? null;
+    case "dconf":    return (p.confidence as number | null) ?? null;
+    case "closes": {
+      const iso = p.expected_resolution_at as string | null | undefined;
+      return iso ? new Date(iso).getTime() : null;
+    }
+  }
+}
+
+function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
+  switch (f) {
+    case "market":   return p.question;
+    case "category": return (p.category as string | null) ?? "";
+    case "side":     return p.side;
+    case "outcome": {
+      const o = p.settlement_outcome as string | null | undefined;
+      const won = o ? o === p.side : ((p.realized_pnl_usd as number | null) ?? 0) >= 0;
+      return won ? "WON" : "LOST";
+    }
+    case "entry":    return p.entry_price;
+    case "myes":     return p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+    case "dyes":     return (p.claude_probability as number | null) ?? null;
+    case "pnl":      return (p.realized_pnl_usd as number | null) ?? null;
+    case "settled": {
+      const iso = p.settled_at as string | null | undefined;
+      return iso ? new Date(iso).getTime() : null;
+    }
+  }
+}
+
+function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
+  switch (f) {
+    case "market":   return e.question;
+    case "category": return e.category ?? "";
+    case "myes":     return e.market_price_yes ?? null;
+    case "dyes":     return e.claude_probability ?? null;
+    case "dconf":    return e.confidence ?? null;
+    case "evaluated": {
+      const iso = e.evaluated_at;
+      return iso ? new Date(iso).getTime() : null;
+    }
+  }
 }
 
 export default function Positions() {
@@ -108,6 +165,29 @@ export default function Positions() {
   const skipped = useMemo(
     () => evals.filter((e) => decision(e.recommendation) === "SKIP"),
     [evals],
+  );
+
+  // Sort states. One per table so they're independent. Defaults
+  // mirror "most recent first" or "biggest first" depending on
+  // what users will scan for in that view.
+  const openSort    = useSort<OpenSk>("size", "desc");
+  const closedSort  = useSort<ClosedSk>("settled", "desc");
+  const skippedSort = useSort<SkippedSk>("evaluated", "desc");
+
+  const openRows = useMemo(
+    () => openSort.apply(open, openKpi),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, openSort.field, openSort.dir],
+  );
+  const closedRows = useMemo(
+    () => closedSort.apply(settled, closedKpi),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settled, closedSort.field, closedSort.dir],
+  );
+  const skippedRows = useMemo(
+    () => skippedSort.apply(skipped, skippedKpi),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [skipped, skippedSort.field, skippedSort.dir],
   );
 
   const deployed = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
@@ -176,19 +256,19 @@ export default function Positions() {
             <table className="table-simple">
               <thead>
                 <tr>
-                  <th>Market</th>
-                  <th>Category</th>
-                  <th>Side</th>
-                  <th>Size</th>
-                  <th>M YES %</th>
-                  <th>D YES %</th>
-                  <th>D CONF</th>
-                  <th>Closes</th>
+                  <SortableTh field="market"   sort={openSort}>Market</SortableTh>
+                  <SortableTh field="category" sort={openSort}>Category</SortableTh>
+                  <SortableTh field="side"     sort={openSort}>Side</SortableTh>
+                  <SortableTh field="size"     sort={openSort}>Size</SortableTh>
+                  <SortableTh field="myes"     sort={openSort}>M YES %</SortableTh>
+                  <SortableTh field="dyes"     sort={openSort}>D YES %</SortableTh>
+                  <SortableTh field="dconf"    sort={openSort}>D CONF</SortableTh>
+                  <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
                   <th style={{ width: 28 }} />
                 </tr>
               </thead>
               <tbody>
-                {open.map((p) => {
+                {openRows.map((p) => {
                   const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
                   const mYesPct = Math.round(marketYes * 100);
                   const cp = (p.claude_probability as number | null | undefined) ?? null;
@@ -291,19 +371,19 @@ export default function Positions() {
             <table className="table-simple">
               <thead>
                 <tr>
-                  <th>Market</th>
-                  <th>Category</th>
-                  <th>Side</th>
-                  <th>Outcome</th>
-                  <th>Entry</th>
-                  <th>M YES %</th>
-                  <th>D YES %</th>
-                  <th>P&amp;L</th>
-                  <th>Settled</th>
+                  <SortableTh field="market"   sort={closedSort}>Market</SortableTh>
+                  <SortableTh field="category" sort={closedSort}>Category</SortableTh>
+                  <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
+                  <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
+                  <SortableTh field="entry"    sort={closedSort}>Entry</SortableTh>
+                  <SortableTh field="myes"     sort={closedSort}>M YES %</SortableTh>
+                  <SortableTh field="dyes"     sort={closedSort}>D YES %</SortableTh>
+                  <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
+                  <SortableTh field="settled"  sort={closedSort}>Settled</SortableTh>
                 </tr>
               </thead>
               <tbody>
-                {settled.map((s) => {
+                {closedRows.map((s) => {
                   const pnl = (s.realized_pnl_usd as number | null | undefined) ?? 0;
                   const outcome = s.settlement_outcome as string | null | undefined;
                   const settledAt = s.settled_at as string | null | undefined;
@@ -352,17 +432,17 @@ export default function Positions() {
             <table className="table-simple">
               <thead>
                 <tr>
-                  <th>Market</th>
-                  <th>Category</th>
-                  <th>M YES %</th>
-                  <th>D YES %</th>
-                  <th>D CONF</th>
-                  <th>Evaluated</th>
+                  <SortableTh field="market"    sort={skippedSort}>Market</SortableTh>
+                  <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
+                  <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
+                  <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
+                  <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
+                  <SortableTh field="evaluated" sort={skippedSort}>Evaluated</SortableTh>
                   <th style={{ width: 28 }} />
                 </tr>
               </thead>
               <tbody>
-                {skipped.map((e) => {
+                {skippedRows.map((e) => {
                   const isOpen = expandedEval.has(e.id);
                   const dYesPct = e.claude_probability != null ? Math.round(e.claude_probability * 100) : null;
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;

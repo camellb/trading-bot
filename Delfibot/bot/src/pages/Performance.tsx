@@ -8,6 +8,7 @@ import {
   PMPosition,
 } from "../api";
 import { EquityChart } from "../components/EquityChart";
+import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
 /**
  * Performance - SaaS-parity layout.
@@ -280,140 +281,214 @@ export default function Performance() {
         </div>
       )}
 
-      {calibration && (
-        <div className="panel">
-          <div className="panel-head">
-            <h2 className="panel-title">By archetype</h2>
-            <span className="panel-meta">
-              {calibration.by_archetype?.length ?? 0} archetypes
-            </span>
-          </div>
-          {calibration.by_archetype && calibration.by_archetype.length > 0 ? (
-          <table className="table-simple">
-            <thead>
-              <tr>
-                <th>Archetype</th>
-                <th>Trades</th>
-                <th>Win rate</th>
-                <th>P&amp;L</th>
-                <th>ROI</th>
-                <th>Brier</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calibration.by_archetype.map((a, i) => {
-                const pnl = a.pnl_usd ?? 0;
-                const cost = a.cost_usd ?? 0;
-                const wins = a.wins ?? 0;
-                const winRate = a.n > 0 ? (wins / a.n) * 100 : null;
-                const roi = cost > 0 ? (pnl / cost) * 100 : null;
-                const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
-                const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
-                return (
-                  <tr key={i}>
-                    <td>{archetypeLabel(a.archetype)}</td>
-                    <td className="mono">{a.n}</td>
-                    <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
-                    <td className={`mono ${pnlClass}`}>{a.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
-                    <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
-                    <td className="mono">{a.brier?.toFixed(3) ?? "-"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          ) : (
-            <div className="empty-state">
-              No settled trades yet. Per-archetype P&amp;L, ROI, and win rate
-              appear here once Delfi opens and resolves positions.
-            </div>
-          )}
-        </div>
-      )}
+      <ArchetypeTable calibration={calibration} />
+      <CategoryTable calibration={calibration} />
+      <HorizonTable calibration={calibration} />
+    </div>
+  );
+}
 
-      {calibration && (
-        <div className="panel">
-          <div className="panel-head">
-            <h2 className="panel-title">By category</h2>
-            <span className="panel-meta">{calibration.by_category.length} categories</span>
-          </div>
-          {calibration.by_category.length > 0 ? (
-          <table className="table-simple">
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>Trades</th>
-                <th>Win rate</th>
-                <th>P&amp;L</th>
-                <th>ROI</th>
-                <th>Brier</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calibration.by_category.map((c, i) => {
-                const pnl = c.pnl_usd ?? 0;
-                const cost = c.cost_usd ?? 0;
-                const wins = c.wins ?? 0;
-                // Prefer derived win rate from wins/n when available; fall back
-                // to the legacy server-computed `win_rate` (older sidecars).
-                const winRate = wins > 0 || c.win_rate == null
-                  ? (c.n > 0 ? (wins / c.n) * 100 : null)
-                  : (c.win_rate ?? 0) * 100;
-                const roi = cost > 0 ? (pnl / cost) * 100 : null;
-                const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
-                const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
-                return (
-                  <tr key={i}>
-                    <td>{c.category ?? "Uncategorised"}</td>
-                    <td className="mono">{c.n}</td>
-                    <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
-                    <td className={`mono ${pnlClass}`}>{c.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
-                    <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
-                    <td className="mono">{c.brier?.toFixed(3) ?? "-"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          ) : (
-            <div className="empty-state">
-              No settled trades yet. Per-category breakdown appears here once
-              Delfi opens and resolves positions.
-            </div>
-          )}
-        </div>
-      )}
+// ── By archetype ────────────────────────────────────────────────────────
 
-      {calibration && calibration.by_horizon.length > 0 && (
-        <div className="panel">
-          <div className="panel-head">
-            <h2 className="panel-title">By horizon</h2>
-            <span className="panel-meta">Resolution time bucket</span>
-          </div>
-          <table className="table-simple">
-            <thead>
-              <tr>
-                <th>Bucket</th>
-                <th>Trades</th>
-                <th>Brier</th>
-                <th>Mean predicted</th>
-                <th>Mean actual</th>
-              </tr>
-            </thead>
-            <tbody>
-              {calibration.by_horizon.map((h, i) => (
+type ArchetypeSk = "archetype" | "trades" | "win_rate" | "pnl" | "roi" | "brier";
+
+function ArchetypeTable({ calibration }: { calibration: CalibrationReport | null }) {
+  const sort = useSort<ArchetypeSk>("trades", "desc");
+  const rows = useMemo(() => {
+    const raw = calibration?.by_archetype ?? [];
+    return sort.apply(raw, (a, f): SortKey => {
+      const wins = a.wins ?? 0;
+      const cost = a.cost_usd ?? 0;
+      const pnl  = a.pnl_usd ?? 0;
+      switch (f) {
+        case "archetype": return archetypeLabel(a.archetype);
+        case "trades":    return a.n;
+        case "win_rate":  return a.n > 0 ? wins / a.n : null;
+        case "pnl":       return a.n > 0 ? pnl : null;
+        case "roi":       return cost > 0 ? pnl / cost : null;
+        case "brier":     return a.brier;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calibration?.by_archetype, sort.field, sort.dir]);
+
+  if (!calibration) return null;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">By archetype</h2>
+        <span className="panel-meta">{calibration.by_archetype?.length ?? 0} archetypes</span>
+      </div>
+      {rows.length > 0 ? (
+        <table className="table-simple">
+          <thead>
+            <tr>
+              <SortableTh field="archetype" sort={sort}>Archetype</SortableTh>
+              <SortableTh field="trades"    sort={sort}>Trades</SortableTh>
+              <SortableTh field="win_rate"  sort={sort}>Win rate</SortableTh>
+              <SortableTh field="pnl"       sort={sort}>P&amp;L</SortableTh>
+              <SortableTh field="roi"       sort={sort}>ROI</SortableTh>
+              <SortableTh field="brier"     sort={sort}>Brier</SortableTh>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((a, i) => {
+              const pnl = a.pnl_usd ?? 0;
+              const cost = a.cost_usd ?? 0;
+              const wins = a.wins ?? 0;
+              const winRate = a.n > 0 ? (wins / a.n) * 100 : null;
+              const roi = cost > 0 ? (pnl / cost) * 100 : null;
+              const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
+              const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
+              return (
                 <tr key={i}>
-                  <td>{h.bucket}</td>
-                  <td className="mono">{h.n}</td>
-                  <td className="mono">{h.brier?.toFixed(3) ?? "-"}</td>
-                  <td className="mono">{h.mean_pred != null ? `${(h.mean_pred * 100).toFixed(0)}%` : "-"}</td>
-                  <td className="mono">{h.mean_actual != null ? `${(h.mean_actual * 100).toFixed(0)}%` : "-"}</td>
+                  <td>{archetypeLabel(a.archetype)}</td>
+                  <td className="mono">{a.n}</td>
+                  <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
+                  <td className={`mono ${pnlClass}`}>{a.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
+                  <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
+                  <td className="mono">{a.brier?.toFixed(3) ?? "-"}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : (
+        <div className="empty-state">
+          No settled trades yet. Per-archetype P&amp;L, ROI, and win rate
+          appear here once Delfi opens and resolves positions.
         </div>
       )}
+    </div>
+  );
+}
+
+// ── By category ─────────────────────────────────────────────────────────
+
+type CategorySk = "category" | "trades" | "win_rate" | "pnl" | "roi" | "brier";
+
+function CategoryTable({ calibration }: { calibration: CalibrationReport | null }) {
+  const sort = useSort<CategorySk>("trades", "desc");
+  const rows = useMemo(() => {
+    const raw = calibration?.by_category ?? [];
+    return sort.apply(raw, (c, f): SortKey => {
+      const wins = c.wins ?? 0;
+      const cost = c.cost_usd ?? 0;
+      const pnl  = c.pnl_usd ?? 0;
+      switch (f) {
+        case "category": return c.category ?? "";
+        case "trades":   return c.n;
+        case "win_rate": return c.n > 0 ? wins / c.n : (c.win_rate ?? null);
+        case "pnl":      return c.n > 0 ? pnl : null;
+        case "roi":      return cost > 0 ? pnl / cost : null;
+        case "brier":    return c.brier;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calibration?.by_category, sort.field, sort.dir]);
+
+  if (!calibration) return null;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">By category</h2>
+        <span className="panel-meta">{calibration.by_category.length} categories</span>
+      </div>
+      {rows.length > 0 ? (
+        <table className="table-simple">
+          <thead>
+            <tr>
+              <SortableTh field="category" sort={sort}>Category</SortableTh>
+              <SortableTh field="trades"   sort={sort}>Trades</SortableTh>
+              <SortableTh field="win_rate" sort={sort}>Win rate</SortableTh>
+              <SortableTh field="pnl"      sort={sort}>P&amp;L</SortableTh>
+              <SortableTh field="roi"      sort={sort}>ROI</SortableTh>
+              <SortableTh field="brier"    sort={sort}>Brier</SortableTh>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((c, i) => {
+              const pnl = c.pnl_usd ?? 0;
+              const cost = c.cost_usd ?? 0;
+              const wins = c.wins ?? 0;
+              const winRate = wins > 0 || c.win_rate == null
+                ? (c.n > 0 ? (wins / c.n) * 100 : null)
+                : (c.win_rate ?? 0) * 100;
+              const roi = cost > 0 ? (pnl / cost) * 100 : null;
+              const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
+              const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
+              return (
+                <tr key={i}>
+                  <td>{c.category ?? "Uncategorised"}</td>
+                  <td className="mono">{c.n}</td>
+                  <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
+                  <td className={`mono ${pnlClass}`}>{c.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
+                  <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
+                  <td className="mono">{c.brier?.toFixed(3) ?? "-"}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : (
+        <div className="empty-state">
+          No settled trades yet. Per-category breakdown appears here once
+          Delfi opens and resolves positions.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── By horizon ──────────────────────────────────────────────────────────
+
+type HorizonSk = "bucket" | "trades" | "brier" | "mean_pred" | "mean_actual";
+
+function HorizonTable({ calibration }: { calibration: CalibrationReport | null }) {
+  const sort = useSort<HorizonSk>("trades", "desc");
+  const rows = useMemo(() => {
+    const raw = calibration?.by_horizon ?? [];
+    return sort.apply(raw, (h, f): SortKey => {
+      switch (f) {
+        case "bucket":      return h.bucket;
+        case "trades":      return h.n;
+        case "brier":       return h.brier;
+        case "mean_pred":   return h.mean_pred;
+        case "mean_actual": return h.mean_actual;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calibration?.by_horizon, sort.field, sort.dir]);
+
+  if (!calibration || calibration.by_horizon.length === 0) return null;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">By horizon</h2>
+        <span className="panel-meta">Resolution time bucket</span>
+      </div>
+      <table className="table-simple">
+        <thead>
+          <tr>
+            <SortableTh field="bucket"      sort={sort}>Bucket</SortableTh>
+            <SortableTh field="trades"      sort={sort}>Trades</SortableTh>
+            <SortableTh field="brier"       sort={sort}>Brier</SortableTh>
+            <SortableTh field="mean_pred"   sort={sort}>Mean predicted</SortableTh>
+            <SortableTh field="mean_actual" sort={sort}>Mean actual</SortableTh>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((h, i) => (
+            <tr key={i}>
+              <td>{h.bucket}</td>
+              <td className="mono">{h.n}</td>
+              <td className="mono">{h.brier?.toFixed(3) ?? "-"}</td>
+              <td className="mono">{h.mean_pred != null ? `${(h.mean_pred * 100).toFixed(0)}%` : "-"}</td>
+              <td className="mono">{h.mean_actual != null ? `${(h.mean_actual * 100).toFixed(0)}%` : "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

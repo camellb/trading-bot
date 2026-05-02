@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { formatDate, formatDateTime } from "../lib/format";
 
 /**
  * Equity-history chart used by both Dashboard and Performance.
@@ -28,22 +29,15 @@ const X_TICKS = 4;  // 4 intervals -> 5 date labels
 const fmtUsd = (n: number) =>
   `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
-const fmtDate = (s: string): string => {
-  if (!s) return "";
-  const d = new Date(s);
-  if (!Number.isFinite(d.getTime())) return s.slice(0, 10);
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-};
-
-const fmtDateTime = (s: string): string => {
-  if (!s) return "—";
-  const d = new Date(s);
-  if (!Number.isFinite(d.getTime())) return s.slice(0, 16);
-  return d.toLocaleString(undefined, {
-    month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
-};
+// Tz-aware formatters live in src/lib/format.ts. The local consts
+// here used to roll their own toLocaleDateString / toLocaleString
+// without honouring the user's configured display timezone, which
+// made the chart's tick labels and hover tooltip read in the OS
+// clock even after the user switched the rest of the app to a
+// different zone. The thin wrappers below preserve the original
+// internal API shape (no-arg, returns string for empty input).
+const fmtDate = (s: string): string => s ? formatDate(s) : "";
+const fmtDateTime = (s: string): string => s ? formatDateTime(s) : "—";
 
 export function EquityChart({
   series,

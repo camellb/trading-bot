@@ -11,6 +11,13 @@ import {
   NotificationsConfig,
   TelegramConfig,
 } from "../api";
+import {
+  COMMON_TIMEZONES,
+  formatDateTime,
+  getDisplayTz,
+  resolvedTz,
+  setDisplayTz,
+} from "../lib/format";
 import type { SettingsTab } from "../App";
 
 /**
@@ -199,6 +206,7 @@ function AccountPanel({
         )}
       </div>
 
+      <TimezonePanel />
       <AutostartPanel />
       <LoginItemPanel />
       <RestartPanel />
@@ -207,6 +215,72 @@ function AccountPanel({
       <LaunchStatsPanel />
       <LicensePanel />
     </>
+  );
+}
+
+// ── Display timezone ─────────────────────────────────────────────────────
+
+/**
+ * Lets the user pick which timezone every date in the app is rendered
+ * in. Defaults to "system" - whatever Intl.DateTimeFormat resolves to
+ * via the OS clock. Setting persists in localStorage and applies to
+ * all formatted dates on the next render.
+ */
+function TimezonePanel() {
+  const [tz, setTz] = useState<string>(getDisplayTz() ?? "");
+  const [saved, setSaved] = useState<{ kind: "ok"; text: string } | null>(null);
+  const sample = "2026-05-03T15:30:00+00:00";
+
+  const apply = (next: string) => {
+    setTz(next);
+    setDisplayTz(next || null);
+    setSaved({
+      kind: "ok",
+      text: next
+        ? `Saved. Dates now render in ${next}.`
+        : `Saved. Dates now follow the system clock (${resolvedTz()}).`,
+    });
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Display timezone</h2>
+        <span className="panel-meta">
+          Currently: {tz || `system (${resolvedTz()})`}
+        </span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Every date and time across the dashboard renders in this
+        timezone. Default is your operating system clock; pick a
+        specific zone if you want the dashboard to follow a different
+        clock than the OS (e.g. trading hours in another region).
+      </p>
+      <div className="form-row">
+        <div className="form-field">
+          <label>Timezone</label>
+          <select
+            value={tz}
+            onChange={(e) => apply(e.target.value)}
+          >
+            <option value="">System default ({resolvedTz()})</option>
+            {COMMON_TIMEZONES.map((z) => (
+              <option key={z.value} value={z.value}>
+                {z.label} - {z.value}
+              </option>
+            ))}
+          </select>
+          <span className="form-hint">
+            Sample: {formatDateTime(sample)}
+          </span>
+        </div>
+      </div>
+      {saved && (
+        <p className="form-success" style={{ marginTop: 12 }}>
+          {saved.text}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -790,7 +864,7 @@ function LicensePanel() {
   };
 
   const lastValidated = status?.last_validated_at
-    ? new Date(status.last_validated_at).toLocaleString()
+    ? formatDateTime(status.last_validated_at)
     : null;
 
   return (

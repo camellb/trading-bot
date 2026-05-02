@@ -9,6 +9,7 @@ import {
   PerformanceSummary,
   PMPosition,
 } from "../api";
+import { formatDateTime, getDisplayTz } from "../lib/format";
 import type { Page, SettingsTab } from "../App";
 
 /**
@@ -62,11 +63,18 @@ const ACT_ICON: Record<ActivityItem["kind"], string> = {
   scan: "·",
 };
 
+// Activity-feed time formatter. Uses the user's display-tz via the
+// central formatter so feed timestamps line up with the rest of the
+// dashboard rather than always reading in the OS clock.
 function fmtTime(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const tz = getDisplayTz();
+  const opts: Intl.DateTimeFormatOptions = {
+    hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit",
+  };
+  return new Intl.DateTimeFormat(undefined, tz ? { ...opts, timeZone: tz } : opts).format(d);
 }
 function daysFromNow(iso: string | null | undefined): string {
   if (!iso) return "-";
@@ -487,13 +495,13 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                   <div>
                     <div className="pos-detail-kv-label">Opened</div>
                     <div className="pos-detail-kv-val">
-                      {p.created_at ? new Date(p.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-"}
+                      {formatDateTime(p.created_at)}
                     </div>
                   </div>
                   <div>
                     <div className="pos-detail-kv-label">Closes</div>
                     <div className="pos-detail-kv-val">
-                      {closesAt ? new Date(closesAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-"}
+                      {formatDateTime(closesAt)}
                     </div>
                   </div>
                   <div>

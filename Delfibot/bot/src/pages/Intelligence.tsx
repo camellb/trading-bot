@@ -5,6 +5,7 @@ import {
   LearningReport,
   PendingSuggestion,
 } from "../api";
+import { formatDate, formatDateTime } from "../lib/format";
 
 /**
  * Intelligence - SaaS-parity layout, with desktop-only in-app
@@ -17,21 +18,11 @@ import {
  *   - Snoozed: suggestions waiting for more samples
  */
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
-}
-function fmtDateTime(iso: string | null): string {
-  if (!iso) return "-";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "-";
-  return d.toLocaleString("en-US", {
-    year: "numeric", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
-}
+// Local aliases delegating to the central tz-aware formatters in
+// src/lib/format.ts so this page picks up the user's display
+// timezone preference automatically.
+const fmtDate = formatDate;
+const fmtDateTime = formatDateTime;
 function fmtNum(n: number | null, digits = 3): string {
   if (n == null) return "-";
   return n.toFixed(digits);
