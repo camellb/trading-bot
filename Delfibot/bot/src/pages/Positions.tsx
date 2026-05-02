@@ -296,12 +296,14 @@ export default function Positions() {
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
                         <td className="mono">{daysFromNow(closesAt)}</td>
-                        <td className="mono" style={{
-                          color: isOpen ? "var(--gold)" : "var(--vellum-40)",
-                          transform: isOpen ? "rotate(90deg)" : "none",
-                          display: "inline-block",
-                          transition: "transform 0.15s ease",
-                        }}>▸</td>
+                        <td className="mono" style={{ textAlign: "right" }}>
+                          <span style={{
+                            display: "inline-block",
+                            color: isOpen ? "var(--gold)" : "var(--vellum-40)",
+                            transform: isOpen ? "rotate(90deg)" : "none",
+                            transition: "transform 0.15s ease",
+                          }}>▸</span>
+                        </td>
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
@@ -461,12 +463,14 @@ export default function Positions() {
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
                         <td className="mono">{fmt(e.evaluated_at)}</td>
-                        <td className="mono" style={{
-                          color: isOpen ? "var(--gold)" : "var(--vellum-40)",
-                          transform: isOpen ? "rotate(90deg)" : "none",
-                          display: "inline-block",
-                          transition: "transform 0.15s ease",
-                        }}>▸</td>
+                        <td className="mono" style={{ textAlign: "right" }}>
+                          <span style={{
+                            display: "inline-block",
+                            color: isOpen ? "var(--gold)" : "var(--vellum-40)",
+                            transform: isOpen ? "rotate(90deg)" : "none",
+                            transition: "transform 0.15s ease",
+                          }}>▸</span>
+                        </td>
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
