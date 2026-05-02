@@ -335,6 +335,14 @@ user_config = Table(
     Column("archetype_stake_multipliers",  JSON,  nullable=False,
            server_default=sa_text("'{}'")),
 
+    # Per-user time-to-resolution filter, in HOURS.
+    # NULL means "no constraint on this side" (frontend exposes
+    # 0 as the null sentinel). When both are set the validator
+    # enforces max >= min so the user can't lock themselves out
+    # of every market.
+    Column("min_hours_to_resolution", Integer, nullable=True),
+    Column("max_hours_to_resolution", Integer, nullable=True),
+
     # Mode + bankroll. Mode: 'simulation' | 'live'.
     Column("mode",            Text, nullable=False,
            server_default=sa_text("'simulation'")),
@@ -441,6 +449,16 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE user_config ADD COLUMN notification_prefs JSON "
                 "NOT NULL DEFAULT '{}'"
+            ))
+        if "min_hours_to_resolution" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "min_hours_to_resolution INTEGER"
+            ))
+        if "max_hours_to_resolution" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "max_hours_to_resolution INTEGER"
             ))
 
         # Seed the singleton row if absent. Local install always has

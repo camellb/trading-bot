@@ -310,8 +310,38 @@ class PMAnalyst:
         Returns a summary keyed by counters across all users.
         """
         skip_days = int(getattr(config, "PM_SKIP_EXISTING_DAYS", 1))
-        min_days  = int(getattr(config, "PM_MIN_DAYS_TO_END", 0))
-        max_days  = int(getattr(config, "PM_MAX_DAYS_TO_END", 7))
+
+        # Per-user time-to-resolution filter overrides the global
+        # config defaults when the user has set explicit hours via
+        # the dashboard. NULL on either side means "no constraint
+        # on this side"; we fall back to the global PM_MIN/MAX
+        # defaults expressed in hours.
+        #
+        # Single-user local-first: there's exactly one onboarded
+        # user, so we pick their config as the authoritative bound.
+        # In a multi-user fan-out we'd take the most permissive
+        # bounds across users (so we fetch every market any user
+        # might want) and re-filter per-user later.
+        from engine.user_config import get_user_config, list_onboarded_user_ids
+        global_min_h = int(getattr(config, "PM_MIN_DAYS_TO_END", 0)) * 24
+        global_max_h = int(getattr(config, "PM_MAX_DAYS_TO_END", 7)) * 24
+        _uids = list_onboarded_user_ids() or []
+        if _uids:
+            _ucfg = get_user_config(_uids[0])
+            user_min = _ucfg.min_hours_to_resolution
+            user_max = _ucfg.max_hours_to_resolution
+        else:
+            user_min = None
+            user_max = None
+        eff_min_h = user_min if user_min is not None else global_min_h
+        eff_max_h = user_max if user_max is not None else global_max_h
+        # Convert back to days for the existing fetcher API; round
+        # the min DOWN (so a 12h min still includes ~0d markets at
+        # the integer-day fetch level - we'll do exact-hour
+        # filtering elsewhere later if needed) and the max UP so
+        # the user's window is fully contained.
+        min_days  = max(0, eff_min_h // 24)
+        max_days  = max(1, -(-eff_max_h // 24))
 
         summary = {
             "fetched":     0,

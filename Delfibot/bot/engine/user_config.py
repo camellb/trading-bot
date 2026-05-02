@@ -77,6 +77,13 @@ class UserConfig:
     archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
     archetype_stake_multipliers: Dict[str, float] = field(default_factory=dict)
 
+    # Per-user time-to-resolution filter (HOURS).
+    # None = no constraint. Frontend exposes 0 as the null
+    # sentinel (the user types 0 to clear the limit). When both
+    # are set the validator enforces max >= min.
+    min_hours_to_resolution:  Optional[int]     = None
+    max_hours_to_resolution:  Optional[int]     = None
+
     # Execution state.
     mode:                  Optional[str]   = None    # 'simulation' | 'live'
     starting_cash:         Optional[float] = None
@@ -142,12 +149,24 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     "dry_powder_reserve_pct":        (0.10, 0.40),
     "cost_assumption_override":      (0.0, 0.10),
     "starting_cash":                 (10.0, 100_000.0),
+    # Time-to-resolution bounds in HOURS. Floor is 1 (a market
+    # less than an hour out is essentially settled noise); ceiling
+    # is 720 = 30 days, an order of magnitude past anything we'd
+    # actually want to hold. 0 isn't in this range because the
+    # frontend translates 0 -> None (no constraint) before reaching
+    # the validator.
+    "min_hours_to_resolution":       (1, 720),
+    "max_hours_to_resolution":       (1, 720),
 }
 
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = ("archetype_skip_list",)
 USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = ("archetype_stake_multipliers",)
 USER_CONFIG_BOOL_DICT_FIELDS: Tuple[str, ...] = ("notification_prefs",)
-USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = ("cost_assumption_override",)
+USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
+    "cost_assumption_override",
+    "min_hours_to_resolution",
+    "max_hours_to_resolution",
+)
 
 NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     "position_opened",
@@ -222,6 +241,8 @@ _CASTERS: dict[str, type] = {
     "dry_powder_reserve_pct":        float,
     "cost_assumption_override":      float,
     "starting_cash":                 float,
+    "min_hours_to_resolution":       int,
+    "max_hours_to_resolution":       int,
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
@@ -245,6 +266,8 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "bot_enabled",
     "notification_prefs",
     "telegram_chat_id",
+    "min_hours_to_resolution",
+    "max_hours_to_resolution",
 })
 
 
@@ -329,6 +352,17 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
         return _cast_list(raw)
     if key in USER_CONFIG_NULLABLE_FIELDS and _is_unset(raw):
         return None
+    # 0 is the explicit "no constraint" sentinel for the time-to-
+    # resolution fields. Translate before validation so the bounds
+    # check (1..720) doesn't reject what the UI considers "off".
+    if key in ("min_hours_to_resolution", "max_hours_to_resolution"):
+        try:
+            n = int(raw) if raw is not None and raw != "" else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+        if n is None or n == 0:
+            return None
+        return n
     if key == "mode":
         if raw not in ("simulation", "live"):
             raise ValueError("mode must be 'simulation' or 'live'")
@@ -404,7 +438,35 @@ def validated_update_payload(payload: dict) -> dict:
         value = cast_value(key, raw)
         validate_user_config_value(key, value)
         clean[key] = value
+    _validate_time_to_resolution(clean)
     return clean
+
+
+def _validate_time_to_resolution(clean: dict) -> None:
+    """Cross-field rule: max_hours >= min_hours when both are set.
+
+    Either field may arrive in this update OR already be persisted on
+    the singleton row from a prior update. We resolve to the EFFECTIVE
+    pair (incoming value if provided, else current persisted value)
+    and compare. None on either side means "no constraint" and skips
+    the check.
+    """
+    if "min_hours_to_resolution" not in clean and "max_hours_to_resolution" not in clean:
+        return
+    # Resolve missing side from the persisted singleton.
+    persisted = get_user_config()
+    new_min = clean.get("min_hours_to_resolution",
+                        persisted.min_hours_to_resolution)
+    new_max = clean.get("max_hours_to_resolution",
+                        persisted.max_hours_to_resolution)
+    if new_min is None or new_max is None:
+        return
+    if new_max < new_min:
+        raise ValueError(
+            f"max_hours_to_resolution ({new_max}) must be >= "
+            f"min_hours_to_resolution ({new_min}). Set either one to "
+            f"0 to remove its constraint."
+        )
 
 
 # ── Decode helpers ──────────────────────────────────────────────────────────
@@ -532,7 +594,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       cost_assumption_override, archetype_skip_list, "
                 "       mode, starting_cash, wallet_address, "
                 "       bot_enabled, archetype_stake_multipliers, "
-                "       notification_prefs, telegram_chat_id "
+                "       notification_prefs, telegram_chat_id, "
+                "       min_hours_to_resolution, max_hours_to_resolution "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -554,6 +617,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             archetype_stake_multipliers   = _decode_archetype_multipliers(row[13]),
             notification_prefs            = _decode_notification_prefs(row[14]),
             telegram_chat_id              = (str(row[15]).strip() if row[15] is not None and str(row[15]).strip() else None),
+            min_hours_to_resolution       = (int(row[16]) if row[16] is not None else None),
+            max_hours_to_resolution       = (int(row[17]) if row[17] is not None else None),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -577,6 +642,11 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
 
     if not clean:
         return get_user_config(user_id)
+
+    # Cross-field check: defended here too so direct callers
+    # (onboarding flows, telegram setters, etc.) get the same
+    # max>=min protection as the dashboard PUT path.
+    _validate_time_to_resolution(clean)
 
     json_fields = set(USER_CONFIG_DICT_FIELDS) | set(USER_CONFIG_BOOL_DICT_FIELDS)
     set_parts = ", ".join(f"{k} = :{k}" for k in clean)
