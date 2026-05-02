@@ -68,7 +68,7 @@ export default function Risk({ config, onSaved }: Props) {
 
 // ── Time-to-resolution window ────────────────────────────────────────────
 
-const RESOLUTION_BOUNDS = [0, 720] as const;  // 0 = no constraint; 720 = 30 days
+const RESOLUTION_BOUNDS = [0, 30] as const;  // days; 0 = no constraint; 30 = 30 days
 
 function ResolutionWindowPanel({
   config,
@@ -77,8 +77,8 @@ function ResolutionWindowPanel({
   config: ConfigShape | null;
   onSaved: () => void;
 }) {
-  const [minHours, setMinHours] = useState("");
-  const [maxHours, setMaxHours] = useState("");
+  const [minDays, setMinDays] = useState("");
+  const [maxDays, setMaxDays] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -91,10 +91,10 @@ function ResolutionWindowPanel({
     if (!config) return;
     if (syncedRef.current) return;
     syncedRef.current = true;
-    const minVal = (config as { min_hours_to_resolution?: number | null }).min_hours_to_resolution;
-    const maxVal = (config as { max_hours_to_resolution?: number | null }).max_hours_to_resolution;
-    setMinHours(minVal != null ? String(minVal) : "0");
-    setMaxHours(maxVal != null ? String(maxVal) : "0");
+    const minVal = (config as { min_days_to_resolution?: number | null }).min_days_to_resolution;
+    const maxVal = (config as { max_days_to_resolution?: number | null }).max_days_to_resolution;
+    setMinDays(minVal != null ? String(minVal) : "0");
+    setMaxDays(maxVal != null ? String(maxVal) : "0");
   }, [config]);
 
   const save = async (e: React.FormEvent) => {
@@ -105,27 +105,27 @@ function ResolutionWindowPanel({
       const parse = (label: string, raw: string): number => {
         const n = Number(raw.trim() === "" ? "0" : raw);
         if (!Number.isInteger(n)) {
-          throw new Error(`${label} must be an integer (hours).`);
+          throw new Error(`${label} must be a whole number of days.`);
         }
         const [lo, hi] = RESOLUTION_BOUNDS;
         if (n < lo || n > hi) {
-          throw new Error(`${label} must be between ${lo} (off) and ${hi} hours.`);
+          throw new Error(`${label} must be between ${lo} (off) and ${hi} days.`);
         }
         return n;
       };
-      const minN = parse("Minimum", minHours);
-      const maxN = parse("Maximum", maxHours);
+      const minN = parse("Minimum", minDays);
+      const maxN = parse("Maximum", maxDays);
       // Cross-field rule, mirrored on the backend:
       // 0 = "no constraint" so it never conflicts.
       if (minN > 0 && maxN > 0 && maxN < minN) {
         throw new Error(
-          `Maximum (${maxN}h) must be at least the minimum (${minN}h). ` +
+          `Maximum (${maxN}d) must be at least the minimum (${minN}d). ` +
           `Set either to 0 to remove that side of the limit.`,
         );
       }
       await api.updateConfig({
-        min_hours_to_resolution: minN,
-        max_hours_to_resolution: maxN,
+        min_days_to_resolution: minN,
+        max_days_to_resolution: maxN,
       });
       setMsg({ kind: "ok", text: "Saved." });
       onSaved();
@@ -140,29 +140,29 @@ function ResolutionWindowPanel({
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Time to resolution</h2>
-        <span className="panel-meta">hours, 0 = no limit</span>
+        <span className="panel-meta">days, 0 = no limit</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Filter markets by how soon they resolve. Set a minimum to avoid
-        markets settling in the next few hours; set a maximum to avoid
-        long-dated markets where capital sits tied up. Either side at 0
-        means no constraint on that side.
+        markets settling within the next day or two; set a maximum to
+        avoid long-dated markets where capital sits tied up. Either side
+        at 0 means no constraint on that side.
       </p>
       <form onSubmit={save}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
           <NumField
-            label="Minimum hours to resolution"
+            label="Minimum days to resolution"
             step="1"
             range={RESOLUTION_BOUNDS}
-            value={minHours}
-            onChange={setMinHours}
+            value={minDays}
+            onChange={setMinDays}
           />
           <NumField
-            label="Maximum hours to resolution"
+            label="Maximum days to resolution"
             step="1"
             range={RESOLUTION_BOUNDS}
-            value={maxHours}
-            onChange={setMaxHours}
+            value={maxDays}
+            onChange={setMaxDays}
           />
         </div>
         <div className="form-actions" style={{ marginTop: 18 }}>

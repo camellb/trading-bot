@@ -335,13 +335,13 @@ user_config = Table(
     Column("archetype_stake_multipliers",  JSON,  nullable=False,
            server_default=sa_text("'{}'")),
 
-    # Per-user time-to-resolution filter, in HOURS.
-    # NULL means "no constraint on this side" (frontend exposes
-    # 0 as the null sentinel). When both are set the validator
-    # enforces max >= min so the user can't lock themselves out
-    # of every market.
-    Column("min_hours_to_resolution", Integer, nullable=True),
-    Column("max_hours_to_resolution", Integer, nullable=True),
+    # Per-user time-to-resolution filter, in DAYS (matches the
+    # day-based "By horizon" buckets on the Performance page so
+    # users think in one unit). NULL means "no constraint on this
+    # side"; the frontend exposes 0 as the null sentinel. When both
+    # are set the validator enforces max >= min.
+    Column("min_days_to_resolution", Integer, nullable=True),
+    Column("max_days_to_resolution", Integer, nullable=True),
 
     # Mode + bankroll. Mode: 'simulation' | 'live'.
     Column("mode",            Text, nullable=False,
@@ -450,15 +450,60 @@ def create_all_tables() -> None:
                 "ALTER TABLE user_config ADD COLUMN notification_prefs JSON "
                 "NOT NULL DEFAULT '{}'"
             ))
-        if "min_hours_to_resolution" not in existing_user_config_cols:
+        # Per-user time-to-resolution filter (DAYS). The first cut of
+        # this feature stored HOURS (column suffix _hours_); we
+        # switched to DAYS to match the "By horizon" Performance
+        # buckets the user reads in. SQLite >= 3.25 supports RENAME
+        # COLUMN, which preserves existing values; we then divide by
+        # 24 to convert. If the user had a sub-day value (rounds to
+        # 0 days) we set NULL because zero days is the no-constraint
+        # sentinel and would otherwise silently invert the filter.
+        if "min_hours_to_resolution" in existing_user_config_cols and \
+                "min_days_to_resolution" not in existing_user_config_cols:
             conn.execute(sa_text(
-                "ALTER TABLE user_config ADD COLUMN "
-                "min_hours_to_resolution INTEGER"
+                "ALTER TABLE user_config RENAME COLUMN "
+                "min_hours_to_resolution TO min_days_to_resolution"
             ))
-        if "max_hours_to_resolution" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "UPDATE user_config "
+                "SET min_days_to_resolution = "
+                "    CAST(ROUND(min_days_to_resolution / 24.0) AS INTEGER) "
+                "WHERE min_days_to_resolution IS NOT NULL"
+            ))
+            conn.execute(sa_text(
+                "UPDATE user_config SET min_days_to_resolution = NULL "
+                "WHERE min_days_to_resolution = 0"
+            ))
+        if "max_hours_to_resolution" in existing_user_config_cols and \
+                "max_days_to_resolution" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config RENAME COLUMN "
+                "max_hours_to_resolution TO max_days_to_resolution"
+            ))
+            conn.execute(sa_text(
+                "UPDATE user_config "
+                "SET max_days_to_resolution = "
+                "    CAST(ROUND(max_days_to_resolution / 24.0) AS INTEGER) "
+                "WHERE max_days_to_resolution IS NOT NULL"
+            ))
+            conn.execute(sa_text(
+                "UPDATE user_config SET max_days_to_resolution = NULL "
+                "WHERE max_days_to_resolution = 0"
+            ))
+        # Re-probe after the optional RENAME above so the ADD COLUMN
+        # branches below see the post-migration column set.
+        existing_user_config_cols = {
+            r[1] for r in conn.execute(sa_text("PRAGMA table_info(user_config)")).fetchall()
+        }
+        if "min_days_to_resolution" not in existing_user_config_cols:
             conn.execute(sa_text(
                 "ALTER TABLE user_config ADD COLUMN "
-                "max_hours_to_resolution INTEGER"
+                "min_days_to_resolution INTEGER"
+            ))
+        if "max_days_to_resolution" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "max_days_to_resolution INTEGER"
             ))
 
         # Seed the singleton row if absent. Local install always has
