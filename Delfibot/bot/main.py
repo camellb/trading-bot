@@ -161,33 +161,115 @@ def _acquire_singleton_lock() -> Optional[object]:
     try:
         from db.engine import app_data_dir
         lock_path = app_data_dir() / "sidecar.lock"
-        # Open for write so multiple bootstrappers can each open the
-        # file; only the flock determines who actually wins.
-        fd = open(str(lock_path), "w")
     except Exception as exc:
         print(f"[delfi] singleton lock open failed: {exc}", flush=True)
         return None
-    try:
-        fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        print(
-            "[delfi] another sidecar already holds the lock - exiting. "
-            "If this is wrong, run: pkill -9 -f delfi-sidecar",
-            flush=True,
-        )
+
+    def _try_acquire(retry: bool = True):
+        # r+ so we can READ the previous PID before truncating; fall
+        # back to w+ when the file doesn't exist yet.
         try:
-            fd.close()
-        except Exception:
-            pass
-        os._exit(0)
-    except Exception as exc:
-        print(f"[delfi] singleton lock acquire failed: {exc}", flush=True)
+            f = open(str(lock_path), "r+")
+        except FileNotFoundError:
+            f = open(str(lock_path), "w+")
+        except Exception as exc:
+            print(f"[delfi] singleton lock open failed: {exc}", flush=True)
+            return None
+
         try:
-            fd.close()
-        except Exception:
-            pass
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Lock held. Check who holds it. If it's an ORPHAN (PPID=1,
+            # re-parented to launchd by a Tauri crash), SIGKILL it and
+            # retry once. If it's a legit running parent's sidecar,
+            # exit politely.
+            #
+            # Why this matters: pre-fix, an orphan sidecar from a Tauri
+            # crash would keep trading silently while every new GUI
+            # launch tried the lock, lost, and exited - the user saw a
+            # hung UI for days. The kill-and-retry path turns "ghost
+            # sidecar" into a self-healing condition.
+            stale_pid = None
+            try:
+                f.seek(0)
+                contents = f.read().strip()
+                if contents.isdigit():
+                    stale_pid = int(contents)
+            except Exception:
+                pass
+            try:
+                f.close()
+            except Exception:
+                pass
+
+            if stale_pid and retry:
+                ppid = _ppid_of(stale_pid)
+                if ppid == 1:
+                    print(
+                        f"[delfi] reaping orphan sidecar pid={stale_pid} "
+                        f"(PPID=1) before acquiring singleton lock",
+                        flush=True,
+                    )
+                    try:
+                        os.kill(stale_pid, 9)
+                    except ProcessLookupError:
+                        pass
+                    except Exception as exc:
+                        print(f"[delfi] orphan kill failed: {exc}",
+                              flush=True)
+                    # Give the kernel a moment to release the flock.
+                    import time as _t
+                    _t.sleep(1.0)
+                    return _try_acquire(retry=False)
+
+            ppid_str = str(_ppid_of(stale_pid)) if stale_pid else "?"
+            print(
+                f"[delfi] another sidecar already holds the lock "
+                f"(pid={stale_pid}, ppid={ppid_str}) - exiting. "
+                f"If this is wrong, run: pkill -9 -f delfi-sidecar",
+                flush=True,
+            )
+            os._exit(0)
+        except Exception as exc:
+            print(f"[delfi] singleton lock acquire failed: {exc}",
+                  flush=True)
+            try:
+                f.close()
+            except Exception:
+                pass
+            return None
+
+        # Got the lock. Stamp our PID inside so future launches can
+        # tell whether the holder is a legit process or an orphan.
+        try:
+            f.seek(0)
+            f.truncate()
+            f.write(str(os.getpid()))
+            f.flush()
+        except Exception as exc:
+            print(f"[delfi] singleton lock pid-stamp failed: {exc}",
+                  flush=True)
+        return f
+
+    return _try_acquire()
+
+
+def _ppid_of(pid):
+    """Return the parent PID of a running process, or None if it's
+    gone. Used by the singleton-lock orphan reaper to decide whether
+    a stale lock-holder is an orphan worth killing."""
+    if not pid:
         return None
-    return fd
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "ppid="],
+            capture_output=True, text=True, timeout=2,
+        )
+        s = out.stdout.strip()
+        return int(s) if s.isdigit() else None
+    except Exception:
+        return None
 
 
 def _migrate_legacy_keychain_secrets() -> None:
