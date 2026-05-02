@@ -27,9 +27,20 @@
     <key>Label</key>
     <string>com.delfi.bot</string>
 
+    <!--
+        Path goes through the UI-less sub-bundle DelfiSidecar.app.
+        macOS walks up from the binary to find the .app bundle that
+        owns it; landing on DelfiSidecar.app first means the daemon
+        inherits LSUIElement=true and gets NO Dock tile. Pointing
+        directly at /Applications/Delfi.app/Contents/MacOS/delfi-sidecar
+        instead would inherit Delfi.app's Info.plist (foreground GUI),
+        which paints a duplicate Dock tile next to the Tauri shell.
+        The binary at the wrapped path is a hard link to the real
+        Tauri externalBin location, so this costs no extra disk.
+    -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/Delfi.app/Contents/MacOS/delfi-sidecar</string>
+        <string>/Applications/Delfi.app/Contents/Library/Daemon/DelfiSidecar.app/Contents/MacOS/delfi-sidecar</string>
     </array>
 
     <!-- Start at user login. -->

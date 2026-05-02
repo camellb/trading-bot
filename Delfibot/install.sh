@@ -71,6 +71,70 @@ mkdir -p "$INSTALLED"
 rsync -a --delete "$BUILD_BUNDLE/" "$INSTALLED/"
 touch "$INSTALLED"
 
+# Wrap the sidecar in a UI-element-only sub-bundle.
+#
+# Without this, both /Applications/Delfi.app/Contents/MacOS/delfi
+# (the Tauri shell, foreground GUI) and
+# /Applications/Delfi.app/Contents/MacOS/delfi-sidecar (the launchd
+# daemon) launch from the SAME .app bundle and SHARE
+# /Applications/Delfi.app/Contents/Info.plist (which has no
+# LSUIElement). LaunchServices registers BOTH as type="Foreground"
+# under bundle-id com.delfi.desktop, and the Dock paints a tile per
+# foreground process - so the user sees two Delfi tiles.
+#
+# The fix: give the sidecar its own .app wrapper INSIDE Delfi.app
+# at Contents/Library/Daemon/DelfiSidecar.app, with an Info.plist
+# that sets LSUIElement=true and a distinct CFBundleIdentifier
+# (com.delfi.sidecar). When launchd execs the binary at the wrapped
+# path, macOS walks up from the binary, finds DelfiSidecar.app
+# first, and applies its UI-element Info.plist - so the daemon
+# registers as a background helper and gets NO Dock tile. The
+# binary itself is a hard link to the Tauri externalBin location,
+# so we don't duplicate 160MB.
+SIDECAR_WRAPPER="$INSTALLED/Contents/Library/Daemon/DelfiSidecar.app"
+SIDECAR_REAL="$INSTALLED/Contents/MacOS/delfi-sidecar"
+echo "[install] creating UI-less sidecar wrapper at $SIDECAR_WRAPPER..."
+mkdir -p "$SIDECAR_WRAPPER/Contents/MacOS"
+cat > "$SIDECAR_WRAPPER/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.delfi.sidecar</string>
+    <key>CFBundleName</key>
+    <string>Delfi Sidecar</string>
+    <key>CFBundleDisplayName</key>
+    <string>Delfi Sidecar</string>
+    <key>CFBundleExecutable</key>
+    <string>delfi-sidecar</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <!-- LSUIElement=true: this is a background helper, not a
+         foreground application. macOS will not paint a Dock tile,
+         not show it in Cmd-Tab, and not register it for the App
+         Switcher. -->
+    <key>LSUIElement</key>
+    <true/>
+    <!-- LSBackgroundOnly is the stronger version of LSUIElement;
+         we use the milder LSUIElement so the process can still
+         interact with windowing if needed in future. -->
+</dict>
+</plist>
+PLIST
+# Hard link the real binary so the wrapper sees the same file
+# without doubling disk usage. Re-link from scratch each install
+# so a stale link from a previous build can't survive.
+rm -f "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+ln "$SIDECAR_REAL" "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+chmod 0755 "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+
 # LaunchServices keeps a registration per *path*, not per bundle-id. Past
 # `cargo tauri build` runs (without --bundles app) generate a DMG that
 # auto-mounts under /Volumes/dmg.<rand>/, register Delfi.app from inside
