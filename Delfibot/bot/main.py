@@ -77,7 +77,18 @@ if hasattr(signal, "SIGUSR1"):
     faulthandler.register(signal.SIGUSR1)
 
 
-def _start_parent_death_watchdog() -> None:
+def _start_parent_death_watchdog_REMOVED() -> None:
+    """REMOVED 2026-04-30. The sidecar is a 24/7 daemon now (managed
+    by launchd via the LaunchAgent installed at first launch). It
+    must NOT die when the Tauri shell quits - the user closes the
+    GUI but expects the bot to keep trading. Replacement: launchd's
+    KeepAlive directive auto-restarts the sidecar if it crashes,
+    independent of whether the GUI is open.
+    """
+    return  # noqa
+
+
+def _start_parent_death_watchdog_OLD() -> None:
     """Exit the sidecar when the Tauri shell dies.
 
     Without this, a Tauri crash leaves the sidecar re-parented to
@@ -179,16 +190,13 @@ def _acquire_singleton_lock() -> Optional[object]:
         try:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            # Lock held. Check who holds it. If it's an ORPHAN (PPID=1,
-            # re-parented to launchd by a Tauri crash), SIGKILL it and
-            # retry once. If it's a legit running parent's sidecar,
-            # exit politely.
-            #
-            # Why this matters: pre-fix, an orphan sidecar from a Tauri
-            # crash would keep trading silently while every new GUI
-            # launch tried the lock, lost, and exited - the user saw a
-            # hung UI for days. The kill-and-retry path turns "ghost
-            # sidecar" into a self-healing condition.
+            # Lock held - exit politely. The lock holder is the
+            # launchd-managed daemon sidecar (the bot proper); we are
+            # a duplicate spawn from the Tauri GUI's old behaviour or
+            # a manual `python main.py` invocation. We must NOT kill
+            # the daemon: it's the bot itself, doing 24/7 trading.
+            # Tauri reads `<app-data>/sidecar.port` to find the
+            # daemon's port - it doesn't need us.
             stale_pid = None
             try:
                 f.seek(0)
@@ -202,31 +210,11 @@ def _acquire_singleton_lock() -> Optional[object]:
             except Exception:
                 pass
 
-            if stale_pid and retry:
-                ppid = _ppid_of(stale_pid)
-                if ppid == 1:
-                    print(
-                        f"[delfi] reaping orphan sidecar pid={stale_pid} "
-                        f"(PPID=1) before acquiring singleton lock",
-                        flush=True,
-                    )
-                    try:
-                        os.kill(stale_pid, 9)
-                    except ProcessLookupError:
-                        pass
-                    except Exception as exc:
-                        print(f"[delfi] orphan kill failed: {exc}",
-                              flush=True)
-                    # Give the kernel a moment to release the flock.
-                    import time as _t
-                    _t.sleep(1.0)
-                    return _try_acquire(retry=False)
-
-            ppid_str = str(_ppid_of(stale_pid)) if stale_pid else "?"
             print(
-                f"[delfi] another sidecar already holds the lock "
-                f"(pid={stale_pid}, ppid={ppid_str}) - exiting. "
-                f"If this is wrong, run: pkill -9 -f delfi-sidecar",
+                f"[delfi] daemon sidecar already running "
+                f"(pid={stale_pid}) - this duplicate exiting cleanly. "
+                f"The daemon is owned by launchd; it auto-restarts on "
+                f"crash via KeepAlive=true.",
                 flush=True,
             )
             os._exit(0)
@@ -392,7 +380,12 @@ async def main() -> None:
 
     # Watch the parent (Tauri shell). Exit if it dies, so a Tauri
     # crash can't leave us re-parented to launchd as an orphan.
-    _start_parent_death_watchdog()
+    # Parent-death watchdog removed 2026-04-30. The sidecar is now a
+    # launchd-managed daemon meant to run 24/7. It survives the Tauri
+    # GUI closing, crashes get auto-restarted by launchd, and it
+    # starts on user login via RunAtLoad. See LaunchAgent at
+    # ~/Library/LaunchAgents/com.delfi.bot.plist.
+    _start_parent_death_watchdog_REMOVED()
 
     from concurrent.futures import ThreadPoolExecutor
     loop = asyncio.get_running_loop()
@@ -441,7 +434,21 @@ async def main() -> None:
     api_port = int(os.environ.get("DELFI_PORT", "0"))
     api = LocalAPI(analyst=analyst, host=api_host, port=api_port)
     bound_port = await api.start()
-    # Tauri reads this line from stdout to know when to load the UI.
+    # Two channels for the Tauri shell to find us:
+    #   1. stdout line - works in dev mode where Tauri spawns us
+    #      directly and reads our stdout via piped CommandEvent.
+    #   2. port file at <app-data>/sidecar.port - works when we run
+    #      as a launchd daemon (no parent reading stdout). Tauri
+    #      polls this file at startup. The file is removed on
+    #      graceful shutdown so a stale file from a crashed sidecar
+    #      doesn't mislead the GUI; if launchd respawns us, we
+    #      rewrite it.
+    try:
+        from db.engine import app_data_dir
+        port_file = app_data_dir() / "sidecar.port"
+        port_file.write_text(str(bound_port))
+    except Exception as exc:
+        print(f"[delfi] port file write failed: {exc}", flush=True)
     print(f"DELFI_LOCAL_API_READY {bound_port}", flush=True)
 
     # ── Scheduler ────────────────────────────────────────────────────────────
@@ -543,6 +550,15 @@ async def main() -> None:
         except Exception:
             name = str(sig)
         print(f"[delfi] received {name} - shutting down", flush=True)
+        # Clear the port file so a fresh launchd respawn (or the next
+        # Tauri spawn) writes a new one and the GUI doesn't connect to
+        # a stale port from a previous run.
+        try:
+            from db.engine import app_data_dir
+            port_file = app_data_dir() / "sidecar.port"
+            port_file.unlink(missing_ok=True)
+        except Exception:
+            pass
         shutdown_event.set()
 
     for sig in (signal.SIGTERM, signal.SIGINT):

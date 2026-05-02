@@ -150,7 +150,40 @@ echo "[install] forcing Dock to re-read the cleaned plist..."
 pkill -KILL Dock 2>/dev/null || true
 sleep 2
 
-echo "[install] launching Delfi..."
+# ── LaunchAgent: keep the sidecar running 24/7 ─────────────────────────
+# The sidecar is the bot. It needs to survive Tauri closing, survive
+# crashes (auto-restart), and start at user login. launchd handles
+# all three when we install a LaunchAgent. The Tauri GUI becomes a
+# viewer that connects to the running daemon via the port file.
+echo "[install] installing LaunchAgent (24/7 daemon)..."
+LAUNCH_AGENT_DIR="$HOME/Library/LaunchAgents"
+LAUNCH_AGENT_PLIST="$LAUNCH_AGENT_DIR/com.delfi.bot.plist"
+PLIST_TEMPLATE="$REPO_ROOT/Delfibot/bot/src-tauri/com.delfi.bot.plist.template"
+LOG_DIR="$HOME/Library/Logs/Delfi"
+mkdir -p "$LAUNCH_AGENT_DIR" "$LOG_DIR"
+
+if [[ -f "$PLIST_TEMPLATE" ]]; then
+  # Substitute __HOME__ with the user's actual home dir.
+  sed "s|__HOME__|${HOME}|g" "$PLIST_TEMPLATE" > "$LAUNCH_AGENT_PLIST"
+
+  USER_GUI="gui/$(id -u)"
+  # Idempotent (re-)bootstrap. `bootout` first to clear any prior
+  # registration with the OLD plist contents, then bootstrap the new
+  # one. Both calls swallow non-zero exits so the script keeps going
+  # whether the LaunchAgent was already loaded or never loaded.
+  launchctl bootout  "$USER_GUI" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
+  launchctl bootstrap "$USER_GUI" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
+  # Force-start now (RunAtLoad already implies this; kickstart -k is
+  # belt-and-suspenders for the case where launchd had it cached as
+  # not-running).
+  launchctl kickstart -k "$USER_GUI/com.delfi.bot" 2>/dev/null || true
+  echo "[install]   LaunchAgent loaded -> sidecar auto-restarts on crash + starts at login"
+else
+  echo "[install]   warning: LaunchAgent template not found at $PLIST_TEMPLATE" >&2
+  echo "[install]   skipping LaunchAgent install; the bot will only run while the GUI is open" >&2
+fi
+
+echo "[install] launching Delfi GUI..."
 open -a "$INSTALLED"
 
 # Second pass: when `open -a` fires, the Dock notices the launch and

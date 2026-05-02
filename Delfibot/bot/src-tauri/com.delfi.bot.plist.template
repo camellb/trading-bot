@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Delfi sidecar LaunchAgent.
+
+    Installed at ~/Library/LaunchAgents/com.delfi.bot.plist by
+    Delfibot/install.sh. The token __HOME__ is substituted at install
+    time.
+
+    Why a LaunchAgent: the bot runs 24/7. Tying its life to the
+    Tauri GUI window meant closing the window stopped trading. With
+    launchd as the lifecycle owner:
+      - RunAtLoad=true: starts the sidecar at user login.
+      - KeepAlive=true: launchd auto-restarts within ~10s if the
+        sidecar crashes or exits non-zero.
+      - The Tauri GUI is now a viewer. Closing it doesn't stop the
+        bot. Re-opening it reads the running sidecar's port from
+        <app-data>/sidecar.port and connects.
+
+    To stop the bot completely:
+      launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.delfi.bot.plist
+    To restart it:
+      launchctl kickstart -k gui/$(id -u)/com.delfi.bot
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.delfi.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Delfi.app/Contents/MacOS/delfi-sidecar</string>
+    </array>
+
+    <!-- Start at user login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Auto-restart on any non-graceful exit. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Throttle respawns to once per 10s. Stops a persistently
+         crashing sidecar from hammering the OS. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- The sidecar uses the Tauri GUI's AppData dir, not the
+         legacy ~/Library/Application Support/Delfi/. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DELFI_DB_PATH</key>
+        <string>__HOME__/Library/Application Support/com.delfi.desktop/delfi.db</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/Delfi/sidecar.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/Delfi/sidecar.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>__HOME__</string>
+</dict>
+</plist>
