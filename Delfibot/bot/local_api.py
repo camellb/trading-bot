@@ -1796,12 +1796,26 @@ class LocalAPI:
             'tell application "System Events" to get the path of every '
             'login item'
         )
+        # 30s timeout: the FIRST call to osascript tell-System-Events
+        # triggers a macOS permission prompt that the user has to
+        # actually click. 5s wasn't enough; the call timed out before
+        # the user could finish reading "Delfi wants to control
+        # System Events. Allow / Don't Allow." Subsequent calls (after
+        # permission is granted or denied) return in milliseconds.
         try:
             r = subprocess.run(
                 ["osascript", "-e", applescript],
-                capture_output=True, timeout=5,
+                capture_output=True, timeout=30,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
+            return {
+                "supported": True,
+                "enabled":   False,
+                "reason":    ("Waiting for System Events permission. "
+                              "Click Allow on the macOS prompt and "
+                              "try again."),
+            }
+        except OSError as exc:
             return {
                 "supported": True,
                 "enabled":   False,
@@ -1809,10 +1823,20 @@ class LocalAPI:
             }
         if r.returncode != 0:
             err_text = (r.stderr or b"").decode("utf-8", "replace").strip()
+            # Specific message for the most common failure: user
+            # clicked Don't Allow on the macOS prompt. The error text
+            # includes "1743" or "Not authorized to send Apple events"
+            # depending on the macOS version.
+            low = err_text.lower()
+            if "not authoris" in low or "not authoriz" in low or "1743" in low:
+                err_text = ("System Events access denied. Open System "
+                            "Settings > Privacy & Security > "
+                            "Automation, find Delfi, and enable "
+                            "System Events.")
             return {
                 "supported": True,
                 "enabled":   False,
-                "reason":    f"osascript: {err_text}",
+                "reason":    err_text,
             }
         out = (r.stdout or b"").decode("utf-8", "replace")
         target = self._login_item_app_path()

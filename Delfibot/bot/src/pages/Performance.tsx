@@ -448,39 +448,60 @@ function BrierSpark({ points }: { points: BrierTrendPoint[] }) {
 
 /**
  * Tiny button that downloads every position the bot has ever opened
- * as a CSV via the daemon's /api/positions/csv endpoint. The
- * Content-Disposition header on that endpoint triggers the browser /
- * Tauri webview's native save dialog, so we don't need a JS save
- * dialog here - just a plain anchor click.
+ * as a CSV via the daemon's /api/positions/csv endpoint.
+ *
+ * We fetch through the Tauri webview rather than via a raw <a href>
+ * so the request goes through the api.ts auto-retry-on-stale-port
+ * path. A bare anchor would silently fail if the cached daemon port
+ * was stale (every daemon respawn picks a fresh random port and a
+ * page that's been open across a respawn would otherwise click into
+ * a connection-refused).
  */
 function ExportCsvButton() {
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const onClick = async () => {
     setBusy(true);
+    setErr(null);
     try {
-      const url = await api.positionsCsvUrl();
-      // Programmatic anchor with download attribute. Tauri honours
-      // Content-Disposition the same way a browser does.
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "delfi-trades.csv";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      const blob = await api.positionsCsvBlob();
+      const url = URL.createObjectURL(blob);
+      try {
+        const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `delfi-trades-${ts}.csv`;
+        a.style.display = "none";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        // Free the Blob URL after a tick so the click had time to
+        // start the download.
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   };
   return (
-    <button
-      type="button"
-      className="chip"
-      onClick={onClick}
-      disabled={busy}
-      title="Export every position to CSV"
-    >
-      {busy ? "Exporting..." : "Export CSV"}
-    </button>
+    <>
+      <button
+        type="button"
+        className="chip"
+        onClick={onClick}
+        disabled={busy}
+        title="Export every position to CSV"
+      >
+        {busy ? "Exporting..." : "Export CSV"}
+      </button>
+      {err && (
+        <span className="form-error" style={{ marginLeft: 8 }}>
+          Export failed: {err}
+        </span>
+      )}
+    </>
   );
 }

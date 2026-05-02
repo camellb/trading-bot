@@ -579,9 +579,37 @@ export const api = {
   // Helper for CSV download. The browser/Tauri webview honours the
   // Content-Disposition: attachment header and triggers a save
   // dialog. Returns the URL the UI uses for an <a download> click.
+  // Kept for back-compat; new code should prefer positionsCsvBlob
+  // which goes through the auto-retry-on-stale-port path.
   positionsCsvUrl: async (): Promise<string> => {
     const p = await port();
     return `http://127.0.0.1:${p}/api/positions/csv`;
+  },
+
+  // CSV download via fetch-as-Blob. Mirrors the auto-retry flow of
+  // request<T> (we duplicate the fetch glue here because the generic
+  // request<T> always JSON-parses; we need raw bytes). The UI wraps
+  // the returned Blob with URL.createObjectURL + an <a download>
+  // click. This survives a stale cached port across daemon respawns.
+  positionsCsvBlob: async (): Promise<Blob> => {
+    const doFetch = async (): Promise<Response> => {
+      const p = await port();
+      return fetch(`http://127.0.0.1:${p}/api/positions/csv`);
+    };
+    let res: Response;
+    try {
+      res = await doFetch();
+    } catch {
+      const refreshed = await refreshPort();
+      if (!refreshed) {
+        throw new Error("Could not connect to Delfi. Please restart the app.");
+      }
+      res = await doFetch();
+    }
+    if (!res.ok) {
+      throw new Error(`/api/positions/csv: HTTP ${res.status}`);
+    }
+    return res.blob();
   },
 
   // Telegram. Save persists, Test probes (never persists). Test
