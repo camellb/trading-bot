@@ -442,19 +442,23 @@ function CategoryTable({ calibration }: { calibration: CalibrationReport | null 
 
 // ── By horizon ──────────────────────────────────────────────────────────
 
-type HorizonSk = "bucket" | "trades" | "brier" | "mean_pred" | "mean_actual";
+type HorizonSk = "bucket" | "trades" | "win_rate" | "pnl" | "roi" | "brier";
 
 function HorizonTable({ calibration }: { calibration: CalibrationReport | null }) {
   const sort = useSort<HorizonSk>("trades", "desc");
   const rows = useMemo(() => {
     const raw = calibration?.by_horizon ?? [];
     return sort.apply(raw, (h, f): SortKey => {
+      const wins = h.wins ?? 0;
+      const cost = h.cost_usd ?? 0;
+      const pnl  = h.pnl_usd ?? 0;
       switch (f) {
-        case "bucket":      return h.bucket;
-        case "trades":      return h.n;
-        case "brier":       return h.brier;
-        case "mean_pred":   return h.mean_pred;
-        case "mean_actual": return h.mean_actual;
+        case "bucket":   return h.bucket;
+        case "trades":   return h.n;
+        case "win_rate": return h.n > 0 ? wins / h.n : null;
+        case "pnl":      return h.n > 0 ? pnl : null;
+        case "roi":      return cost > 0 ? pnl / cost : null;
+        case "brier":    return h.brier;
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -470,23 +474,34 @@ function HorizonTable({ calibration }: { calibration: CalibrationReport | null }
       <table className="table-simple">
         <thead>
           <tr>
-            <SortableTh field="bucket"      sort={sort}>Bucket</SortableTh>
-            <SortableTh field="trades"      sort={sort}>Trades</SortableTh>
-            <SortableTh field="brier"       sort={sort}>Brier</SortableTh>
-            <SortableTh field="mean_pred"   sort={sort}>Mean predicted</SortableTh>
-            <SortableTh field="mean_actual" sort={sort}>Mean actual</SortableTh>
+            <SortableTh field="bucket"   sort={sort}>Bucket</SortableTh>
+            <SortableTh field="trades"   sort={sort}>Trades</SortableTh>
+            <SortableTh field="win_rate" sort={sort}>Win rate</SortableTh>
+            <SortableTh field="pnl"      sort={sort}>P&amp;L</SortableTh>
+            <SortableTh field="roi"      sort={sort}>ROI</SortableTh>
+            <SortableTh field="brier"    sort={sort}>Brier</SortableTh>
           </tr>
         </thead>
         <tbody>
-          {rows.map((h, i) => (
-            <tr key={i}>
-              <td>{h.bucket}</td>
-              <td className="mono">{h.n}</td>
-              <td className="mono">{h.brier?.toFixed(3) ?? "-"}</td>
-              <td className="mono">{h.mean_pred != null ? `${(h.mean_pred * 100).toFixed(0)}%` : "-"}</td>
-              <td className="mono">{h.mean_actual != null ? `${(h.mean_actual * 100).toFixed(0)}%` : "-"}</td>
-            </tr>
-          ))}
+          {rows.map((h, i) => {
+            const pnl = h.pnl_usd ?? 0;
+            const cost = h.cost_usd ?? 0;
+            const wins = h.wins ?? 0;
+            const winRate = h.n > 0 ? (wins / h.n) * 100 : null;
+            const roi = cost > 0 ? (pnl / cost) * 100 : null;
+            const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
+            const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
+            return (
+              <tr key={i}>
+                <td>{h.bucket}</td>
+                <td className="mono">{h.n}</td>
+                <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
+                <td className={`mono ${pnlClass}`}>{h.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
+                <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
+                <td className="mono">{h.brier?.toFixed(3) ?? "-"}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

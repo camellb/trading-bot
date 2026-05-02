@@ -371,11 +371,16 @@ def get_report(
                     )
                     h_params["h_hi"] = hi_h
                 h_where = "WHERE " + " AND ".join(horizon_filters)
+                # Same shape as by_category / by_archetype: pnl + cost
+                # + wins so the frontend can derive ROI and win rate.
                 h_row = conn.execute(text(
                     f"SELECT COUNT(*) AS n, "
                     f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
                     f"       AVG(claude_probability) AS mp, "
-                    f"       AVG({outcome_expr}) AS ma "
+                    f"       AVG({outcome_expr}) AS ma, "
+                    f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
+                    f"       COALESCE(SUM(cost_usd), 0) AS cost, "
+                    f"       SUM(CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END) AS wins "
                     f"FROM pm_positions {h_where}"
                 ), h_params).fetchone()
                 by_horizon.append({
@@ -384,6 +389,9 @@ def get_report(
                     "brier":       float(h_row[1]) if h_row[1] is not None else None,
                     "mean_pred":   float(h_row[2]) if h_row[2] is not None else None,
                     "mean_actual": float(h_row[3]) if h_row[3] is not None else None,
+                    "pnl_usd":     float(h_row[4]) if h_row[4] is not None else 0.0,
+                    "cost_usd":    float(h_row[5]) if h_row[5] is not None else 0.0,
+                    "wins":        int(h_row[6] or 0),
                 })
 
         return {
