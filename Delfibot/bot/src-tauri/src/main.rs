@@ -68,6 +68,33 @@ fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
     }
 }
 
+/// Re-resolve the daemon's listening port and update ApiState.
+///
+/// Why this exists: each daemon respawn picks a fresh random port
+/// (aiohttp port=0). The cached port in ApiState becomes stale after
+/// any respawn (launchd KeepAlive on a crash, the autostart toggle,
+/// or a fresh `bash install.sh`). The frontend calls this when a
+/// fetch fails with a connection error so it can recover without
+/// the user manually restarting the GUI.
+///
+/// Returns the new port + ready=true on success. On failure (no
+/// port file, port not listening) returns ready=false; the caller
+/// can keep polling or surface a "daemon is down" message.
+#[tauri::command]
+async fn refresh_api_port(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ApiState>,
+) -> Result<ApiPort, String> {
+    match read_existing_sidecar_port(&app).await {
+        Some(p) => {
+            *state.port.lock().unwrap() = Some(p);
+            println!("[delfi] refreshed daemon port -> 127.0.0.1:{p}");
+            Ok(ApiPort { port: p, ready: true })
+        }
+        None => Ok(ApiPort { port: 0, ready: false }),
+    }
+}
+
 fn resolve_db_path(app: &tauri::AppHandle) -> PathBuf {
     // Tauri exposes per-platform app-data dirs. We use AppData (which
     // resolves to ~/Library/Application Support/<bundleId> on macOS,
@@ -222,7 +249,7 @@ fn main() {
             port: Mutex::new(None),
             child: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![get_api_port])
+        .invoke_handler(tauri::generate_handler![get_api_port, refresh_api_port])
         .setup(|app| {
             // Two paths to a running sidecar:
             //

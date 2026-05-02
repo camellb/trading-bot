@@ -3,6 +3,7 @@ import {
   api,
   ArchetypeCatalogue,
   ArchetypeEntry,
+  isConnectionError,
 } from "../api";
 
 /**
@@ -421,7 +422,9 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
           <h2 className="panel-title">Archetypes</h2>
         </div>
         <div className="empty-state">Loading archetypes...</div>
-        {error && <div className="error">{error}</div>}
+        {error && !isConnectionError(error) && (
+        <div className="error">{error}</div>
+      )}
       </div>
     );
   }
@@ -440,7 +443,9 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
         size up or down without skipping. Default for unknown archetypes is 1.0×.
       </p>
 
-      {error && <div className="error">{error}</div>}
+      {error && !isConnectionError(error) && (
+        <div className="error">{error}</div>
+      )}
 
       {groups.map((g) => (
         <div key={g.title} style={{ marginTop: 16 }}>

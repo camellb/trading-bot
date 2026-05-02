@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   api,
+  isConnectionError,
   LearningReport,
   PendingSuggestion,
 } from "../api";
@@ -118,7 +119,9 @@ export default function Intelligence() {
         </div>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      {error && !isConnectionError(error) && (
+        <div className="error">{error}</div>
+      )}
 
       {!loaded && <div className="empty-state">Loading reviews...</div>}
 

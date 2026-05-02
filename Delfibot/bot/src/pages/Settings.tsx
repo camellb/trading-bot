@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   api,
   AutostartStatus,
   Credentials,
+  LaunchStats,
   LicenseStatus,
+  LogTail,
+  LoginItemStatus,
   NotificationsConfig,
   TelegramConfig,
 } from "../api";
@@ -196,6 +200,11 @@ function AccountPanel({
       </div>
 
       <AutostartPanel />
+      <LoginItemPanel />
+      <RestartPanel />
+      <LogsPanel />
+      <DbBackupPanel />
+      <LaunchStatsPanel />
       <LicensePanel />
     </>
   );
@@ -304,6 +313,429 @@ function AutostartPanel() {
           {msg.text}
         </p>
       )}
+    </div>
+  );
+}
+
+// ── Login item: open the GUI window at login ─────────────────────────────
+
+/** Toggle that adds Delfi.app to the user's macOS Login Items so the
+ *  GUI window pops up at login. Independent of the autostart-the-
+ *  daemon toggle above: that one runs the bot headlessly, this one
+ *  controls whether you also see the dashboard window automatically. */
+function LoginItemPanel() {
+  const [status, setStatus] = useState<LoginItemStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.loginItem()
+      .then((s) => alive && setStatus(s))
+      .catch(() => alive && setStatus({
+        supported: false,
+        enabled:   false,
+        reason:    "Could not read login item status.",
+      }));
+    return () => { alive = false; };
+  }, []);
+
+  const toggle = async () => {
+    if (!status?.supported || busy) return;
+    const next = !status.enabled;
+    const previous = status;
+    setStatus({ ...status, enabled: next });
+    setBusy(true);
+    setMsg(null);
+    try {
+      const updated = await api.setLoginItem(next);
+      setStatus(updated);
+      setMsg({
+        kind: "ok",
+        text: next
+          ? "Delfi window will open at login."
+          : "Delfi window will not open automatically at login.",
+      });
+    } catch (err) {
+      setStatus(previous);
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Open Delfi window at login</h2>
+        <span className="panel-meta">
+          {status?.supported === false ? "macOS only" : "macOS"}
+        </span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Adds Delfi to your macOS Login Items so the dashboard window
+        opens automatically when you sign in. Independent of
+        auto-start: the bot can run headlessly without the window
+        opening.
+      </p>
+      <div className="notif-row">
+        <div>
+          <div className="notif-name">Open Delfi window at login</div>
+          <div className="notif-desc">
+            {status === null
+              ? "Loading..."
+              : status.supported === false
+                ? (status.reason ?? "Not available on this platform.")
+                : status.enabled
+                  ? "Enabled."
+                  : "Disabled. Open Delfi manually from Applications."}
+          </div>
+        </div>
+        <label className="toggle-switch">
+          <input
+            type="checkbox"
+            checked={!!status?.enabled}
+            disabled={!status?.supported || busy}
+            onChange={toggle}
+          />
+          <span className="toggle-slider" />
+        </label>
+      </div>
+      {msg && (
+        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+           style={{ marginTop: 12 }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Restart Delfi ───────────────────────────────────────────────────────
+
+/** One-click restart of the daemon. Sends SIGTERM via launchctl
+ *  kickstart -k; launchd respawns within ThrottleInterval (10s). The
+ *  api.ts retry-on-connection-error logic transparently re-resolves
+ *  the new port, so the user typically sees a brief "Restarting..."
+ *  spinner and then everything resumes. */
+function RestartPanel() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [confirm, setConfirm] = useState(false);
+
+  const restart = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.restart();
+      setMsg({ kind: "ok", text: r.detail || "Restart signal sent." });
+      setConfirm(false);
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Restart Delfi</h2>
+        <span className="panel-meta">macOS</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Bounces the daemon. Open positions are preserved, in-flight
+        scans get cancelled, the bot is back online within ~10s. Use
+        this when something looks stuck.
+      </p>
+      {!confirm ? (
+        <div className="form-actions">
+          <button
+            type="button"
+            className="btn ghost small"
+            onClick={() => setConfirm(true)}
+            disabled={busy}
+          >
+            Restart Delfi
+          </button>
+        </div>
+      ) : (
+        <div className="form-actions">
+          <button
+            type="button"
+            className="btn small"
+            onClick={restart}
+            disabled={busy}
+          >
+            {busy ? "Restarting..." : "Yes, restart"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost small"
+            onClick={() => setConfirm(false)}
+            disabled={busy}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+      {msg && (
+        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+           style={{ marginTop: 12 }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Logs viewer ─────────────────────────────────────────────────────────
+
+/** Read-only tail of the daemon's stdout / stderr log files (the
+ *  StandardOutPath / StandardErrorPath wired in the LaunchAgent
+ *  plist). Lets the user diagnose issues without opening Terminal. */
+function LogsPanel() {
+  const [tail, setTail] = useState<LogTail | null>(null);
+  const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async (s: "stdout" | "stderr") => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.logs(s, 200);
+      setTail(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Daemon logs</h2>
+        <span className="panel-meta">last 200 lines</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Stream the bot's stdout and stderr without opening Terminal.
+        stderr usually has the interesting stuff (crashes, retries,
+        rate-limit warnings); stdout is the routine activity feed.
+      </p>
+      <div className="form-actions" style={{ marginBottom: 12 }}>
+        <button
+          type="button"
+          className={`btn small ${stream === "stdout" ? "" : "ghost"}`}
+          onClick={() => { setStream("stdout"); load("stdout"); }}
+          disabled={busy}
+        >
+          stdout
+        </button>
+        <button
+          type="button"
+          className={`btn small ${stream === "stderr" ? "" : "ghost"}`}
+          onClick={() => { setStream("stderr"); load("stderr"); }}
+          disabled={busy}
+        >
+          stderr
+        </button>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={() => load(stream)}
+          disabled={busy}
+        >
+          {busy ? "Loading..." : "Refresh"}
+        </button>
+      </div>
+      {error && <div className="error">{error}</div>}
+      {tail && (
+        <>
+          {tail.note && (
+            <p className="page-sub" style={{ marginBottom: 8 }}>{tail.note}</p>
+          )}
+          <pre style={{
+            background: "var(--obsidian-90, #0a0a0a)",
+            color: "var(--vellum-90, #e8e6e1)",
+            border: "1px solid var(--obsidian-80, #1a1a1a)",
+            borderRadius: 4,
+            padding: "12px 16px",
+            margin: 0,
+            maxHeight: 360,
+            overflow: "auto",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontSize: 12,
+            lineHeight: 1.55,
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}>
+            {tail.lines.length === 0 ? "(empty)" : tail.lines.join("\n")}
+          </pre>
+          <p className="form-hint" style={{ marginTop: 8 }}>
+            Source: {tail.path}
+          </p>
+        </>
+      )}
+      {!tail && !busy && !error && (
+        <p className="page-sub">Click stdout or stderr to load logs.</p>
+      )}
+    </div>
+  );
+}
+
+// ── DB backup ───────────────────────────────────────────────────────────
+
+/** Export a consistent snapshot of the SQLite DB to a user-chosen
+ *  path via SQLite VACUUM INTO. Refuses to overwrite the live DB. */
+function DbBackupPanel() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const backup = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const dest = await saveDialog({
+        title: "Save Delfi backup",
+        defaultPath: `delfi-backup-${ts}.db`,
+        filters: [{ name: "SQLite DB", extensions: ["db"] }],
+      });
+      if (!dest) {
+        setBusy(false);
+        return;
+      }
+      const r = await api.dbBackup(dest);
+      const mb = (r.size / (1024 * 1024)).toFixed(2);
+      setMsg({
+        kind: "ok",
+        text: `Backup written to ${r.path} (${mb} MB)`,
+      });
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Database backup</h2>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Export a consistent snapshot of every position, evaluation,
+        and config row to a SQLite file you choose. Uses VACUUM INTO
+        so the backup is safe to take while the bot is trading. Save
+        these somewhere outside the app (cloud sync folder, external
+        drive) so you can recover after a disk failure.
+      </p>
+      <div className="form-actions">
+        <button
+          type="button"
+          className="btn small"
+          onClick={backup}
+          disabled={busy}
+        >
+          {busy ? "Backing up..." : "Export backup..."}
+        </button>
+      </div>
+      {msg && (
+        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+           style={{ marginTop: 12 }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Launch stats ────────────────────────────────────────────────────────
+
+/** Read-only diagnostic panel surfacing what launchd thinks is
+ *  going on with the daemon: current PID, total respawn count,
+ *  last exit code, state. High respawn counts or a nonzero last
+ *  exit code mean something's misbehaving. */
+function LaunchStatsPanel() {
+  const [stats, setStats] = useState<LaunchStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.launchStats();
+      setStats(r);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Daemon stats</h2>
+        <button
+          type="button"
+          className="btn ghost small"
+          onClick={load}
+          disabled={busy}
+        >
+          {busy ? "..." : "Refresh"}
+        </button>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Diagnostic view on what launchd reports about the daemon.
+        Total runs goes up by one every time the bot starts (login,
+        crash + auto-restart, or a manual Restart). A nonzero last
+        exit code means the previous run died on an exception worth
+        investigating in the logs.
+      </p>
+      {error && <div className="error">{error}</div>}
+      {stats && stats.supported === false && (
+        <p className="page-sub">Stats are macOS-only.</p>
+      )}
+      {stats && stats.supported && (
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(4, 1fr)",
+          gap: 24,
+          maxWidth: 720,
+        }}>
+          <Stat label="State" value={stats.state ?? "—"} />
+          <Stat label="PID" value={stats.pid != null ? String(stats.pid) : "—"} />
+          <Stat label="Total runs" value={stats.runs != null ? String(stats.runs) : "—"} />
+          <Stat
+            label="Last exit code"
+            value={stats.last_exit_code != null ? String(stats.last_exit_code) : "—"}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{
+        fontSize: 11,
+        textTransform: "uppercase",
+        letterSpacing: "0.1em",
+        color: "var(--vellum-60, #888)",
+      }}>{label}</div>
+      <div style={{
+        fontSize: 22,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+        marginTop: 4,
+      }}>{value}</div>
     </div>
   );
 }

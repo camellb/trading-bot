@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, MarketEvaluation, PMPosition } from "../api";
+import { api, isConnectionError, MarketEvaluation, PMPosition } from "../api";
 
 // Tauri webviews swallow `target="_blank"` clicks by default - the link
 // just does nothing because the new window can't open inside the
@@ -137,7 +137,9 @@ export default function Positions() {
         </div>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      {error && !isConnectionError(error) && (
+        <div className="error">{error}</div>
+      )}
 
       <div className="page-toolbar">
         <div className="page-toolbar-left">

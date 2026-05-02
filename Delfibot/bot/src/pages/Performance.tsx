@@ -3,6 +3,7 @@ import {
   api,
   BrierTrendPoint,
   CalibrationReport,
+  isConnectionError,
   PerformanceSummary,
   PMPosition,
 } from "../api";
@@ -185,11 +186,14 @@ export default function Performance() {
                 {r.label}
               </button>
             ))}
+            <ExportCsvButton />
           </div>
         </div>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      {error && !isConnectionError(error) && (
+        <div className="error">{error}</div>
+      )}
 
       <div className="stat-row">
         <div className="stat-cell">
@@ -437,5 +441,46 @@ function BrierSpark({ points }: { points: BrierTrendPoint[] }) {
         {" "}{points.length} samples
       </p>
     </div>
+  );
+}
+
+// ── Export CSV ───────────────────────────────────────────────────────────
+
+/**
+ * Tiny button that downloads every position the bot has ever opened
+ * as a CSV via the daemon's /api/positions/csv endpoint. The
+ * Content-Disposition header on that endpoint triggers the browser /
+ * Tauri webview's native save dialog, so we don't need a JS save
+ * dialog here - just a plain anchor click.
+ */
+function ExportCsvButton() {
+  const [busy, setBusy] = useState(false);
+  const onClick = async () => {
+    setBusy(true);
+    try {
+      const url = await api.positionsCsvUrl();
+      // Programmatic anchor with download attribute. Tauri honours
+      // Content-Disposition the same way a browser does.
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "delfi-trades.csv";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="chip"
+      onClick={onClick}
+      disabled={busy}
+      title="Export every position to CSV"
+    >
+      {busy ? "Exporting..." : "Export CSV"}
+    </button>
   );
 }

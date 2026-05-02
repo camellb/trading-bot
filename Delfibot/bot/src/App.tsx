@@ -74,9 +74,22 @@ export default function App() {
   // updates user_config.mode (which ledger trades go to). Whether the
   // bot is actually opening trades is governed by `bot_enabled`, set
   // separately via toggleBotEnabled.
+  //
+  // Switching INTO live mode triggers a confirm dialog. The user has
+  // to type LIVE explicitly. This is a footgun guard: an accidental
+  // click on the Live button used to silently flip the mode and the
+  // next scan would place real Polymarket orders.
+  const [pendingLiveSwitch, setPendingLiveSwitch] = useState(false);
   const setMode = async (next: "simulation" | "live") => {
     if (modeBusy) return;
     if (state?.mode === next) return;
+    if (next === "live") {
+      setPendingLiveSwitch(true);
+      return;
+    }
+    await applyMode(next);
+  };
+  const applyMode = async (next: "simulation" | "live") => {
     setModeBusy(true);
     try {
       await api.updateConfig({ mode: next });
@@ -87,6 +100,11 @@ export default function App() {
       setModeBusy(false);
     }
   };
+  const confirmLiveSwitch = async () => {
+    setPendingLiveSwitch(false);
+    await applyMode("live");
+  };
+  const cancelLiveSwitch = () => setPendingLiveSwitch(false);
 
   // Bot on/off. Calls /api/bot/start (sets bot_enabled=true; validates
   // creds for the current mode) or /api/bot/stop (sets bot_enabled=false).
@@ -136,6 +154,12 @@ export default function App() {
     <LicenseGate>
     <div className="app-shell">
       <UpdatePrompt />
+      {pendingLiveSwitch && (
+        <LiveConfirmModal
+          onConfirm={confirmLiveSwitch}
+          onCancel={cancelLiveSwitch}
+        />
+      )}
       <Sidebar
         page={page}
         settingsTab={settingsTab}
@@ -377,6 +401,114 @@ function BotStatusPill({
           {modeBusy ? "Starting..." : "Start Delfi"}
         </button>
       )}
+    </div>
+  );
+}
+
+// ── LIVE confirm modal ─────────────────────────────────────────────────
+//
+// Switching to live mode places real Polymarket orders on the next
+// scan. An accidental click on the Live button is the kind of mistake
+// the user only makes once, but once is too many. We require typing
+// LIVE in all caps before flipping the mode. Cancel button + Escape
+// + clicking the backdrop all dismiss without flipping.
+
+function LiveConfirmModal({
+  onConfirm, onCancel,
+}: {
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const [typed, setTyped] = useState("");
+  const enabled = typed === "LIVE";
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onCancel}
+      style={{
+        position: "fixed", inset: 0, zIndex: 9999,
+        background: "rgba(0,0,0,0.66)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--obsidian-90, #0f0f10)",
+          color: "var(--vellum-90, #e8e6e1)",
+          border: "1px solid var(--obsidian-70, #2a2a2c)",
+          borderRadius: 6,
+          maxWidth: 480,
+          width: "calc(100% - 48px)",
+          padding: 28,
+          boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
+        }}
+      >
+        <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>
+          Switch to live trading?
+        </h2>
+        <p style={{ margin: "0 0 16px", color: "var(--vellum-70, #b8b6b1)" }}>
+          The bot will place real Polymarket orders on the next scan
+          using the wallet you connected. Make sure you have funded
+          the wallet and reviewed your risk settings.
+        </p>
+        <p style={{
+          margin: "0 0 8px",
+          color: "var(--vellum-60, #888)",
+          fontSize: 13,
+        }}>
+          Type <strong>LIVE</strong> to confirm.
+        </p>
+        <input
+          type="text"
+          autoFocus
+          value={typed}
+          onChange={(e) => setTyped(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && enabled) onConfirm();
+          }}
+          style={{
+            width: "100%",
+            padding: "8px 12px",
+            background: "var(--obsidian-100, #050505)",
+            color: "inherit",
+            border: "1px solid var(--obsidian-70, #2a2a2c)",
+            borderRadius: 4,
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+            letterSpacing: "0.1em",
+            marginBottom: 16,
+          }}
+          placeholder="LIVE"
+        />
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button
+            type="button"
+            className="btn ghost small"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn small"
+            onClick={onConfirm}
+            disabled={!enabled}
+            style={enabled ? {} : { opacity: 0.5, cursor: "not-allowed" }}
+          >
+            Switch to live
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

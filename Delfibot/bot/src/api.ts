@@ -59,9 +59,55 @@ async function port(): Promise<number> {
   return portPromise;
 }
 
+/**
+ * Force a port re-resolve via the Rust shell's `refresh_api_port`
+ * IPC. Re-reads <app-data>/sidecar.port + TCP-probes. Used by
+ * `request()` after a connection-refused error to recover from a
+ * daemon respawn (which picks a new random port).
+ *
+ * Returns true if the cached port was updated to a new live value.
+ */
+async function refreshPort(): Promise<boolean> {
+  cachedPort = null;
+  portPromise = null;
+  if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
+    // Outside Tauri (vite dev): no IPC, just clear the cache and let
+    // fetchPort re-read the env var on the next port() call.
+    return false;
+  }
+  try {
+    const res = await invoke<{ port: number; ready: boolean }>(
+      "refresh_api_port",
+    );
+    if (res.ready && res.port > 0) {
+      cachedPort = res.port;
+      return true;
+    }
+  } catch {
+    // IPC failed (Rust shell wedged?). Fall through to false; caller
+    // will surface the connection error.
+  }
+  return false;
+}
+
+/** True if `err.message` looks like a daemon-not-reachable error
+ *  rather than an application-level error. The page-level error
+ *  banners use this to suppress the global connection error and let
+ *  App.tsx render it once instead of stacking duplicates. */
+export function isConnectionError(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return (
+    m.includes("could not connect to delfi") ||
+    m.includes("delfi took too long to start") ||
+    m.includes("the sidecar may be stuck")
+  );
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit & { body?: BodyInit; timeoutMs?: number },
+  _retryCount: number = 0,
 ): Promise<T> {
   const p = await port();
   // Hard ceiling so a wedged sidecar can't hang the UI forever. Most
@@ -92,6 +138,19 @@ async function request<T>(
         `${path}: timed out after ${Math.round(timeoutMs / 1000)}s. ` +
           "The sidecar may be stuck — restart Delfi if this keeps happening.",
       );
+    }
+    // Connection refused. The most common cause is a daemon respawn
+    // (launchd KeepAlive, autostart toggle, install rebuild) that
+    // picked a new random port - leaving our cachedPort stale. Re-
+    // resolve the port file and retry once before surfacing the
+    // error to the UI. This single retry costs ~50ms when the daemon
+    // is up and ~3s when it isn't (TCP probe timeout in Rust).
+    if (_retryCount === 0) {
+      const refreshed = await refreshPort();
+      if (refreshed) {
+        clearTimeout(timer);
+        return request<T>(path, init, 1);
+      }
     }
     throw new Error("Could not connect to Delfi. Please restart the app.");
   } finally {
@@ -331,6 +390,39 @@ export interface AutostartStatus {
   reason:    string | null;
 }
 
+/** Tail of stdout/stderr from the daemon log files. */
+export interface LogTail {
+  stream: "stdout" | "stderr";
+  path:   string;
+  lines:  string[];
+  note:   string | null;
+}
+
+/** Daemon supervision stats from `launchctl print`. */
+export interface LaunchStats {
+  supported:        boolean;
+  runs:             number | null;
+  last_exit_code:   number | null;
+  pid:              number | null;
+  state:            string | null;
+}
+
+/** Login item status (whether the GUI window opens automatically
+ *  at user login). Separate from the autostart-the-daemon toggle. */
+export interface LoginItemStatus {
+  supported: boolean;
+  enabled:   boolean;
+  reason:    string | null;
+}
+
+/** Result of a SQLite backup (VACUUM INTO). */
+export interface DbBackupResult {
+  ok:     boolean;
+  path:   string;
+  size:   number;
+  detail: string;
+}
+
 /** Lemon Squeezy license gate state, returned by /api/license/status
  *  and /api/license/activate. */
 export interface LicenseStatus {
@@ -448,6 +540,49 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+
+  // Restart the daemon (launchctl kickstart -k). The respawned
+  // daemon picks a new port; the request retry logic in this file
+  // handles port re-resolution automatically.
+  restart: () =>
+    request<{ ok: boolean; detail: string }>("/api/system/restart", {
+      method: "POST",
+    }),
+
+  // Tail stdout/stderr from the daemon log files. lines is
+  // clamped server-side to [10, 2000].
+  logs: (stream: "stdout" | "stderr" = "stdout", lines = 200) =>
+    request<LogTail>(
+      `/api/system/logs?stream=${stream}&lines=${lines}`,
+    ),
+
+  // SQLite backup via VACUUM INTO. dest_path must NOT be the live
+  // DB path. Parent directory must exist.
+  dbBackup: (dest_path: string) =>
+    request<DbBackupResult>("/api/system/db-backup", {
+      method: "POST",
+      body: JSON.stringify({ dest_path }),
+    }),
+
+  // Daemon supervision stats from launchctl print.
+  launchStats: () => request<LaunchStats>("/api/system/launch-stats"),
+
+  // Login item: toggles whether the GUI window opens at login.
+  // Independent of autostart-the-daemon.
+  loginItem:    () => request<LoginItemStatus>("/api/system/login-item"),
+  setLoginItem: (enabled: boolean) =>
+    request<LoginItemStatus>("/api/system/login-item", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  // Helper for CSV download. The browser/Tauri webview honours the
+  // Content-Disposition: attachment header and triggers a save
+  // dialog. Returns the URL the UI uses for an <a download> click.
+  positionsCsvUrl: async (): Promise<string> => {
+    const p = await port();
+    return `http://127.0.0.1:${p}/api/positions/csv`;
+  },
 
   // Telegram. Save persists, Test probes (never persists). Test
   // accepts an optional override of (bot_token, chat_id) — when the

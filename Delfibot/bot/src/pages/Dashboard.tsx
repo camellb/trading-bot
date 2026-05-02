@@ -4,6 +4,7 @@ import { EquityChart } from "../components/EquityChart";
 import {
   api,
   BotState,
+  isConnectionError,
   MarketEvaluation,
   PerformanceSummary,
   PMPosition,
@@ -208,7 +209,9 @@ export default function Dashboard({ state, goto }: Props) {
 
   return (
     <div className="dash">
-      {error && <div className="error">{error}</div>}
+      {error && !isConnectionError(error) && (
+        <div className="error">{error}</div>
+      )}
 
       <DashHero
         mode={mode}

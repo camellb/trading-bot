@@ -411,6 +411,19 @@ class LocalAPI:
         app.router.add_get("/api/system/autostart",  self._get_autostart)
         app.router.add_put("/api/system/autostart",  self._put_autostart)
 
+        # System operations (restart, logs, backup, launch stats,
+        # login item / window-at-login). All are user-initiated from
+        # Settings > Account.
+        app.router.add_post("/api/system/restart",    self._post_restart)
+        app.router.add_get("/api/system/logs",        self._get_logs)
+        app.router.add_post("/api/system/db-backup",  self._post_db_backup)
+        app.router.add_get("/api/system/launch-stats", self._get_launch_stats)
+        app.router.add_get("/api/system/login-item",  self._get_login_item)
+        app.router.add_put("/api/system/login-item",  self._put_login_item)
+
+        # CSV export of positions (Performance page Export button).
+        app.router.add_get("/api/positions/csv",      self._get_positions_csv)
+
         # Permissive CORS preflight for the Vite dev server.
         async def _options(_req: web.Request) -> web.Response:
             return web.Response(
@@ -1518,6 +1531,439 @@ class LocalAPI:
                 500,
             )
         return _ok(status)
+
+    # ── System ops: restart, logs, backup, launch stats, login item ─────────
+
+    async def _post_restart(self, _req: web.Request) -> web.Response:
+        """Restart the daemon via launchctl kickstart -k.
+
+        Sends SIGTERM, launchd respawns within ThrottleInterval
+        (10s). The respawned daemon picks a fresh port and rewrites
+        sidecar.port; the GUI's request retry logic picks it up
+        without the user having to do anything.
+
+        macOS-only for now. On Windows we'd need to terminate the
+        process and rely on the user's manually-launched fallback,
+        or wire a Windows Service equivalent.
+        """
+        import platform
+        import subprocess
+
+        if platform.system() != "Darwin":
+            return _err("Restart is currently macOS-only.", 400)
+
+        _, service_id = self._autostart_paths()
+        try:
+            r = subprocess.run(
+                ["launchctl", "kickstart", "-k", service_id],
+                capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return _err(f"restart failed: {exc}", 500)
+        if r.returncode != 0:
+            err_text = (r.stderr or b"").decode("utf-8", "replace").strip()
+            return _err(f"launchctl kickstart failed: {err_text}", 500)
+        return _ok({"ok": True, "detail": "Restart signal sent. The daemon "
+                    "will be back online in a few seconds."})
+
+    async def _get_logs(self, req: web.Request) -> web.Response:
+        """Tail the daemon's stdout / stderr log files.
+
+        Query params:
+          stream = stdout | stderr (default stdout)
+          lines  = how many lines from the end to return (default 200,
+                   capped at 2000 to avoid blowing memory on chatty logs)
+        """
+        import os
+
+        stream = req.query.get("stream", "stdout")
+        if stream not in ("stdout", "stderr"):
+            return _err("stream must be 'stdout' or 'stderr'", 400)
+        try:
+            n = int(req.query.get("lines", "200"))
+        except ValueError:
+            return _err("lines must be an integer", 400)
+        n = max(10, min(n, 2000))
+
+        # Path mirrors the LaunchAgent plist's StandardOutPath /
+        # StandardErrorPath (~/Library/Logs/Delfi/sidecar.{log,err}).
+        # On non-macOS platforms we don't currently have a daemon
+        # log file; fall back to a single-line "not available" so the
+        # UI can render something instead of erroring.
+        home = os.path.expanduser("~")
+        log_dir = os.path.join(home, "Library", "Logs", "Delfi")
+        path = os.path.join(
+            log_dir,
+            "sidecar.log" if stream == "stdout" else "sidecar.err",
+        )
+        if not os.path.isfile(path):
+            return _ok({
+                "stream": stream,
+                "path":   path,
+                "lines":  [],
+                "note":   "Log file not found yet. It populates once the "
+                          "launchd daemon writes its first line.",
+            })
+
+        # Cheap "tail": read the whole file, slice. The log files
+        # are appended-only and macOS launchd doesn't rotate them
+        # by default, so they CAN grow indefinitely. To stay sane
+        # we read at most the last 2 MiB.
+        try:
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                if size > 2 * 1024 * 1024:
+                    f.seek(size - 2 * 1024 * 1024)
+                blob = f.read()
+            text_blob = blob.decode("utf-8", "replace")
+            tail = text_blob.splitlines()[-n:]
+        except Exception as exc:
+            return _err(f"could not read log: {exc}", 500)
+
+        return _ok({
+            "stream": stream,
+            "path":   path,
+            "lines":  tail,
+            "note":   None,
+        })
+
+    async def _post_db_backup(self, req: web.Request) -> web.Response:
+        """Copy the SQLite DB to a user-supplied path.
+
+        Body: {"dest_path": "/path/to/backup.db"}
+
+        Uses SQLite's VACUUM INTO so the snapshot is consistent even
+        while the bot is mid-write. Returns the resulting file size
+        so the UI can confirm "exported X MB".
+        """
+        import os
+
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+        dest = payload.get("dest_path")
+        if not isinstance(dest, str) or not dest.strip():
+            return _err("dest_path (string) is required", 400)
+        dest = os.path.expanduser(dest.strip())
+
+        # Refuse to overwrite the live DB - that would corrupt it.
+        # Refuse to write into the AppData dir at all so backups
+        # always land somewhere outside the app's volatile state.
+        from db.engine import _default_db_path
+        live = str(_default_db_path().resolve())
+        try:
+            dest_real = os.path.realpath(dest)
+        except Exception:
+            dest_real = dest
+        if dest_real == live:
+            return _err(
+                "dest_path cannot be the live database file.", 400,
+            )
+
+        # Make sure parent exists.
+        parent = os.path.dirname(dest)
+        if parent and not os.path.isdir(parent):
+            return _err(
+                f"parent directory does not exist: {parent}", 400,
+            )
+
+        try:
+            engine = get_engine()
+            with engine.begin() as conn:
+                # VACUUM INTO requires a literal path string -
+                # parameter binding doesn't work here. We've already
+                # validated dest as a non-empty string and prevented
+                # overwriting the live DB; quoting handles the rest.
+                escaped = dest.replace("'", "''")
+                conn.execute(text(f"VACUUM INTO '{escaped}'"))
+        except Exception as exc:
+            return _err(f"backup failed: {exc}", 500)
+
+        try:
+            size = os.path.getsize(dest)
+        except OSError:
+            size = 0
+        return _ok({
+            "ok":      True,
+            "path":    dest,
+            "size":    size,
+            "detail":  f"Backup written to {dest} ({size:,} bytes)",
+        })
+
+    async def _get_launch_stats(self, _req: web.Request) -> web.Response:
+        """Parse `launchctl print` to extract daemon supervision stats.
+
+        Useful diagnostic when something is misbehaving:
+          - `runs`: total respawn count since the agent was bootstrapped.
+            High = something's crashing.
+          - `last_exit_code`: nonzero = the last run died on an
+            exception.
+          - `pid`: current daemon PID, or null if not running.
+        """
+        import platform
+        import re
+        import subprocess
+
+        if platform.system() != "Darwin":
+            return _ok({
+                "supported": False,
+                "runs":      None,
+                "last_exit_code": None,
+                "pid":       None,
+                "state":     None,
+            })
+
+        _, service_id = self._autostart_paths()
+        try:
+            r = subprocess.run(
+                ["launchctl", "print", service_id],
+                capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return _ok({
+                "supported": True,
+                "runs":      None,
+                "last_exit_code": None,
+                "pid":       None,
+                "state":     None,
+            })
+
+        if r.returncode != 0:
+            return _ok({
+                "supported": True,
+                "runs":      0,
+                "last_exit_code": None,
+                "pid":       None,
+                "state":     "unloaded",
+            })
+        out = (r.stdout or b"").decode("utf-8", "replace")
+
+        def _grab(pattern: str) -> Optional[str]:
+            # MULTILINE so ^ matches per line (launchctl print uses
+            # tab-indented key = value lines, not start-of-string).
+            m = re.search(pattern, out, re.MULTILINE)
+            return m.group(1).strip() if m else None
+
+        # `runs = N` and `last exit code = X` are top-level fields in
+        # launchctl print's output. `state = running` plus `pid = N`.
+        runs_str = _grab(r"^\s*runs\s*=\s*(\d+)")
+        last_exit_str = _grab(r"^\s*last exit code\s*=\s*(-?\d+|UNKNOWN)")
+        # Match pid (not pid-local-endpoints which is a sub-dict). The
+        # `pid-local` line shares the prefix so be specific: pid =
+        # followed by digits and end of line.
+        pid_str = _grab(r"^\s*pid\s*=\s*(\d+)\s*$")
+        state_str = _grab(r"^\s*state\s*=\s*(\S+)")
+
+        runs = int(runs_str) if runs_str and runs_str.isdigit() else None
+        last_exit = None
+        if last_exit_str and last_exit_str.lstrip("-").isdigit():
+            last_exit = int(last_exit_str)
+        pid = int(pid_str) if pid_str and pid_str.isdigit() else None
+        return _ok({
+            "supported": True,
+            "runs":      runs,
+            "last_exit_code": last_exit,
+            "pid":       pid,
+            "state":     state_str,
+        })
+
+    # ── Login item: open the GUI window automatically at login ──────────────
+    #
+    # Separate from autostart-the-daemon. The daemon is supervised by
+    # launchd and runs headlessly. This toggle controls whether the
+    # Tauri shell window pops up at user login. Implemented via macOS
+    # Login Items (the same list users see in System Settings >
+    # General > Login Items).
+
+    def _login_item_app_path(self) -> str:
+        return "/Applications/Delfi.app"
+
+    async def _login_item_status(self) -> dict:
+        """Internal: return the login item status dict (no HTTP wrap)."""
+        import platform
+        import subprocess
+
+        if platform.system() != "Darwin":
+            return {
+                "supported": False,
+                "enabled":   False,
+                "reason":    "Login item is currently macOS-only.",
+            }
+        applescript = (
+            'tell application "System Events" to get the path of every '
+            'login item'
+        )
+        try:
+            r = subprocess.run(
+                ["osascript", "-e", applescript],
+                capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "supported": True,
+                "enabled":   False,
+                "reason":    f"osascript probe failed: {exc}",
+            }
+        if r.returncode != 0:
+            err_text = (r.stderr or b"").decode("utf-8", "replace").strip()
+            return {
+                "supported": True,
+                "enabled":   False,
+                "reason":    f"osascript: {err_text}",
+            }
+        out = (r.stdout or b"").decode("utf-8", "replace")
+        target = self._login_item_app_path()
+        return {
+            "supported": True,
+            "enabled":   target in out,
+            "reason":    None,
+        }
+
+    async def _get_login_item(self, _req: web.Request) -> web.Response:
+        return _ok(await self._login_item_status())
+
+    async def _put_login_item(self, req: web.Request) -> web.Response:
+        import platform
+        import subprocess
+
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+        if "enabled" not in payload or not isinstance(payload["enabled"], bool):
+            return _err("body must include 'enabled' (boolean)", 400)
+        target = bool(payload["enabled"])
+
+        if platform.system() != "Darwin":
+            return _err("Login item is currently macOS-only.", 400)
+
+        path = self._login_item_app_path()
+        if target:
+            # Delete first so we don't end up with a duplicate entry
+            # if the user toggles ON when ON.
+            del_script = (
+                f'tell application "System Events" to delete (every login '
+                f'item whose path is "{path}")'
+            )
+            subprocess.run(
+                ["osascript", "-e", del_script],
+                capture_output=True, timeout=5,
+            )
+            add_script = (
+                f'tell application "System Events" to make login item at '
+                f'end with properties {{path:"{path}", hidden:false}}'
+            )
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e", add_script],
+                    capture_output=True, timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return _err(f"login item add failed: {exc}", 500)
+        else:
+            del_script = (
+                f'tell application "System Events" to delete (every login '
+                f'item whose path is "{path}")'
+            )
+            try:
+                r = subprocess.run(
+                    ["osascript", "-e", del_script],
+                    capture_output=True, timeout=5,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return _err(f"login item delete failed: {exc}", 500)
+
+        status = await self._login_item_status()
+        if status["enabled"] != target:
+            err_text = (r.stderr or b"").decode("utf-8", "replace").strip()
+            return _err(
+                f"login item toggle did not converge: {err_text}",
+                500,
+            )
+        return _ok(status)
+
+    # ── Positions CSV export ────────────────────────────────────────────────
+    async def _get_positions_csv(self, req: web.Request) -> web.Response:
+        """Return a CSV of all positions for the current user.
+
+        Used by Performance > Export. We deliberately stream the
+        whole table - typical user has hundreds to a few thousand
+        rows, well under the streaming threshold.
+        """
+        import csv
+        import io
+
+        try:
+            engine = get_engine()
+            with engine.begin() as conn:
+                rows = conn.execute(text(
+                    "SELECT id, created_at, prediction_id, market_id, "
+                    "       slug, question, category, market_archetype, "
+                    "       side, shares, entry_price, cost_usd, "
+                    "       claude_probability, mode, status, "
+                    "       expected_resolution_at, settled_at, "
+                    "       settlement_outcome, settlement_price, "
+                    "       realized_pnl_usd, venue "
+                    "FROM pm_positions WHERE user_id = :uid "
+                    "ORDER BY created_at DESC"
+                ), {"uid": DEFAULT_USER_ID}).mappings().all()
+        except Exception as exc:
+            return _err(f"export failed: {exc}", 500)
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "id", "created_at_utc", "prediction_id", "market_id",
+            "slug", "question", "category", "archetype",
+            "side", "shares", "entry_price", "cost_usd",
+            "delfi_probability", "mode", "status",
+            "expected_resolution_at_utc", "settled_at_utc",
+            "settlement_outcome", "settlement_price",
+            "realized_pnl_usd", "venue",
+        ])
+        for r in rows:
+            writer.writerow([
+                r["id"],
+                iso_utc(r["created_at"]),
+                r["prediction_id"],
+                r["market_id"],
+                r["slug"],
+                r["question"],
+                r["category"],
+                r["market_archetype"],
+                r["side"],
+                r["shares"],
+                r["entry_price"],
+                r["cost_usd"],
+                r["claude_probability"],
+                r["mode"],
+                r["status"],
+                iso_utc(r["expected_resolution_at"]),
+                iso_utc(r["settled_at"]),
+                r["settlement_outcome"],
+                r["settlement_price"],
+                r["realized_pnl_usd"],
+                r["venue"],
+            ])
+
+        csv_bytes = buf.getvalue().encode("utf-8")
+        # Plain text/csv response with attachment so the browser /
+        # Tauri webview triggers a save dialog.
+        from datetime import datetime as _dt
+        filename = f"delfi-trades-{_dt.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+        return web.Response(
+            body=csv_bytes,
+            headers={
+                "Content-Type":        "text/csv; charset=utf-8",
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
 
 
 # Helpful when poking at the API from the dev shell:
