@@ -101,39 +101,51 @@ pkill cfprefsd 2>/dev/null || true
 sleep 2
 
 _dedupe_dock_recents() {
-  # Strip every com.delfi.desktop entry, then collapse any remaining
-  # duplicate URLs (Dock occasionally inserts the same .app twice, even
-  # when LaunchServices only has one registration). Idempotent — safe
-  # to run before AND after launch.
+  # Keep at most ONE com.delfi.desktop entry per Dock list, drop the
+  # rest. Also collapse any non-Delfi (bundle-id, url) duplicates as
+  # generic robustness. Idempotent - safe to run pre- AND post-launch.
+  #
+  # The previous version stripped every com.delfi.desktop entry and
+  # relied on the launch to re-add a single one. That raced: when the
+  # Dock notices a launch it sometimes inserts TWO tiles in quick
+  # succession (especially across rapid install cycles or when the
+  # launchd-managed daemon and the user-clicked GUI both register as
+  # launches). "Keep at most one" is race-proof: even if the Dock has
+  # already inserted a duplicate by the time we run, we collapse to
+  # one without depending on a perfectly-timed re-launch.
   python3 - <<'PY'
 import plistlib, subprocess
 xml = subprocess.check_output(["defaults", "export", "com.apple.dock", "-"])
 data = plistlib.loads(xml)
-removed_delfi = 0
+delfi_dropped = 0
 deduped = 0
 for key in ("recent-apps", "persistent-apps"):
     arr = data.get(key)
     if not isinstance(arr, list):
         continue
-    seen_urls = set()
+    seen = set()
+    delfi_kept = False
     out = []
     for entry in arr:
         td = entry.get("tile-data", {}) or {}
         bid = td.get("bundle-identifier")
         url = (td.get("file-data", {}) or {}).get("_CFURLString") or ""
         if bid == "com.delfi.desktop":
-            removed_delfi += 1
+            if delfi_kept:
+                delfi_dropped += 1
+                continue
+            delfi_kept = True
+            seen.add((bid, url))
+            out.append(entry)
             continue
-        # Dedupe by (bundle-id, url) so any other app duplicates also
-        # collapse — generic robustness, not Delfi-specific.
         dedup_key = (bid, url)
-        if dedup_key in seen_urls:
+        if dedup_key in seen:
             deduped += 1
             continue
-        seen_urls.add(dedup_key)
+        seen.add(dedup_key)
         out.append(entry)
     data[key] = out
-print(f"[install]   delfi-entries-stripped={removed_delfi} url-duplicates-collapsed={deduped}")
+print(f"[install]   delfi-duplicates-dropped={delfi_dropped} other-url-duplicates={deduped}")
 with open("/tmp/dock_patched.plist", "wb") as f:
     plistlib.dump(data, f)
 subprocess.check_call(["defaults", "import", "com.apple.dock", "/tmp/dock_patched.plist"])
@@ -186,14 +198,18 @@ fi
 echo "[install] launching Delfi GUI..."
 open -a "$INSTALLED"
 
-# Second pass: when `open -a` fires, the Dock notices the launch and
-# auto-adds the app to recent-apps. On some macOS versions it inserts
-# TWO entries for the same URL. Wait for the launch to settle, then
-# run the dedupe again so any duplicate the Dock just added gets
-# collapsed.
+# Two more dedupe passes after the GUI launch. The Dock can insert
+# a second tile up to 8-10 seconds after the launch event, especially
+# when both the launchd daemon and the user-clicked GUI are observed
+# as separate launches. One pass at +6s and another at +12s catches
+# the late-arriving duplicate without us having to guess the timing.
 echo "[install] waiting for app to settle..."
 sleep 6
-echo "[install] post-launch dedupe pass..."
+echo "[install] post-launch dedupe pass 1..."
+_dedupe_dock_recents
+pkill -KILL Dock 2>/dev/null || true
+sleep 6
+echo "[install] post-launch dedupe pass 2..."
 _dedupe_dock_recents
 pkill -KILL Dock 2>/dev/null || true
 
