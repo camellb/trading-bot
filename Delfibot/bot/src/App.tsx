@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { api, BotState, Credentials } from "./api";
+import { api, AutostartStatus, BotState, Credentials, isConnectionError } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
@@ -39,6 +39,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState<boolean>(false);
   const [modeBusy, setModeBusy] = useState(false);
+  // Track the last-known autostart status so the connection-error
+  // banner can distinguish "daemon is down because the user turned
+  // off auto-start" from "daemon is down for an unexpected reason".
+  // Polled alongside refresh; on connection failure we keep the
+  // last-known value so the banner can surface the right message
+  // even though the daemon is currently unreachable.
+  const [autostart, setAutostart] = useState<AutostartStatus | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -59,6 +66,9 @@ export default function App() {
       // setError fired again, banner re-appeared. Users read that
       // blink as "an issue appearing for 0.3s and disappearing."
       setError(null);
+      // Refresh autostart in the background (don't fail the whole
+      // poll if this errors - it's only used by the banner copy).
+      api.autostart().then(setAutostart).catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -173,7 +183,11 @@ export default function App() {
         modeBusy={modeBusy}
       />
       <main className="app-main">
-        {error && <div className="error">{error}</div>}
+        <ConnectionBanner
+          error={error}
+          autostart={autostart}
+          onOpenSettings={() => goto("settings", "account")}
+        />
         {page === "dashboard" && (
           <Dashboard state={state} refresh={refresh} goto={goto} />
         )}
@@ -196,6 +210,63 @@ export default function App() {
     </div>
     </LicenseGate>
   );
+}
+
+// ── Connection banner ──────────────────────────────────────────────────
+//
+// Rendered above every page. Three modes:
+//
+//   1. No error -> render nothing.
+//   2. Connection error AND last-known autostart was OFF -> render
+//      a clear "Auto-start is off" banner with a button that
+//      navigates to Settings > Account so the user can flip it back
+//      on. This is the path the user hits when they deliberately
+//      toggle auto-start OFF and then look at the dashboard - the
+//      old generic "Could not connect, please restart the app"
+//      copy was misleading because the daemon went down BY DESIGN.
+//   3. Any other error -> render it as-is.
+
+function ConnectionBanner({
+  error,
+  autostart,
+  onOpenSettings,
+}: {
+  error: string | null;
+  autostart: AutostartStatus | null;
+  onOpenSettings: () => void;
+}) {
+  if (!error) return null;
+  const isConn = isConnectionError(error);
+  // The "deliberately off" path: connection error + we have a last-
+  // known autostart that says enabled=false. We use the cached value
+  // because the daemon is currently unreachable - we can't re-check
+  // its state in real time. The cached value persists from the last
+  // successful poll, which is exactly the moment the user toggled
+  // it off.
+  if (isConn && autostart?.supported && autostart.enabled === false) {
+    return (
+      <div className="error" style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        background: "rgba(184, 145, 63, 0.08)",
+        border: "1px solid rgba(184, 145, 63, 0.35)",
+        color: "var(--vellum-90, #e8e6e1)",
+      }}>
+        <span style={{ flex: 1 }}>
+          Auto-start is off. Delfi is paused and not opening trades.
+        </span>
+        <button
+          type="button"
+          className="btn small"
+          onClick={onOpenSettings}
+        >
+          Open settings
+        </button>
+      </div>
+    );
+  }
+  return <div className="error">{error}</div>;
 }
 
 // ── Boot screen ────────────────────────────────────────────────────────

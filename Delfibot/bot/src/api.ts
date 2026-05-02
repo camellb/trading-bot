@@ -106,7 +106,31 @@ export function isConnectionError(msg: string | null | undefined): boolean {
 
 async function request<T>(
   path: string,
-  init?: RequestInit & { body?: BodyInit; timeoutMs?: number },
+  init?: RequestInit & {
+    body?: BodyInit;
+    timeoutMs?: number;
+    /**
+     * When true, never retry on connection-refused errors.
+     *
+     * The default retry path replays the request once after
+     * re-resolving the daemon's port. That's the right behaviour
+     * for idempotent reads + the vast majority of writes, but a
+     * handful of endpoints aren't safe to replay even once:
+     *
+     *   - License activation (Stripe-billed seat consumption when
+     *     we cut over from the current Lemon Squeezy gate). A
+     *     replay could decrement the seat count twice if the
+     *     daemon dies mid-request between the provider responding
+     *     and the keychain write committing. One-time-per-machine
+     *     so the window is small, but the cost of getting it wrong
+     *     is real money / a support ticket.
+     *
+     * Set noRetry=true on those calls. Connection failures will
+     * surface as the standard "Could not connect" error and the
+     * user retries manually.
+     */
+    noRetry?: boolean;
+  },
   _retryCount: number = 0,
 ): Promise<T> {
   const p = await port();
@@ -145,7 +169,12 @@ async function request<T>(
     // resolve the port file and retry once before surfacing the
     // error to the UI. This single retry costs ~50ms when the daemon
     // is up and ~3s when it isn't (TCP probe timeout in Rust).
-    if (_retryCount === 0) {
+    //
+    // Skipped when init.noRetry is true: the caller has opted out
+    // because the request is non-idempotent and replaying it could
+    // double-execute (e.g. consume two seats from the billing
+    // provider when the daemon dies mid-activation).
+    if (_retryCount === 0 && !init?.noRetry) {
       const refreshed = await refreshPort();
       if (refreshed) {
         clearTimeout(timer);
@@ -423,17 +452,21 @@ export interface DbBackupResult {
   detail: string;
 }
 
-/** Lemon Squeezy license gate state, returned by /api/license/status
- *  and /api/license/activate. */
+/** License gate state, returned by /api/license/status and
+ *  /api/license/activate. The provider is being migrated from Lemon
+ *  Squeezy to Stripe; the wire shape stays the same and the daemon
+ *  abstracts the provider behind these endpoints. UI doesn't care
+ *  which one is on the other end. */
 export interface LicenseStatus {
   valid: boolean;
   reason: string | null;
   has_key: boolean;
   last_validated_at: string | null;
   instance_id: string | null;
-  /** Set by /api/license/deactivate when LS rejected the call but we
-   *  cleared the local key anyway. UI shows it as a one-time warning
-   *  toast: "your slot may still be consumed, contact support". */
+  /** Set by /api/license/deactivate when the upstream provider
+   *  rejected the call but we cleared the local key anyway. UI
+   *  shows it as a one-time warning toast: "your seat may still
+   *  be consumed, contact support". */
   warning?: string;
 }
 
@@ -513,15 +546,25 @@ export const api = {
   // Archetypes
   archetypes: () => request<ArchetypeCatalogue>("/api/archetypes"),
 
-  // License (Lemon Squeezy hard gate)
+  // License hard gate. Provider is being migrated from Lemon Squeezy
+  // to Stripe; the wire shape is provider-agnostic. The two POSTs
+  // below set noRetry=true because they consume / free a paid seat
+  // on the upstream provider - replaying after a daemon mid-request
+  // crash could double-bill. Connection failures here will surface
+  // to the user; they retry manually. license/status is idempotent
+  // and uses the default retry path.
   license:           () => request<LicenseStatus>("/api/license/status"),
   activateLicense:   (license_key: string) =>
     request<LicenseStatus>("/api/license/activate", {
       method: "POST",
       body: JSON.stringify({ license_key }),
+      noRetry: true,
     }),
   deactivateLicense: () =>
-    request<LicenseStatus>("/api/license/deactivate", { method: "POST" }),
+    request<LicenseStatus>("/api/license/deactivate", {
+      method: "POST",
+      noRetry: true,
+    }),
 
   // Notifications: in-app per-category toggles + Telegram outbound.
   notifications:   () => request<NotificationsConfig>("/api/config/notifications"),
