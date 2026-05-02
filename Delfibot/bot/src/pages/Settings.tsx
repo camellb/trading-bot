@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   api,
-  ArchetypeCatalogue,
-  ArchetypeEntry,
+  AutostartStatus,
   Credentials,
   LicenseStatus,
   NotificationsConfig,
@@ -12,8 +11,11 @@ import type { SettingsTab } from "../App";
 
 /**
  * Settings - SaaS-parity layout, with desktop additions:
- *   - Per-archetype grid (vs the SaaS JSON editor)
  *   - Simulation reset (desktop-only)
+ *   - Auto-start at login toggle (macOS LaunchAgent supervision)
+ *
+ * Risk and archetype controls used to live here as a sub-tab. They were
+ * promoted to a top-level page on 2026-05-02 (see pages/Risk.tsx).
  *
  * The active tab is owned by App and surfaced via the sidebar sub-nav.
  * This page renders one panel at a time. Each form submits independently
@@ -21,27 +23,11 @@ import type { SettingsTab } from "../App";
  */
 
 const BOUNDS = {
-  base_stake_pct:        [0.005, 0.05] as const,
-  max_stake_pct:         [0.01,  0.10] as const,
-  daily_loss_limit_pct:  [0.01,  1.00] as const,
-  weekly_loss_limit_pct: [0.01,  1.00] as const,
-  drawdown_halt_pct:     [0.01,  1.00] as const,
-  streak_cooldown_losses:[2,     10]   as const,
-  dry_powder_reserve_pct:[0.10,  0.40] as const,
-  starting_cash:         [10,    100_000] as const,
+  starting_cash: [10, 100_000] as const,
 };
 
 type ConfigShape = {
-  base_stake_pct?: number;
-  max_stake_pct?: number;
-  daily_loss_limit_pct?: number;
-  weekly_loss_limit_pct?: number;
-  drawdown_halt_pct?: number;
-  streak_cooldown_losses?: number;
-  dry_powder_reserve_pct?: number;
   starting_cash?: number | null;
-  archetype_skip_list?: string[];
-  archetype_stake_multipliers?: Record<string, number>;
   [k: string]: unknown;
 };
 
@@ -56,7 +42,6 @@ interface Props {
 const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   account:       { h1: "Account",         sub: "" },
   connections:   { h1: "Connections",     sub: "" },
-  risk:          { h1: "Risk and sizing", sub: "" },
   notifications: { h1: "Notifications",   sub: "" },
 };
 
@@ -77,7 +62,6 @@ export default function Settings({ tab, creds, config, onSaved }: Props) {
 
       {tab === "account"       && <AccountPanel       config={config} onSaved={onSaved} />}
       {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} />}
-      {tab === "risk"          && <RiskPanel          config={config} onSaved={onSaved} />}
       {tab === "notifications" && <NotificationsPanel />}
     </div>
   );
@@ -211,8 +195,116 @@ function AccountPanel({
         )}
       </div>
 
+      <AutostartPanel />
       <LicensePanel />
     </>
+  );
+}
+
+// ── Auto-start at login ──────────────────────────────────────────────────
+
+/**
+ * Auto-start panel inside Account.
+ *
+ * Toggles the macOS LaunchAgent at ~/Library/LaunchAgents/
+ * com.delfi.bot.plist. ON means the daemon launches at every user
+ * login and auto-restarts on crash (RunAtLoad=true + KeepAlive=true).
+ * OFF means the daemon doesn't start at login; toggling OFF also
+ * stops the currently-running daemon (launchctl bootout signals
+ * SIGTERM).
+ *
+ * Currently macOS-only. On other platforms the panel renders a
+ * disabled state with a "macOS-only" hint.
+ */
+function AutostartPanel() {
+  const [status, setStatus] = useState<AutostartStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.autostart()
+      .then((s) => alive && setStatus(s))
+      .catch(() => alive && setStatus({
+        supported: false,
+        enabled:   false,
+        reason:    "Could not read auto-start status.",
+      }));
+    return () => { alive = false; };
+  }, []);
+
+  const toggle = async () => {
+    if (!status?.supported || busy) return;
+    const next = !status.enabled;
+    const previous = status;
+    // Optimistic flip: the launchctl call takes 1-2s and the user
+    // wants to see the switch move immediately.
+    setStatus({ ...status, enabled: next });
+    setBusy(true);
+    setMsg(null);
+    try {
+      const updated = await api.setAutostart(next);
+      setStatus(updated);
+      setMsg({
+        kind: "ok",
+        text: next
+          ? "Auto-start enabled. Delfi will launch at every login."
+          : "Auto-start disabled. Delfi stopped and won't start at login.",
+      });
+    } catch (err) {
+      setStatus(previous);
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Auto-start at login</h2>
+        <span className="panel-meta">
+          {status?.supported === false ? "macOS only" : "macOS"}
+        </span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        When on, Delfi runs as a background daemon: it starts at every
+        login, survives the GUI window closing, and auto-restarts within
+        ~10s if it crashes. Trading continues 24/7. Turning it off stops
+        the daemon and requires you to launch Delfi manually next time.
+      </p>
+      <div className="notif-row">
+        <div>
+          <div className="notif-name">
+            Run Delfi automatically at login
+          </div>
+          <div className="notif-desc">
+            {status === null
+              ? "Loading..."
+              : status.supported === false
+                ? (status.reason ?? "Not available on this platform.")
+                : status.enabled
+                  ? "Currently enabled. Delfi is running in the background."
+                  : (status.reason ?? "Currently disabled. Delfi is not running.")}
+          </div>
+        </div>
+        <label className="toggle-switch">
+          <input
+            type="checkbox"
+            checked={!!status?.enabled}
+            disabled={!status?.supported || busy}
+            onChange={toggle}
+          />
+          <span className="toggle-slider" />
+        </label>
+      </div>
+      {msg && (
+        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+           style={{ marginTop: 12 }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -855,486 +947,3 @@ function TelegramConnectorPanel() {
   );
 }
 
-// ── Risk + sizing ────────────────────────────────────────────────────────
-
-function RiskPanel({
-  config,
-  onSaved,
-}: {
-  config: ConfigShape | null;
-  onSaved: () => void;
-}) {
-  const [risk, setRisk] = useState({
-    base_stake_pct: "",
-    max_stake_pct: "",
-    daily_loss_limit_pct: "",
-    weekly_loss_limit_pct: "",
-    drawdown_halt_pct: "",
-    streak_cooldown_losses: "",
-    dry_powder_reserve_pct: "",
-  });
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // Sync the form from `config` ONCE, on first non-null arrival. App's
-  // 5-second poll re-renders this component with a fresh `config` object
-  // every tick; without this guard the user's typed-but-not-yet-saved
-  // values get clobbered every 5s, and clicking Save then writes back
-  // the (just-clobbered) old values - the exact bug the user reported as
-  // "showed saved but nothing changed".
-  const syncedRef = useRef(false);
-  useEffect(() => {
-    if (!config) return;
-    if (syncedRef.current) return;
-    syncedRef.current = true;
-    setRisk({
-      base_stake_pct:         config.base_stake_pct         != null ? String(config.base_stake_pct)         : "",
-      max_stake_pct:          config.max_stake_pct          != null ? String(config.max_stake_pct)          : "",
-      daily_loss_limit_pct:   config.daily_loss_limit_pct   != null ? String(config.daily_loss_limit_pct)   : "",
-      weekly_loss_limit_pct:  config.weekly_loss_limit_pct  != null ? String(config.weekly_loss_limit_pct)  : "",
-      drawdown_halt_pct:      config.drawdown_halt_pct      != null ? String(config.drawdown_halt_pct)      : "",
-      streak_cooldown_losses: config.streak_cooldown_losses != null ? String(config.streak_cooldown_losses) : "",
-      dry_powder_reserve_pct: config.dry_powder_reserve_pct != null ? String(config.dry_powder_reserve_pct) : "",
-    });
-  }, [config]);
-
-  const saveRisk = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setMsg(null);
-    try {
-      const changes: Record<string, unknown> = {};
-      const numericKeys = [
-        "base_stake_pct", "max_stake_pct", "daily_loss_limit_pct",
-        "weekly_loss_limit_pct", "drawdown_halt_pct", "dry_powder_reserve_pct",
-      ] as const;
-      for (const k of numericKeys) {
-        const raw = risk[k].trim();
-        if (raw === "") continue;
-        const n = Number(raw);
-        if (!Number.isFinite(n)) throw new Error(`${k} must be a number.`);
-        const [lo, hi] = BOUNDS[k];
-        if (n < lo || n > hi) throw new Error(`${k} must be between ${lo} and ${hi}.`);
-        changes[k] = n;
-      }
-      const streakRaw = risk.streak_cooldown_losses.trim();
-      if (streakRaw !== "") {
-        const n = Number(streakRaw);
-        if (!Number.isInteger(n)) throw new Error("Streak cooldown must be an integer.");
-        const [lo, hi] = BOUNDS.streak_cooldown_losses;
-        if (n < lo || n > hi) throw new Error(`Streak cooldown must be between ${lo} and ${hi}.`);
-        changes.streak_cooldown_losses = n;
-      }
-      if (Object.keys(changes).length === 0) {
-        setMsg({ kind: "err", text: "Nothing to save." });
-        return;
-      }
-      await api.updateConfig(changes);
-      setMsg({ kind: "ok", text: `Saved ${Object.keys(changes).length} field(s).` });
-      onSaved();
-    } catch (err) {
-      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Sizing and limits</h2>
-          <span className="panel-meta">% of capital</span>
-        </div>
-        <p className="page-sub" style={{ marginBottom: 16 }}>
-          Stake = capital × base stake × archetype multiplier, capped at
-          max stake. Loss limits halt new trades when the threshold is
-          crossed.
-        </p>
-        <form onSubmit={saveRisk}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
-            <PercentField
-              label="Base stake" step="0.1"
-              fractionRange={BOUNDS.base_stake_pct}
-              fractionValue={risk.base_stake_pct}
-              onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
-            />
-            <PercentField
-              label="Max stake" step="0.1"
-              fractionRange={BOUNDS.max_stake_pct}
-              fractionValue={risk.max_stake_pct}
-              onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
-            />
-            <PercentField
-              label="Daily loss limit" step="1"
-              fractionRange={BOUNDS.daily_loss_limit_pct}
-              fractionValue={risk.daily_loss_limit_pct}
-              onChangeFraction={(v) => setRisk({ ...risk, daily_loss_limit_pct: v })}
-            />
-            <PercentField
-              label="Weekly loss limit" step="1"
-              fractionRange={BOUNDS.weekly_loss_limit_pct}
-              fractionValue={risk.weekly_loss_limit_pct}
-              onChangeFraction={(v) => setRisk({ ...risk, weekly_loss_limit_pct: v })}
-            />
-            <PercentField
-              label="Drawdown halt" step="1"
-              fractionRange={BOUNDS.drawdown_halt_pct}
-              fractionValue={risk.drawdown_halt_pct}
-              onChangeFraction={(v) => setRisk({ ...risk, drawdown_halt_pct: v })}
-            />
-            <NumField
-              label="Streak cooldown (losses)" step="1"
-              range={BOUNDS.streak_cooldown_losses}
-              value={risk.streak_cooldown_losses}
-              onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
-            />
-            <PercentField
-              label="Dry powder reserve" step="1"
-              fractionRange={BOUNDS.dry_powder_reserve_pct}
-              fractionValue={risk.dry_powder_reserve_pct}
-              onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
-            />
-          </div>
-          <div className="form-actions" style={{ marginTop: 18 }}>
-            <button type="submit" className="btn small" disabled={busy}>
-              {busy ? "Saving..." : "Save risk and sizing"}
-            </button>
-            {msg && (
-              <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
-                {msg.text}
-              </span>
-            )}
-          </div>
-        </form>
-      </div>
-
-      <ArchetypePanel onSaved={onSaved} />
-    </>
-  );
-}
-
-function NumField({
-  label, step, range, value, onChange,
-}: {
-  label: string;
-  step: string;
-  range: readonly [number, number];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="form-field">
-      <label>{label}</label>
-      <input
-        type="number"
-        step={step}
-        min={range[0]}
-        max={range[1]}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="form-hint">Range: {range[0]} - {range[1]}</span>
-    </div>
-  );
-}
-
-/**
- * Percent display wrapper around NumField.
- *
- * The DB stores fractions (0.10 = 10%) because the engine's risk
- * manager expects fractions. The UI shows percentages because that's
- * how humans read risk parameters.
- *
- * `fractionValue` is the form state string (which is still a fraction,
- * e.g. "0.10"). We multiply by 100 for display, format to one decimal
- * to keep the number from displaying as 9.999999999, and convert the
- * percent back to a fraction string before passing to onChangeFraction.
- *
- * `step` is in PERCENT units (e.g. step="1" steps by 1 percentage
- * point, step="0.1" steps by 0.1pp). `fractionRange` is in fraction
- * units (so [0.005, 0.05] is 0.5%-5%); we multiply by 100 for display.
- */
-function PercentField({
-  label, step, fractionRange, fractionValue, onChangeFraction,
-}: {
-  label: string;
-  step: string;
-  fractionRange: readonly [number, number];
-  fractionValue: string;
-  onChangeFraction: (fractionStr: string) => void;
-}) {
-  const percentValue = fractionValue === ""
-    ? ""
-    : (() => {
-        const n = Number(fractionValue);
-        if (!Number.isFinite(n)) return fractionValue;
-        // Round to 4 decimal places to avoid 0.1*100 = 10.000000000000002.
-        return String(Math.round(n * 10000) / 100);
-      })();
-  const minPct = fractionRange[0] * 100;
-  const maxPct = fractionRange[1] * 100;
-  return (
-    <div className="form-field">
-      <label>{label}</label>
-      <div style={{ position: "relative" }}>
-        <input
-          type="number"
-          step={step}
-          min={minPct}
-          max={maxPct}
-          value={percentValue}
-          onChange={(e) => {
-            const raw = e.target.value;
-            if (raw === "") {
-              onChangeFraction("");
-              return;
-            }
-            const n = Number(raw);
-            if (!Number.isFinite(n)) return;
-            // Round to 6 decimal places to avoid float drift on save.
-            const fraction = Math.round(n / 100 * 1_000_000) / 1_000_000;
-            onChangeFraction(String(fraction));
-          }}
-          style={{ paddingRight: 28 }}
-        />
-        <span style={{
-          position: "absolute", right: 10, top: "50%",
-          transform: "translateY(-50%)", color: "var(--text-muted, #888)",
-          pointerEvents: "none", fontSize: "0.9em",
-        }}>%</span>
-      </div>
-      <span className="form-hint">
-        Range: {minPct % 1 === 0 ? minPct : minPct.toFixed(1)}% -
-        {' '}{maxPct % 1 === 0 ? maxPct : maxPct.toFixed(1)}%
-      </span>
-    </div>
-  );
-}
-
-// ── Archetype grid ───────────────────────────────────────────────────────
-
-function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
-  const [data, setData] = useState<ArchetypeCatalogue | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-
-  const load = async () => {
-    try {
-      const r = await api.archetypes();
-      setData(r);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const groups = useMemo(() => {
-    if (!data) return [] as Array<{ title: string; items: ArchetypeEntry[] }>;
-    // Group buckets aligned with the categories in
-    // `engine/archetype_classifier.py`. Order matters - this is also
-    // the render order, top-to-bottom.
-    const groupOrder: Array<{ title: string; ids: string[] }> = [
-      { title: "Sports", ids: [
-        "tennis", "basketball", "baseball", "football", "hockey",
-        "cricket", "esports", "soccer", "sports_other",
-      ]},
-      { title: "Finance and markets", ids: [
-        "crypto", "stocks", "macro", "fx_commodities",
-      ]},
-      { title: "Politics and society", ids: [
-        "election", "policy_event", "geopolitical_event",
-      ]},
-      { title: "Tech and culture", ids: [
-        "tech_release", "awards", "entertainment",
-      ]},
-      { title: "Other markets", ids: [
-        "weather_event", "price_threshold", "activity_count", "binary_event",
-      ]},
-    ];
-    const byId = new Map(data.archetypes.map((a) => [a.id, a]));
-    const seen = new Set<string>();
-    const out: Array<{ title: string; items: ArchetypeEntry[] }> = [];
-    for (const g of groupOrder) {
-      const items = g.ids
-        .map((id) => byId.get(id))
-        .filter((a): a is ArchetypeEntry => a != null);
-      items.forEach((a) => seen.add(a.id));
-      if (items.length) out.push({ title: g.title, items });
-    }
-    // Belt-and-suspenders: any future archetype not in groupOrder
-    // still renders, just lumped at the end so it's never invisible.
-    const stragglers = data.archetypes.filter((a) => !seen.has(a.id));
-    if (stragglers.length) out.push({ title: "Uncategorized", items: stragglers });
-    return out;
-  }, [data]);
-
-  const update = async (
-    a: ArchetypeEntry,
-    patch: Partial<Pick<ArchetypeEntry, "skip" | "multiplier">>,
-  ) => {
-    if (!data || busyId) return;
-    setBusyId(a.id);
-    setError(null);
-
-    const nextSkip = new Set(
-      data.archetypes
-        .filter((x) => (x.id === a.id ? (patch.skip ?? x.skip) : x.skip))
-        .map((x) => x.id),
-    );
-    const nextMults: Record<string, number> = {};
-    for (const x of data.archetypes) {
-      const m = x.id === a.id ? (patch.multiplier ?? x.multiplier) : x.multiplier;
-      if (Math.abs(m - x.default_mult) > 1e-6) {
-        nextMults[x.id] = m;
-      }
-    }
-
-    try {
-      await api.updateConfig({
-        archetype_skip_list: Array.from(nextSkip),
-        archetype_stake_multipliers: nextMults,
-      });
-      await load();
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  const reset = (a: ArchetypeEntry) => {
-    void update(a, { skip: a.default_skip, multiplier: a.default_mult });
-  };
-
-  if (!data) {
-    return (
-      <div className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Archetypes</h2>
-        </div>
-        <div className="empty-state">Loading archetypes...</div>
-        {error && <div className="error">{error}</div>}
-      </div>
-    );
-  }
-
-  const { multiplier_min, multiplier_max } = data.bounds;
-
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Archetypes</h2>
-        <span className="panel-meta">{data.archetypes.length} categories</span>
-      </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Each market Delfi looks at is classified into one archetype. Skip an
-        archetype to ignore those markets entirely. Use the multiplier to
-        size up or down without skipping. Default for unknown archetypes is 1.0×.
-      </p>
-
-      {error && <div className="error">{error}</div>}
-
-      {groups.map((g) => (
-        <div key={g.title} style={{ marginTop: 16 }}>
-          <h3 className="t-caption" style={{ margin: "0 0 8px" }}>{g.title}</h3>
-          <div className="archetype-grid">
-            {g.items.map((a) => (
-              <ArchetypeCard
-                key={a.id}
-                a={a}
-                busy={busyId === a.id}
-                multMin={multiplier_min}
-                multMax={multiplier_max}
-                onToggleSkip={() => update(a, { skip: !a.skip })}
-                onMultChange={(m) => update(a, { multiplier: m })}
-                onReset={() => reset(a)}
-              />
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ArchetypeCard({
-  a, busy, multMin, multMax, onToggleSkip, onMultChange, onReset,
-}: {
-  a: ArchetypeEntry;
-  busy: boolean;
-  multMin: number;
-  multMax: number;
-  onToggleSkip: () => void;
-  onMultChange: (m: number) => void;
-  onReset: () => void;
-}) {
-  const [pending, setPending] = useState<number | null>(null);
-  const shown = pending ?? a.multiplier;
-  const isDefault =
-    a.skip === a.default_skip && Math.abs(a.multiplier - a.default_mult) < 1e-6;
-
-  return (
-    <div className={`archetype-card ${a.skip ? "skipped" : ""}`}>
-      <div>
-        <div className="archetype-name">{a.label}</div>
-        <div className="archetype-desc">{a.description}</div>
-      </div>
-
-      <div className="archetype-controls">
-        <span style={{
-          fontSize: 11, color: "var(--vellum-60)",
-          letterSpacing: "0.1em", textTransform: "uppercase",
-        }}>
-          {a.skip ? "Skip" : "Trade"}
-        </span>
-        <label className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={!a.skip}
-            disabled={busy}
-            onChange={onToggleSkip}
-          />
-          <span className="toggle-slider" />
-        </label>
-      </div>
-
-      <div className="archetype-mult">
-        <span className="archetype-mult-label">Stake mult</span>
-        <input
-          type="range"
-          min={multMin}
-          max={multMax}
-          step="0.05"
-          value={shown}
-          disabled={busy || a.skip}
-          onChange={(e) => setPending(Number(e.target.value))}
-          onMouseUp={(e) => {
-            const v = Number((e.target as HTMLInputElement).value);
-            setPending(null);
-            if (Math.abs(v - a.multiplier) > 1e-6) onMultChange(v);
-          }}
-          onTouchEnd={(e) => {
-            const v = Number((e.target as HTMLInputElement).value);
-            setPending(null);
-            if (Math.abs(v - a.multiplier) > 1e-6) onMultChange(v);
-          }}
-        />
-        <span className="archetype-mult-value">{shown.toFixed(2)}×</span>
-        {!isDefault && (
-          <button
-            type="button"
-            className="archetype-mult-default"
-            onClick={onReset}
-            disabled={busy}
-            title={`Default: ${a.default_skip ? "skip" : "trade"} at ${a.default_mult}×`}
-          >
-            Reset
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}

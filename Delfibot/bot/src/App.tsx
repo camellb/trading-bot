@@ -4,6 +4,7 @@ import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
 import Intelligence from "./pages/Intelligence";
+import Risk from "./pages/Risk";
 import Settings from "./pages/Settings";
 import Onboarding from "./Onboarding";
 import { UpdatePrompt } from "./components/UpdatePrompt";
@@ -24,9 +25,10 @@ export type Page =
   | "positions"
   | "performance"
   | "intelligence"
+  | "risk"
   | "settings";
 
-export type SettingsTab = "account" | "connections" | "risk" | "notifications";
+export type SettingsTab = "account" | "connections" | "notifications";
 
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
@@ -154,6 +156,9 @@ export default function App() {
         {page === "positions" && <Positions />}
         {page === "performance" && <PerformancePage />}
         {page === "intelligence" && <Intelligence />}
+        {page === "risk" && (
+          <Risk config={config} onSaved={refresh} />
+        )}
         {page === "settings" && (
           <Settings
             tab={settingsTab}
@@ -205,6 +210,7 @@ const NAV: NavItem[] = [
   { id: "positions",    label: "Positions",    icon: IconLayers() },
   { id: "performance",  label: "Performance",  icon: IconTrend() },
   { id: "intelligence", label: "Intelligence", icon: IconBolt() },
+  { id: "risk",         label: "Risk controls", icon: IconShield() },
   {
     id: "settings",
     label: "Settings",
@@ -212,7 +218,6 @@ const NAV: NavItem[] = [
     sub: [
       { id: "account",       label: "Account" },
       { id: "connections",   label: "Connections" },
-      { id: "risk",          label: "Risk controls" },
       { id: "notifications", label: "Notifications" },
     ],
   },
@@ -409,6 +414,13 @@ function IconBolt() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
       <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+    </svg>
+  );
+}
+function IconShield() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
     </svg>
   );
 }

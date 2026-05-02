@@ -320,6 +320,17 @@ export interface TelegramConfig {
   chat_id: string | null;
 }
 
+/** Auto-start at login (macOS LaunchAgent). `supported=false` on
+ *  non-macOS platforms; `enabled=true` means the LaunchAgent is
+ *  currently bootstrapped, so the bot starts at every login and
+ *  auto-restarts on crash. `reason` carries an explanatory string
+ *  when the toggle is unavailable (e.g. plist not installed). */
+export interface AutostartStatus {
+  supported: boolean;
+  enabled:   boolean;
+  reason:    string | null;
+}
+
 /** Lemon Squeezy license gate state, returned by /api/license/status
  *  and /api/license/activate. */
 export interface LicenseStatus {
@@ -426,6 +437,16 @@ export const api = {
     request<NotificationsConfig>("/api/config/notifications", {
       method: "PUT",
       body: JSON.stringify({ notification_prefs: prefs }),
+    }),
+
+  // System: auto-start at login (macOS LaunchAgent supervision).
+  // GET reports {supported, enabled, reason}. PUT toggles bootstrap
+  // /bootout via launchctl; returns the post-toggle status.
+  autostart:    () => request<AutostartStatus>("/api/system/autostart"),
+  setAutostart: (enabled: boolean) =>
+    request<AutostartStatus>("/api/system/autostart", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
     }),
 
   // Telegram. Save persists, Test probes (never persists). Test

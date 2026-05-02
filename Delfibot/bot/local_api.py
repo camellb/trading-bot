@@ -403,6 +403,14 @@ class LocalAPI:
         # Simulation reset (zeros out simulation positions + bankroll)
         app.router.add_post("/api/reset-simulation",      self._reset_simulation)
 
+        # Auto-start at login. Backed by the LaunchAgent at
+        # ~/Library/LaunchAgents/com.delfi.bot.plist (created by
+        # install.sh). GET reports whether the agent is currently
+        # bootstrapped; PUT toggles bootstrap/bootout via launchctl.
+        # macOS-only - other platforms return supported=false.
+        app.router.add_get("/api/system/autostart",  self._get_autostart)
+        app.router.add_put("/api/system/autostart",  self._put_autostart)
+
         # Permissive CORS preflight for the Vite dev server.
         async def _options(_req: web.Request) -> web.Response:
             return web.Response(
@@ -1342,6 +1350,174 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"reset failed: {exc}", 500)
         return _ok({"ok": True, "detail": "simulation positions reset"})
+
+    # ── Auto-start at login (LaunchAgent supervision) ──────────────────────
+    #
+    # Backed by launchd on macOS. The LaunchAgent plist at
+    # ~/Library/LaunchAgents/com.delfi.bot.plist (created by the
+    # bundled install.sh) carries RunAtLoad=true + KeepAlive=true,
+    # so when it's bootstrapped it auto-starts at user login and
+    # auto-restarts on crash. Toggling this setting calls
+    # `launchctl bootstrap` (turn on) or `launchctl bootout`
+    # (turn off). bootout signals SIGTERM to the running daemon -
+    # so toggling OFF stops the bot. bootstrap+kickstart starts
+    # a fresh daemon immediately.
+    #
+    # Other platforms (Linux, Windows): we report supported=false.
+    # Windows would need a Startup-folder shortcut or a Task
+    # Scheduler entry; not wired yet.
+
+    def _autostart_paths(self) -> tuple[str, str]:
+        """Return (plist path, launchctl service id) for the current user."""
+        import os
+        home = os.path.expanduser("~")
+        plist = os.path.join(home, "Library", "LaunchAgents",
+                             "com.delfi.bot.plist")
+        uid = os.getuid()
+        service_id = f"gui/{uid}/com.delfi.bot"
+        return plist, service_id
+
+    async def _autostart_status(self) -> dict:
+        """Probe the LaunchAgent state. Caller decides what to do with it."""
+        import os
+        import platform
+        import subprocess
+
+        if platform.system() != "Darwin":
+            return {
+                "supported": False,
+                "enabled":   False,
+                "reason":    "Auto-start at login is currently macOS-only.",
+            }
+
+        plist, service_id = self._autostart_paths()
+        if not os.path.isfile(plist):
+            return {
+                "supported": True,
+                "enabled":   False,
+                "reason":    ("LaunchAgent file not found. Run "
+                              "Delfibot/install.sh to install it."),
+            }
+        # `launchctl print` exits 0 when the service is bootstrapped,
+        # nonzero when it is not. We don't need stdout.
+        try:
+            r = subprocess.run(
+                ["launchctl", "print", service_id],
+                capture_output=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "supported": True,
+                "enabled":   False,
+                "reason":    f"launchctl probe failed: {exc}",
+            }
+        return {
+            "supported": True,
+            "enabled":   r.returncode == 0,
+            "reason":    None,
+        }
+
+    async def _get_autostart(self, _req: web.Request) -> web.Response:
+        return _ok(await self._autostart_status())
+
+    async def _put_autostart(self, req: web.Request) -> web.Response:
+        import os
+        import platform
+        import subprocess
+
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+        if "enabled" not in payload or not isinstance(payload["enabled"], bool):
+            return _err("body must include 'enabled' (boolean)", 400)
+        target = bool(payload["enabled"])
+
+        if platform.system() != "Darwin":
+            return _err(
+                "Auto-start at login is currently macOS-only.",
+                400,
+            )
+
+        plist, service_id = self._autostart_paths()
+        if not os.path.isfile(plist):
+            return _err(
+                f"LaunchAgent plist not found at {plist}. Run "
+                f"Delfibot/install.sh to install it.",
+                400,
+            )
+
+        # bootout is idempotent: nonzero on "not loaded" is fine.
+        # bootstrap fails with errno 17 if already loaded; treat
+        # that as success.
+        def _run(args: list[str]) -> tuple[int, str]:
+            try:
+                r = subprocess.run(args, capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return -1, str(exc)
+            err_text = (r.stderr or b"").decode("utf-8", "replace").strip()
+            return r.returncode, err_text
+
+        try:
+            if target:
+                # bootout first so we always start from a clean slate.
+                # bootout is async-ish: launchd accepts the request and
+                # signals SIGTERM, but the agent isn't fully torn down
+                # until the daemon process exits and launchd reaps. If
+                # we bootstrap before that completes, bootstrap returns
+                # rc=5 ("Input/output error") or rc=37 ("Operation
+                # already in progress"). Poll briefly to make sure the
+                # previous registration is gone.
+                _run(["launchctl", "bootout", service_id])
+                for _ in range(20):  # up to ~2s
+                    rc_check, _ = _run(["launchctl", "print", service_id])
+                    if rc_check != 0:
+                        break
+                    await asyncio.sleep(0.1)
+                rc, err = _run([
+                    "launchctl", "bootstrap",
+                    f"gui/{os.getuid()}", plist,
+                ])
+                # bootstrap return codes that mean "agent is loaded":
+                #   0  = success
+                #   17 = "File exists" (already loaded, older macOS)
+                #   5  = "Input/output error" (already loaded or
+                #         service is mid-launch)
+                # We don't fail eagerly on these - reconcile against
+                # actual status below.
+                # kickstart -k forces an immediate (re)start so the
+                # daemon is alive without waiting for the next login.
+                _run(["launchctl", "kickstart", "-k", service_id])
+            else:
+                rc, err = _run(["launchctl", "bootout", service_id])
+                # rc 113 = not currently loaded; rc 36 / 3 = service
+                # not present. Treat all "already in target state" rcs
+                # as success and reconcile from status below.
+        except Exception as exc:
+            return _err(f"autostart toggle failed: {exc}", 500)
+
+        # Reconcile: poll the actual launchctl state for up to ~1s,
+        # because bootstrap/bootout return before the daemon has
+        # finished its lifecycle change. The earlier non-zero rc from
+        # bootstrap is only an error if the END state doesn't match
+        # what the user asked for.
+        status = await self._autostart_status()
+        for _ in range(10):
+            if status["enabled"] == target:
+                break
+            await asyncio.sleep(0.1)
+            status = await self._autostart_status()
+
+        if status["enabled"] != target:
+            return _err(
+                f"autostart toggle did not converge to enabled={target}. "
+                f"launchctl reported: rc={rc} {err!r}",
+                500,
+            )
+        return _ok(status)
 
 
 # Helpful when poking at the API from the dev shell:

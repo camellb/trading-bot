@@ -255,7 +255,7 @@ export default function Dashboard({ state, goto }: Props) {
         <section className="dash-card card-risk">
           <CardHead
             title="Risk today"
-            onLink={() => goto("settings", "risk")}
+            onLink={() => goto("risk")}
             linkLabel="Risk controls"
           />
           <RiskGauges risk={riskGauges} />
