@@ -151,7 +151,11 @@ html, body { scroll-behavior: smooth; }
   padding-top: 32px;
   border-top: 1px solid var(--vellum-10);
   width: 100%;
-  max-width: 760px;
+  /* Was 760px (a holdover from when the marquee fade-masked the
+     overflow). Static layout needs more room or the outer names
+     get clipped; widen to match the parent .hero-inner so all six
+     names fit on a single line. */
+  max-width: 920px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -172,7 +176,11 @@ html, body { scroll-behavior: smooth; }
    the override at the bottom of this file re-enables the marquee
    for mobile only. */
 .hero-press-track {
-  display: flex; gap: clamp(20px, 4vw, 48px);
+  display: flex;
+  /* Was clamp(20px, 4vw, 48px). Tightened so the six names fit on
+     a single line at desktop widths down to ~900px without
+     overflow; mobile re-overrides this to a fixed 28px below. */
+  gap: clamp(16px, 2.4vw, 36px);
   flex-wrap: nowrap;
   white-space: nowrap;
   justify-content: center;
