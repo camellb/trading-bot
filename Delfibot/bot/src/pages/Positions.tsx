@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, isConnectionError, MarketEvaluation, PMPosition } from "../api";
-import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt } from "../lib/format";
+import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
 // Tauri webviews swallow `target="_blank"` clicks by default - the link
@@ -61,7 +61,7 @@ function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
 // the formatted string, so "+10%" sorts after "+9%" not before it.
 
 type OpenSk    = "market" | "category" | "side" | "size"
-                | "myes"  | "dyes"     | "dconf" | "closes";
+                | "myes"  | "dyes"     | "dconf" | "opened" | "closes";
 type ClosedSk  = "market" | "category" | "side" | "outcome"
                 | "entry" | "myes"     | "dyes"  | "pnl" | "settled";
 type SkippedSk = "market" | "category" | "myes" | "dyes"
@@ -79,6 +79,10 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
     }
     case "dyes":     return (p.claude_probability as number | null) ?? null;
     case "dconf":    return (p.confidence as number | null) ?? null;
+    case "opened": {
+      const iso = p.created_at as string | null | undefined;
+      return iso ? new Date(iso).getTime() : null;
+    }
     case "closes": {
       const iso = p.expected_resolution_at as string | null | undefined;
       return iso ? new Date(iso).getTime() : null;
@@ -253,6 +257,7 @@ export default function Positions() {
                 : "Loading..."}
             </div>
           ) : (
+            <div style={{ overflowX: "auto" }}>
             <table className="table-simple">
               <thead>
                 <tr>
@@ -263,6 +268,7 @@ export default function Positions() {
                   <SortableTh field="myes"     sort={openSort}>M YES %</SortableTh>
                   <SortableTh field="dyes"     sort={openSort}>D YES %</SortableTh>
                   <SortableTh field="dconf"    sort={openSort}>D CONF</SortableTh>
+                  <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
                   <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
                   <th style={{ width: 28 }} />
                 </tr>
@@ -295,6 +301,7 @@ export default function Positions() {
                         <td className="mono">{mYesPct}%</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
+                        <td className="mono">{timeAgo(p.created_at)}</td>
                         <td className="mono">{daysFromNow(closesAt)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>
                           <span style={{
@@ -307,7 +314,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={9} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -355,6 +362,7 @@ export default function Positions() {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       )}

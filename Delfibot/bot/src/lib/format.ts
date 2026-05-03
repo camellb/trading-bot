@@ -131,6 +131,35 @@ export function daysFromNow(iso: string | null | undefined): string {
 }
 
 /**
+ * Compact relative-past format: "5m ago", "2h ago", "3d ago", "2w ago".
+ * For future timestamps returns "in 5m" / "in 2h" / etc.
+ *
+ * Use for "opened" timestamps where the past direction is implied
+ * and the user wants quick scannability without parsing the full
+ * date.
+ */
+export function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  const ms = Date.now() - d.getTime();
+  const future = ms < 0;
+  const abs = Math.abs(ms);
+  const minutes = Math.floor(abs / 60_000);
+  const hours   = Math.floor(abs / 3_600_000);
+  const days    = Math.floor(abs / 86_400_000);
+  const weeks   = Math.floor(abs / (7 * 86_400_000));
+  let body: string;
+  if (minutes < 1)        body = "just now";
+  else if (minutes < 60)  body = `${minutes}m`;
+  else if (hours < 24)    body = `${hours}h`;
+  else if (days < 14)     body = `${days}d`;
+  else                    body = `${weeks}w`;
+  if (body === "just now") return body;
+  return future ? `in ${body}` : `${body} ago`;
+}
+
+/**
  * Get the user's resolved timezone, even when the preference is
  * "system default". Useful for the Settings dropdown so we can
  * display "System default (Europe/Warsaw)" instead of just

@@ -9,7 +9,7 @@ import {
   PerformanceSummary,
   PMPosition,
 } from "../api";
-import { formatDateTime, getDisplayTz } from "../lib/format";
+import { formatDateTime, getDisplayTz, timeAgo } from "../lib/format";
 import type { Page, SettingsTab } from "../App";
 
 /**
@@ -449,6 +449,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         <div>M YES %</div>
         <div>D YES %</div>
         <div>D CONF</div>
+        <div>Opened</div>
         <div>Closes</div>
         <div />
       </div>
@@ -486,6 +487,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
               <div className="pos-num t-num">{mYesPct}%</div>
               <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
               <div className="pos-num t-num">{dConfPct != null ? `${dConfPct}%` : "-"}</div>
+              <div className="pos-num t-num">{timeAgo(p.created_at)}</div>
               <div className="pos-closes t-num">{daysFromNow(closesAt)}</div>
               <div className={`pos-chevron ${isOpen ? "open" : ""}`}>▸</div>
             </div>

@@ -259,15 +259,12 @@ export default function Performance() {
               fontFamily: "var(--font-body)",
               fontSize: 13,
               lineHeight: 1.55,
-              maxWidth: "72ch",
             }}
           >
-            Each row groups settled trades by Delfi's confidence in the
-            trade direction. The gold bar is the actual win rate. The
-            faint vertical line is the bucket midpoint, where a
-            perfectly-calibrated forecaster would land. A bar past the
-            line means Delfi was underconfident in that band; falling
-            short means overconfident.
+            Settled trades grouped by Delfi's confidence. Gold bar =
+            actual win rate; faint line = where a perfectly-calibrated
+            forecaster would land. Bar past the line means
+            underconfident, short means overconfident.
           </p>
           <div className="calib-header">
             <div>Delfi confidence</div>
@@ -275,6 +272,24 @@ export default function Performance() {
             <div>Win rate</div>
             <div>Won</div>
             <div>Off by</div>
+          </div>
+          {/* Scale row: tick labels above the bar column so the user
+              can see where 50%, 60%, 70%, 80%, 90%, 100% land along
+              the visualization. Aligned with the .calib-bar grid cell
+              via the same 5-column template. */}
+          <div className="calib-scale" aria-hidden="true">
+            <div />
+            <div />
+            <div className="calib-scale-track">
+              <span>50%</span>
+              <span>60%</span>
+              <span>70%</span>
+              <span>80%</span>
+              <span>90%</span>
+              <span>100%</span>
+            </div>
+            <div />
+            <div />
           </div>
           <div>
             {calibration.bins.map((b, i) => {

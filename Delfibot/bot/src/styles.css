@@ -945,15 +945,29 @@ button { font: inherit; }
 }
 .card-head-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-.pos-table { display: flex; flex-direction: column; }
+.pos-table {
+  display: flex;
+  flex-direction: column;
+  /* Allow the table to scroll horizontally if the viewport is too
+     narrow for all 10 columns. Text-overflow: ellipsis on individual
+     cells already handles graceful truncation, but a hard scroll
+     guarantees nothing falls off the right edge of the card. */
+  overflow-x: auto;
+}
 .pos-row {
+  /* 10 cells: Market, Category, Side, Size, M YES, D YES, D CONF,
+     Opened, Closes, chevron. The two "when" columns (Opened + Closes)
+     are kept narrow because their values are short-form ("3h ago",
+     "5d 2h"). Min-width keeps the grid from collapsing under tiny
+     widths; once below, the parent .pos-table scrolls horizontally. */
   display: grid;
-  grid-template-columns: 2.2fr 0.9fr 0.5fr 0.8fr 0.7fr 0.8fr 0.9fr 0.6fr 24px;
+  grid-template-columns: 2.0fr 0.85fr 0.5fr 0.7fr 0.7fr 0.8fr 0.8fr 0.7fr 0.7fr 24px;
   gap: 14px;
   padding: 14px 0;
   align-items: center;
   border-bottom: 1px solid var(--vellum-05);
   font-family: var(--font-body); font-size: 13.5px;
+  min-width: 820px;
 }
 .pos-row.expandable { cursor: pointer; transition: background var(--dur-quick) var(--ease); }
 .pos-row.expandable:hover { background: rgba(232, 228, 216, 0.025); }
@@ -1342,9 +1356,9 @@ button { font: inherit; }
    in this bucket matches reality. */
 .calib-bar > .calib-mid {
   position: absolute;
-  top: -3px; bottom: -3px;
-  width: 1px;
-  background: var(--vellum-30, rgba(232, 228, 216, 0.30));
+  top: -4px; bottom: -4px;
+  width: 2px;
+  background: var(--vellum-60);
   pointer-events: none;
 }
 /* The thicker vertical pip at Delfi's average confidence in this
@@ -1362,6 +1376,28 @@ button { font: inherit; }
 .calib-delta-pos  { color: var(--teal); }
 .calib-delta-neg  { color: var(--ember); }
 .calib-delta-zero { color: var(--vellum-60); }
+
+/* Scale row above the calibration table - reuses the same 5-column
+   grid as .calib-bin/.calib-header so the labels under the third
+   cell (the win-rate bar column) line up with the actual ticks. */
+.calib-scale {
+  display: grid;
+  grid-template-columns: 100px 80px 1fr 60px 120px;
+  gap: 12px;
+  padding: 6px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--vellum-40);
+}
+.calib-scale-track {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+}
+.calib-scale-track > span {
+  flex: 0 0 auto;
+}
 
 /* ── Archetype-card per-archetype band controls ───────────────────── */
 .archetype-bands-row {
