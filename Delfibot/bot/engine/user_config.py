@@ -847,6 +847,68 @@ def ensure_default_user_config() -> None:
                             f"global band(s) to {len(ARCHETYPES)} archetypes",
                             file=sys.stderr,
                         )
+
+            # ── Fix-up migration: clear the broken left-only band pattern ──
+            # Earlier today's migration mis-mapped legacy
+            # `min_market_favourite_price` to a left-only band set
+            # [[0.0,0.1] ... [(N-1)*0.1, N*0.1]] which blocked EVERY
+            # NO-favoured market plus the weak YES band - effectively
+            # making the bot YES-only. The correct symmetric middle-band
+            # set is now produced by the corrected migration in
+            # db/models.py, but rows already migrated need to be fixed
+            # here.
+            #
+            # Detection: every archetype's bands are identical AND the
+            # first band is [0.0, 0.1] AND the bands form a consecutive
+            # run starting at 0.0. That's the exact broken-migration
+            # signature; manual user edits would not produce it.
+            #
+            # Action: clear the per-archetype bands entirely. The user
+            # gets a clean slate to reconfigure from the Risk page.
+            row = conn.execute(text(
+                "SELECT archetype_skip_market_price_bands "
+                "FROM user_config WHERE user_id = :uid"
+            ), {"uid": DEFAULT_USER_ID}).fetchone()
+            if row is not None and row[0]:
+                try:
+                    arch_dict = json.loads(row[0])
+                except (TypeError, ValueError):
+                    arch_dict = None
+                if isinstance(arch_dict, dict) and arch_dict:
+                    # Pull the first archetype's band list as a reference
+                    # set; we want every archetype to match this exactly.
+                    sample = next(iter(arch_dict.values()))
+                    def _is_broken_left_only(bands):
+                        if not isinstance(bands, list) or len(bands) < 1:
+                            return False
+                        if not all(
+                            isinstance(p, list) and len(p) == 2
+                            for p in bands
+                        ):
+                            return False
+                        # Must be consecutive 10pp buckets starting at 0.0.
+                        for i, (lo, hi) in enumerate(bands):
+                            expected_lo = i * 0.10
+                            expected_hi = expected_lo + 0.10
+                            if abs(lo - expected_lo) > 1e-6:
+                                return False
+                            if abs(hi - expected_hi) > 1e-6:
+                                return False
+                        return True
+                    if _is_broken_left_only(sample) and all(
+                        bands == sample for bands in arch_dict.values()
+                    ):
+                        conn.execute(text(
+                            "UPDATE user_config "
+                            "SET archetype_skip_market_price_bands = '{}' "
+                            "WHERE user_id = :uid"
+                        ), {"uid": DEFAULT_USER_ID})
+                        print(
+                            f"[user_config] cleared broken left-only "
+                            f"band migration on {len(arch_dict)} "
+                            f"archetypes (was [{len(sample)} bands])",
+                            file=sys.stderr,
+                        )
     except Exception as exc:
         print(f"[user_config] ensure_default failed: {exc}", file=sys.stderr)
 

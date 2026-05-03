@@ -759,8 +759,10 @@ function ArchetypeCard({
       {bandsOpen && (
         <div className="archetype-bands-panel">
           <p className="archetype-bands-help">
-            Skip bands only when a market matches this archetype. Adds to
-            the global Price band filter; doesn't replace it.
+            Toggle off any 10pp band Delfi should skip on {a.label}{" "}
+            markets. 0-50 means market favours NO; 50-100 means YES. A
+            band disabled here only applies to {a.label}; other
+            archetypes are unaffected.
           </p>
           <div className="price-band-row">
             {PRICE_BANDS.slice(0, 5).map(([lo, hi]) => {

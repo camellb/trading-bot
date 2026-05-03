@@ -1402,6 +1402,21 @@ button { font: inherit; }
   color: var(--vellum-60);
   line-height: 1.5;
 }
+/* Tighter pill layout when the band row lives inside an archetype card.
+   The card is narrower than the dedicated Risk page panel and we want
+   all 10 buckets visible without odd 4-3-2 wrapping. */
+.archetype-bands-panel .price-band-row {
+  gap: 6px;
+}
+.archetype-bands-panel .price-band {
+  min-width: 50px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+.archetype-bands-panel .price-band-divider {
+  height: 18px;
+  margin: 0 2px;
+}
 
 /* ── Price band filter (Risk page) ─────────────────────────────────── */
 .price-band-row {

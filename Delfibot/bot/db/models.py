@@ -540,12 +540,20 @@ def create_all_tables() -> None:
                 "ALTER TABLE user_config ADD COLUMN "
                 "skip_market_price_bands TEXT"
             ))
-            # One-shot migration: if the row had a legacy floor set, fold
-            # it into the equivalent list of 10pp-aligned skip bands so
-            # the gate keeps behaving the same after the cutover. A floor
-            # of f rounds UP to the nearest 0.10 boundary, then every
-            # 10pp bucket below that boundary on both sides of 0.50 is
-            # disabled. e.g. min=0.60 -> [[0.40,0.50],[0.50,0.60]].
+            # One-shot migration: legacy `min_market_favourite_price`
+            # floor -> equivalent skip bands.
+            #
+            # SEMANTICS: min_favourite_price = f means "skip markets
+            # where max(p, 1-p) < f" - i.e. the COIN-FLIP middle band
+            # [1-f, f] in raw market_price_yes space. This rule is
+            # SYMMETRIC: a NO bet at market_p_yes=0.30 has favourite
+            # price 0.70 and should be ALLOWED at f=0.60, not skipped.
+            #
+            # Algorithm: round f UP to nearest 0.10 (0.55 -> 0.60),
+            # then disable every 10pp bucket whose [lo, hi) range
+            # falls entirely inside the symmetric middle [1-f, f].
+            #   f=0.60 -> middle [0.40, 0.60] -> [[0.40,0.50],[0.50,0.60]]
+            #   f=0.70 -> middle [0.30, 0.70] -> 4 buckets [0.30..0.70]
             rows = conn.execute(sa_text(
                 "SELECT user_id, min_market_favourite_price "
                 "FROM user_config "
@@ -554,14 +562,15 @@ def create_all_tables() -> None:
             )).fetchall()
             for r in rows:
                 uid, floor = r[0], float(r[1])
-                # Round up to nearest 0.10 (0.55 -> 0.60, 0.65 -> 0.70).
-                # Operate in integer percent space to avoid float drift
-                # (0.6 in float is actually 0.5999... and would round to
-                # 0.50 with naive ceil).
-                pct  = max(50, min(100, int(round(floor * 100))))
-                stop = ((pct + 9) // 10) * 10
+                # Round UP to nearest 0.10 in integer-percent space to
+                # avoid float drift (0.6 stored as 0.5999... naively
+                # rounds to 0.50).
+                pct      = max(50, min(100, int(round(floor * 100))))
+                fav_pct  = ((pct + 9) // 10) * 10   # 60, 70, 80, ...
+                lo_bound = 100 - fav_pct            # 40, 30, 20, ...
+                hi_bound = fav_pct
                 bands = []
-                for lo_pct in range(0, stop, 10):
+                for lo_pct in range(lo_bound, hi_bound, 10):
                     bands.append([lo_pct / 100.0, (lo_pct + 10) / 100.0])
                 import json as _json
                 conn.execute(sa_text(
