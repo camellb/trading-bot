@@ -343,13 +343,22 @@ user_config = Table(
     Column("min_days_to_resolution", Integer, nullable=True),
     Column("max_days_to_resolution", Integer, nullable=True),
 
-    # Minimum market favourite price required to enter. Filters out
-    # slim-favourite markets where the spread + variance eat the
-    # edge. NULL = no constraint (frontend exposes 0 as sentinel).
-    # Empirically the 0.55-0.60 entry band lost -58% ROI on cost
-    # over the first 5 trading days; setting this to 0.60 excludes
-    # that band.
+    # Legacy: minimum market favourite price required to enter. Kept
+    # in the schema for backward compatibility (rolling-upgrade DBs
+    # will still have a value here) but no longer read by the engine.
+    # Superseded by `skip_market_price_bands` below, which expresses
+    # the same gate as a list of disabled bands and supports asymmetric
+    # cuts (e.g. block 90-100% YES favourites without blocking 0-10%
+    # NO favourites).
     Column("min_market_favourite_price", Float, nullable=True),
+
+    # Disabled market-price bands, JSON-encoded list of [lo, hi] pairs
+    # in market_price_yes space (0..1). The sizer skips any market
+    # whose `market_price_yes` falls into any band. NULL or empty list
+    # = no bands disabled (default). UI exposes 10 10pp toggles in
+    # [0.0, 1.0]; the schema accepts arbitrary bands so a future UI
+    # could go finer.
+    Column("skip_market_price_bands", Text, nullable=True),
 
     # Mode + bankroll. Mode: 'simulation' | 'live'.
     Column("mode",            Text, nullable=False,
@@ -518,6 +527,40 @@ def create_all_tables() -> None:
                 "ALTER TABLE user_config ADD COLUMN "
                 "min_market_favourite_price REAL"
             ))
+        if "skip_market_price_bands" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "skip_market_price_bands TEXT"
+            ))
+            # One-shot migration: if the row had a legacy floor set, fold
+            # it into the equivalent list of 10pp-aligned skip bands so
+            # the gate keeps behaving the same after the cutover. A floor
+            # of f rounds UP to the nearest 0.10 boundary, then every
+            # 10pp bucket below that boundary on both sides of 0.50 is
+            # disabled. e.g. min=0.60 -> [[0.40,0.50],[0.50,0.60]].
+            rows = conn.execute(sa_text(
+                "SELECT user_id, min_market_favourite_price "
+                "FROM user_config "
+                "WHERE min_market_favourite_price IS NOT NULL "
+                "  AND skip_market_price_bands IS NULL"
+            )).fetchall()
+            for r in rows:
+                uid, floor = r[0], float(r[1])
+                # Round up to nearest 0.10 (0.55 -> 0.60, 0.65 -> 0.70).
+                # Operate in integer percent space to avoid float drift
+                # (0.6 in float is actually 0.5999... and would round to
+                # 0.50 with naive ceil).
+                pct  = max(50, min(100, int(round(floor * 100))))
+                stop = ((pct + 9) // 10) * 10
+                bands = []
+                for lo_pct in range(0, stop, 10):
+                    bands.append([lo_pct / 100.0, (lo_pct + 10) / 100.0])
+                import json as _json
+                conn.execute(sa_text(
+                    "UPDATE user_config "
+                    "SET skip_market_price_bands = :v "
+                    "WHERE user_id = :uid"
+                ), {"v": _json.dumps(bands), "uid": uid})
 
         # Seed the singleton row if absent. Local install always has
         # exactly one row; doing this here means the engine modules can

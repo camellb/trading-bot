@@ -1360,6 +1360,53 @@ button { font: inherit; }
 .calib-delta-neg  { color: var(--ember); }
 .calib-delta-zero { color: var(--vellum-60); }
 
+/* ── Price band filter (Risk page) ─────────────────────────────────── */
+.price-band-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.price-band {
+  flex: 0 0 auto;
+  min-width: 64px;
+  padding: 8px 12px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  background: var(--gold-dim);
+  color: var(--gold);
+  border: 1px solid var(--gold-line);
+}
+.price-band.on {
+  background: var(--gold-dim);
+  color: var(--gold);
+  border-color: var(--gold-line);
+}
+.price-band.off {
+  background: var(--surface-3);
+  color: var(--vellum-40);
+  border-color: var(--vellum-10);
+  text-decoration: line-through;
+}
+.price-band:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+/* Vertical separator between the NO-favoured (0-50) and YES-favoured
+   (50-100) sides of the price axis. Reads as "this row is split into
+   two halves" without needing labels above each cluster. */
+.price-band-divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 24px;
+  background: var(--gold-line);
+  margin: 0 4px;
+}
+
 .brier-spark svg { display: block; width: 100%; }
 .brier-foot      { color: var(--vellum-60); font-size: 12px; margin: 6px 0 0; font-family: var(--font-mono); }
 

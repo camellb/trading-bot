@@ -125,19 +125,25 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
-    # ── Gate: minimum favourite price ───────────────────────────────────────
-    # Per-user floor for how strong the market's favourite has to be
-    # before we'll trade. Filters out coin-flip-grade markets (price
-    # bands ~0.50-0.60) where spread + variance erode profitability.
-    # User-configurable; None = no floor.
-    min_fav = getattr(user_config, "min_market_favourite_price", None)
-    if min_fav is not None and p_win < float(min_fav):
-        return _skip(
-            cp, cf,
-            f"market favourite price {p_win:.2f} below user floor "
-            f"{float(min_fav):.2f}",
-            side=side, entry=entry, p_win=p_win,
-        )
+    # ── Gate: disabled market-price bands ───────────────────────────────────
+    # Per-user list of (lo, hi) bands in market_price_yes space; the
+    # bot skips any market whose price falls in any band. Replaces the
+    # V0 single-floor `min_market_favourite_price` gate. Empty list =
+    # no bands disabled. Bands are matched on raw market_price_yes
+    # (not favourite price) so the user can disable e.g. just YES
+    # extreme favourites without also blocking the symmetric NO side.
+    skip_bands = getattr(user_config, "skip_market_price_bands", ()) or ()
+    for lo, hi in skip_bands:
+        # Half-open interval [lo, hi). User-defined bands always have
+        # hi <= 1.0; a market_price_yes of exactly 1.0 (only possible
+        # post-resolution, never at entry) is allowed through.
+        if float(lo) <= market_p_yes < float(hi):
+            return _skip(
+                cp, cf,
+                f"market price {market_p_yes:.2f} inside disabled "
+                f"{float(lo):.2f}-{float(hi):.2f} band",
+                side=side, entry=entry, p_win=p_win,
+            )
 
     # Entry-price sanity - can't compute shares without a positive ask.
     if entry <= 0:

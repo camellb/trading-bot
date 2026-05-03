@@ -61,58 +61,110 @@ export default function Risk({ config, onSaved }: Props) {
 
       <RiskPanel config={config} onSaved={onSaved} />
       <ResolutionWindowPanel config={config} onSaved={onSaved} />
-      <MinFavouritePricePanel config={config} onSaved={onSaved} />
+      <PriceBandPanel config={config} onSaved={onSaved} />
       <ArchetypePanel onSaved={onSaved} />
     </div>
   );
 }
 
-// ── Minimum favourite price ──────────────────────────────────────────────
+// ── Price band filter ────────────────────────────────────────────────────
+//
+// The user enables/disables 10 10pp buckets along the raw market_price_yes
+// axis (0-10, 10-20, ..., 90-100). 0-50 is "market favours NO"; 50-100 is
+// "market favours YES". Disabling a band means the bot skips any market
+// whose price falls in it. Replaces the V0 single-floor min favourite
+// price control - more flexible (asymmetric cuts possible) and matches
+// how the audit data clusters by 10pp bucket.
 
-function MinFavouritePricePanel({
+const PRICE_BAND_COUNT = 10;
+const PRICE_BAND_STEP  = 0.10;
+
+// Build the canonical 10 buckets [0.00,0.10), [0.10,0.20), ..., [0.90,1.00].
+const PRICE_BANDS: ReadonlyArray<readonly [number, number]> = Array.from(
+  { length: PRICE_BAND_COUNT },
+  (_, i) => [i * PRICE_BAND_STEP, (i + 1) * PRICE_BAND_STEP] as const,
+);
+
+function bandLabel(lo: number, hi: number): string {
+  return `${Math.round(lo * 100)}-${Math.round(hi * 100)}`;
+}
+
+function bandKey(lo: number, hi: number): string {
+  // Avoid floating-point equality games. Lo*100 rounded is unique per band.
+  return `${Math.round(lo * 100)}_${Math.round(hi * 100)}`;
+}
+
+function PriceBandPanel({
   config,
   onSaved,
 }: {
   config: ConfigShape | null;
   onSaved: () => void;
 }) {
-  const [value, setValue] = useState("");
+  // Set of disabled bucket keys (bandKey of [lo, hi]).
+  const [disabled, setDisabled] = useState<Set<string>>(new Set());
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Same one-shot sync as the other panels: read the persisted
-  // value once on first non-null arrival of `config`. Backend
-  // stores NULL = no constraint; surface that as 0 in the input
-  // so the user has one consistent sentinel.
+  // One-shot sync from persisted config. Storage shape:
+  // skip_market_price_bands: [[lo, hi], [lo, hi], ...] (floats 0-1).
+  // We accept any band that aligns to a 10pp bucket; out-of-grid bands
+  // (set by a future finer-grained UI or hand-edit) are silently ignored
+  // by the toggle row. For v1 the UI is canonical.
   const syncedRef = useRef(false);
   useEffect(() => {
     if (!config) return;
     if (syncedRef.current) return;
     syncedRef.current = true;
-    const v = (config as { min_market_favourite_price?: number | null }).min_market_favourite_price;
-    setValue(v != null ? String(Math.round(v * 100)) : "0");
+    const raw = (config as { skip_market_price_bands?: unknown })
+      .skip_market_price_bands;
+    if (!Array.isArray(raw)) return;
+    const next = new Set<string>();
+    for (const pair of raw) {
+      if (!Array.isArray(pair) || pair.length !== 2) continue;
+      const [lo, hi] = [Number(pair[0]), Number(pair[1])];
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
+      // Snap to nearest 10pp bucket - only mark if it's a recognised one.
+      const loPct = Math.round(lo * 100);
+      const hiPct = Math.round(hi * 100);
+      if (hiPct - loPct !== 10) continue;
+      if (loPct % 10 !== 0) continue;
+      if (loPct < 0 || hiPct > 100) continue;
+      next.add(`${loPct}_${hiPct}`);
+    }
+    setDisabled(next);
   }, [config]);
+
+  const toggle = (lo: number, hi: number) => {
+    setDisabled(prev => {
+      const next = new Set(prev);
+      const k = bandKey(lo, hi);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+    setMsg(null);
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setMsg(null);
     try {
-      const raw = value.trim();
-      const n = Number(raw === "" ? "0" : raw);
-      if (!Number.isFinite(n) || !Number.isInteger(n)) {
-        throw new Error("Must be a whole number percent (0 = no limit, 50-95 = floor).");
-      }
-      if (n !== 0 && (n < 50 || n > 95)) {
-        throw new Error("Must be 0 (no limit) or between 50 and 95 (percent).");
-      }
-      const fraction = n === 0 ? 0 : n / 100;
-      await api.updateConfig({ min_market_favourite_price: fraction });
+      const bands = PRICE_BANDS
+        .filter(([lo, hi]) => disabled.has(bandKey(lo, hi)))
+        // Round-trip through Math.round so we don't ship float drift
+        // like 0.30000000000000004 to the backend.
+        .map(([lo, hi]) => [
+          Math.round(lo * 100) / 100,
+          Math.round(hi * 100) / 100,
+        ]);
+      await api.updateConfig({ skip_market_price_bands: bands });
       setMsg({
         kind: "ok",
-        text: n === 0
-          ? "Saved. No floor on favourite price."
-          : `Saved. Will skip markets where favourite price < ${n}%.`,
+        text: bands.length === 0
+          ? "Saved. No bands disabled - bot will trade any market price."
+          : `Saved. Skipping ${bands.length} band${bands.length === 1 ? "" : "s"}.`,
       });
       onSaved();
     } catch (err) {
@@ -125,29 +177,68 @@ function MinFavouritePricePanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Minimum favourite price</h2>
-        <span className="panel-meta">% of $1, 0 = no limit</span>
+        <h2 className="panel-title">Price band filter</h2>
+        <span className="panel-meta">market price (YES probability)</span>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Skip markets where the market favourite is priced below this
-        threshold. The 0.50-0.60 price band has historically been a
-        net loser for the bot (spread + variance erode profitability
-        on coin-flip-grade markets). 60 is the empirical floor from
-        the 2026-05-03 audit.
+      <p
+        style={{
+          margin: "0 0 14px",
+          color: "var(--vellum-60)",
+          fontFamily: "var(--font-body)",
+          fontSize: 13,
+          lineHeight: 1.55,
+          maxWidth: "72ch",
+        }}
+      >
+        Disable bands the bot should not enter. 0-50 is markets where NO
+        is favoured; 50-100 is YES. Toggle any 10pp bucket off to skip
+        every market whose price lands inside it. The 2026-05-03 audit
+        found 50-60 was net negative; common starting point is to
+        disable 40-50 and 50-60 (coin-flip territory).
       </p>
       <form onSubmit={save}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
-          <NumField
-            label="Min favourite price (%)"
-            step="1"
-            range={[0, 95]}
-            value={value}
-            onChange={setValue}
-          />
+        <div className="price-band-row">
+          {PRICE_BANDS.slice(0, 5).map(([lo, hi]) => {
+            const k = bandKey(lo, hi);
+            const off = disabled.has(k);
+            return (
+              <button
+                type="button"
+                key={k}
+                onClick={() => toggle(lo, hi)}
+                className={off ? "price-band off" : "price-band on"}
+                aria-pressed={!off}
+                aria-label={
+                  `Band ${bandLabel(lo, hi)} percent: ${off ? "off" : "on"}`
+                }
+              >
+                {bandLabel(lo, hi)}
+              </button>
+            );
+          })}
+          <span className="price-band-divider" aria-hidden="true" />
+          {PRICE_BANDS.slice(5).map(([lo, hi]) => {
+            const k = bandKey(lo, hi);
+            const off = disabled.has(k);
+            return (
+              <button
+                type="button"
+                key={k}
+                onClick={() => toggle(lo, hi)}
+                className={off ? "price-band off" : "price-band on"}
+                aria-pressed={!off}
+                aria-label={
+                  `Band ${bandLabel(lo, hi)} percent: ${off ? "off" : "on"}`
+                }
+              >
+                {bandLabel(lo, hi)}
+              </button>
+            );
+          })}
         </div>
         <div className="form-actions" style={{ marginTop: 18 }}>
           <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save threshold"}
+            {busy ? "Saving..." : "Save bands"}
           </button>
           {msg && (
             <span className={msg.kind === "ok" ? "form-success" : "form-error"}>

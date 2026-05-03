@@ -86,12 +86,21 @@ class UserConfig:
     min_days_to_resolution:  Optional[int]     = None
     max_days_to_resolution:  Optional[int]     = None
 
-    # Minimum market-favourite price to enter. Filters out slim
-    # favourites where spread + variance eat the edge. None = no
-    # constraint. Frontend exposes 0 as the null sentinel.
-    # Empirical floor 0.60 from the 2026-05-03 audit (0.55-0.60
-    # band lost -58% ROI on cost).
-    min_market_favourite_price: Optional[float] = None
+    # Disabled market-price bands. Each element is a (lo, hi) pair in
+    # market_price_yes space (0..1). The sizer skips any market whose
+    # `market_price_yes` falls into any band. Empty tuple = no bands
+    # disabled (default).
+    #
+    # The UI exposes 10 10pp toggles (0-10, 10-20, ..., 90-100), so
+    # each disabled bucket adds one (lo, hi) pair like (0.40, 0.50).
+    # The schema accepts arbitrary bands so a finer UI could go to 5pp
+    # or arbitrary cuts later without a schema change.
+    #
+    # Supersedes the V0 single-floor `min_market_favourite_price`
+    # field (still in the DB schema for back-compat, no longer read).
+    # The 2026-05-03 audit's 0.55-0.60 underperformance is expressible
+    # here as the bucket pair (0.40, 0.50) and (0.50, 0.60).
+    skip_market_price_bands: Tuple[Tuple[float, float], ...] = field(default_factory=tuple)
 
     # Execution state.
     mode:                  Optional[str]   = None    # 'simulation' | 'live'
@@ -166,12 +175,12 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     # validator runs.
     "min_days_to_resolution":        (1, 30),
     "max_days_to_resolution":        (1, 30),
-    # Min favourite price floor: 0.50 lets in any favourite,
-    # 0.95 essentially blocks all but lock-grade favourites.
-    # Frontend's 0 sentinel translates to None (no constraint)
-    # before bounds check.
-    "min_market_favourite_price":    (0.50, 0.95),
 }
+
+# Band-shaped fields. Stored as JSON-encoded list of [lo, hi] float
+# pairs in [0, 1]. Values are validated piecewise (each band must
+# satisfy 0 <= lo < hi <= 1) rather than via USER_CONFIG_BOUNDS.
+USER_CONFIG_BAND_FIELDS: Tuple[str, ...] = ("skip_market_price_bands",)
 
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = ("archetype_skip_list",)
 USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = ("archetype_stake_multipliers",)
@@ -180,7 +189,6 @@ USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
     "cost_assumption_override",
     "min_days_to_resolution",
     "max_days_to_resolution",
-    "min_market_favourite_price",
 )
 
 NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
@@ -258,7 +266,6 @@ _CASTERS: dict[str, type] = {
     "starting_cash":                 float,
     "min_days_to_resolution":        int,
     "max_days_to_resolution":        int,
-    "min_market_favourite_price":    float,
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
@@ -284,7 +291,7 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "telegram_chat_id",
     "min_days_to_resolution",
     "max_days_to_resolution",
-    "min_market_favourite_price",
+    "skip_market_price_bands",
 })
 
 
@@ -330,6 +337,71 @@ def _cast_notification_prefs(raw) -> Dict[str, bool]:
     return clean
 
 
+def _cast_skip_market_price_bands(raw) -> Tuple[Tuple[float, float], ...]:
+    """Coerce arbitrary input into a tuple of (lo, hi) float pairs.
+
+    Accepts:
+      - None or "" -> no bands (empty tuple)
+      - JSON string like '[[0.4, 0.5], [0.5, 0.6]]'
+      - Python list/tuple of pair-likes [[lo, hi], ...]
+      - A single pair like [0.4, 0.5] -> wrapped
+    Each pair is normalised to (min, max) with both values clamped to
+    [0, 1]. Invalid pairs (lo >= hi after clamping, non-numeric, wrong
+    arity) raise ValueError so the persistence path rejects garbage.
+    Bands are sorted by lo then deduplicated so the stored representation
+    is stable across saves.
+    """
+    if raw is None or raw == "":
+        return tuple()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "skip_market_price_bands must be JSON-encoded "
+                "list of [lo, hi] pairs"
+            ) from exc
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(
+            f"skip_market_price_bands must be a list of pairs, "
+            f"got {type(raw).__name__}"
+        )
+    # Allow a single pair like [0.4, 0.5] by wrapping.
+    if (
+        len(raw) == 2
+        and all(isinstance(x, (int, float)) for x in raw)
+    ):
+        raw = [raw]
+    out: list[Tuple[float, float]] = []
+    for i, pair in enumerate(raw):
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError(
+                f"skip_market_price_bands[{i}] must be a [lo, hi] pair"
+            )
+        try:
+            lo = float(pair[0])
+            hi = float(pair[1])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"skip_market_price_bands[{i}] values must be numeric"
+            ) from exc
+        # Clamp to [0, 1] then ensure lo < hi.
+        lo = max(0.0, min(1.0, lo))
+        hi = max(0.0, min(1.0, hi))
+        if lo >= hi:
+            raise ValueError(
+                f"skip_market_price_bands[{i}]: lo ({lo}) must be < hi ({hi})"
+            )
+        out.append((lo, hi))
+    # Stable order, dedup identical pairs.
+    out.sort()
+    deduped: list[Tuple[float, float]] = []
+    for p in out:
+        if not deduped or deduped[-1] != p:
+            deduped.append(p)
+    return tuple(deduped)
+
+
 def _cast_archetype_multipliers(raw) -> Dict[str, float]:
     if raw is None or raw == "":
         return {}
@@ -367,6 +439,8 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
         return _cast_notification_prefs(raw)
     if key in USER_CONFIG_LIST_FIELDS:
         return _cast_list(raw)
+    if key in USER_CONFIG_BAND_FIELDS:
+        return _cast_skip_market_price_bands(raw)
     if key in USER_CONFIG_NULLABLE_FIELDS and _is_unset(raw):
         return None
     # 0 is the explicit "no constraint" sentinel for the time-to-
@@ -380,19 +454,6 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
         if n is None or n == 0:
             return None
         return n
-    # Same 0 -> None convention for the favourite-price gate. The
-    # bounds (0.50..0.95) wouldn't accept 0 anyway; 0 is the UI
-    # sentinel meaning "off".
-    if key == "min_market_favourite_price":
-        if raw is None or raw == "":
-            return None
-        try:
-            f = float(raw)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"{key} must be a number") from exc
-        if f == 0.0:
-            return None
-        return f
     if key == "mode":
         if raw not in ("simulation", "live"):
             raise ValueError("mode must be 'simulation' or 'live'")
@@ -448,6 +509,21 @@ def validate_user_config_value(key: str, value) -> None:
     if key in USER_CONFIG_LIST_FIELDS:
         if not isinstance(value, tuple):
             raise ValueError(f"{key} must be a tuple of strings")
+        return
+    if key in USER_CONFIG_BAND_FIELDS:
+        # Already cast to a tuple of (lo, hi) tuples by the caster.
+        # Re-validate piecewise so a direct-call path (not going
+        # through cast_value) still gets the same bounds check.
+        if not isinstance(value, tuple):
+            raise ValueError(f"{key} must be a tuple of (lo, hi) pairs")
+        for i, pair in enumerate(value):
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise ValueError(f"{key}[{i}] must be a (lo, hi) pair")
+            lo, hi = pair
+            if not (0.0 <= lo < hi <= 1.0):
+                raise ValueError(
+                    f"{key}[{i}]=({lo},{hi}) must satisfy 0 <= lo < hi <= 1"
+                )
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
@@ -530,6 +606,36 @@ def _decode_archetype_multipliers(raw) -> Dict[str, float]:
             continue
         out[key] = max(lo, min(hi, f))
     return out
+
+
+def _decode_skip_market_price_bands(raw) -> Tuple[Tuple[float, float], ...]:
+    """Read path mirror of _cast_skip_market_price_bands. Lenient on
+    bad rows so a corrupt cell doesn't take the whole config offline -
+    the caster on the write path is the strict gate."""
+    if raw is None or raw == "":
+        return tuple()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return tuple()
+    if not isinstance(raw, (list, tuple)):
+        return tuple()
+    out: list[Tuple[float, float]] = []
+    for pair in raw:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        try:
+            lo, hi = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError):
+            continue
+        lo = max(0.0, min(1.0, lo))
+        hi = max(0.0, min(1.0, hi))
+        if lo >= hi:
+            continue
+        out.append((lo, hi))
+    out.sort()
+    return tuple(out)
 
 
 def _encode_csv(value) -> Optional[str]:
@@ -626,7 +732,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       bot_enabled, archetype_stake_multipliers, "
                 "       notification_prefs, telegram_chat_id, "
                 "       min_days_to_resolution, max_days_to_resolution, "
-                "       min_market_favourite_price "
+                "       skip_market_price_bands "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -650,7 +756,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             telegram_chat_id              = (str(row[15]).strip() if row[15] is not None and str(row[15]).strip() else None),
             min_days_to_resolution        = (int(row[16]) if row[16] is not None else None),
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
-            min_market_favourite_price    = (float(row[18]) if row[18] is not None else None),
+            skip_market_price_bands       = _decode_skip_market_price_bands(row[18]),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -687,6 +793,11 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
     for k, v in clean.items():
         if k in USER_CONFIG_LIST_FIELDS:
             params[k] = _encode_csv(v)
+        elif k in USER_CONFIG_BAND_FIELDS:
+            # Tuple of (lo, hi) tuples -> JSON-encoded list of [lo, hi].
+            # Empty tuple persists as JSON empty list, which the read
+            # decoder treats identically to NULL (no bands disabled).
+            params[k] = json.dumps([list(p) for p in (v or ())])
         elif k in json_fields:
             params[k] = json.dumps(v or {})
         else:
