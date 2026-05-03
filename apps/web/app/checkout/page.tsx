@@ -121,7 +121,7 @@ export default function CheckoutPage() {
             <div className="checkout-summary-eyebrow">Order</div>
             <h1 className="checkout-summary-title">Delfi</h1>
             <p className="checkout-summary-desc">
-              Autonomous Polymarket trader. Runs on your machine, 24/7.
+              Autonomous and self-improving bot for Polymarket
             </p>
           </div>
 
@@ -130,15 +130,19 @@ export default function CheckoutPage() {
             <ol className="checkout-next-steps">
               <li>
                 <span className="checkout-next-num">1</span>
-                License key in your inbox.
+                You will receive a license key to your email
               </li>
               <li>
                 <span className="checkout-next-num">2</span>
-                Download Delfi for macOS or Windows.
+                Download Delfi on your computer
               </li>
               <li>
                 <span className="checkout-next-num">3</span>
-                Paste it on first launch.
+                Activate using your license
+              </li>
+              <li>
+                <span className="checkout-next-num">4</span>
+                Connect your credentials and start trading
               </li>
             </ol>
           </div>
