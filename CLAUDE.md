@@ -136,22 +136,38 @@ Follow the market. Use the forecast as a filter. Measure the result. Improve.
 
 As this conversation grows, older context gets compressed and you lose details. Counteract this by externalising everything important to Obsidian so you can re-read it whenever you feel uncertain about context.
 
+The vault lives at `/Users/macmini/Documents/Obsidian Vault/Delfi/`. Read `START_HERE.md` first on any new session - it indexes the rest. The vault is your operational brain. The repo `CLAUDE.md` (this file) is the doctrine source-of-truth in git. The auto-memory at `~/.claude/projects/.../memory/MEMORY.md` is the cross-session rule index. These three should agree; if they conflict, the most recent date wins and you update the other two.
+
+### Folder routing (where things go)
+
+- `00_Core/` - rules that don't move. Doctrine, tech stack. Edit cautiously.
+- `10_State/current.md` - single source of truth for "what am I doing right now". Always current.
+- `20_Sessions/YYYY-MM-DD.md` - append-only daily log. One file per day. Every decision and shipped change.
+- `30_Todos/open.md` - prioritised todo list with P0/P1/P2/tech-debt/parked.
+- `40_Decisions/` - one file per architecture decision. Captures: what, why, alternatives, date.
+- `50_Feedback/` - one file per user-enforced rule or correction. The rules that, when violated, cost trust.
+- `60_Playbook/` - repeatable how-tos. SQLite query templates, gamma-API quirks, build commands.
+- `99_Scratch/` - WIP, half-formed ideas, raw outputs. No discipline expected here.
+
 ### WRITE to Obsidian when
 
-- You make a decision (any decision).
-- You discover something about the codebase.
-- The user tells you something about their preferences, constraints, or goals.
-- Something doesn't work and you figure out why.
-- You complete a task.
-- You learn what files do what.
+- You make a decision (any decision) -> append to today's `20_Sessions/YYYY-MM-DD.md`. Architectural decisions also get a standalone file in `40_Decisions/`.
+- You discover something about the codebase -> session log + (if reusable) `60_Playbook/`.
+- The user tells you something about their preferences, constraints, or goals -> new file in `50_Feedback/` and one-line link in `00_Core/doctrine.md`.
+- Something doesn't work and you figure out why -> session log + (if recurring failure mode) `60_Playbook/`.
+- You complete a task -> log line in today's session, mark item done in `30_Todos/open.md`.
+- You learn what files do what -> `00_Core/tech_stack.md`.
+- Active focus shifts -> update `10_State/current.md`.
 
 ### READ from Obsidian when
 
-- You're about to ask the user something (check if you already know).
-- You feel uncertain about context ("wait, why are we doing this?").
-- Starting a new task.
-- Something feels like it might conflict with an earlier decision.
+- You're about to ask the user something - search `50_Feedback/` and `40_Decisions/` first.
+- You feel uncertain about context ("wait, why are we doing this?") - check `10_State/current.md` and the most recent session log.
+- Starting a new task - read `00_Core/doctrine.md` if it touches the sizer/forecaster/risk/copy.
+- Something feels like it might conflict with an earlier decision - search `40_Decisions/`.
+- About to write user-facing copy - read `50_Feedback/no_filler_subheadlines.md`.
+- About to recommend architecture that touches funds/keys/credentials - read `50_Feedback/custody_question_always_ask.md`.
 
 ### The rule
 
-If losing a piece of information mid-conversation would cause you to do something wrong or redundant, write it to Obsidian now, before it gets compressed out.
+If losing a piece of information mid-conversation would cause you to do something wrong or redundant, write it to Obsidian now, before it gets compressed out. Literally every meaningful operation should end with a vault touch.

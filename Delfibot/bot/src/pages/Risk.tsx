@@ -131,9 +131,9 @@ function MinFavouritePricePanel({
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Skip markets where the market favourite is priced below this
         threshold. The 0.50-0.60 price band has historically been a
-        net loser for the bot (spread + variance eat the edge on
-        coin-flip-grade markets). 60 is the empirical floor from the
-        2026-05-03 audit.
+        net loser for the bot (spread + variance erode profitability
+        on coin-flip-grade markets). 60 is the empirical floor from
+        the 2026-05-03 audit.
       </p>
       <form onSubmit={save}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>

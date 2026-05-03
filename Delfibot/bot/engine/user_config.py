@@ -862,7 +862,7 @@ def _keyring_get(key: str) -> Optional[str]:
 
 def _keyring_set(key: str, value: Optional[str]) -> None:
     """Write/clear a secret. Always file-backed. Best-effort wipes the
-    legacy keychain entry too so a stale value can't shadow the file."""
+    legacy keychain entry too so a stale value can't override the file."""
     secrets = _read_secrets()
     if value is None or value == "":
         secrets.pop(key, None)

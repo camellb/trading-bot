@@ -128,7 +128,7 @@ def size_position(
     # ── Gate: minimum favourite price ───────────────────────────────────────
     # Per-user floor for how strong the market's favourite has to be
     # before we'll trade. Filters out coin-flip-grade markets (price
-    # bands ~0.50-0.60) where spread + variance eat the edge.
+    # bands ~0.50-0.60) where spread + variance erode profitability.
     # User-configurable; None = no floor.
     min_fav = getattr(user_config, "min_market_favourite_price", None)
     if min_fav is not None and p_win < float(min_fav):

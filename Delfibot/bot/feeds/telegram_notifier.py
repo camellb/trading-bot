@@ -184,7 +184,7 @@ def notify(
 # ── Inbound commands ────────────────────────────────────────────────────────
 
 # All user-facing copy is rendered via feeds.telegram_messages so
-# Telegram output matches the SaaS Messages Spec v1 verbatim. Local
+# Telegram output matches the Messages Spec v1 verbatim. Local
 # import to keep module import time small (and avoid a circular at
 # module-load if telegram_messages ever grows engine deps).
 def _tm():
@@ -205,7 +205,7 @@ def _handle_start(token: str, chat_id: str) -> None:
 
 
 def _handle_status(token: str, chat_id: str) -> None:
-    """Pull portfolio stats + render via tm.status (SaaS-spec copy)."""
+    """Pull portfolio stats + render via tm.status (Messages Spec v1)."""
     try:
         from engine.notifier_state import is_trading_paused
         from execution.pm_executor import PMExecutor
@@ -276,10 +276,10 @@ def _handle_resume(token: str, chat_id: str) -> None:
 def _handle_apply(token: str, chat_id: str) -> None:
     """Apply every pending suggestion in the learning queue at once.
 
-    Same semantics as the SaaS /apply: users almost always want every
-    proposal from the most recent review, applying one row at a time
-    is tedious. The dashboard still has per-row Apply/Skip buttons for
-    finer control.
+    Apply-all matches the Intelligence page's bulk-apply: users almost
+    always want every proposal from the most recent review, applying
+    one row at a time is tedious. The Intelligence page still has
+    per-row Apply/Skip buttons for finer control.
     """
     try:
         from engine.learning_cadence import apply_all_pending_suggestions
@@ -307,7 +307,7 @@ def _handle_apply(token: str, chat_id: str) -> None:
 
 
 def _handle_reject(token: str, chat_id: str) -> None:
-    """Skip the oldest pending suggestion. Same SaaS copy."""
+    """Skip the oldest pending suggestion. Messages Spec v1."""
     try:
         from engine.learning_cadence import skip_next_pending_suggestion
         result = skip_next_pending_suggestion(

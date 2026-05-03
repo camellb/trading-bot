@@ -171,7 +171,7 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
                            "description": "Generic 'will X cross $Y by Z' markets that aren't crypto/stocks/macro/FX."},
     "activity_count":     {"label": "Activity count",
                            "description": "Counts of public activity (executive orders, posts, hires, layoffs) by date."},
-    "binary_event":       {"label": "Other event",
+    "binary_event":       {"label": "Other events",
                            "description": "Yes/no markets that don't fit the categories above."},
 }
 

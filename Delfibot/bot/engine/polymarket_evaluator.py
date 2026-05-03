@@ -108,8 +108,23 @@ def _system_prompt() -> str:
         f"'because of the above', no references to the long reasoning. Lead "
         f"with the driver, then the direction. Example: 'Incumbent polls +6 "
         f"nationally with 3 weeks left and no debate scheduled; YES favored.' "
+        f"DIRECTIONAL SELF-CHECK: After writing your reasoning, look at "
+        f"it again as if a stranger had to call the trade. Which side "
+        f"does the prose make a stronger case for? "
+        f"Set `reasoning_direction` to that side ('YES' or 'NO'). "
+        f"Then ensure your `probability_yes` matches: "
+        f"reasoning_direction='YES' MUST mean probability_yes >= 0.50, "
+        f"reasoning_direction='NO'  MUST mean probability_yes <= 0.50. "
+        f"If your prose is genuinely balanced, set reasoning_direction to "
+        f"the SAME side as your probability_yes (i.e. 'YES' if >=0.50, "
+        f"else 'NO') and lower confidence to <=0.4. "
+        f"WHY THIS MATTERS: a forecaster whose reasoning argues YES but "
+        f"whose probability says NO is broken on that call. The bot will "
+        f"reject inconsistent outputs entirely and skip the trade rather "
+        f"than risk acting on incoherent reasoning. "
         f"Output STRICT JSON only - no markdown fence, no prose before/after. "
         f"Schema: {{\"probability_yes\":0..1, \"confidence\":0..1, "
+        f"\"reasoning_direction\":\"YES|NO\", "
         f"\"category\":\"macro|geopolitics|politics|crypto|tech|sports|entertainment|science|other\", "
         f"\"key_factors\":[\"short factor\",...], "
         f"\"reasoning_short\":\"<=140 char one-sentence summary\", "
@@ -224,9 +239,47 @@ class PolymarketEvaluator:
         reasoning_short_raw = str(obj.get("reasoning_short") or "").strip()
         if len(reasoning_short_raw) > 140:
             reasoning_short_raw = reasoning_short_raw[:137].rstrip() + "..."
+
+        # ── Reasoning-vs-probability consistency gate ───────────────────
+        # The forecaster has a documented failure mode where the prose
+        # argues one side and the probability lands on the other. Real
+        # case from 2026-05-02: BTC reasoning argued strongly for YES
+        # ("price action strongly supports this possibility... could
+        # easily push through $79,000") but probability_yes=0.25,
+        # leading to a $-15.62 NO bet that lost when BTC reached $79k.
+        #
+        # Fix: require the model to output a `reasoning_direction`
+        # field declaring which side the prose argues for. If that
+        # disagrees with the probability_yes >= 0.50 rule, the
+        # evaluation is rejected entirely - we'd rather skip than act
+        # on incoherent reasoning. The downstream analyst already
+        # treats `None` evaluations as SKIP_INVALID.
+        prob_yes = _clamp01(obj.get("probability_yes"), 0.5)
+        rd_raw = str(obj.get("reasoning_direction") or "").strip().upper()
+        if rd_raw not in ("YES", "NO"):
+            print(
+                f"[polymarket_eval] missing/invalid reasoning_direction "
+                f"on {market.id}: {rd_raw!r} - skipping",
+                file=sys.stderr,
+            )
+            return None
+        # 0.50 is the boundary; treat it as agreeing with EITHER side
+        # to avoid a tied-probability false-rejection.
+        delfi_implied = "YES" if prob_yes >= 0.50 else "NO"
+        if rd_raw != delfi_implied and abs(prob_yes - 0.50) > 0.01:
+            print(
+                f"[polymarket_eval] reasoning/probability mismatch on "
+                f"{market.id}: reasoning_direction={rd_raw} but "
+                f"probability_yes={prob_yes:.3f} (implies {delfi_implied}). "
+                f"Rejecting the evaluation - the forecaster contradicted "
+                f"itself on this market.",
+                file=sys.stderr,
+            )
+            return None
+
         return MarketEvaluation(
             market_id       = market.id,
-            probability_yes = _clamp01(obj.get("probability_yes"), 0.5),
+            probability_yes = prob_yes,
             confidence      = _clamp01(obj.get("confidence"),      0.5),
             category        = str(obj.get("category") or "other")[:40],
             key_factors     = [str(x)[:200] for x in (obj.get("key_factors") or [])][:6],

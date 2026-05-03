@@ -69,7 +69,7 @@ const ARCHETYPE_LABELS: Record<string, string> = {
   price_threshold:     "Price threshold",
   activity_count:      "Activity count",
   geopolitical_event:  "Geopolitical event",
-  binary_event:        "Other event",
+  binary_event:        "Other events",
 };
 function archetypeLabel(id: string | null): string {
   if (!id) return "Unknown";
