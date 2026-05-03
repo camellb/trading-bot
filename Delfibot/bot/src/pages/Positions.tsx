@@ -301,7 +301,7 @@ export default function Positions() {
                   return (
                     <React.Fragment key={p.id}>
                       <tr
-                        className="row-hover"
+                        className={`row-hover${isOpen ? " is-open" : ""}`}
                         onClick={() => togglePos(p.id)}
                         style={{ cursor: "pointer" }}
                       >

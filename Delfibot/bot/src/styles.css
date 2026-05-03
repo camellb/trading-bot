@@ -1255,6 +1255,15 @@ button { font: inherit; }
   white-space: nowrap;
   max-width: 0;
 }
+/* When the row is expanded (chevron clicked) the data row carries
+   the .is-open class - undo the truncate so the full market title
+   is readable on the same line that the user just expanded. */
+.table-simple tr.is-open td.truncate {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  line-height: 1.4;
+}
 .table-simple tr.row-hover:hover td { background: rgba(232, 228, 216, 0.02); }
 .table-simple tr.expanded-row > td {
   background: rgba(232, 228, 216, 0.02);
