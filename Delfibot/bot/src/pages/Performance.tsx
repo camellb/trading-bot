@@ -248,10 +248,27 @@ export default function Performance() {
           <div className="panel-head">
             <h2 className="panel-title">Calibration</h2>
             <span className="panel-meta">
-              Delfi's confidence vs actual win rate · {calibration.resolved}{" "}
-              resolved · Brier {calibration.brier?.toFixed(3) ?? "-"}
+              {calibration.resolved} resolved · Brier{" "}
+              {calibration.brier?.toFixed(3) ?? "-"}
             </span>
           </div>
+          <p
+            style={{
+              margin: "0 0 14px",
+              color: "var(--vellum-60)",
+              fontFamily: "var(--font-body)",
+              fontSize: 13,
+              lineHeight: 1.55,
+              maxWidth: "72ch",
+            }}
+          >
+            Each row groups settled trades by Delfi's confidence in the
+            trade direction. The gold bar is the actual win rate. The
+            faint vertical line is the bucket midpoint, where a
+            perfectly-calibrated forecaster would land. A bar past the
+            line means Delfi was underconfident in that band; falling
+            short means overconfident.
+          </p>
           <div className="calib-header">
             <div>Confidence</div>
             <div>Trades</div>
