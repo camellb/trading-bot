@@ -529,7 +529,7 @@ function LiveConfirmModal({
           Switch to live trading?
         </h2>
         <p style={{ margin: "0 0 16px", color: "var(--vellum-70, #b8b6b1)" }}>
-          The bot will place real Polymarket orders on the next scan
+          Delfi will place real Polymarket orders on the next scan
           using the wallet you connected. Make sure you have funded
           the wallet and reviewed your risk settings.
         </p>

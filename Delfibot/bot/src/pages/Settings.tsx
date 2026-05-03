@@ -449,7 +449,7 @@ function LoginItemPanel() {
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Adds Delfi to your macOS Login Items so the dashboard window
         opens automatically when you sign in. Independent of
-        auto-start: the bot can run headlessly without the window
+        auto-start: Delfi can run headlessly without the window
         opening.
       </p>
       <div className="notif-row">
@@ -519,7 +519,7 @@ function RestartPanel() {
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Bounces the daemon. Open positions are preserved, in-flight
-        scans get cancelled, the bot is back online within ~10s. Use
+        scans get cancelled, Delfi is back online within ~10s. Use
         this when something looks stuck.
       </p>
       {!confirm ? (
@@ -594,7 +594,7 @@ function LogsPanel() {
         <span className="panel-meta">last 200 lines</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Stream the bot's stdout and stderr without opening Terminal.
+        Stream Delfi's stdout and stderr without opening Terminal.
         stderr usually has the interesting stuff (crashes, retries,
         rate-limit warnings); stdout is the routine activity feed.
       </p>
@@ -702,7 +702,7 @@ function DbBackupPanel() {
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Export a consistent snapshot of every position, evaluation,
         and config row to a SQLite file you choose. Uses VACUUM INTO
-        so the backup is safe to take while the bot is trading. Save
+        so the backup is safe to take while Delfi is trading. Save
         these somewhere outside the app (cloud sync folder, external
         drive) so you can recover after a disk failure.
       </p>
@@ -767,7 +767,7 @@ function LaunchStatsPanel() {
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Diagnostic view on what launchd reports about the daemon.
-        Total runs goes up by one every time the bot starts (login,
+        Total runs goes up by one every time Delfi starts (login,
         crash + auto-restart, or a manual Restart). A nonzero last
         exit code means the previous run died on an exception worth
         investigating in the logs.
@@ -1014,7 +1014,7 @@ function ConnectionsPanel({
           />
           <p className="form-hint">
             Signs Polymarket orders for live trading. Required only when you
-            switch the bot to Live mode.
+            switch Delfi to Live mode.
           </p>
         </div>
         <div className="form-field">

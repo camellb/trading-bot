@@ -270,7 +270,7 @@ export default function Performance() {
             short means overconfident.
           </p>
           <div className="calib-header">
-            <div>Confidence</div>
+            <div>Delfi confidence</div>
             <div>Trades</div>
             <div>Win rate</div>
             <div>Won</div>
@@ -370,13 +370,13 @@ function PriceBandTable({ calibration }: { calibration: CalibrationReport | null
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By price band</h2>
-        <span className="panel-meta">market favourite price at entry</span>
+        <span className="panel-meta">raw market price at entry</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        How each entry-price band has actually performed. Bands where
-        empirical win rate falls well below the implied price are
-        candidates for the &quot;Minimum favourite price&quot; floor in
-        Risk controls.
+        How each market-price band has actually performed. 0-50 means
+        the market favoured NO; 50-100 means YES. Bands with weak win
+        rate or negative ROI are candidates for skipping in the Risk
+        page Price band filter.
       </p>
       <table className="table-simple">
         <thead>

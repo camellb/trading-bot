@@ -163,7 +163,7 @@ function PriceBandPanel({
       setMsg({
         kind: "ok",
         text: bands.length === 0
-          ? "Saved. No bands disabled - bot will trade any market price."
+          ? "Saved. No bands skipped, Delfi will trade every market price."
           : `Saved. Skipping ${bands.length} band${bands.length === 1 ? "" : "s"}.`,
       });
       onSaved();
@@ -178,7 +178,7 @@ function PriceBandPanel({
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Price band filter</h2>
-        <span className="panel-meta">market price (YES probability)</span>
+        <span className="panel-meta">raw market price (0-100)</span>
       </div>
       <p
         style={{
@@ -190,11 +190,12 @@ function PriceBandPanel({
           maxWidth: "72ch",
         }}
       >
-        Disable bands the bot should not enter. 0-50 is markets where NO
-        is favoured; 50-100 is YES. Toggle any 10pp bucket off to skip
-        every market whose price lands inside it. The 2026-05-03 audit
-        found 50-60 was net negative; common starting point is to
-        disable 40-50 and 50-60 (coin-flip territory).
+        Toggle off any band Delfi should skip. 0-50 means the market
+        favours NO; 50-100 means YES. The 2026-05-03 audit found 50-60
+        was net negative, so a common starting point is to skip 40-50
+        and 50-60 (coin-flip territory). Match each band against the
+        Performance page's By price band table to validate before
+        toggling.
       </p>
       <form onSubmit={save}>
         <div className="price-band-row">

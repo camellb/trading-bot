@@ -418,22 +418,36 @@ def get_report(
                     "wins":        int(h_row[6] or 0),
                 })
 
-            # By market-favourite price band. Surfaces the
-            # 0.55-0.60 / 0.70-0.80 leak finding from the
-            # 2026-05-03 audit so the user can see at a glance
-            # where their entries are losing money. The favourite
-            # price is max(entry_price, 1 - entry_price) regardless
-            # of whether we bought YES or NO.
+            # By raw market-price band. Same axis as the Risk page's
+            # Price band filter so the two surfaces line up: a "Skip
+            # the 50-60 band" decision can be validated directly
+            # against the 50-60 row of this table.
+            #
+            # Raw market_price_yes = entry_price when we bet YES, and
+            # 1 - entry_price when we bet NO. The CASE expression
+            # reconstructs it from the (entry_price, side) columns
+            # because pm_positions doesn't store market_price_yes
+            # directly (it's derivable).
+            #
+            # 10 10pp buckets [0,10), [10,20), ..., [90,100]. The
+            # last bucket uses 1.0001 as its open upper bound so an
+            # entry at exactly 1.00 (impossible at entry, but safe)
+            # still lands in 90-100.
             BAND_EDGES = [
-                (0.50, 0.55), (0.55, 0.60), (0.60, 0.65),
-                (0.65, 0.70), (0.70, 0.80), (0.80, 0.90),
+                (0.00, 0.10), (0.10, 0.20), (0.20, 0.30),
+                (0.30, 0.40), (0.40, 0.50), (0.50, 0.60),
+                (0.60, 0.70), (0.70, 0.80), (0.80, 0.90),
                 (0.90, 1.0001),
             ]
+            market_price_expr = (
+                "CASE WHEN side = 'YES' THEN entry_price "
+                "ELSE 1.0 - entry_price END"
+            )
             by_price_band: list[dict] = []
             for lo, hi in BAND_EDGES:
                 band_filters = list(res_filters) + [
-                    "MAX(entry_price, 1 - entry_price) >= :pb_lo",
-                    "MAX(entry_price, 1 - entry_price) <  :pb_hi",
+                    f"({market_price_expr}) >= :pb_lo",
+                    f"({market_price_expr}) <  :pb_hi",
                 ]
                 b_params = {**params, "pb_lo": lo, "pb_hi": hi}
                 b_where = "WHERE " + " AND ".join(band_filters)
@@ -447,13 +461,13 @@ def get_report(
                     f"       SUM(CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END) AS wins "
                     f"FROM pm_positions {b_where}"
                 ), b_params).fetchone()
-                # Display label: "0.55-0.60" with the upper-most
-                # band rendered as "0.90+".
+                # Display label: "0-10", "10-20", ..., "90-100".
+                # Matches the Risk page Price band filter pill labels
+                # so the two views read the same.
                 hi_disp = 1.0 if hi > 1.0 else hi
-                if hi_disp >= 1.0:
-                    label = f"{lo:.2f}+"
-                else:
-                    label = f"{lo:.2f}-{hi_disp:.2f}"
+                lo_pct = int(round(lo * 100))
+                hi_pct = int(round(hi_disp * 100))
+                label = f"{lo_pct}-{hi_pct}"
                 by_price_band.append({
                     "bucket":      label,
                     "n":           int(b_row[0] or 0),
