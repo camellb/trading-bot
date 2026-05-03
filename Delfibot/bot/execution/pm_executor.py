@@ -649,13 +649,14 @@ class PMExecutor:
         Polymarket. `settlement_price` defaults to $1.00 for winners /
         $0.00 for losers / $0.50 for invalid markets.
 
-        Live mode caveat (2026-04-28): this method only updates the DB.
-        It does NOT call `redeemPositions()` on the V2 CTF Exchange.
-        Polymarket's web UI auto-prompts winning users to redeem; until
-        on-chain redemption is wired up, users running with the kill
-        switch off must redeem winning positions through that UI to
-        actually convert held tokens into pUSD. The bot's P&L numbers
-        are correct regardless.
+        Live mode (post-2026-05-03): on settlement of a live position
+        with held outcome tokens, this method also calls
+        CTF.redeemPositions on Polygon to convert the ERC-1155 tokens
+        into pUSD. The redemption is gated by DELFI_LIVE_KILLSWITCH_OFF
+        - same env var as _open_live - and short-circuits silently
+        when off. The redeem tx hash is persisted in
+        `pm_positions.redeem_tx_hash` for the operator's audit trail.
+        Losers and simulation rows skip the redeem path entirely.
         """
         outcome = (winning_outcome or "").upper()
         if outcome not in ("YES", "NO", "INVALID"):
@@ -666,7 +667,8 @@ class PMExecutor:
         try:
             with get_engine().begin() as conn:
                 row = conn.execute(text(
-                    "SELECT side, shares, cost_usd, prediction_id "
+                    "SELECT side, shares, cost_usd, prediction_id, "
+                    "       mode, condition_id "
                     "FROM pm_positions "
                     "WHERE id = :pid AND user_id = :uid AND status = 'open'"
                 ), {"pid": position_id, "uid": self.user_id}).fetchone()
@@ -674,10 +676,12 @@ class PMExecutor:
                     print(f"[pm_executor] settle: position {position_id} not open "
                           f"for user {self.user_id}", file=sys.stderr)
                     return False
-                side      = str(row[0])
-                shares    = float(row[1])
-                cost_usd  = float(row[2])
-                pred_id   = int(row[3]) if row[3] is not None else None
+                side          = str(row[0])
+                shares        = float(row[1])
+                cost_usd      = float(row[2])
+                pred_id       = int(row[3]) if row[3] is not None else None
+                row_mode      = str(row[4]) if row[4] is not None else ""
+                condition_id  = str(row[5]) if row[5] is not None else ""
 
                 if settlement_price is None:
                     if outcome == "INVALID":
@@ -702,6 +706,59 @@ class PMExecutor:
                     "sp": float(settlement_price), "pnl": float(pnl),
                     "pid": position_id,
                 })
+
+            # ── On-chain redemption (live winners only) ────────────────
+            # Runs OUTSIDE the begin() block above so a slow Polygon
+            # round-trip can't hold a write lock on the SQLite DB. The
+            # redeemer self-gates on DELFI_LIVE_KILLSWITCH_OFF; with
+            # the switch on (default) it returns immediately without
+            # touching the network.
+            if row_mode == "live":
+                try:
+                    from execution.pm_redeemer import (
+                        redeem_winning_position, index_sets_for_outcome,
+                    )
+                    needs_redeem = index_sets_for_outcome(side, outcome) is not None
+                    if needs_redeem:
+                        creds = get_active_polymarket_creds(self._user_config)
+                        wallet      = (creds.get("wallet_address") or "").strip()
+                        private_key = (creds.get("private_key")    or "").strip()
+                        result = redeem_winning_position(
+                            condition_id=condition_id,
+                            side=side,
+                            outcome=outcome,
+                            wallet=wallet,
+                            private_key=private_key,
+                        )
+                        if result.tx_hash:
+                            try:
+                                with get_engine().begin() as conn2:
+                                    conn2.execute(text(
+                                        "UPDATE pm_positions "
+                                        "SET redeem_tx_hash = :tx "
+                                        "WHERE id = :pid"
+                                    ), {"tx": result.tx_hash, "pid": position_id})
+                            except Exception as exc:
+                                print(
+                                    f"[pm_executor] redeem_tx_hash persist "
+                                    f"failed for pos {position_id}: {exc}",
+                                    file=sys.stderr,
+                                )
+                        if not result.redeemed:
+                            print(
+                                f"[pm_executor] redeem skipped or failed for "
+                                f"pos {position_id}: {result.error}",
+                                file=sys.stderr,
+                            )
+                except Exception as exc:
+                    # Never let a redeem-side problem mark settlement as
+                    # failed - the DB is already correct, the on-chain
+                    # tokens can be redeemed manually if the hook misfires.
+                    print(
+                        f"[pm_executor] redeem hook threw for pos "
+                        f"{position_id}: {exc}",
+                        file=sys.stderr,
+                    )
 
             # Feed the calibration ledger so Brier and reliability update.
             # 'correct' means we took the winning side. INVALID markets

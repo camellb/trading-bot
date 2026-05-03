@@ -93,6 +93,12 @@ pm_positions = Table(
     Column("market_archetype", Text, nullable=True),
     Column("clob_order_id", Text, nullable=True),
     Column("tx_hash",       Text, nullable=True),
+    # Polygon CTF.redeemPositions tx hash, set by the settler when the
+    # bot auto-redeems a winning live position on resolution. Distinct
+    # from `tx_hash` (which is the order-fill hash from open). NULL on
+    # simulation rows, on losers, and on live winners that haven't been
+    # redeemed yet (kill switch on, missing creds, RPC error).
+    Column("redeem_tx_hash", Text, nullable=True),
     Column("reasoning",     Text, nullable=True),
     Column("venue",         Text, nullable=False,
            server_default=sa_text("'polymarket'")),
@@ -592,6 +598,20 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE user_config ADD COLUMN "
                 "archetype_skip_market_price_bands TEXT"
+            ))
+
+        # ── pm_positions backfills ──────────────────────────────────────
+        # Same PRAGMA-probe pattern as the user_config block above. Adds
+        # any column that exists in the metadata definition but not in
+        # the live SQLite file. Order matters: probe -> ALTER per column.
+        existing_pm_positions_cols = {
+            r[1] for r in conn.execute(
+                sa_text("PRAGMA table_info(pm_positions)")
+            ).fetchall()
+        }
+        if "redeem_tx_hash" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN redeem_tx_hash TEXT"
             ))
 
         # Seed the singleton row if absent. Local install always has
