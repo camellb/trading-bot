@@ -120,60 +120,19 @@
   margin: 0;
 }
 
-.checkout-summary-list {
-  list-style: none;
-  margin: 0;
-  padding: 22px 0;
-  border-top: 1px solid var(--vellum-10);
-  border-bottom: 1px solid var(--vellum-10);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.checkout-summary-list li {
+.checkout-summary-fineprint {
   font-family: var(--font-body);
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.5;
-  color: var(--vellum);
-  padding-left: 22px;
-  position: relative;
-}
-.checkout-summary-list li::before {
-  content: "✓";
-  position: absolute;
-  left: 0;
-  top: 0;
-  color: var(--gold);
-  font-size: 14px;
-  font-weight: 600;
+  color: var(--vellum-40);
+  margin: 0;
 }
 
-.checkout-summary-trust {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.checkout-summary-trust-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  font-family: var(--font-body);
-  font-size: 12.5px;
-  line-height: 1.45;
-  color: var(--vellum-60);
-}
-.checkout-summary-trust-row svg {
-  flex-shrink: 0;
-  color: var(--gold);
-  margin-top: 2px;
-}
-
-/* ── Right column: Stripe iframe wrapper + after-pay copy ──────── */
+/* ── Right column: Stripe iframe wrapper ───────────────────────── */
 
 .checkout-stripe-wrap {
   display: flex;
   flex-direction: column;
-  gap: 32px;
 }
 
 /* The iframe Stripe drops in is unavoidably white. Wrap it in a
@@ -253,21 +212,20 @@
   text-decoration: underline;
 }
 
-/* "After you pay" mini-checklist below the iframe. Removes the
-   classic checkout-page worry about what happens after Pay. */
+/* "After you pay" lives in the left summary card alongside the
+   product info. No background of its own; just a subtle top
+   divider so it reads as its own beat. */
 .checkout-next {
-  background: var(--obsidian-raise);
-  border: 1px solid var(--vellum-10);
-  border-radius: 8px;
-  padding: 28px 32px;
+  padding-top: 22px;
+  border-top: 1px solid var(--vellum-10);
 }
 .checkout-next-eyebrow {
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: var(--gold);
-  margin-bottom: 18px;
+  color: var(--vellum-40);
+  margin-bottom: 16px;
 }
 .checkout-next-steps {
   list-style: none;
@@ -275,30 +233,29 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   counter-reset: step;
 }
 .checkout-next-steps li {
   display: flex;
-  align-items: flex-start;
-  gap: 14px;
+  align-items: center;
+  gap: 12px;
   font-family: var(--font-body);
   font-size: 14px;
-  line-height: 1.55;
+  line-height: 1.45;
   color: var(--vellum);
 }
 .checkout-next-num {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  border: 1px solid var(--gold);
+  border: 1px solid var(--vellum-20, rgba(232,228,216,0.18));
   display: grid;
   place-items: center;
   font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--gold);
-  margin-top: 1px;
+  font-size: 10px;
+  color: var(--vellum-60);
 }
 
 /* ── Return page card ───────────────────────────────────────────── */

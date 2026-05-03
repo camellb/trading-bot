@@ -121,37 +121,31 @@ export default function CheckoutPage() {
             <div className="checkout-summary-eyebrow">Order</div>
             <h1 className="checkout-summary-title">Delfi</h1>
             <p className="checkout-summary-desc">
-              Autonomous Polymarket trader.<br />Runs on your machine, 24/7.
+              Autonomous Polymarket trader. Runs on your machine, 24/7.
             </p>
           </div>
 
-          <ul className="checkout-summary-list">
-            <li>Lifetime access. Yours forever.</li>
-            <li>Your keys never leave your machine.</li>
-            <li>All future updates included.</li>
-            <li>14-day refund. No questions.</li>
-          </ul>
-
-          <div className="checkout-summary-trust">
-            <div className="checkout-summary-trust-row">
-              <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
-                <path
-                  d="M8 1 2.5 3.5v4c0 3.3 2.4 6.4 5.5 7 3.1-.6 5.5-3.7 5.5-7v-4L8 1Zm-1 9L4.5 7.5l1-1L7 8l3.5-3.5 1 1L7 10Z"
-                  fill="currentColor"
-                />
-              </svg>
-              <span>Card data goes straight to Stripe, never to Delfi.</span>
-            </div>
-            <div className="checkout-summary-trust-row">
-              <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
-                <path
-                  d="M8 1a4 4 0 0 0-4 4v2H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-1V5a4 4 0 0 0-4-4Zm-2 6V5a2 2 0 1 1 4 0v2H6Z"
-                  fill="currentColor"
-                />
-              </svg>
-              <span>Encrypted end-to-end by Stripe.</span>
-            </div>
+          <div className="checkout-next">
+            <div className="checkout-next-eyebrow">After you pay</div>
+            <ol className="checkout-next-steps">
+              <li>
+                <span className="checkout-next-num">1</span>
+                License key in your inbox.
+              </li>
+              <li>
+                <span className="checkout-next-num">2</span>
+                Download Delfi for macOS or Windows.
+              </li>
+              <li>
+                <span className="checkout-next-num">3</span>
+                Paste it on first launch.
+              </li>
+            </ol>
           </div>
+
+          <p className="checkout-summary-fineprint">
+            Includes all future updates. 14-day refund.
+          </p>
         </aside>
 
         <section className="checkout-stripe-wrap">
@@ -171,33 +165,13 @@ export default function CheckoutPage() {
             ) : !options ? (
               <div className="checkout-loading" role="status">
                 <span className="checkout-spinner" aria-hidden="true" />
-                <span className="checkout-loading-text">
-                  Loading secure checkout...
-                </span>
+                <span className="checkout-loading-text">Loading...</span>
               </div>
             ) : (
               <EmbeddedCheckoutProvider stripe={getStripe()} options={options}>
                 <EmbeddedCheckout />
               </EmbeddedCheckoutProvider>
             )}
-          </div>
-
-          <div className="checkout-next">
-            <div className="checkout-next-eyebrow">After you pay</div>
-            <ol className="checkout-next-steps">
-              <li>
-                <span className="checkout-next-num">1</span>
-                Your license key lands in your inbox in seconds.
-              </li>
-              <li>
-                <span className="checkout-next-num">2</span>
-                Download Delfi for macOS or Windows from the email.
-              </li>
-              <li>
-                <span className="checkout-next-num">3</span>
-                Paste the license on first launch. You&apos;re live.
-              </li>
-            </ol>
           </div>
         </section>
       </div>
