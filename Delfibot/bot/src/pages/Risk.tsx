@@ -61,7 +61,101 @@ export default function Risk({ config, onSaved }: Props) {
 
       <RiskPanel config={config} onSaved={onSaved} />
       <ResolutionWindowPanel config={config} onSaved={onSaved} />
+      <MinFavouritePricePanel config={config} onSaved={onSaved} />
       <ArchetypePanel onSaved={onSaved} />
+    </div>
+  );
+}
+
+// ── Minimum favourite price ──────────────────────────────────────────────
+
+function MinFavouritePricePanel({
+  config,
+  onSaved,
+}: {
+  config: ConfigShape | null;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Same one-shot sync as the other panels: read the persisted
+  // value once on first non-null arrival of `config`. Backend
+  // stores NULL = no constraint; surface that as 0 in the input
+  // so the user has one consistent sentinel.
+  const syncedRef = useRef(false);
+  useEffect(() => {
+    if (!config) return;
+    if (syncedRef.current) return;
+    syncedRef.current = true;
+    const v = (config as { min_market_favourite_price?: number | null }).min_market_favourite_price;
+    setValue(v != null ? String(Math.round(v * 100)) : "0");
+  }, [config]);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const raw = value.trim();
+      const n = Number(raw === "" ? "0" : raw);
+      if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        throw new Error("Must be a whole number percent (0 = no limit, 50-95 = floor).");
+      }
+      if (n !== 0 && (n < 50 || n > 95)) {
+        throw new Error("Must be 0 (no limit) or between 50 and 95 (percent).");
+      }
+      const fraction = n === 0 ? 0 : n / 100;
+      await api.updateConfig({ min_market_favourite_price: fraction });
+      setMsg({
+        kind: "ok",
+        text: n === 0
+          ? "Saved. No floor on favourite price."
+          : `Saved. Will skip markets where favourite price < ${n}%.`,
+      });
+      onSaved();
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Minimum favourite price</h2>
+        <span className="panel-meta">% of $1, 0 = no limit</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Skip markets where the market favourite is priced below this
+        threshold. The 0.50-0.60 price band has historically been a
+        net loser for the bot (spread + variance eat the edge on
+        coin-flip-grade markets). 60 is the empirical floor from the
+        2026-05-03 audit.
+      </p>
+      <form onSubmit={save}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
+          <NumField
+            label="Min favourite price (%)"
+            step="1"
+            range={[0, 95]}
+            value={value}
+            onChange={setValue}
+          />
+        </div>
+        <div className="form-actions" style={{ marginTop: 18 }}>
+          <button type="submit" className="btn small" disabled={busy}>
+            {busy ? "Saving..." : "Save threshold"}
+          </button>
+          {msg && (
+            <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
+              {msg.text}
+            </span>
+          )}
+        </div>
+      </form>
     </div>
   );
 }

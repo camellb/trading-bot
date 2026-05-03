@@ -343,6 +343,14 @@ user_config = Table(
     Column("min_days_to_resolution", Integer, nullable=True),
     Column("max_days_to_resolution", Integer, nullable=True),
 
+    # Minimum market favourite price required to enter. Filters out
+    # slim-favourite markets where the spread + variance eat the
+    # edge. NULL = no constraint (frontend exposes 0 as sentinel).
+    # Empirically the 0.55-0.60 entry band lost -58% ROI on cost
+    # over the first 5 trading days; setting this to 0.60 excludes
+    # that band.
+    Column("min_market_favourite_price", Float, nullable=True),
+
     # Mode + bankroll. Mode: 'simulation' | 'live'.
     Column("mode",            Text, nullable=False,
            server_default=sa_text("'simulation'")),
@@ -504,6 +512,11 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE user_config ADD COLUMN "
                 "max_days_to_resolution INTEGER"
+            ))
+        if "min_market_favourite_price" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "min_market_favourite_price REAL"
             ))
 
         # Seed the singleton row if absent. Local install always has

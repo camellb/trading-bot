@@ -86,6 +86,13 @@ class UserConfig:
     min_days_to_resolution:  Optional[int]     = None
     max_days_to_resolution:  Optional[int]     = None
 
+    # Minimum market-favourite price to enter. Filters out slim
+    # favourites where spread + variance eat the edge. None = no
+    # constraint. Frontend exposes 0 as the null sentinel.
+    # Empirical floor 0.60 from the 2026-05-03 audit (0.55-0.60
+    # band lost -58% ROI on cost).
+    min_market_favourite_price: Optional[float] = None
+
     # Execution state.
     mode:                  Optional[str]   = None    # 'simulation' | 'live'
     starting_cash:         Optional[float] = None
@@ -159,6 +166,11 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     # validator runs.
     "min_days_to_resolution":        (1, 30),
     "max_days_to_resolution":        (1, 30),
+    # Min favourite price floor: 0.50 lets in any favourite,
+    # 0.95 essentially blocks all but lock-grade favourites.
+    # Frontend's 0 sentinel translates to None (no constraint)
+    # before bounds check.
+    "min_market_favourite_price":    (0.50, 0.95),
 }
 
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = ("archetype_skip_list",)
@@ -168,6 +180,7 @@ USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
     "cost_assumption_override",
     "min_days_to_resolution",
     "max_days_to_resolution",
+    "min_market_favourite_price",
 )
 
 NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
@@ -245,6 +258,7 @@ _CASTERS: dict[str, type] = {
     "starting_cash":                 float,
     "min_days_to_resolution":        int,
     "max_days_to_resolution":        int,
+    "min_market_favourite_price":    float,
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
@@ -270,6 +284,7 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "telegram_chat_id",
     "min_days_to_resolution",
     "max_days_to_resolution",
+    "min_market_favourite_price",
 })
 
 
@@ -365,6 +380,19 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
         if n is None or n == 0:
             return None
         return n
+    # Same 0 -> None convention for the favourite-price gate. The
+    # bounds (0.50..0.95) wouldn't accept 0 anyway; 0 is the UI
+    # sentinel meaning "off".
+    if key == "min_market_favourite_price":
+        if raw is None or raw == "":
+            return None
+        try:
+            f = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be a number") from exc
+        if f == 0.0:
+            return None
+        return f
     if key == "mode":
         if raw not in ("simulation", "live"):
             raise ValueError("mode must be 'simulation' or 'live'")
@@ -597,7 +625,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       mode, starting_cash, wallet_address, "
                 "       bot_enabled, archetype_stake_multipliers, "
                 "       notification_prefs, telegram_chat_id, "
-                "       min_days_to_resolution, max_days_to_resolution "
+                "       min_days_to_resolution, max_days_to_resolution, "
+                "       min_market_favourite_price "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -621,6 +650,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             telegram_chat_id              = (str(row[15]).strip() if row[15] is not None and str(row[15]).strip() else None),
             min_days_to_resolution        = (int(row[16]) if row[16] is not None else None),
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
+            min_market_favourite_price    = (float(row[18]) if row[18] is not None else None),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)

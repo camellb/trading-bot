@@ -284,6 +284,81 @@ export default function Performance() {
       <ArchetypeTable calibration={calibration} />
       <CategoryTable calibration={calibration} />
       <HorizonTable calibration={calibration} />
+      <PriceBandTable calibration={calibration} />
+    </div>
+  );
+}
+
+// ── By price band ───────────────────────────────────────────────────────
+
+type PriceBandSk = "bucket" | "trades" | "win_rate" | "pnl" | "roi" | "brier";
+
+function PriceBandTable({ calibration }: { calibration: CalibrationReport | null }) {
+  const sort = useSort<PriceBandSk>("trades", "desc");
+  const rows = useMemo(() => {
+    const raw = calibration?.by_price_band ?? [];
+    return sort.apply(raw, (b, f): SortKey => {
+      const wins = b.wins ?? 0;
+      const cost = b.cost_usd ?? 0;
+      const pnl  = b.pnl_usd ?? 0;
+      switch (f) {
+        case "bucket":   return b.bucket;
+        case "trades":   return b.n;
+        case "win_rate": return b.n > 0 ? wins / b.n : null;
+        case "pnl":      return b.n > 0 ? pnl : null;
+        case "roi":      return cost > 0 ? pnl / cost : null;
+        case "brier":    return b.brier;
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [calibration?.by_price_band, sort.field, sort.dir]);
+
+  if (!calibration || !calibration.by_price_band || calibration.by_price_band.length === 0) return null;
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">By price band</h2>
+        <span className="panel-meta">market favourite price at entry</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        How each entry-price band has actually performed. Bands where
+        empirical win rate falls well below the implied price are
+        candidates for the &quot;Minimum favourite price&quot; floor in
+        Risk controls.
+      </p>
+      <table className="table-simple">
+        <thead>
+          <tr>
+            <SortableTh field="bucket"   sort={sort}>Band</SortableTh>
+            <SortableTh field="trades"   sort={sort}>Trades</SortableTh>
+            <SortableTh field="win_rate" sort={sort}>Win rate</SortableTh>
+            <SortableTh field="pnl"      sort={sort}>P&amp;L</SortableTh>
+            <SortableTh field="roi"      sort={sort}>ROI</SortableTh>
+            <SortableTh field="brier"    sort={sort}>Brier</SortableTh>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((b, i) => {
+            const pnl = b.pnl_usd ?? 0;
+            const cost = b.cost_usd ?? 0;
+            const wins = b.wins ?? 0;
+            const winRate = b.n > 0 ? (wins / b.n) * 100 : null;
+            const roi = cost > 0 ? (pnl / cost) * 100 : null;
+            const pnlClass = pnl > 0 ? "cell-up" : pnl < 0 ? "cell-down" : "";
+            const roiClass = roi != null && roi > 0 ? "cell-up" : roi != null && roi < 0 ? "cell-down" : "";
+            return (
+              <tr key={i}>
+                <td>{b.bucket}</td>
+                <td className="mono">{b.n}</td>
+                <td className="mono">{winRate != null ? `${winRate.toFixed(0)}%` : "-"}</td>
+                <td className={`mono ${pnlClass}`}>{b.n > 0 ? fmtSignedPnl(pnl) : "-"}</td>
+                <td className={`mono ${roiClass}`}>{roi != null ? fmtPct(roi) : "-"}</td>
+                <td className="mono">{b.brier?.toFixed(3) ?? "-"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

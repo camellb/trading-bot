@@ -339,6 +339,10 @@ export interface CalibrationReport {
   by_category: Array<CalibrationBucket & { category: string | null; win_rate?: number | null }>;
   by_archetype: Array<CalibrationBucket & { archetype: string | null }>;
   by_horizon: Array<CalibrationBucket & { bucket: string }>;
+  /** New 2026-05-03: per-market-favourite-price-band breakdown so the
+   *  user can see at a glance which entry-price bands are leaking
+   *  money. Same shape as by_horizon. */
+  by_price_band?: Array<CalibrationBucket & { bucket: string }>;
 }
 
 export interface PendingSuggestion {

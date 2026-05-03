@@ -394,6 +394,53 @@ def get_report(
                     "wins":        int(h_row[6] or 0),
                 })
 
+            # By market-favourite price band. Surfaces the
+            # 0.55-0.60 / 0.70-0.80 leak finding from the
+            # 2026-05-03 audit so the user can see at a glance
+            # where their entries are losing money. The favourite
+            # price is max(entry_price, 1 - entry_price) regardless
+            # of whether we bought YES or NO.
+            BAND_EDGES = [
+                (0.50, 0.55), (0.55, 0.60), (0.60, 0.65),
+                (0.65, 0.70), (0.70, 0.80), (0.80, 0.90),
+                (0.90, 1.0001),
+            ]
+            by_price_band: list[dict] = []
+            for lo, hi in BAND_EDGES:
+                band_filters = list(res_filters) + [
+                    "MAX(entry_price, 1 - entry_price) >= :pb_lo",
+                    "MAX(entry_price, 1 - entry_price) <  :pb_hi",
+                ]
+                b_params = {**params, "pb_lo": lo, "pb_hi": hi}
+                b_where = "WHERE " + " AND ".join(band_filters)
+                b_row = conn.execute(text(
+                    f"SELECT COUNT(*) AS n, "
+                    f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                    f"       AVG(claude_probability) AS mp, "
+                    f"       AVG({outcome_expr}) AS ma, "
+                    f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
+                    f"       COALESCE(SUM(cost_usd), 0) AS cost, "
+                    f"       SUM(CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END) AS wins "
+                    f"FROM pm_positions {b_where}"
+                ), b_params).fetchone()
+                # Display label: "0.55-0.60" with the upper-most
+                # band rendered as "0.90+".
+                hi_disp = 1.0 if hi > 1.0 else hi
+                if hi_disp >= 1.0:
+                    label = f"{lo:.2f}+"
+                else:
+                    label = f"{lo:.2f}-{hi_disp:.2f}"
+                by_price_band.append({
+                    "bucket":      label,
+                    "n":           int(b_row[0] or 0),
+                    "brier":       float(b_row[1]) if b_row[1] is not None else None,
+                    "mean_pred":   float(b_row[2]) if b_row[2] is not None else None,
+                    "mean_actual": float(b_row[3]) if b_row[3] is not None else None,
+                    "pnl_usd":     float(b_row[4]) if b_row[4] is not None else 0.0,
+                    "cost_usd":    float(b_row[5]) if b_row[5] is not None else 0.0,
+                    "wins":        int(b_row[6] or 0),
+                })
+
         return {
             "source":       source or "polymarket",
             "since_days":   since_days,
@@ -407,6 +454,7 @@ def get_report(
             "bins":         bins,
             "by_category":  by_category,
             "by_archetype": by_archetype,
+            "by_price_band": by_price_band,
             "by_horizon":   by_horizon,
         }
     except Exception as exc:

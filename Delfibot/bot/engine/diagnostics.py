@@ -326,21 +326,36 @@ def brier_by_archetype(scope: Scope = "all",
 @lru_cache(maxsize=16)
 def _brier_by_archetype_impl(scope: str, flag_threshold: float,
                              _bucket: int) -> list[dict]:
+    """
+    Brier broken out by GRANULAR archetype (tennis, baseball, etc.),
+    not by Polymarket's coarse legacy `predictions.category` label.
+    The latter collapses every sport into 'sports' and made the
+    learning-loop's archetype-skip proposer emit `add 'sports' to
+    the skip list` suggestions that don't map to any of the canonical
+    archetype labels in `engine/archetype_classifier.ARCHETYPES` -
+    pure no-op proposals nobody could apply.
+
+    Bug fixed 2026-05-03 by sourcing the archetype label from
+    `pm_positions.market_archetype` (the classifier's output)
+    instead of `predictions.category`. Joins predictions to
+    pm_positions via prediction_id.
+    """
     try:
         from sqlalchemy import text
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
-                "SELECT p.category, COUNT(*) AS n, "
+                "SELECT pm.market_archetype AS archetype, COUNT(*) AS n, "
                 "       AVG((p.probability - p.resolved_outcome) * (p.probability - p.resolved_outcome)) AS brier, "
                 "       AVG(p.probability) AS mp, "
                 "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
                 "FROM predictions p "
+                "JOIN pm_positions pm ON pm.prediction_id = p.id "
                 "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                 "  AND p.resolved_outcome IN (0,1) "
                 "  AND p.probability IS NOT NULL "
-                "  AND p.category IS NOT NULL "
+                "  AND pm.market_archetype IS NOT NULL "
                 f"  AND {_scope_clause(scope)} "
-                "GROUP BY p.category ORDER BY n DESC"
+                "GROUP BY pm.market_archetype ORDER BY n DESC"
             )).fetchall()
         out = []
         for r in rows:

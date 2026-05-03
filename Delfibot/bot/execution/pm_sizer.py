@@ -125,6 +125,20 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
+    # ── Gate: minimum favourite price ───────────────────────────────────────
+    # Per-user floor for how strong the market's favourite has to be
+    # before we'll trade. Filters out coin-flip-grade markets (price
+    # bands ~0.50-0.60) where spread + variance eat the edge.
+    # User-configurable; None = no floor.
+    min_fav = getattr(user_config, "min_market_favourite_price", None)
+    if min_fav is not None and p_win < float(min_fav):
+        return _skip(
+            cp, cf,
+            f"market favourite price {p_win:.2f} below user floor "
+            f"{float(min_fav):.2f}",
+            side=side, entry=entry, p_win=p_win,
+        )
+
     # Entry-price sanity - can't compute shares without a positive ask.
     if entry <= 0:
         return _skip(
