@@ -165,21 +165,27 @@ html, body { scroll-behavior: smooth; }
 .hero-press-row {
   display: flex; align-items: center; justify-content: center;
   width: 100%; overflow: hidden;
-  mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
 }
+/* Desktop default: static, centered. The names fit on one line at
+   typical desktop widths so a marquee adds motion noise without
+   benefit. Below 720px the row is too narrow to fit all six items;
+   the override at the bottom of this file re-enables the marquee
+   for mobile only. */
 .hero-press-track {
   display: flex; gap: clamp(20px, 4vw, 48px);
-  width: max-content; flex-wrap: nowrap;
+  flex-wrap: nowrap;
   white-space: nowrap;
-  animation: press-marquee 30s linear infinite;
+  justify-content: center;
+}
+/* Hide the duplicate copy on desktop. The HeroPress JSX renders the
+   six press names twice so the marquee can loop seamlessly on
+   mobile; on desktop one copy is enough. */
+.hero-press-track > [aria-hidden="true"] {
+  display: none;
 }
 @keyframes press-marquee {
   0% { transform: translate3d(0, 0, 0); }
   100% { transform: translate3d(-50%, 0, 0); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .hero-press-track { animation: none; }
 }
 .hero-press-item {
   font-family: var(--font-display);
@@ -942,7 +948,24 @@ html, body { scroll-behavior: smooth; }
   .hero-note { font-size: 11.5px; margin-top: 22px; }
   .hero-press { margin-top: 48px; padding-top: 24px; gap: 16px; }
   .hero-press-item { font-size: 12px; letter-spacing: 0.04em; }
-  .hero-press-track { gap: 28px; animation-duration: 24s; }
+  /* Mobile: the row is too narrow to fit all six names statically,
+     so re-enable the marquee + edge mask + duplicate copy here. */
+  .hero-press-row {
+    mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+  }
+  .hero-press-track {
+    gap: 28px;
+    width: max-content;
+    justify-content: flex-start;
+    animation: press-marquee 24s linear infinite;
+  }
+  .hero-press-track > [aria-hidden="true"] {
+    display: inline;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero-press-track { animation: none; }
+  }
   .hero-scroll { display: none; }
 
   /* Ribbon — three stats on one row */
