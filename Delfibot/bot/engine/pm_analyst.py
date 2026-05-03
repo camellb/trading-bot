@@ -392,12 +392,76 @@ class PMAnalyst:
             if not markets:
                 return summary
 
+            # Pre-load every user's config once per scan so the inner
+            # per-market pre-filter doesn't hit SQLite per-market.
+            user_cfgs = {uid: get_user_config(uid) for uid in user_ids}
+
             for mk in markets:
                 if _recently_predicted(mk.id, skip_days):
                     summary["outcomes"].append({
                         "market_id": mk.id, "question": mk.question[:80],
                         "status": "SKIP_RECENT_EVAL",
                         "detail": f"evaluated within {skip_days}d",
+                    })
+                    summary["skipped"] += 1
+                    continue
+
+                # ── Pre-Claude filter ──────────────────────────────────
+                # The archetype classifier is a pure regex/keyword
+                # function; running it BEFORE the Claude call lets us
+                # drop markets that every user is guaranteed to skip
+                # at the sizer (archetype on skip list, or market price
+                # inside a per-archetype disabled band). Saves one
+                # Anthropic API call per dropped market.
+                #
+                # The post-Claude classify still runs and may yield a
+                # different (e.g. category-disambiguated) archetype -
+                # this pre-filter is purely an optimization on the
+                # cases where the question text alone is enough to
+                # know the trade would be skipped.
+                pre_arch = classify_archetype(
+                    mk.question,
+                    event_slug=getattr(mk, "event_slug", None),
+                )
+                pre_skip_reason = None
+                # Fast-path: if EVERY user would skip this market for
+                # the same reason, skip pre-Claude. If any user would
+                # take it, run Claude.
+                all_users_would_skip = bool(user_cfgs)
+                for cfg in user_cfgs.values():
+                    if pre_arch in (cfg.archetype_skip_list or ()):
+                        pre_skip_reason = (
+                            f"archetype '{pre_arch}' on skip list"
+                        )
+                        continue
+                    arch_bands = (
+                        cfg.archetype_skip_market_price_bands or {}
+                    ).get(pre_arch, ())
+                    hit = next(
+                        (
+                            (lo, hi) for lo, hi in arch_bands
+                            if float(lo) <= mk.yes_price < float(hi)
+                        ),
+                        None,
+                    )
+                    if hit is not None:
+                        lo, hi = hit
+                        pre_skip_reason = (
+                            f"market price {mk.yes_price:.2f} inside "
+                            f"disabled {float(lo):.2f}-{float(hi):.2f} "
+                            f"band on {pre_arch}"
+                        )
+                        continue
+                    # This user wouldn't pre-skip; abort pre-filter.
+                    all_users_would_skip = False
+                    pre_skip_reason = None
+                    break
+                if all_users_would_skip and pre_skip_reason:
+                    summary["outcomes"].append({
+                        "market_id": mk.id,
+                        "question":  mk.question[:80],
+                        "status":    "SKIP_PRE_FILTER",
+                        "detail":    pre_skip_reason,
                     })
                     summary["skipped"] += 1
                     continue

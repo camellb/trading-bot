@@ -52,13 +52,13 @@ PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving mar
 # Setting this to an empty dict falls back to the legacy untagged
 # top-by-volume scan (kept available for emergencies and tests).
 PM_SCAN_TAG_QUOTAS: dict[int, int] = {
-    1:      20,   # Sports       (NBA / soccer / tennis - capped despite high volume)
+    1:      5,    # Sports       (hard cap: net-loser archetype per 2026-05-03 audit)
     2:      30,   # Politics     (Fed, elections, policy)
-    21:     15,   # Crypto       (BTC / ETH price thresholds)
+    21:     25,   # Crypto       (best-performing archetype to date - boosted)
     100265: 15,   # Geopolitics  (ceasefires, treaties, summits)
     100328: 10,   # Economy      (Fed rates, GDP, jobs)
     596:    5,    # Culture      (Oscars, awards, celebrity)
-    101970: 5,    # World        (broader catch-all)
+    101970: 10,   # World        (broader catch-all - boosted)
 }
 
 
