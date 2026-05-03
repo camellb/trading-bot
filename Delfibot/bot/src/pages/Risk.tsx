@@ -61,20 +61,17 @@ export default function Risk({ config, onSaved }: Props) {
 
       <RiskPanel config={config} onSaved={onSaved} />
       <ResolutionWindowPanel config={config} onSaved={onSaved} />
-      <PriceBandPanel config={config} onSaved={onSaved} />
       <ArchetypePanel onSaved={onSaved} />
     </div>
   );
 }
 
-// ── Price band filter ────────────────────────────────────────────────────
+// ── Price band constants (used only by per-archetype band controls) ──────
 //
-// The user enables/disables 10 10pp buckets along the raw market_price_yes
-// axis (0-10, 10-20, ..., 90-100). 0-50 is "market favours NO"; 50-100 is
-// "market favours YES". Disabling a band means the bot skips any market
-// whose price falls in it. Replaces the V0 single-floor min favourite
-// price control - more flexible (asymmetric cuts possible) and matches
-// how the audit data clusters by 10pp bucket.
+// V1 has no global price-band filter. Each archetype card has its own
+// band row; these constants + helpers are shared between those cards
+// and any future UI that reuses 10pp band semantics on raw market
+// price (0-100).
 
 const PRICE_BAND_COUNT = 10;
 const PRICE_BAND_STEP  = 0.10;
@@ -92,164 +89,6 @@ function bandLabel(lo: number, hi: number): string {
 function bandKey(lo: number, hi: number): string {
   // Avoid floating-point equality games. Lo*100 rounded is unique per band.
   return `${Math.round(lo * 100)}_${Math.round(hi * 100)}`;
-}
-
-function PriceBandPanel({
-  config,
-  onSaved,
-}: {
-  config: ConfigShape | null;
-  onSaved: () => void;
-}) {
-  // Set of disabled bucket keys (bandKey of [lo, hi]).
-  const [disabled, setDisabled] = useState<Set<string>>(new Set());
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // One-shot sync from persisted config. Storage shape:
-  // skip_market_price_bands: [[lo, hi], [lo, hi], ...] (floats 0-1).
-  // We accept any band that aligns to a 10pp bucket; out-of-grid bands
-  // (set by a future finer-grained UI or hand-edit) are silently ignored
-  // by the toggle row. For v1 the UI is canonical.
-  const syncedRef = useRef(false);
-  useEffect(() => {
-    if (!config) return;
-    if (syncedRef.current) return;
-    syncedRef.current = true;
-    const raw = (config as { skip_market_price_bands?: unknown })
-      .skip_market_price_bands;
-    if (!Array.isArray(raw)) return;
-    const next = new Set<string>();
-    for (const pair of raw) {
-      if (!Array.isArray(pair) || pair.length !== 2) continue;
-      const [lo, hi] = [Number(pair[0]), Number(pair[1])];
-      if (!Number.isFinite(lo) || !Number.isFinite(hi)) continue;
-      // Snap to nearest 10pp bucket - only mark if it's a recognised one.
-      const loPct = Math.round(lo * 100);
-      const hiPct = Math.round(hi * 100);
-      if (hiPct - loPct !== 10) continue;
-      if (loPct % 10 !== 0) continue;
-      if (loPct < 0 || hiPct > 100) continue;
-      next.add(`${loPct}_${hiPct}`);
-    }
-    setDisabled(next);
-  }, [config]);
-
-  const toggle = (lo: number, hi: number) => {
-    setDisabled(prev => {
-      const next = new Set(prev);
-      const k = bandKey(lo, hi);
-      if (next.has(k)) next.delete(k);
-      else next.add(k);
-      return next;
-    });
-    setMsg(null);
-  };
-
-  const save = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setMsg(null);
-    try {
-      const bands = PRICE_BANDS
-        .filter(([lo, hi]) => disabled.has(bandKey(lo, hi)))
-        // Round-trip through Math.round so we don't ship float drift
-        // like 0.30000000000000004 to the backend.
-        .map(([lo, hi]) => [
-          Math.round(lo * 100) / 100,
-          Math.round(hi * 100) / 100,
-        ]);
-      await api.updateConfig({ skip_market_price_bands: bands });
-      setMsg({
-        kind: "ok",
-        text: bands.length === 0
-          ? "Saved. No bands skipped, Delfi will trade every market price."
-          : `Saved. Skipping ${bands.length} band${bands.length === 1 ? "" : "s"}.`,
-      });
-      onSaved();
-    } catch (err) {
-      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Price band filter</h2>
-        <span className="panel-meta">raw market price (0-100)</span>
-      </div>
-      <p
-        style={{
-          margin: "0 0 14px",
-          color: "var(--vellum-60)",
-          fontFamily: "var(--font-body)",
-          fontSize: 13,
-          lineHeight: 1.55,
-          maxWidth: "72ch",
-        }}
-      >
-        Toggle off any band Delfi should skip. 0-50 means the market
-        favours NO; 50-100 means YES. The 2026-05-03 audit found 50-60
-        was net negative, so a common starting point is to skip 40-50
-        and 50-60 (coin-flip territory). Match each band against the
-        Performance page's By price band table to validate before
-        toggling.
-      </p>
-      <form onSubmit={save}>
-        <div className="price-band-row">
-          {PRICE_BANDS.slice(0, 5).map(([lo, hi]) => {
-            const k = bandKey(lo, hi);
-            const off = disabled.has(k);
-            return (
-              <button
-                type="button"
-                key={k}
-                onClick={() => toggle(lo, hi)}
-                className={off ? "price-band off" : "price-band on"}
-                aria-pressed={!off}
-                aria-label={
-                  `Band ${bandLabel(lo, hi)} percent: ${off ? "off" : "on"}`
-                }
-              >
-                {bandLabel(lo, hi)}
-              </button>
-            );
-          })}
-          <span className="price-band-divider" aria-hidden="true" />
-          {PRICE_BANDS.slice(5).map(([lo, hi]) => {
-            const k = bandKey(lo, hi);
-            const off = disabled.has(k);
-            return (
-              <button
-                type="button"
-                key={k}
-                onClick={() => toggle(lo, hi)}
-                className={off ? "price-band off" : "price-band on"}
-                aria-pressed={!off}
-                aria-label={
-                  `Band ${bandLabel(lo, hi)} percent: ${off ? "off" : "on"}`
-                }
-              >
-                {bandLabel(lo, hi)}
-              </button>
-            );
-          })}
-        </div>
-        <div className="form-actions" style={{ marginTop: 18 }}>
-          <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save bands"}
-          </button>
-          {msg && (
-            <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
-              {msg.text}
-            </span>
-          )}
-        </div>
-      </form>
-    </div>
-  );
 }
 
 // ── Time-to-resolution window ────────────────────────────────────────────

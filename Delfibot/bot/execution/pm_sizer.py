@@ -125,27 +125,22 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
-    # ── Gate: disabled market-price bands ───────────────────────────────────
-    # Per-user lists of (lo, hi) bands in market_price_yes space; the
-    # bot skips any market whose price falls in any band. Replaces the
-    # V0 single-floor `min_market_favourite_price` gate.
+    # ── Gate: per-archetype disabled market-price bands ─────────────────────
+    # Per-archetype list of (lo, hi) bands in market_price_yes space.
+    # The sizer skips a market when its market_price_yes falls inside
+    # any band on its archetype's list. Bands are matched on raw
+    # market_price_yes (not favourite price), so the user can disable
+    # just YES extreme favourites for one archetype without also
+    # blocking the symmetric NO side or other archetypes.
     #
-    # Two layers, evaluated together:
-    #   1. Global skip_market_price_bands - applies to every market.
-    #   2. archetype_skip_market_price_bands[archetype] - applies only
-    #      to markets classified as that archetype. ADDS to the global
-    #      list, doesn't replace, so a user can globally skip 40-60
-    #      and additionally skip 90-100 only on tennis.
-    #
-    # Bands are matched on raw market_price_yes (not favourite price)
-    # so a user can disable just YES extreme favourites without also
-    # blocking the symmetric NO side.
-    global_bands = getattr(user_config, "skip_market_price_bands", ()) or ()
+    # Replaces both the V0 single-floor `min_market_favourite_price`
+    # gate and the brief intermediate global `skip_market_price_bands`
+    # field. There is no global filter under V1 - per-archetype only.
     arch_band_map = (
         getattr(user_config, "archetype_skip_market_price_bands", None) or {}
     )
     arch_bands = arch_band_map.get(archetype, ()) if archetype else ()
-    for lo, hi in (*global_bands, *arch_bands):
+    for lo, hi in arch_bands:
         # Half-open interval [lo, hi). User-defined bands always have
         # hi <= 1.0; a market_price_yes of exactly 1.0 (only possible
         # post-resolution, never at entry) is allowed through.
@@ -153,7 +148,8 @@ def size_position(
             return _skip(
                 cp, cf,
                 f"market price {market_p_yes:.2f} inside disabled "
-                f"{float(lo):.2f}-{float(hi):.2f} band",
+                f"{float(lo):.2f}-{float(hi):.2f} band on "
+                f"{archetype}",
                 side=side, entry=entry, p_win=p_win,
             )
 

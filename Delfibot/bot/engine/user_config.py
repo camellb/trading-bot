@@ -100,19 +100,21 @@ class UserConfig:
     # field (still in the DB schema for back-compat, no longer read).
     # The 2026-05-03 audit's 0.55-0.60 underperformance is expressible
     # here as the bucket pair (0.40, 0.50) and (0.50, 0.60).
-    skip_market_price_bands: Tuple[Tuple[float, float], ...] = field(default_factory=tuple)
-
     # Per-archetype price-band overrides. Maps archetype id -> tuple
-    # of (lo, hi) pairs in market_price_yes space. The sizer's band
-    # gate checks the global `skip_market_price_bands` list FIRST,
-    # then this archetype-specific list, and skips on first hit. So
-    # per-archetype bands ADD to the global list rather than replace
-    # it.
+    # of (lo, hi) pairs in market_price_yes space. The sizer skips a
+    # market when its market_price_yes falls inside any band on its
+    # archetype's list. Empty dict = no skips.
     #
-    # Empty dict = no archetype-specific overrides. UI in the Risk
-    # page archetype matrix shows a per-card collapsible 10-pill row
-    # so the user can decide e.g. "skip 90-100 only on tennis" without
-    # touching the global filter.
+    # UI in the Risk page archetype matrix shows a per-card collapsible
+    # 10-pill row so the user can decide e.g. "skip 90-100 only on
+    # tennis" without touching anything else. The matching DB column
+    # `archetype_skip_market_price_bands` stores the JSON-encoded dict.
+    #
+    # The legacy global `skip_market_price_bands` field is gone (locked
+    # 2026-05-03). The DB column stays in the schema for back-compat
+    # but is no longer read. ensure_default_user_config copies any
+    # existing global bands to every archetype on first boot after
+    # the upgrade.
     archetype_skip_market_price_bands: Dict[str, Tuple[Tuple[float, float], ...]] = field(default_factory=dict)
 
     # Execution state.
@@ -193,11 +195,13 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
 # Band-shaped fields. Stored as JSON-encoded list of [lo, hi] float
 # pairs in [0, 1]. Values are validated piecewise (each band must
 # satisfy 0 <= lo < hi <= 1) rather than via USER_CONFIG_BOUNDS.
-USER_CONFIG_BAND_FIELDS: Tuple[str, ...] = ("skip_market_price_bands",)
+# Flat band fields (none under V1 - the global list was dropped).
+# Kept as an empty tuple to avoid touching the cast/validate branches
+# that key off membership in this set.
+USER_CONFIG_BAND_FIELDS: Tuple[str, ...] = ()
 
 # Dict-of-bands fields. Stored as JSON-encoded dict mapping archetype id
-# to a list of [lo, hi] pairs. Validated piecewise (each archetype's list
-# follows the same rules as USER_CONFIG_BAND_FIELDS).
+# to a list of [lo, hi] pairs. Validated piecewise.
 USER_CONFIG_DICT_BAND_FIELDS: Tuple[str, ...] = ("archetype_skip_market_price_bands",)
 
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = ("archetype_skip_list",)
@@ -309,7 +313,6 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "telegram_chat_id",
     "min_days_to_resolution",
     "max_days_to_resolution",
-    "skip_market_price_bands",
     "archetype_skip_market_price_bands",
 })
 
@@ -798,6 +801,52 @@ def ensure_default_user_config() -> None:
                 "      IN ('{}', '', 'null') "
                 "  AND tour_completed_at IS NULL"
             ), {"uid": DEFAULT_USER_ID, "skip": skip_csv, "mult": mult_json})
+
+            # ── One-shot migration: global skip_market_price_bands ──────
+            # The global Price band filter was dropped 2026-05-03 in
+            # favour of per-archetype bands only. Copy any existing
+            # global band list to every known archetype so the user's
+            # prior settings carry over, then NULL out the global so
+            # this migration only fires once.
+            row = conn.execute(text(
+                "SELECT skip_market_price_bands, "
+                "       archetype_skip_market_price_bands "
+                "FROM user_config WHERE user_id = :uid"
+            ), {"uid": DEFAULT_USER_ID}).fetchone()
+            if row is not None:
+                global_raw = row[0]
+                arch_raw   = row[1]
+                arch_is_empty = (
+                    arch_raw is None
+                    or arch_raw == ""
+                    or arch_raw in ("{}", "null")
+                )
+                if global_raw and arch_is_empty:
+                    try:
+                        global_list = json.loads(global_raw)
+                    except (TypeError, ValueError):
+                        global_list = None
+                    if isinstance(global_list, list) and global_list:
+                        # Lazy import here to avoid pulling the
+                        # archetype classifier on every config read.
+                        from engine.archetype_classifier import ARCHETYPES
+                        per_archetype = {
+                            arch: list(global_list) for arch in ARCHETYPES
+                        }
+                        conn.execute(text(
+                            "UPDATE user_config "
+                            "SET archetype_skip_market_price_bands = :a, "
+                            "    skip_market_price_bands = NULL "
+                            "WHERE user_id = :uid"
+                        ), {
+                            "uid": DEFAULT_USER_ID,
+                            "a":   json.dumps(per_archetype),
+                        })
+                        print(
+                            f"[user_config] migrated {len(global_list)} "
+                            f"global band(s) to {len(ARCHETYPES)} archetypes",
+                            file=sys.stderr,
+                        )
     except Exception as exc:
         print(f"[user_config] ensure_default failed: {exc}", file=sys.stderr)
 
@@ -843,7 +892,6 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       bot_enabled, archetype_stake_multipliers, "
                 "       notification_prefs, telegram_chat_id, "
                 "       min_days_to_resolution, max_days_to_resolution, "
-                "       skip_market_price_bands, "
                 "       archetype_skip_market_price_bands "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
@@ -868,8 +916,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             telegram_chat_id              = (str(row[15]).strip() if row[15] is not None and str(row[15]).strip() else None),
             min_days_to_resolution        = (int(row[16]) if row[16] is not None else None),
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
-            skip_market_price_bands       = _decode_skip_market_price_bands(row[18]),
-            archetype_skip_market_price_bands = _decode_archetype_skip_market_price_bands(row[19]),
+            archetype_skip_market_price_bands = _decode_archetype_skip_market_price_bands(row[18]),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
