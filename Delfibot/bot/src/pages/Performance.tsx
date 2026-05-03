@@ -274,7 +274,7 @@ export default function Performance() {
             <div>Trades</div>
             <div>Win rate</div>
             <div>Won</div>
-            <div>Delta</div>
+            <div>Off by</div>
           </div>
           <div>
             {calibration.bins.map((b, i) => {
@@ -312,9 +312,11 @@ export default function Performance() {
                   </div>
                   <div>{hasData ? `${actualPct.toFixed(0)}%` : "-"}</div>
                   <div className={deltaCls}>
-                    {hasData
-                      ? `${delta >= 0 ? "+" : ""}${delta.toFixed(0)} pp`
-                      : "-"}
+                    {hasData ? (
+                      delta >= 1.0  ? `+${delta.toFixed(0)}% under` :
+                      delta <= -1.0 ? `${delta.toFixed(0)}% over` :
+                                      "on target"
+                    ) : "-"}
                   </div>
                 </div>
               );

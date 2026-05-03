@@ -1302,7 +1302,10 @@ button { font: inherit; }
 .calib-bin,
 .calib-header {
   display: grid;
-  grid-template-columns: 100px 80px 1fr 60px 80px;
+  /* Last column widened from 80px to 120px to fit "+22% under" /
+     "-24% over" without truncation. The calib-delta values read
+     more clearly with a directional word than as bare "+22 pp". */
+  grid-template-columns: 100px 80px 1fr 60px 120px;
   gap: 12px;
   align-items: center;
   padding: 8px 0;
