@@ -406,19 +406,26 @@ class PMAnalyst:
                     summary["skipped"] += 1
                     continue
 
-                # ── Pre-Claude filter ──────────────────────────────────
-                # The archetype classifier is a pure regex/keyword
-                # function; running it BEFORE the Claude call lets us
-                # drop markets that every user is guaranteed to skip
-                # at the sizer (archetype on skip list, or market price
-                # inside a per-archetype disabled band). Saves one
-                # Anthropic API call per dropped market.
+                # ─────────────────────────────────────────────────────
+                # PRE-CLAUDE FILTER
+                # ─────────────────────────────────────────────────────
+                # INPUT axis : mk.yes_price = raw market_p_yes, [0, 1]
+                # BANDS axis : raw market_p_yes (matches sizer gate)
+                # INVARIANT  : drop the market only if EVERY user would
+                #              skip at the sizer for the same reason
+                #              (archetype on skip list, or price inside
+                #              a per-archetype disabled band).
                 #
-                # The post-Claude classify still runs and may yield a
-                # different (e.g. category-disambiguated) archetype -
-                # this pre-filter is purely an optimization on the
-                # cases where the question text alone is enough to
-                # know the trade would be skipped.
+                # The archetype classifier is a pure regex/keyword
+                # function; running it BEFORE the Claude call saves
+                # one Anthropic API call per dropped market. Post-Claude
+                # classify still runs and may yield a different
+                # (category-disambiguated) archetype, so this is purely
+                # an optimization on cases where question text alone
+                # is enough to know the trade would be skipped.
+                #
+                # If any user wouldn't skip, run Claude. The post-sizer
+                # gate is the source of truth, not this filter.
                 pre_arch = classify_archetype(
                     mk.question,
                     event_slug=getattr(mk, "event_slug", None),

@@ -125,17 +125,29 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
-    # ── Gate: per-archetype disabled market-price bands ─────────────────────
-    # Per-archetype list of (lo, hi) bands in market_price_yes space.
-    # The sizer skips a market when its market_price_yes falls inside
-    # any band on its archetype's list. Bands are matched on raw
-    # market_price_yes (not favourite price), so the user can disable
-    # just YES extreme favourites for one archetype without also
-    # blocking the symmetric NO side or other archetypes.
+    # ─────────────────────────────────────────────────────────────────
+    # GATE: per-archetype disabled market-price bands
+    # ─────────────────────────────────────────────────────────────────
+    # INPUT  : market_p_yes (= ay above), range [0, 1]
+    # AXIS   : RAW market_p_yes - NOT favourite price.
+    #          favourite price = max(p, 1-p), range [0.5, 1] - DIFFERENT.
+    # BANDS  : list of (lo, hi) pairs in raw market_p_yes space, per
+    #          archetype. Half-open intervals [lo, hi).
+    # ACTION : skip if ANY band on the trade's archetype contains
+    #          market_p_yes.
     #
-    # Replaces both the V0 single-floor `min_market_favourite_price`
-    # gate and the brief intermediate global `skip_market_price_bands`
-    # field. There is no global filter under V1 - per-archetype only.
+    # Why raw, not favourite: the user wants asymmetric control. Disabling
+    # 90-100 (YES extremes) without 0-10 (NO extremes) is meaningful;
+    # bucketing on favourite price would force them symmetric.
+    #
+    # Concrete check for archetype tennis with bands [[0.40, 0.60]]:
+    #   market_p_yes = 0.30 (NO favourite, fav=0.70) -> ALLOWED
+    #   market_p_yes = 0.55 (weak YES,    fav=0.55) -> SKIPPED
+    #   market_p_yes = 0.85 (strong YES,  fav=0.85) -> ALLOWED
+    #
+    # Replaces the V0 `min_market_favourite_price` floor and the brief
+    # intermediate global `skip_market_price_bands`. No global filter
+    # under V1 - per-archetype only.
     arch_band_map = (
         getattr(user_config, "archetype_skip_market_price_bands", None) or {}
     )

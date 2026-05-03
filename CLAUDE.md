@@ -167,6 +167,7 @@ The vault lives at `/Users/macmini/Documents/Obsidian Vault/Delfi/`. Read `START
 - Something feels like it might conflict with an earlier decision - search `40_Decisions/`.
 - About to write user-facing copy - read `50_Feedback/no_filler_subheadlines.md`.
 - About to recommend architecture that touches funds/keys/credentials - read `50_Feedback/custody_question_always_ask.md`.
+- About to write or modify a migration / sizer gate / axis-sensitive transform - read `50_Feedback/be_critical_and_intentional.md` and write the invariant block FIRST.
 
 ### The rule
 

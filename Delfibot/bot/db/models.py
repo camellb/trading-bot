@@ -540,20 +540,30 @@ def create_all_tables() -> None:
                 "ALTER TABLE user_config ADD COLUMN "
                 "skip_market_price_bands TEXT"
             ))
-            # One-shot migration: legacy `min_market_favourite_price`
-            # floor -> equivalent skip bands.
+            # ─────────────────────────────────────────────────────────
+            # MIGRATION: legacy `min_market_favourite_price` -> bands
+            # ─────────────────────────────────────────────────────────
+            # INPUT axis : favourite price = max(p, 1-p), range [0.50, 1.00]
+            # OUTPUT axis: raw market_p_yes,              range [0.00, 1.00]
+            # INVARIANT  : "skip iff favourite price < f"
+            #              <=> "skip iff (1 - f) < market_p_yes < f"
+            #              <=> output bands cover ONLY the symmetric
+            #                  middle (1 - f, f) on the raw axis.
             #
-            # SEMANTICS: min_favourite_price = f means "skip markets
-            # where max(p, 1-p) < f" - i.e. the COIN-FLIP middle band
-            # [1-f, f] in raw market_price_yes space. This rule is
-            # SYMMETRIC: a NO bet at market_p_yes=0.30 has favourite
-            # price 0.70 and should be ALLOWED at f=0.60, not skipped.
+            # The two axes are NOT the same. Migration v1 silently
+            # produced left-only bands [0, f] and turned the bot YES-only.
+            # A 30s sanity-check would have caught it. See
+            # 50_Feedback/be_critical_and_intentional.md.
+            #
+            # Concrete check for f=0.60:
+            #   p=0.30 (NO favourite, fav=0.70) -> ALLOWED (✓ not in any band)
+            #   p=0.55 (weak YES,    fav=0.55) -> SKIPPED (in [0.50, 0.60))
+            #   p=0.85 (strong YES,  fav=0.85) -> ALLOWED (✓ not in any band)
             #
             # Algorithm: round f UP to nearest 0.10 (0.55 -> 0.60),
-            # then disable every 10pp bucket whose [lo, hi) range
-            # falls entirely inside the symmetric middle [1-f, f].
+            # then disable every 10pp bucket inside (1 - f, f).
             #   f=0.60 -> middle [0.40, 0.60] -> [[0.40,0.50],[0.50,0.60]]
-            #   f=0.70 -> middle [0.30, 0.70] -> 4 buckets [0.30..0.70]
+            #   f=0.70 -> middle [0.30, 0.70] -> 4 buckets covering 0.30..0.70
             rows = conn.execute(sa_text(
                 "SELECT user_id, min_market_favourite_price "
                 "FROM user_config "
