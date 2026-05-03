@@ -1151,6 +1151,25 @@ html, body { scroll-behavior: smooth; }
   font-family: var(--font-body); font-size: 13px; line-height: 1.6;
   color: var(--vellum-60); max-width: 600px; margin: 32px auto 0; text-align: center;
 }
+/* Informational tile: shows platform support without pretending to be
+   a download link. The download itself is gated behind purchase and
+   delivered in the post-purchase email; the section CTA below the
+   grid is the actual call-to-action. */
+.platform-card.is-info {
+  cursor: default;
+}
+.platform-card.is-info:hover {
+  border-color: var(--vellum-10);
+  background: var(--obsidian-raise);
+}
+.platform-card.is-info:hover .platform-icon {
+  color: var(--vellum);
+  border-color: var(--vellum-10);
+}
+.platforms-cta-wrap {
+  display: flex; justify-content: center;
+  margin: 40px auto 0;
+}
 
 @media (max-width: 720px) {
   .custody-grid { grid-template-columns: 1fr; padding: 32px; gap: 32px; }
