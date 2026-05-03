@@ -28,7 +28,12 @@ export type Page =
   | "risk"
   | "settings";
 
-export type SettingsTab = "account" | "connections" | "notifications";
+export type SettingsTab =
+  | "account"
+  | "app"
+  | "diagnostics"
+  | "connections"
+  | "notifications";
 
 export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
@@ -312,6 +317,8 @@ const NAV: NavItem[] = [
     icon: IconGear(),
     sub: [
       { id: "account",       label: "Account" },
+      { id: "app",           label: "App" },
+      { id: "diagnostics",   label: "Diagnostics" },
       { id: "connections",   label: "Connections" },
       { id: "notifications", label: "Notifications" },
     ],

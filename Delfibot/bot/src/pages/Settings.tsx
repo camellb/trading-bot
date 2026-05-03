@@ -52,6 +52,8 @@ interface Props {
 
 const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   account:       { h1: "Account",         sub: "" },
+  app:           { h1: "App",             sub: "" },
+  diagnostics:   { h1: "Diagnostics",     sub: "" },
   connections:   { h1: "Connections",     sub: "" },
   notifications: { h1: "Notifications",   sub: "" },
 };
@@ -72,6 +74,8 @@ export default function Settings({ tab, creds, config, onSaved }: Props) {
       </div>
 
       {tab === "account"       && <AccountPanel       config={config} onSaved={onSaved} />}
+      {tab === "app"           && <AppPanel />}
+      {tab === "diagnostics"   && <DiagnosticsPanel />}
       {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} />}
       {tab === "notifications" && <NotificationsPanel />}
     </div>
@@ -206,14 +210,32 @@ function AccountPanel({
         )}
       </div>
 
-      <TimezonePanel />
-      <AutostartPanel />
-      <LoginItemPanel />
-      <RestartPanel />
-      <LogsPanel />
-      <DbBackupPanel />
-      <LaunchStatsPanel />
       <LicensePanel />
+    </>
+  );
+}
+
+// ── App tab: how the app behaves on this machine ────────────────────────
+
+function AppPanel() {
+  return (
+    <>
+      <TimezonePanel />
+      <LoginItemPanel />
+      <AutostartPanel />
+    </>
+  );
+}
+
+// ── Diagnostics tab: ops + debugging ────────────────────────────────────
+
+function DiagnosticsPanel() {
+  return (
+    <>
+      <RestartPanel />
+      <DbBackupPanel />
+      <LogsPanel />
+      <LaunchStatsPanel />
     </>
   );
 }
