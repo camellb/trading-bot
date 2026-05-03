@@ -32,7 +32,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.executors.asyncio import AsyncIOExecutor
+from apscheduler.executors.pool import ThreadPoolExecutor as APThreadPoolExecutor
 from apscheduler.triggers.interval import IntervalTrigger
+import asyncio as _asyncio_module  # alias for the sync job wrappers below
 
 # Force aiohttp's DNS resolver onto a thread pool BEFORE any
 # ClientSession is constructed anywhere else in the codebase.
@@ -452,46 +455,70 @@ async def main() -> None:
     print(f"DELFI_LOCAL_API_READY {bound_port}", flush=True)
 
     # ── Scheduler ────────────────────────────────────────────────────────────
-    scheduler = AsyncIOScheduler()
+    #
+    # Why a separate threadpool executor: APScheduler's AsyncIOScheduler
+    # default runs `async def` jobs ON the same event loop as aiohttp.
+    # If a job does ANY blocking sync I/O (sqlite read, anthropic call,
+    # urllib fetch in research/fetcher) the loop is blocked - new
+    # /api/state requests can't be dispatched and the GUI shows
+    # "Delfi could not start" after its 30s wait. Confirmed in production
+    # 2026-05-03: `/api/state` hung indefinitely while a 165-quota scan
+    # was mid-flight.
+    #
+    # Fix: register a ThreadPoolExecutor and route the heavy jobs to it.
+    # Each job becomes a sync wrapper that calls asyncio.run() to spin
+    # up its own short-lived event loop on the worker thread, isolated
+    # from the API loop. The scan can take its full sweet time and
+    # /api/state stays responsive throughout.
+    #
+    # The aiohttp client sessions used inside scan_and_analyze /
+    # resolve_positions are created INSIDE the async body via
+    # `async with PolymarketFeed() as feed:` so they're bound to the
+    # job's own loop - they don't leak across loops. Same for the
+    # sqlalchemy sessions (per-thread connections by default).
+    scheduler = AsyncIOScheduler(executors={
+        "default":    AsyncIOExecutor(),
+        "threadpool": APThreadPoolExecutor(max_workers=4),
+    })
     api.set_scheduler(scheduler)
 
     scan_interval_min = int(getattr(config, "PM_SCAN_INTERVAL_MINUTES", 5))
     resolve_interval_min = int(getattr(config, "PM_RESOLVE_INTERVAL_MINUTES", 15))
     fast_resolve_sec = int(getattr(config, "PM_RESOLVE_FAST_INTERVAL_SECONDS", 60))
 
-    async def _run_scan():
+    def _run_scan():
         if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
             return
         try:
-            await scan_and_analyze(
+            _asyncio_module.run(scan_and_analyze(
                 limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
                 min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
                 analyst        = analyst,
-            )
+            ))
             proc_health.record_job_ok("pm_scan")
         except Exception as exc:
             proc_health.record_job_error("pm_scan")
             print(f"[delfi] scan failed: {exc}", file=sys.stderr, flush=True)
 
-    async def _run_resolve():
+    def _run_resolve():
         try:
-            await resolve_positions()
+            _asyncio_module.run(resolve_positions())
             proc_health.record_job_ok("pm_resolve")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve")
             print(f"[delfi] resolve failed: {exc}", file=sys.stderr, flush=True)
 
-    async def _run_resolve_fast():
+    def _run_resolve_fast():
         try:
-            await resolve_positions(short_horizon_only=True)
+            _asyncio_module.run(resolve_positions(short_horizon_only=True))
             proc_health.record_job_ok("pm_resolve_fast")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve_fast")
             print(f"[delfi] fast resolve failed: {exc}", file=sys.stderr, flush=True)
 
-    async def _run_markouts():
+    def _run_markouts():
         try:
-            await check_markouts()
+            _asyncio_module.run(check_markouts())
             proc_health.record_job_ok("markout_check")
         except Exception as exc:
             proc_health.record_job_error("markout_check")
@@ -503,24 +530,28 @@ async def main() -> None:
         id="pm_scan",
         next_run_time=now_utc + timedelta(seconds=60),
         max_instances=1, coalesce=True,
+        executor="threadpool",
     )
     scheduler.add_job(
         _run_resolve, IntervalTrigger(minutes=resolve_interval_min),
         id="pm_resolve",
         next_run_time=now_utc + timedelta(minutes=5),
         max_instances=1, coalesce=True,
+        executor="threadpool",
     )
     scheduler.add_job(
         _run_resolve_fast, IntervalTrigger(seconds=fast_resolve_sec),
         id="pm_resolve_fast",
         next_run_time=now_utc + timedelta(seconds=30),
         max_instances=1, coalesce=True,
+        executor="threadpool",
     )
     scheduler.add_job(
         _run_markouts, IntervalTrigger(hours=1),
         id="markout_check",
         next_run_time=now_utc + timedelta(minutes=7),
         max_instances=1, coalesce=True,
+        executor="threadpool",
     )
 
     scheduler.start()
