@@ -765,24 +765,7 @@ function ArchetypeCard({
             archetypes are unaffected.
           </p>
           <div className="price-band-row">
-            {PRICE_BANDS.slice(0, 5).map(([lo, hi]) => {
-              const k = bandKey(lo, hi);
-              const off = disabledBands.has(k);
-              return (
-                <button
-                  type="button"
-                  key={k}
-                  onClick={() => toggleBand(lo, hi)}
-                  disabled={busy}
-                  className={off ? "price-band off" : "price-band on"}
-                  aria-pressed={!off}
-                >
-                  {bandLabel(lo, hi)}
-                </button>
-              );
-            })}
-            <span className="price-band-divider" aria-hidden="true" />
-            {PRICE_BANDS.slice(5).map(([lo, hi]) => {
+            {PRICE_BANDS.map(([lo, hi]) => {
               const k = bandKey(lo, hi);
               const off = disabledBands.has(k);
               return (

@@ -1362,6 +1362,13 @@ button { font: inherit; }
 
 /* ── Archetype-card per-archetype band controls ───────────────────── */
 .archetype-bands-row {
+  /* The archetype-card grid is `1fr auto` (name+desc | trade toggle).
+     Without grid-column, the Bands row would land in column 1, leaving
+     column 2 empty. When the panel below opens it would cram into the
+     card's column 2 and squeeze the description column to ~half width
+     - that's the wrap-narrowly bug from 2026-05-03. Span both columns
+     so the bands UI uses the full card width. */
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1390,6 +1397,10 @@ button { font: inherit; }
   letter-spacing: 0;
 }
 .archetype-bands-panel {
+  /* Same grid-spans-both-columns rule as archetype-bands-row above:
+     without it, the panel goes into column 2 and squeezes the
+     description column on the left. */
+  grid-column: 1 / -1;
   margin-top: 10px;
   padding: 12px;
   border-radius: var(--radius-md);
@@ -1403,8 +1414,10 @@ button { font: inherit; }
   line-height: 1.5;
 }
 /* Tighter pill layout when the band row lives inside an archetype card.
-   The card is narrower than the dedicated Risk page panel and we want
-   all 10 buckets visible without odd 4-3-2 wrapping. */
+   Card-width narrower than a full Risk-page panel so the pills shrink
+   slightly. The divider element is gone now (no global panel exists,
+   the help text already explains 0-50=NO, 50-100=YES) so wrapping is
+   the natural single-line / two-line behaviour driven by card width. */
 .archetype-bands-panel .price-band-row {
   gap: 6px;
 }
@@ -1412,10 +1425,6 @@ button { font: inherit; }
   min-width: 50px;
   padding: 5px 8px;
   font-size: 11px;
-}
-.archetype-bands-panel .price-band-divider {
-  height: 18px;
-  margin: 0 2px;
 }
 
 /* ── Price band filter (Risk page) ─────────────────────────────────── */
@@ -1454,17 +1463,6 @@ button { font: inherit; }
   outline: 2px solid var(--gold);
   outline-offset: 2px;
 }
-/* Vertical separator between the NO-favoured (0-50) and YES-favoured
-   (50-100) sides of the price axis. Reads as "this row is split into
-   two halves" without needing labels above each cluster. */
-.price-band-divider {
-  flex: 0 0 auto;
-  width: 1px;
-  height: 24px;
-  background: var(--gold-line);
-  margin: 0 4px;
-}
-
 .brier-spark svg { display: block; width: 100%; }
 .brier-foot      { color: var(--vellum-60); font-size: 12px; margin: 6px 0 0; font-family: var(--font-mono); }
 
