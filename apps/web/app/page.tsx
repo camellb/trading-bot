@@ -43,13 +43,16 @@ declare global {
   }
 }
 
-function trackCta(location: string) {
+function trackCta(location: string, ctaText: string) {
   try {
     window.gtag?.("event", "cta_click", {
       cta_location: location,
-      cta_text:     "Try it today",
+      cta_text:     ctaText,
     });
-    window.fbq?.("trackCustom", "CtaClick", { cta_location: location });
+    window.fbq?.("trackCustom", "CtaClick", {
+      cta_location: location,
+      cta_text:     ctaText,
+    });
   } catch {
     /* analytics failures must never break the click */
   }
@@ -75,21 +78,29 @@ function withUtm(url: string, location: string): string {
   return `${url}${sep}${params.toString()}`;
 }
 
-/** Tracked checkout CTA. Use everywhere on the landing page. */
+/** Tracked checkout CTA. Use everywhere on the landing page. The
+ *  visible label is variable per location so we can A/B and so the
+ *  analytics events carry the actual button text the user clicked. */
 function CtaLink({
   location,
   className,
   children,
+  text,
 }: {
   location: string;
   className: string;
   children: React.ReactNode;
+  /** Plain-text label for analytics. Defaults to "Try it today" for
+   *  back-compat. Pass the visible text when it differs from the
+   *  default. */
+  text?: string;
 }) {
+  const ctaText = text ?? "Try it today";
   return (
     <a
       className={className}
       href={withUtm(CHECKOUT_URL, location)}
-      onClick={() => trackCta(location)}
+      onClick={() => trackCta(location, ctaText)}
     >
       {children}
     </a>
@@ -151,7 +162,7 @@ function TopNav() {
           </Link>
         </div>
         <div className="nav-right">
-          <CtaLink className="btn-primary" location="topnav">Try it today</CtaLink>
+          <CtaLink className="btn-primary" location="topnav" text="Get Delfi">Get Delfi</CtaLink>
         </div>
       </div>
     </nav>
@@ -174,7 +185,7 @@ function Hero() {
           The first autonomous Polymarket trader that runs entirely on your computer. Your wallet key never leaves it. Your reasoning is yours alone.
         </p>
         <div className="hero-ctas">
-          <CtaLink className="btn-primary" location="hero">Try it today</CtaLink>
+          <CtaLink className="btn-primary" location="hero" text="Download Delfi">Download Delfi</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
       </div>
@@ -370,7 +381,7 @@ function Platforms() {
           <h2 className="t-display-l balanced">Available for macOS<br />and Windows</h2>
         </div>
         <div className="platforms-grid">
-          <div className="platform-card disabled" aria-disabled="true">
+          <CtaLink className="platform-card" location="platform-mac" text="Get Delfi for macOS">
             <div className="platform-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.6 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8s1.8.8 3 .8 2-1.2 2.8-2.3c.9-1.3 1.2-2.6 1.2-2.7 0 0-2.3-.9-2.3-3.6zM14.4 5.7c.6-.7 1-1.7.9-2.7-.9.1-2 .6-2.6 1.3-.6.6-1.1 1.6-.9 2.6.9.1 1.9-.5 2.6-1.2z"/></svg>
             </div>
@@ -379,8 +390,9 @@ function Platforms() {
               <div className="platform-detail">Apple Silicon. M1, M2, M3, M4.</div>
               <div className="platform-arch">arm64 · .dmg</div>
             </div>
-          </div>
-          <div className="platform-card disabled" aria-disabled="true">
+            <span className="platform-cta">Get Delfi</span>
+          </CtaLink>
+          <CtaLink className="platform-card" location="platform-win" text="Get Delfi for Windows">
             <div className="platform-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5L11 4v8H3V5.5zm0 13L11 20v-8H3v6.5zM12 4l9-1.5V12h-9V4zm0 16l9 1.5V12h-9v8z"/></svg>
             </div>
@@ -389,7 +401,8 @@ function Platforms() {
               <div className="platform-detail">Windows 10 and 11.</div>
               <div className="platform-arch">x64 · .msi</div>
             </div>
-          </div>
+            <span className="platform-cta">Get Delfi</span>
+          </CtaLink>
         </div>
       </div>
     </section>
@@ -431,7 +444,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <CtaLink className="sim-cta" location="sim">Try it today →</CtaLink>
+            <CtaLink className="sim-cta" location="sim" text="Start free in Simulation">Start free in Simulation →</CtaLink>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -524,7 +537,7 @@ function NewHere() {
             <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
             <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade, and acts when the forecast clears every gate.</p>
             <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need a machine to run Delfi on.</p>
-            <CtaLink className="newhere-cta" location="newhere">Try it today →</CtaLink>
+            <CtaLink className="newhere-cta" location="newhere" text="Try Delfi free">Try Delfi free →</CtaLink>
           </div>
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
@@ -553,7 +566,7 @@ function FAQ() {
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
     { q: "How much does it cost?", a: "$199 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
-    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key stays in your OS keychain. Delfi reads the key only inside your own process, only when it needs to sign a trade. We can't withdraw funds, transfer them, or even see them. You can pause Delfi or delete the app at any time." },
+    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in your OS keychain (macOS Keychain, Windows Credential Locker), never on Delfi servers. Delfi reads it only inside your own process, only when signing a trade: never at rest, never written to logs, never transmitted off your machine. We can't withdraw funds, transfer them, or even see your wallet address. You can pause Delfi or delete the app at any time." },
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
     { q: "Can I turn Delfi off?", a: "Any time. The dashboard has an emergency stop button. Open positions stay open until they resolve. No new trades are placed until you turn it back on." },
     { q: "Is this legal?", a: "Polymarket and prediction markets are regulated differently in every jurisdiction. Some permit it, some restrict it, some prohibit it. Confirm legality in your own region before trading. If in doubt, consult a local advisor." },
@@ -591,7 +604,7 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">$199 once. All future updates included.</p>
-        <CtaLink className="btn-primary large" location="final">Try it today</CtaLink>
+        <CtaLink className="btn-primary large" location="final" text="Get Delfi">Get Delfi</CtaLink>
       </div>
     </section>
   );
