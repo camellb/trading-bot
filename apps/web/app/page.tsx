@@ -358,7 +358,7 @@ function CustodyPromise() {
         </div>
         <div className="custody-grid">
           <p className="custody-body">
-            Delfi installs and runs entirely on your computer. Your Polymarket private key sits in your operating system&apos;s keychain, where it has always lived. Delfi reads it only when it places a trade, and only inside your own process. Nothing about your wallet ever leaves the computer you&apos;re reading this on.
+            Delfi runs on your computer, not ours. Your Polymarket key never leaves your OS keychain. Delfi reads it only when it places a trade. Your wallet stays invisible to us by design.
           </p>
           <ul className="custody-list">
             <li><span className="custody-tick">✓</span> We never see your wallet address.</li>
