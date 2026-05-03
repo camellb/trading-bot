@@ -16,9 +16,8 @@ import { SortableTh, SortKey, useSort } from "../components/SortableTh";
  * page-wrap with title + range chips, then:
  *   - stat-row: Bankroll, Realized P&L, Win rate, Brier (4 tiles)
  *   - Equity chart (SVG, reconstructed client-side from settled positions)
- *   - Calibration bins (predicted vs actual)
  *   - Brier trend sparkline
- *   - By category / by horizon tables
+ *   - By category / by horizon / by archetype / by price-band tables
  */
 
 type Range = "all" | "30d" | "7d";
@@ -242,103 +241,6 @@ export default function Performance() {
           <EquityChart series={equitySeries} />
         )}
       </div>
-
-      {calibration && calibration.bins.length > 0 && (
-        <div className="panel">
-          <div className="panel-head">
-            <h2 className="panel-title">Calibration</h2>
-            <span className="panel-meta">
-              {calibration.resolved} resolved · Brier{" "}
-              {calibration.brier?.toFixed(3) ?? "-"}
-            </span>
-          </div>
-          <p
-            style={{
-              margin: "0 0 14px",
-              color: "var(--vellum-60)",
-              fontFamily: "var(--font-body)",
-              fontSize: 13,
-              lineHeight: 1.55,
-            }}
-          >
-            Settled trades grouped by Delfi's confidence. Gold bar =
-            actual win rate; faint line = where a perfectly-calibrated
-            forecaster would land. Bar past the line means
-            underconfident, short means overconfident.
-          </p>
-          <div className="calib-header">
-            <div>Delfi confidence</div>
-            <div>Trades</div>
-            <div>Win rate</div>
-            <div>Won</div>
-            <div>Off by</div>
-          </div>
-          {/* Scale row: tick labels above the bar column so the user
-              can see where 50%, 60%, 70%, 80%, 90%, 100% land along
-              the visualization. Aligned with the .calib-bar grid cell
-              via the same 5-column template. */}
-          <div className="calib-scale" aria-hidden="true">
-            <div />
-            <div />
-            <div className="calib-scale-track">
-              <span>50%</span>
-              <span>60%</span>
-              <span>70%</span>
-              <span>80%</span>
-              <span>90%</span>
-              <span>100%</span>
-            </div>
-            <div />
-            <div />
-          </div>
-          <div>
-            {calibration.bins.map((b, i) => {
-              const loPct     = b.lo * 100;
-              const hiPct     = b.hi * 100;
-              const midPct    = (loPct + hiPct) / 2;
-              const hasData   = b.n > 0 && b.mean_actual != null;
-              const actualPct = hasData ? (b.mean_actual ?? 0) * 100 : 0;
-              const predPct   = b.n > 0 && b.mean_pred != null
-                ? (b.mean_pred ?? 0) * 100
-                : midPct;
-              // Map [50, 100] to [0, 100] so the bar fills the visible
-              // confidence range (low extreme of any V1 bet is 50%).
-              const norm = (v: number) =>
-                Math.max(0, Math.min(100, ((v - 50) / 50) * 100));
-              const actualW  = hasData ? norm(actualPct) : 0;
-              const midLeft  = norm(midPct);
-              const predLeft = norm(predPct);
-              const delta    = hasData ? actualPct - predPct : 0;
-              const deltaCls =
-                !hasData      ? "calib-delta calib-delta-zero" :
-                delta >= 1.0  ? "calib-delta calib-delta-pos"  :
-                delta <= -1.0 ? "calib-delta calib-delta-neg"  :
-                                "calib-delta calib-delta-zero";
-              return (
-                <div className="calib-bin" key={i}>
-                  <div>{loPct.toFixed(0)}-{hiPct.toFixed(0)}%</div>
-                  <div>{b.n} trades</div>
-                  <div className="calib-bar">
-                    <div className="calib-mid" style={{ left: `${midLeft}%` }} />
-                    <div className="calib-actual" style={{ width: `${actualW}%` }} />
-                    {hasData && (
-                      <div className="calib-pred" style={{ left: `${predLeft}%` }} />
-                    )}
-                  </div>
-                  <div>{hasData ? `${actualPct.toFixed(0)}%` : "-"}</div>
-                  <div className={deltaCls}>
-                    {hasData ? (
-                      delta >= 1.0  ? `+${delta.toFixed(0)}% under` :
-                      delta <= -1.0 ? `${delta.toFixed(0)}% over` :
-                                      "on target"
-                    ) : "-"}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {trend.length > 1 && (
         <div className="panel">
