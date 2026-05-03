@@ -109,9 +109,8 @@ from engine.user_config import (
     validated_update_payload,
 )
 from engine.license import (
-    LICENSE_OFFLINE_GRACE_DAYS,
-    deactivate_license,
-    validate_license,
+    fresh_meta_for,
+    verify_license,
 )
 from execution.pm_executor import PMExecutor
 from process_health import health as proc_health
@@ -1180,71 +1179,79 @@ class LocalAPI:
             print(f"[telegram] listener stop failed: {exc}", file=sys.stderr)
         return _ok(get_user_telegram_config())
 
-    # ── License (LS hard gate) ──────────────────────────────────────────
+    # ── License (offline Ed25519 hard gate) ─────────────────────────────
     def _license_status_payload(self) -> dict:
         """Pack the cached state into a small dict for the LicenseGate.
 
-        The component cares about three things:
+        The React shell cares about three things:
           - is the app gated right now (`valid` boolean)
           - if not, why ("reason" string for inline display)
-          - was a key ever activated ("has_key" — controls whether to
+          - was a key ever activated ("has_key" - controls whether to
             show "Paste your license key" or "Re-activate")
-        """
-        from datetime import datetime, timedelta, timezone
 
+        Under the offline Ed25519 model we re-verify the cached blob
+        on every call. The crypto check is sub-millisecond, so there
+        is no value in trusting a stale "good last week" stamp; this
+        also means a build whose embedded public key gets rotated
+        will immediately gate the app until a new license is pasted.
+        """
         key = get_license_key() or ""
         meta = get_license_meta() or {}
-        status = meta.get("status")
-        last_validated_iso = meta.get("last_validated_at")
 
-        valid = False
-        reason: Optional[str] = None
         if not key:
-            reason = "no license key activated"
-        elif status == "revoked":
-            reason = "license has been revoked"
-        elif status == "invalid":
-            reason = meta.get("error") or "license is invalid"
-        elif status == "valid" and last_validated_iso:
-            try:
-                last = datetime.fromisoformat(last_validated_iso)
-                if last.tzinfo is None:
-                    last = last.replace(tzinfo=timezone.utc)
-                age = datetime.now(timezone.utc) - last
-                if age <= timedelta(days=LICENSE_OFFLINE_GRACE_DAYS):
-                    valid = True
-                else:
-                    reason = "license needs re-validation (offline grace expired)"
-            except Exception:
-                reason = "cached license metadata is unparseable"
-        else:
-            reason = "license never validated"
+            return {
+                "valid": False,
+                "reason": "no license key activated",
+                "has_key": False,
+                "last_validated_at": None,
+                "instance_id": None,
+                "email": None,
+            }
+
+        result = verify_license(key)
+        if not result.valid:
+            return {
+                "valid": False,
+                "reason": result.error or "license is not valid",
+                "has_key": True,
+                "last_validated_at": meta.get("last_validated_at"),
+                "instance_id": meta.get("instance_id"),
+                "email": (meta.get("payload") or {}).get("email"),
+            }
+
+        # Verification succeeded; refresh the cached meta so admin
+        # tooling has a current timestamp.
+        refreshed = fresh_meta_for(result.payload or {})
+        try:
+            set_license_meta(refreshed)
+        except Exception:
+            # Persisting the refresh is best-effort; verification is
+            # what gates the bot.
+            pass
 
         return {
-            "valid": valid,
-            "reason": reason,
-            "has_key": bool(key),
-            "last_validated_at": last_validated_iso,
-            "instance_id": meta.get("instance_id"),
+            "valid": True,
+            "reason": None,
+            "has_key": True,
+            "last_validated_at": refreshed["last_validated_at"],
+            "instance_id": refreshed["instance_id"],
+            "email": (result.payload or {}).get("email"),
         }
 
     async def _get_license_status(self, _req: web.Request) -> web.Response:
         return _ok(self._license_status_payload())
 
     async def _post_license_activate(self, req: web.Request) -> web.Response:
-        """Store + validate a license key against Lemon Squeezy.
+        """Store + verify a signed license blob.
 
         First-paste flow:
-          1. POST /api/license/activate {"license_key": "..."}
-          2. Sidecar calls LS /v1/licenses/validate.
+          1. POST /api/license/activate {"license_key": "<blob>"}
+          2. Sidecar verifies the Ed25519 signature offline.
           3. On valid: store key + meta in keychain, return 200.
-          4. On invalid: return 400 with the LS error message; do NOT
-             store the key (a stored bad key would block the gate
-             without recourse).
+          4. On invalid: return 400 with the verifier's error
+             message; do NOT store the blob (a stored bad blob
+             would just keep the gate open with no path forward).
         """
-        from datetime import datetime, timezone
-        import platform as _platform
-
         try:
             payload = await req.json()
         except Exception:
@@ -1256,89 +1263,25 @@ class LocalAPI:
         if not key:
             return _err("license_key is required", 400)
 
-        # Owner bypass. Skips the LS round-trip so the maintainer can
-        # launch the app on a fresh build without burning an LS
-        # activation slot. Anyone can read this code, but the bypass
-        # only writes a cached-valid keychain entry on this one
-        # machine; it does not generate real LS license keys, does not
-        # bypass anything in production for paying customers, and is
-        # documented in scripts/owner-activate.py. Acceptable risk for
-        # a single-tenant desktop app where the binary is the gate.
-        if key == "DELFI-OWNER-LOCAL-2026":
-            set_license_key(key)
-            set_license_meta({
-                "status":             "valid",
-                # Far future so the offline-grace check stays happy
-                # forever without re-validation.
-                "last_validated_at":  "2099-12-31T00:00:00+00:00",
-                "instance_id":        "owner-local",
-            })
-            return _ok(self._license_status_payload())
-
-        # Stable per-machine identifier so LS can attribute
-        # activations to the right machine in their dashboard. Uses
-        # node + system; not collected anywhere else.
-        instance_name = f"delfi-{_platform.node()}-{_platform.system()}"
-
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, validate_license, key, instance_name,
-        )
-
+        result = verify_license(key)
         if not result.valid:
-            # Don't persist a known-bad key — it would just keep the
-            # gate open with no path forward. The user can paste a
-            # different key.
             return _err(result.error or "license is not valid", 400)
 
         set_license_key(key)
-        set_license_meta({
-            "status":             "valid",
-            "last_validated_at":  datetime.now(timezone.utc).isoformat(),
-            "instance_id":        result.instance_id,
-        })
+        set_license_meta(fresh_meta_for(result.payload or {}))
         return _ok(self._license_status_payload())
 
     async def _post_license_deactivate(self, _req: web.Request) -> web.Response:
         """Sign this device out of its license.
 
-        Order of operations:
-          1. If we have an LS-issued instance_id from activation, call
-             `/v1/licenses/deactivate` to free the slot. This is what
-             makes "move to a new machine" work without spending
-             another activation against `activation_limit`.
-          2. Wipe the local keychain regardless of LS outcome — the
-             user pressed the button to leave this machine; we honour
-             that locally even if LS is unreachable.
-          3. Surface a warning string when LS rejected the
-             deactivation so the user knows their slot may still be
-             consumed (e.g. they're offline). Status payload itself
-             still flips to `valid: false, has_key: false`.
+        Under the offline Ed25519 model there is no online activation
+        slot to release; we just wipe the local keychain so the
+        LicenseGate re-shows. The same paid blob can be pasted again
+        on this or any other machine the user owns.
         """
-        key = get_license_key() or ""
-        meta = get_license_meta() or {}
-        instance_id = (meta.get("instance_id") or "").strip()
-
-        warning: Optional[str] = None
-        if key and instance_id:
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, deactivate_license, key, instance_id,
-            )
-            if not result.deactivated:
-                warning = (
-                    f"could not free the license slot on the server "
-                    f"({result.error or 'unknown error'}). The local "
-                    f"key has been cleared, but if you hit your "
-                    f"activation limit on a new machine, email "
-                    f"info@delfibot.com to release the orphan slot."
-                )
-
         set_license_key(None)
         set_license_meta(None)
-
-        payload = self._license_status_payload()
-        if warning:
-            payload["warning"] = warning
-        return _ok(payload)
+        return _ok(self._license_status_payload())
 
     # ── Reset simulation ────────────────────────────────────────────────
     async def _reset_simulation(self, _req: web.Request) -> web.Response:

@@ -1310,12 +1310,15 @@ def set_cryptopanic_key(value: Optional[str]) -> None:
     _keyring_set(KEYRING_CRYPTOPANIC_KEY, value)
 
 
-# ── License (Lemon Squeezy hard gate) ───────────────────────────────────────
-# The desktop app will not boot past `<LicenseGate>` until a key has
-# been activated against LS at least once. Activation result is
-# cached in the keychain; subsequent boots trust the cache for a
-# bounded window (see engine/license.py LICENSE_REVALIDATE_DAYS and
-# LICENSE_OFFLINE_GRACE_DAYS).
+# ── License (offline Ed25519 hard gate) ────────────────────────────────────
+# The desktop app will not boot past `<LicenseGate>` until a signed
+# license blob has been pasted and verified against the embedded
+# Ed25519 public key (see engine/license.py). The blob lives in the
+# keychain so the user can copy it back out; the small JSON meta
+# (verified payload + activation timestamp) lives in the data
+# directory. Re-verification happens on every /api/license/status
+# call - the crypto check is sub-millisecond and there is no online
+# round-trip to amortise.
 def get_license_key() -> Optional[str]:
     return _keyring_get(KEYRING_LICENSE_KEY)
 
