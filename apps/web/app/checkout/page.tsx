@@ -109,49 +109,96 @@ export default function CheckoutPage() {
   return (
     <main className="checkout-page">
       <header className="checkout-header">
-        <a href="/" className="checkout-back" aria-label="Back to homepage">
-          <span className="checkout-back-arrow">←</span>
+        <a href="/" className="checkout-back" aria-label="Back to delfibot.com">
+          <span className="checkout-back-arrow" aria-hidden="true">←</span>
           <span className="checkout-back-text">Delfi</span>
         </a>
       </header>
 
       <div className="checkout-grid">
         <aside className="checkout-summary">
-          <div className="checkout-summary-eyebrow">Order summary</div>
-          <h1 className="checkout-summary-title">Delfi</h1>
-          <p className="checkout-summary-desc">
-            Autonomous Polymarket trader. One-time purchase. All future
-            updates included.
-          </p>
-          <div className="checkout-summary-row">
-            <span>One-time</span>
-            <span className="t-num">$199.00</span>
+          <div>
+            <div className="checkout-summary-eyebrow">Order</div>
+            <h1 className="checkout-summary-title">Delfi</h1>
+            <p className="checkout-summary-desc">
+              Autonomous Polymarket trader.<br />Runs on your machine, 24/7.
+            </p>
           </div>
+
           <ul className="checkout-summary-list">
-            <li>Lifetime access on as many of your own machines as you like.</li>
-            <li>Your private key never leaves your computer.</li>
-            <li>14-day refund, no questions asked.</li>
+            <li>Lifetime access. Yours forever.</li>
+            <li>Your keys never leave your machine.</li>
+            <li>All future updates included.</li>
+            <li>14-day refund. No questions.</li>
           </ul>
+
+          <div className="checkout-summary-trust">
+            <div className="checkout-summary-trust-row">
+              <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
+                <path
+                  d="M8 1 2.5 3.5v4c0 3.3 2.4 6.4 5.5 7 3.1-.6 5.5-3.7 5.5-7v-4L8 1Zm-1 9L4.5 7.5l1-1L7 8l3.5-3.5 1 1L7 10Z"
+                  fill="currentColor"
+                />
+              </svg>
+              <span>Card data goes straight to Stripe, never to Delfi.</span>
+            </div>
+            <div className="checkout-summary-trust-row">
+              <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14">
+                <path
+                  d="M8 1a4 4 0 0 0-4 4v2H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8a1 1 0 0 0-1-1h-1V5a4 4 0 0 0-4-4Zm-2 6V5a2 2 0 1 1 4 0v2H6Z"
+                  fill="currentColor"
+                />
+              </svg>
+              <span>Encrypted end-to-end by Stripe.</span>
+            </div>
+          </div>
         </aside>
 
-        <section className="checkout-stripe">
-          {error ? (
-            <div className="checkout-error" role="alert">
-              <div className="checkout-error-title">
-                Checkout couldn&apos;t start
+        <section className="checkout-stripe-wrap">
+          <div className="checkout-stripe-frame">
+            {error ? (
+              <div className="checkout-error" role="alert">
+                <div className="checkout-error-title">
+                  Checkout couldn&apos;t start.
+                </div>
+                <div className="checkout-error-detail">{error}</div>
+                <div className="checkout-error-fallback">
+                  Email{" "}
+                  <a href="mailto:info@delfibot.com">info@delfibot.com</a> and
+                  we&apos;ll send you a payment link directly.
+                </div>
               </div>
-              <div className="checkout-error-detail">{error}</div>
-            </div>
-          ) : !options ? (
-            <div className="checkout-loading" role="status">
-              <span className="checkout-spinner" aria-hidden="true" />
-              <span className="checkout-loading-text">Loading checkout...</span>
-            </div>
-          ) : (
-            <EmbeddedCheckoutProvider stripe={getStripe()} options={options}>
-              <EmbeddedCheckout />
-            </EmbeddedCheckoutProvider>
-          )}
+            ) : !options ? (
+              <div className="checkout-loading" role="status">
+                <span className="checkout-spinner" aria-hidden="true" />
+                <span className="checkout-loading-text">
+                  Loading secure checkout...
+                </span>
+              </div>
+            ) : (
+              <EmbeddedCheckoutProvider stripe={getStripe()} options={options}>
+                <EmbeddedCheckout />
+              </EmbeddedCheckoutProvider>
+            )}
+          </div>
+
+          <div className="checkout-next">
+            <div className="checkout-next-eyebrow">After you pay</div>
+            <ol className="checkout-next-steps">
+              <li>
+                <span className="checkout-next-num">1</span>
+                Your license key lands in your inbox in seconds.
+              </li>
+              <li>
+                <span className="checkout-next-num">2</span>
+                Download Delfi for macOS or Windows from the email.
+              </li>
+              <li>
+                <span className="checkout-next-num">3</span>
+                Paste the license on first launch. You&apos;re live.
+              </li>
+            </ol>
+          </div>
         </section>
       </div>
     </main>

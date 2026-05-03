@@ -3,13 +3,19 @@
  * Styles scoped to the embedded checkout pages (/checkout and
  * /checkout/return). Keeps the marketing site's visual language
  * (Obsidian + Oracle Gold + Vellum, Newsreader display + Geist
- * body) but lays out a centered two-column billing flow rather
- * than the full-page hero stack of the homepage.
+ * body) but lays out a two-column billing flow rather than the
+ * full-page hero stack of the homepage.
  *
- * The page reuses brand tokens defined in app/globals.css and
- * leans on Stripe's own iframe styling for the card form
- * (Stripe-hosted; we cannot restyle the field interiors -- only
- * the surrounding chrome).
+ * Conversion notes baked in:
+ *   - the order summary stays sticky on desktop so trust signals
+ *     remain visible when the buyer scrolls inside the long
+ *     Stripe iframe;
+ *   - the iframe sits inside a vellum-toned frame so it doesn't
+ *     read as a foreign white panel against the obsidian page;
+ *   - the price isn't hardcoded in our copy; Stripe owns it so
+ *     the order summary can never drift from the actual charge;
+ *   - "after you pay" steps below the form remove ambiguity
+ *     about what happens next (a known checkout-page anxiety).
  */
 
 .checkout-page,
@@ -22,10 +28,22 @@
   flex-direction: column;
 }
 
+/* Subtle top vignette so the page doesn't feel like a flat
+   black slab when the iframe is loading. */
+.checkout-page {
+  background:
+    radial-gradient(
+      ellipse 100% 60% at 50% 0%,
+      rgba(212, 175, 55, 0.04) 0%,
+      transparent 60%
+    ),
+    var(--obsidian);
+}
+
 .checkout-header {
-  max-width: 1080px;
+  max-width: 1180px;
   width: 100%;
-  margin: 0 auto 32px;
+  margin: 0 auto 28px;
 }
 .checkout-back {
   display: inline-flex;
@@ -39,122 +57,163 @@
 .checkout-back-arrow {
   font-size: 18px;
   line-height: 1;
+  transition: transform var(--dur-base) var(--ease);
 }
+.checkout-back:hover .checkout-back-arrow { transform: translateX(-2px); }
 .checkout-back-text {
   font-family: var(--font-display);
-  font-size: 15px;
-  letter-spacing: 0.08em;
+  font-size: 17px;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
 }
 
 .checkout-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
-  gap: 48px;
-  max-width: 1080px;
+  /* Asymmetric so the Stripe iframe gets the wider column. */
+  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+  gap: 56px;
+  max-width: 1180px;
   width: 100%;
   margin: 0 auto;
   align-items: start;
 }
+
+/* ── Left column: order summary + trust signals ─────────────────── */
 
 .checkout-summary {
   position: sticky;
   top: 28px;
   background: var(--obsidian-raise);
   border: 1px solid var(--vellum-10);
-  border-radius: 6px;
-  padding: 32px;
+  border-radius: 8px;
+  padding: 36px 32px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 28px;
+  /* Subtle gold edge on the side of the card to tie it to the
+     site's accent without being loud. */
+  box-shadow: inset 1px 0 0 rgba(212, 175, 55, 0.18);
 }
 .checkout-summary-eyebrow {
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: var(--vellum-40);
+  color: var(--gold);
+  margin-bottom: 12px;
 }
 .checkout-summary-title {
   font-family: var(--font-display);
-  font-size: 36px;
+  font-size: 44px;
   font-weight: 400;
-  letter-spacing: -0.015em;
-  color: var(--gold);
-  margin: 0;
+  letter-spacing: -0.02em;
+  color: var(--vellum);
+  margin: 0 0 14px;
+  line-height: 1;
 }
 .checkout-summary-desc {
   font-family: var(--font-body);
-  font-size: 14px;
-  line-height: 1.6;
+  font-size: 15px;
+  line-height: 1.55;
   color: var(--vellum-60);
   margin: 0;
 }
-.checkout-summary-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding-top: 18px;
-  border-top: 1px solid var(--vellum-10);
-  font-family: var(--font-body);
-  font-size: 14px;
-  color: var(--vellum);
-}
-.checkout-summary-row .t-num {
-  font-family: var(--font-mono);
-  font-size: 16px;
-  color: var(--gold);
-}
+
 .checkout-summary-list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 22px 0;
+  border-top: 1px solid var(--vellum-10);
+  border-bottom: 1px solid var(--vellum-10);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 .checkout-summary-list li {
   font-family: var(--font-body);
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--vellum-60);
-  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--vellum);
+  padding-left: 22px;
   position: relative;
 }
 .checkout-summary-list li::before {
   content: "✓";
   position: absolute;
   left: 0;
+  top: 0;
   color: var(--gold);
+  font-size: 14px;
+  font-weight: 600;
 }
 
-.checkout-stripe {
-  background: var(--obsidian-raise);
+.checkout-summary-trust {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.checkout-summary-trust-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--vellum-60);
+}
+.checkout-summary-trust-row svg {
+  flex-shrink: 0;
+  color: var(--gold);
+  margin-top: 2px;
+}
+
+/* ── Right column: Stripe iframe wrapper + after-pay copy ──────── */
+
+.checkout-stripe-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+/* The iframe Stripe drops in is unavoidably white. Wrap it in a
+   vellum-toned frame so it reads as an intentional surface
+   against the obsidian page rather than a foreign popup. */
+.checkout-stripe-frame {
+  background: #ffffff;
   border: 1px solid var(--vellum-10);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 8px;
-  min-height: 520px;
+  min-height: 580px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.08),
+              0 12px 40px rgba(0, 0, 0, 0.35);
 }
 
-/* Stripe's embedded iframe sets its own background; the wrapper
-   above provides the brand frame. The 8px padding gives the iframe
-   a hairline so it doesn't look glued to the card border. */
+/* Stripe's iframe fills its parent. */
+.checkout-stripe-frame > div { min-height: 564px; }
 
 .checkout-loading {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 12px;
-  padding: 60px 20px;
-  color: var(--vellum-60);
+  padding: 80px 20px;
+  color: var(--obsidian);
   font-family: var(--font-body);
   font-size: 14px;
 }
+.checkout-page .checkout-loading {
+  /* Loading state lives inside the white Stripe frame; pin colours
+     to the dark wordmark + obsidian text so the spinner is visible
+     against white. */
+  color: rgba(10, 10, 15, 0.6);
+}
 .checkout-spinner {
-  width: 16px;
-  height: 16px;
-  border: 1.5px solid var(--vellum-10);
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(10, 10, 15, 0.12);
   border-top-color: var(--gold);
   border-radius: 50%;
   animation: checkout-spin 0.9s linear infinite;
@@ -165,62 +224,125 @@
 
 .checkout-error {
   margin: 24px;
-  padding: 24px;
+  padding: 28px;
   border: 1px solid rgba(255, 100, 100, 0.4);
   border-radius: 6px;
-  background: rgba(255, 100, 100, 0.06);
+  background: rgba(255, 100, 100, 0.04);
+  color: rgba(10, 10, 15, 0.85);
 }
 .checkout-error-title {
   font-family: var(--font-display);
-  font-size: 18px;
-  color: var(--vellum);
-  margin-bottom: 8px;
+  font-size: 20px;
+  color: rgba(10, 10, 15, 0.95);
+  margin-bottom: 10px;
 }
 .checkout-error-detail {
   font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.55;
-  color: var(--vellum-60);
+  color: rgba(10, 10, 15, 0.7);
+  margin-bottom: 14px;
+}
+.checkout-error-fallback {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: rgba(10, 10, 15, 0.7);
+}
+.checkout-error-fallback a {
+  color: var(--gold);
+  text-decoration: underline;
 }
 
-/* Return page card */
-.checkout-return-card {
-  max-width: 560px;
-  width: 100%;
-  margin: 64px auto;
-  padding: 40px;
+/* "After you pay" mini-checklist below the iframe. Removes the
+   classic checkout-page worry about what happens after Pay. */
+.checkout-next {
   background: var(--obsidian-raise);
   border: 1px solid var(--vellum-10);
-  border-radius: 6px;
-  text-align: center;
+  border-radius: 8px;
+  padding: 28px 32px;
 }
-.checkout-return-eyebrow {
+.checkout-next-eyebrow {
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.24em;
   text-transform: uppercase;
   color: var(--gold);
   margin-bottom: 18px;
 }
+.checkout-next-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  counter-reset: step;
+}
+.checkout-next-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--vellum);
+}
+.checkout-next-num {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--gold);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--gold);
+  margin-top: 1px;
+}
+
+/* ── Return page card ───────────────────────────────────────────── */
+
+.checkout-return-card {
+  max-width: 580px;
+  width: 100%;
+  margin: 64px auto;
+  padding: 48px 40px;
+  background: var(--obsidian-raise);
+  border: 1px solid var(--vellum-10);
+  border-radius: 8px;
+  text-align: center;
+  box-shadow: inset 0 1px 0 rgba(212, 175, 55, 0.18);
+}
+.checkout-return-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 20px;
+}
 .checkout-return-title {
   font-family: var(--font-display);
-  font-size: 32px;
+  font-size: 36px;
   font-weight: 400;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
   color: var(--vellum);
-  margin: 0 0 18px;
+  margin: 0 0 22px;
+  line-height: 1.05;
 }
 .checkout-return-body {
   font-family: var(--font-body);
   font-size: 15px;
   line-height: 1.6;
   color: var(--vellum);
-  margin: 0 0 14px;
+  margin: 0 0 16px;
 }
 .checkout-return-body.muted { color: var(--vellum-60); font-size: 13px; }
 .checkout-return-email {
   font-family: var(--font-mono);
   color: var(--gold);
+  font-size: 0.92em;
 }
 .checkout-return-link { color: var(--gold); text-decoration: underline; }
 
@@ -237,16 +359,55 @@
   text-decoration: none;
   transition: box-shadow var(--dur-base) var(--ease),
               background var(--dur-base) var(--ease);
+  margin-top: 8px;
 }
 .btn-primary:hover {
   box-shadow: 0 0 28px rgba(212, 175, 55, 0.28);
   background: rgba(212, 175, 55, 0.05);
 }
 
-@media (max-width: 880px) {
+/* ── Responsive ─────────────────────────────────────────────────── */
+
+@media (max-width: 920px) {
+  .checkout-page,
+  .checkout-return-page {
+    padding: 20px 16px 48px;
+  }
   .checkout-grid {
     grid-template-columns: 1fr;
     gap: 24px;
   }
-  .checkout-summary { position: static; }
+  .checkout-summary {
+    position: static;
+    padding: 28px 24px;
+  }
+  .checkout-summary-title {
+    font-size: 36px;
+  }
+  .checkout-stripe-wrap {
+    gap: 20px;
+  }
+  .checkout-stripe-frame {
+    min-height: 540px;
+    padding: 4px;
+  }
+  .checkout-stripe-frame > div { min-height: 532px; }
+  .checkout-next {
+    padding: 22px 24px;
+  }
+  .checkout-return-card {
+    padding: 32px 24px;
+    margin: 32px auto;
+  }
+  .checkout-return-title {
+    font-size: 28px;
+  }
+}
+
+@media (max-width: 480px) {
+  .checkout-summary {
+    padding: 24px 20px;
+    gap: 22px;
+  }
+  .checkout-summary-list { padding: 18px 0; }
 }
