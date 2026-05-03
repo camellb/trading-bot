@@ -171,6 +171,44 @@ async function markRefunded(paymentIntentId: string): Promise<number> {
   return r.rowCount ?? 0;
 }
 
+/**
+ * Stamp a license as revoked because the buyer disputed the charge
+ * with their bank. Treated as more serious than a refund: the money
+ * may not be coming back yet, and chargebacks usually correlate with
+ * abuse or shared accounts. Operator should follow up manually in
+ * the Stripe dashboard to submit evidence within the deadline.
+ */
+async function markDisputed(paymentIntentId: string): Promise<number> {
+  const r = await db().query(
+    `UPDATE licenses
+        SET revoked_at = COALESCE(revoked_at, now()),
+            revoke_reason = COALESCE(revoke_reason, 'stripe charge.dispute.created')
+      WHERE stripe_payment_intent = $1
+        AND revoked_at IS NULL`,
+    [paymentIntentId],
+  );
+  return r.rowCount ?? 0;
+}
+
+/**
+ * Async payment methods (SEPA, BACS, some bank debits) clear AFTER
+ * the buyer sees the success page. If the payment subsequently fails
+ * the buyer may already have a license they didn't actually pay for.
+ * Revoke by session id since at this stage the payment_intent may
+ * not yet have a captured charge.
+ */
+async function markAsyncPaymentFailed(sessionId: string): Promise<number> {
+  const r = await db().query(
+    `UPDATE licenses
+        SET revoked_at = COALESCE(revoked_at, now()),
+            revoke_reason = COALESCE(revoke_reason, 'stripe checkout.session.async_payment_failed')
+      WHERE stripe_session_id = $1
+        AND revoked_at IS NULL`,
+    [sessionId],
+  );
+  return r.rowCount ?? 0;
+}
+
 // ---- entrypoint --------------------------------------------------------
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -261,6 +299,61 @@ export async function POST(request: Request): Promise<NextResponse> {
         console.log("[stripe-webhook] license revoked on refund", {
           paymentIntentId: piId,
           rowsAffected: n,
+        });
+        break;
+      }
+
+      case "charge.dispute.created": {
+        // Buyer disputed the charge with their bank. Revoke the
+        // license now; operator should follow up in Stripe to
+        // submit evidence before the response deadline.
+        const dispute = event.data.object as Stripe.Dispute;
+        const piId =
+          typeof dispute.payment_intent === "string"
+            ? dispute.payment_intent
+            : dispute.payment_intent?.id;
+        if (!piId) {
+          console.warn("[stripe-webhook] dispute without payment_intent", {
+            disputeId: dispute.id,
+          });
+          break;
+        }
+        const n = await markDisputed(piId);
+        console.error("[stripe-webhook] license revoked on dispute", {
+          disputeId: dispute.id,
+          paymentIntentId: piId,
+          reason: dispute.reason,
+          amount: dispute.amount,
+          dueBy: dispute.evidence_details?.due_by,
+          rowsAffected: n,
+        });
+        break;
+      }
+
+      case "checkout.session.async_payment_failed": {
+        // Async-clearing payment method failed after we already
+        // issued a license. Revoke and log loudly; the buyer's
+        // copy still validates offline so they could trade for a
+        // little while, but the next desktop release with a
+        // revocation check would lock them out. For now this is
+        // primarily an operator alert.
+        const session = event.data.object as Stripe.Checkout.Session;
+        const n = await markAsyncPaymentFailed(session.id);
+        console.error("[stripe-webhook] license revoked on async payment failure", {
+          sessionId: session.id,
+          email:     session.customer_details?.email,
+          rowsAffected: n,
+        });
+        break;
+      }
+
+      case "checkout.session.expired": {
+        // Buyer started checkout but never finished. No money
+        // moved, no license to revoke; we just want the funnel
+        // signal in the logs for now.
+        const session = event.data.object as Stripe.Checkout.Session;
+        console.log("[stripe-webhook] session expired", {
+          sessionId: session.id,
         });
         break;
       }

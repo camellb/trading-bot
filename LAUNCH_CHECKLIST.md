@@ -90,7 +90,12 @@ What's left:
   Webhooks -> Add endpoint:
   - Endpoint URL: `https://delfibot.com/api/webhooks/stripe`
   - Listen to: `Events on your account`
-  - Events: `checkout.session.completed`, `charge.refunded`
+  - Events (5):
+    - `checkout.session.completed`        (issues the license + sends email)
+    - `charge.refunded`                   (revokes on refund)
+    - `charge.dispute.created`            (revokes on chargeback; logs loudly)
+    - `checkout.session.async_payment_failed` (revokes on delayed-clear payment failure)
+    - `checkout.session.expired`          (funnel signal only, no DB write)
   - API version: leave at default
   - Click "Add endpoint"
 
