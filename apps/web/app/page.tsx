@@ -532,10 +532,9 @@ function NewHere() {
       <div className="container">
         <div className="newhere-grid">
           <div>
-            <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster.</h2>
-            <p className="newhere-body">Delfi reads every market on Polymarket, builds its own probability for each one, and trades the ones where the read is strong enough. You don&apos;t need to know what an order book is, what calibration means, or how to size a trade. Delfi does the work.</p>
-            <p className="newhere-body muted">The crowd is often wrong. People bet on what they want to be true, anchor on headlines, and ignore base rates. A calibrated forecaster, running 24/7, finds the gaps. That&apos;s Delfi.</p>
-            <p className="newhere-body muted">New to prediction markets? Polymarket is a marketplace for real-world questions. Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
+            <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster</h2>
+            <p className="newhere-body">Delfi is an autonomous prediction market trader. It watches Polymarket, follows the market favourite on every tradeable market its forecaster also points at, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. You don&apos;t need to understand order books, calibration, or position sizing. Delfi handles all of it.</p>
+            <p className="newhere-body muted">The crowd is right more often than not, but it has blind spots. People bet on what they want to be true, anchor on recent headlines, and ignore base rates. Sharp traders noticed a long time ago. Fourteen of the twenty most profitable Polymarket wallets are bots. Delfi competes on that side of the table, with research, math, and discipline instead of emotion. And it learns from every settled trade. The longer it runs, the sharper its filter gets.</p>
             <CtaLink className="newhere-cta" location="newhere" text="Try Delfi free">Try Delfi free →</CtaLink>
           </div>
           <div className="edge-viz">
