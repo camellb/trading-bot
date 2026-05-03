@@ -1360,6 +1360,49 @@ button { font: inherit; }
 .calib-delta-neg  { color: var(--ember); }
 .calib-delta-zero { color: var(--vellum-60); }
 
+/* ── Archetype-card per-archetype band controls ───────────────────── */
+.archetype-bands-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.archetype-bands-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--vellum-20);
+  color: var(--vellum-60);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.archetype-bands-toggle:hover { color: var(--vellum); border-color: var(--vellum-40); }
+.archetype-bands-count {
+  font-size: 10px;
+  color: var(--gold);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.archetype-bands-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  border: 1px solid var(--vellum-10);
+}
+.archetype-bands-help {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--vellum-60);
+  line-height: 1.5;
+}
+
 /* ── Price band filter (Risk page) ─────────────────────────────────── */
 .price-band-row {
   display: flex;

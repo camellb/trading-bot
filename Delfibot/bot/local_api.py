@@ -949,6 +949,10 @@ class LocalAPI:
         cfg = get_user_config()
         skip_set = set(cfg.archetype_skip_list or ())
         mults = dict(cfg.archetype_stake_multipliers or {})
+        # Per-archetype price-band overrides. Stored as a tuple of
+        # (lo, hi) tuples on the dataclass; flatten to JSON-friendly
+        # list-of-lists per archetype on the way out.
+        arch_bands = dict(cfg.archetype_skip_market_price_bands or {})
 
         out = []
         for arch in ARCHETYPES:
@@ -956,6 +960,7 @@ class LocalAPI:
             default_mult = float(V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS.get(arch, 1.0))
             default_skip = arch in V1_DEFAULT_ARCHETYPE_SKIP_LIST
             current_mult = float(mults.get(arch, default_mult))
+            bands_tuple = arch_bands.get(arch, ())
             out.append({
                 "id":             arch,
                 "label":          meta["label"],
@@ -964,6 +969,7 @@ class LocalAPI:
                 "multiplier":     current_mult,
                 "default_skip":   default_skip,
                 "default_mult":   default_mult,
+                "bands":          [list(p) for p in bands_tuple],
             })
 
         bounds_lo, bounds_hi = ARCHETYPE_MULTIPLIER_BOUNDS

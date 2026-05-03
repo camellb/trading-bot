@@ -126,14 +126,26 @@ def size_position(
         )
 
     # ── Gate: disabled market-price bands ───────────────────────────────────
-    # Per-user list of (lo, hi) bands in market_price_yes space; the
+    # Per-user lists of (lo, hi) bands in market_price_yes space; the
     # bot skips any market whose price falls in any band. Replaces the
-    # V0 single-floor `min_market_favourite_price` gate. Empty list =
-    # no bands disabled. Bands are matched on raw market_price_yes
-    # (not favourite price) so the user can disable e.g. just YES
-    # extreme favourites without also blocking the symmetric NO side.
-    skip_bands = getattr(user_config, "skip_market_price_bands", ()) or ()
-    for lo, hi in skip_bands:
+    # V0 single-floor `min_market_favourite_price` gate.
+    #
+    # Two layers, evaluated together:
+    #   1. Global skip_market_price_bands - applies to every market.
+    #   2. archetype_skip_market_price_bands[archetype] - applies only
+    #      to markets classified as that archetype. ADDS to the global
+    #      list, doesn't replace, so a user can globally skip 40-60
+    #      and additionally skip 90-100 only on tennis.
+    #
+    # Bands are matched on raw market_price_yes (not favourite price)
+    # so a user can disable just YES extreme favourites without also
+    # blocking the symmetric NO side.
+    global_bands = getattr(user_config, "skip_market_price_bands", ()) or ()
+    arch_band_map = (
+        getattr(user_config, "archetype_skip_market_price_bands", None) or {}
+    )
+    arch_bands = arch_band_map.get(archetype, ()) if archetype else ()
+    for lo, hi in (*global_bands, *arch_bands):
         # Half-open interval [lo, hi). User-defined bands always have
         # hi <= 1.0; a market_price_yes of exactly 1.0 (only possible
         # post-resolution, never at entry) is allowed through.

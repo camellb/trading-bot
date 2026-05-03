@@ -376,6 +376,11 @@ export interface ArchetypeEntry {
   multiplier: number;
   default_skip: boolean;
   default_mult: number;
+  /** Per-archetype price-band overrides. Each entry is a [lo, hi] pair
+   *  in market_price_yes space (0..1). The sizer ADDS these to the
+   *  global skip_market_price_bands list when this archetype matches.
+   *  Empty/undefined = no per-archetype overrides. */
+  bands?: number[][];
 }
 
 export interface ArchetypeCatalogue {

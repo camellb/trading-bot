@@ -679,7 +679,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
 
   const update = async (
     a: ArchetypeEntry,
-    patch: Partial<Pick<ArchetypeEntry, "skip" | "multiplier">>,
+    patch: Partial<Pick<ArchetypeEntry, "skip" | "multiplier" | "bands">>,
   ) => {
     if (!data || busyId) return;
     setBusyId(a.id);
@@ -697,11 +697,23 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
         nextMults[x.id] = m;
       }
     }
+    // Build the per-archetype band map for ALL archetypes (so we
+    // round-trip the user's existing per-card overrides, not just the
+    // one being edited). Empty band lists are dropped so the stored
+    // representation is canonical.
+    const nextBands: Record<string, number[][]> = {};
+    for (const x of data.archetypes) {
+      const bands = x.id === a.id ? (patch.bands ?? x.bands ?? []) : (x.bands ?? []);
+      if (bands.length > 0) {
+        nextBands[x.id] = bands;
+      }
+    }
 
     try {
       await api.updateConfig({
         archetype_skip_list: Array.from(nextSkip),
         archetype_stake_multipliers: nextMults,
+        archetype_skip_market_price_bands: nextBands,
       });
       await load();
       onSaved();
@@ -713,7 +725,12 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
   };
 
   const reset = (a: ArchetypeEntry) => {
-    void update(a, { skip: a.default_skip, multiplier: a.default_mult });
+    void update(a, {
+      skip: a.default_skip,
+      multiplier: a.default_mult,
+      // Reset also clears any per-archetype band overrides.
+      bands: [],
+    });
   };
 
   if (!data) {
@@ -761,6 +778,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
                 multMax={multiplier_max}
                 onToggleSkip={() => update(a, { skip: !a.skip })}
                 onMultChange={(m) => update(a, { multiplier: m })}
+                onBandsChange={(bands) => update(a, { bands })}
                 onReset={() => reset(a)}
               />
             ))}
@@ -772,7 +790,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
 }
 
 function ArchetypeCard({
-  a, busy, multMin, multMax, onToggleSkip, onMultChange, onReset,
+  a, busy, multMin, multMax, onToggleSkip, onMultChange, onBandsChange, onReset,
 }: {
   a: ArchetypeEntry;
   busy: boolean;
@@ -780,12 +798,48 @@ function ArchetypeCard({
   multMax: number;
   onToggleSkip: () => void;
   onMultChange: (m: number) => void;
+  onBandsChange: (bands: number[][]) => void;
   onReset: () => void;
 }) {
   const [pending, setPending] = useState<number | null>(null);
+  const [bandsOpen, setBandsOpen] = useState(false);
   const shown = pending ?? a.multiplier;
+  // Set of disabled bucket keys derived from a.bands. Each band is a
+  // [lo, hi] pair already snapped to a 10pp boundary by the API or
+  // by a previous toggle.
+  const disabledBands = useMemo(() => {
+    const set = new Set<string>();
+    for (const pair of a.bands ?? []) {
+      if (!Array.isArray(pair) || pair.length !== 2) continue;
+      const loPct = Math.round(Number(pair[0]) * 100);
+      const hiPct = Math.round(Number(pair[1]) * 100);
+      if (hiPct - loPct !== 10) continue;
+      if (loPct % 10 !== 0) continue;
+      if (loPct < 0 || hiPct > 100) continue;
+      set.add(`${loPct}_${hiPct}`);
+    }
+    return set;
+  }, [a.bands]);
   const isDefault =
-    a.skip === a.default_skip && Math.abs(a.multiplier - a.default_mult) < 1e-6;
+    a.skip === a.default_skip
+    && Math.abs(a.multiplier - a.default_mult) < 1e-6
+    && disabledBands.size === 0;
+
+  const toggleBand = (lo: number, hi: number) => {
+    if (busy) return;
+    const k = bandKey(lo, hi);
+    const next = new Set(disabledBands);
+    if (next.has(k)) next.delete(k);
+    else next.add(k);
+    // Re-emit as a sorted list of [lo, hi] pairs in canonical 10pp form.
+    const bands = PRICE_BANDS
+      .filter(([l, h]) => next.has(bandKey(l, h)))
+      .map(([l, h]) => [
+        Math.round(l * 100) / 100,
+        Math.round(h * 100) / 100,
+      ]);
+    onBandsChange(bands);
+  };
 
   return (
     <div className={`archetype-card ${a.skip ? "skipped" : ""}`}>
@@ -846,6 +900,66 @@ function ArchetypeCard({
           </button>
         )}
       </div>
+
+      <div className="archetype-bands-row">
+        <button
+          type="button"
+          className="archetype-bands-toggle"
+          onClick={() => setBandsOpen(o => !o)}
+          aria-expanded={bandsOpen}
+        >
+          {bandsOpen ? "Hide" : "Bands"}
+          {disabledBands.size > 0 && (
+            <span className="archetype-bands-count">
+              {disabledBands.size} skipped
+            </span>
+          )}
+        </button>
+      </div>
+
+      {bandsOpen && (
+        <div className="archetype-bands-panel">
+          <p className="archetype-bands-help">
+            Skip bands only when a market matches this archetype. Adds to
+            the global Price band filter; doesn't replace it.
+          </p>
+          <div className="price-band-row">
+            {PRICE_BANDS.slice(0, 5).map(([lo, hi]) => {
+              const k = bandKey(lo, hi);
+              const off = disabledBands.has(k);
+              return (
+                <button
+                  type="button"
+                  key={k}
+                  onClick={() => toggleBand(lo, hi)}
+                  disabled={busy}
+                  className={off ? "price-band off" : "price-band on"}
+                  aria-pressed={!off}
+                >
+                  {bandLabel(lo, hi)}
+                </button>
+              );
+            })}
+            <span className="price-band-divider" aria-hidden="true" />
+            {PRICE_BANDS.slice(5).map(([lo, hi]) => {
+              const k = bandKey(lo, hi);
+              const off = disabledBands.has(k);
+              return (
+                <button
+                  type="button"
+                  key={k}
+                  onClick={() => toggleBand(lo, hi)}
+                  disabled={busy}
+                  className={off ? "price-band off" : "price-band on"}
+                  aria-pressed={!off}
+                >
+                  {bandLabel(lo, hi)}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

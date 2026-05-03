@@ -102,6 +102,19 @@ class UserConfig:
     # here as the bucket pair (0.40, 0.50) and (0.50, 0.60).
     skip_market_price_bands: Tuple[Tuple[float, float], ...] = field(default_factory=tuple)
 
+    # Per-archetype price-band overrides. Maps archetype id -> tuple
+    # of (lo, hi) pairs in market_price_yes space. The sizer's band
+    # gate checks the global `skip_market_price_bands` list FIRST,
+    # then this archetype-specific list, and skips on first hit. So
+    # per-archetype bands ADD to the global list rather than replace
+    # it.
+    #
+    # Empty dict = no archetype-specific overrides. UI in the Risk
+    # page archetype matrix shows a per-card collapsible 10-pill row
+    # so the user can decide e.g. "skip 90-100 only on tennis" without
+    # touching the global filter.
+    archetype_skip_market_price_bands: Dict[str, Tuple[Tuple[float, float], ...]] = field(default_factory=dict)
+
     # Execution state.
     mode:                  Optional[str]   = None    # 'simulation' | 'live'
     starting_cash:         Optional[float] = None
@@ -181,6 +194,11 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
 # pairs in [0, 1]. Values are validated piecewise (each band must
 # satisfy 0 <= lo < hi <= 1) rather than via USER_CONFIG_BOUNDS.
 USER_CONFIG_BAND_FIELDS: Tuple[str, ...] = ("skip_market_price_bands",)
+
+# Dict-of-bands fields. Stored as JSON-encoded dict mapping archetype id
+# to a list of [lo, hi] pairs. Validated piecewise (each archetype's list
+# follows the same rules as USER_CONFIG_BAND_FIELDS).
+USER_CONFIG_DICT_BAND_FIELDS: Tuple[str, ...] = ("archetype_skip_market_price_bands",)
 
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = ("archetype_skip_list",)
 USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = ("archetype_stake_multipliers",)
@@ -292,6 +310,7 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "min_days_to_resolution",
     "max_days_to_resolution",
     "skip_market_price_bands",
+    "archetype_skip_market_price_bands",
 })
 
 
@@ -402,6 +421,48 @@ def _cast_skip_market_price_bands(raw) -> Tuple[Tuple[float, float], ...]:
     return tuple(deduped)
 
 
+def _cast_archetype_skip_market_price_bands(
+    raw,
+) -> Dict[str, Tuple[Tuple[float, float], ...]]:
+    """Coerce arbitrary input into a {archetype: tuple-of-bands} dict.
+
+    Accepts:
+      - None or "" or {} -> empty dict
+      - JSON string like '{"tennis": [[0.5, 0.6]]}'
+      - Python dict mapping str -> list-of-pair-likes
+
+    Each per-archetype value is validated through
+    _cast_skip_market_price_bands so the rules are identical to the
+    global skip_market_price_bands. Empty per-archetype lists are
+    dropped from the output dict so the stored representation is
+    canonical (no '{"tennis": []}' rows).
+    """
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "archetype_skip_market_price_bands must be JSON-encoded "
+                "object of {archetype: [[lo, hi], ...]}"
+            ) from exc
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"archetype_skip_market_price_bands must be a dict, "
+            f"got {type(raw).__name__}"
+        )
+    out: Dict[str, Tuple[Tuple[float, float], ...]] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        bands = _cast_skip_market_price_bands(v)
+        if bands:
+            out[key] = bands
+    return out
+
+
 def _cast_archetype_multipliers(raw) -> Dict[str, float]:
     if raw is None or raw == "":
         return {}
@@ -441,6 +502,8 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
         return _cast_list(raw)
     if key in USER_CONFIG_BAND_FIELDS:
         return _cast_skip_market_price_bands(raw)
+    if key in USER_CONFIG_DICT_BAND_FIELDS:
+        return _cast_archetype_skip_market_price_bands(raw)
     if key in USER_CONFIG_NULLABLE_FIELDS and _is_unset(raw):
         return None
     # 0 is the explicit "no constraint" sentinel for the time-to-
@@ -525,6 +588,28 @@ def validate_user_config_value(key: str, value) -> None:
                     f"{key}[{i}]=({lo},{hi}) must satisfy 0 <= lo < hi <= 1"
                 )
         return
+    if key in USER_CONFIG_DICT_BAND_FIELDS:
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be a dict of {{archetype: bands}}")
+        for arch, bands in value.items():
+            if not isinstance(arch, str) or not arch:
+                raise ValueError(f"{key} keys must be non-empty strings")
+            if not isinstance(bands, tuple):
+                raise ValueError(
+                    f"{key}[{arch!r}] must be a tuple of (lo, hi) pairs"
+                )
+            for i, pair in enumerate(bands):
+                if not isinstance(pair, tuple) or len(pair) != 2:
+                    raise ValueError(
+                        f"{key}[{arch!r}][{i}] must be a (lo, hi) pair"
+                    )
+                lo, hi = pair
+                if not (0.0 <= lo < hi <= 1.0):
+                    raise ValueError(
+                        f"{key}[{arch!r}][{i}]=({lo},{hi}) must satisfy "
+                        f"0 <= lo < hi <= 1"
+                    )
+        return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
     if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id"):
@@ -605,6 +690,32 @@ def _decode_archetype_multipliers(raw) -> Dict[str, float]:
         except (TypeError, ValueError):
             continue
         out[key] = max(lo, min(hi, f))
+    return out
+
+
+def _decode_archetype_skip_market_price_bands(
+    raw,
+) -> Dict[str, Tuple[Tuple[float, float], ...]]:
+    """Read path mirror of _cast_archetype_skip_market_price_bands.
+    Lenient on bad rows so a corrupt cell doesn't take the whole config
+    offline."""
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Tuple[Tuple[float, float], ...]] = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        bands = _decode_skip_market_price_bands(v)
+        if bands:
+            out[key] = bands
     return out
 
 
@@ -732,7 +843,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       bot_enabled, archetype_stake_multipliers, "
                 "       notification_prefs, telegram_chat_id, "
                 "       min_days_to_resolution, max_days_to_resolution, "
-                "       skip_market_price_bands "
+                "       skip_market_price_bands, "
+                "       archetype_skip_market_price_bands "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -757,6 +869,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             min_days_to_resolution        = (int(row[16]) if row[16] is not None else None),
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
             skip_market_price_bands       = _decode_skip_market_price_bands(row[18]),
+            archetype_skip_market_price_bands = _decode_archetype_skip_market_price_bands(row[19]),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -798,6 +911,13 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
             # Empty tuple persists as JSON empty list, which the read
             # decoder treats identically to NULL (no bands disabled).
             params[k] = json.dumps([list(p) for p in (v or ())])
+        elif k in USER_CONFIG_DICT_BAND_FIELDS:
+            # Dict[str, tuple-of-tuples] -> JSON object mapping
+            # archetype -> list-of-pairs. Empty dict serialises to '{}'.
+            encoded: dict[str, list[list[float]]] = {}
+            for arch, bands in (v or {}).items():
+                encoded[arch] = [list(p) for p in (bands or ())]
+            params[k] = json.dumps(encoded)
         elif k in json_fields:
             params[k] = json.dumps(v or {})
         else:

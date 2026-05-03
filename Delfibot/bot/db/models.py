@@ -360,6 +360,14 @@ user_config = Table(
     # could go finer.
     Column("skip_market_price_bands", Text, nullable=True),
 
+    # Per-archetype price band overrides. JSON-encoded dict mapping
+    # archetype id -> list of [lo, hi] pairs. The sizer's band gate
+    # checks the global skip_market_price_bands list FIRST, then the
+    # archetype-specific list (if any), and skips on first hit. So
+    # per-archetype bands ADD to the global list rather than replacing
+    # it. NULL or empty dict = no archetype-specific overrides.
+    Column("archetype_skip_market_price_bands", Text, nullable=True),
+
     # Mode + bankroll. Mode: 'simulation' | 'live'.
     Column("mode",            Text, nullable=False,
            server_default=sa_text("'simulation'")),
@@ -561,6 +569,11 @@ def create_all_tables() -> None:
                     "SET skip_market_price_bands = :v "
                     "WHERE user_id = :uid"
                 ), {"v": _json.dumps(bands), "uid": uid})
+        if "archetype_skip_market_price_bands" not in existing_user_config_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "archetype_skip_market_price_bands TEXT"
+            ))
 
         # Seed the singleton row if absent. Local install always has
         # exactly one row; doing this here means the engine modules can
