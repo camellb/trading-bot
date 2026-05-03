@@ -978,8 +978,8 @@ export default function HomePage() {
       <Simulation />
       <NewHere />
       <OnboardingSteps />
-      <Platforms />
       <Testimonials />
+      <Platforms />
       <FAQ />
       <FinalCTA />
       <Footer />
