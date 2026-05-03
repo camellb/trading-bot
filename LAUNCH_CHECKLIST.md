@@ -57,49 +57,75 @@ lives only in Vercel.
 
 ## 2. Stripe
 
-The marketing site CTAs link to a Stripe Payment Link. The
-post-purchase webhook signs a license + sends the buyer email.
+Checkout runs ON delfibot.com via Stripe's embedded mode at
+/checkout (Delfi-themed wrapper, Stripe-iframed card field).
+The post-purchase webhook signs a license + sends the buyer
+email. There is no Payment Link in the default flow; the env
+override lets you route CTAs to one if needed.
 
-- [ ] **Create the product.** Stripe dashboard -> Products ->
-  Add product:
-  - Name: "Delfi"
-  - Description: "Autonomous Polymarket trader. One-time fee."
-  - Pricing: One-time, $199 USD.
+You already have:
+  Product:  prod_URwEtsVQ0sSWmF
+  Price:    price_1TT2LeIB1LZX4WOxHO98wshJ ($199 one-time)
+  Live publishable key (in your hand)
+  Identity verified
+  Stripe Tax configured
 
-- [ ] **Create a Payment Link.** Stripe -> Payment Links ->
-  New. Use the product above. Under Confirmation page, redirect
-  to `https://delfibot.com/thanks` (the buyer hits the email,
-  not this page, but it's a polite landing). **Important:** the
-  default Stripe Checkout collects email; leave that on -- the
-  webhook fails closed if the session has no email.
+What's left:
 
-- [ ] **Copy the Payment Link URL.** Vercel -> env ->
-  `NEXT_PUBLIC_CHECKOUT_URL` -> paste it. Scope: Production AND
-  Preview.
+- [ ] **Get the live secret key.** Stripe dashboard ->
+  Developers -> API keys -> click "Reveal live key" next to
+  the **Secret key** row. This is the ONLY key you need to
+  treat as a secret (the publishable key is safe to share).
+  Copy it. Vercel -> Project Settings -> Environment Variables
+  -> add `STRIPE_SECRET_KEY` (Production scope) -> paste.
 
-- [ ] **Set the API secret key.** Stripe -> Developers ->
-  API keys -> Reveal -> copy the **Secret key**. Vercel ->
-  `STRIPE_SECRET_KEY` -> paste. Use `sk_test_...` for Preview
-  and `sk_live_...` for Production (each environment needs its
-  own key).
+- [ ] **Set the publishable key.** Vercel ->
+  `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (Production) -> paste
+  your `pk_live_...` value.
+
+- [ ] **Set the price id.** Vercel -> `STRIPE_PRICE_ID`
+  (Production) -> paste `price_1TT2LeIB1LZX4WOxHO98wshJ`.
 
 - [ ] **Add the webhook endpoint.** Stripe -> Developers ->
   Webhooks -> Add endpoint:
-  - URL: `https://delfibot.com/api/webhooks/stripe`
+  - Endpoint URL: `https://delfibot.com/api/webhooks/stripe`
+  - Listen to: `Events on your account`
   - Events: `checkout.session.completed`, `charge.refunded`
-  - API version: latest
-- [ ] **Copy the webhook signing secret.** Click into the
-  endpoint -> "Signing secret" -> reveal. Vercel ->
-  `STRIPE_WEBHOOK_SECRET` -> paste. Each Stripe environment
-  has its own webhook secret (test vs live); set both.
+  - API version: leave at default
+  - Click "Add endpoint"
 
-- [ ] **Test it once before launch.** Use Stripe's "Send test
-  webhook" button on the endpoint detail page, pick
-  `checkout.session.completed`. Check the Vercel function logs
-  for `[stripe-webhook] license issued`. The fake event has no
-  real email so the Resend send will 400 -- that's expected.
-  Then make a real $1 test purchase via the Payment Link in
-  test mode and confirm the email arrives.
+- [ ] **Copy the webhook signing secret.** On the endpoint
+  detail page click "Signing secret" -> Reveal. Vercel ->
+  `STRIPE_WEBHOOK_SECRET` (Production) -> paste.
+
+- [ ] **(Optional) Test mode for Vercel Preview deploys.** In
+  the Stripe dashboard, top-right of the sidebar, flip the
+  "Test mode" toggle. Repeat the steps above to grab the
+  **test** versions of:
+  - `pk_test_...`  (publishable)
+  - `sk_test_...`  (secret)
+  - `price_test_...` (the test-mode equivalent of your price -
+    Stripe creates a separate copy of the product in test mode;
+    you have to recreate the $199 SKU there)
+  - A separate webhook endpoint listening at the same URL
+  Set them in Vercel under the **Preview** environment scope
+  rather than Production. This lets you push a branch and try
+  the whole flow end-to-end with Stripe's test cards
+  (4242 4242 4242 4242 etc.) without touching real money.
+
+  Skip this if you want to launch faster - the alternative is a
+  $1 real charge in production followed by an immediate refund.
+
+- [ ] **Pre-launch test.** With the live keys set:
+  - Visit `https://delfibot.com/checkout` directly.
+  - Use a real card; pay $1 (set the price to $1 in Stripe
+    temporarily, or just pay $199 and refund yourself).
+  - Watch Vercel function logs for
+    `[stripe-webhook] license issued`.
+  - Confirm the license email lands in the inbox you typed
+    into the Stripe form.
+  - Refund in Stripe -> Payments. Confirm Vercel logs show
+    `[stripe-webhook] license revoked on refund`.
 
 ---
 

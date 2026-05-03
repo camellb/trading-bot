@@ -4,14 +4,16 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import "./styles/homepage.css";
 
-// Checkout destination. Wired to Stripe / Lemon Squeezy / Polar via
-// the NEXT_PUBLIC_CHECKOUT_URL env var when that lands; falls back to
-// a mailto so a buyer can still reach the maintainer in the meantime.
-// The actual download link is delivered in the post-purchase email,
-// never embedded in this page.
-const CHECKOUT_URL =
-  process.env.NEXT_PUBLIC_CHECKOUT_URL ||
-  "mailto:info@delfibot.com?subject=Delfi%20order";
+// Checkout destination. Default is the embedded checkout at
+// /checkout (Stripe Checkout in `ui_mode: "embedded"`, mounted
+// inside the Delfi-branded /checkout page). Override via
+// NEXT_PUBLIC_CHECKOUT_URL if we ever need to fall back to a
+// hosted Payment Link or third-party processor; the env var
+// continues to work for both relative (/checkout) and absolute
+// (https://buy.stripe.com/...) URLs. The actual download link
+// is delivered in the post-purchase email, never embedded
+// here.
+const CHECKOUT_URL = process.env.NEXT_PUBLIC_CHECKOUT_URL || "/checkout";
 
 // ─── Landing-page analytics ──────────────────────────────
 //
@@ -67,8 +69,8 @@ function trackSectionView(section: string) {
 }
 
 function withUtm(url: string, location: string): string {
-  // Don't decorate mailto: fallback — would break the address.
-  if (!url.startsWith("http")) return url;
+  // Don't decorate mailto: fallback - would break the address.
+  if (url.startsWith("mailto:")) return url;
   const sep = url.includes("?") ? "&" : "?";
   const params = new URLSearchParams({
     utm_source:  "delfi-site",

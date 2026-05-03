@@ -1,0 +1,252 @@
+/* apps/web/app/checkout/checkout.css
+ *
+ * Styles scoped to the embedded checkout pages (/checkout and
+ * /checkout/return). Keeps the marketing site's visual language
+ * (Obsidian + Oracle Gold + Vellum, Newsreader display + Geist
+ * body) but lays out a centered two-column billing flow rather
+ * than the full-page hero stack of the homepage.
+ *
+ * The page reuses brand tokens defined in app/globals.css and
+ * leans on Stripe's own iframe styling for the card form
+ * (Stripe-hosted; we cannot restyle the field interiors -- only
+ * the surrounding chrome).
+ */
+
+.checkout-page,
+.checkout-return-page {
+  min-height: 100vh;
+  background: var(--obsidian);
+  color: var(--vellum);
+  padding: 28px 24px 64px;
+  display: flex;
+  flex-direction: column;
+}
+
+.checkout-header {
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto 32px;
+}
+.checkout-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--vellum-60);
+  transition: color var(--dur-base) var(--ease);
+}
+.checkout-back:hover { color: var(--vellum); }
+.checkout-back-arrow {
+  font-size: 18px;
+  line-height: 1;
+}
+.checkout-back-text {
+  font-family: var(--font-display);
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.checkout-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 48px;
+  max-width: 1080px;
+  width: 100%;
+  margin: 0 auto;
+  align-items: start;
+}
+
+.checkout-summary {
+  position: sticky;
+  top: 28px;
+  background: var(--obsidian-raise);
+  border: 1px solid var(--vellum-10);
+  border-radius: 6px;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.checkout-summary-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--vellum-40);
+}
+.checkout-summary-title {
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--gold);
+  margin: 0;
+}
+.checkout-summary-desc {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--vellum-60);
+  margin: 0;
+}
+.checkout-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding-top: 18px;
+  border-top: 1px solid var(--vellum-10);
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--vellum);
+}
+.checkout-summary-row .t-num {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--gold);
+}
+.checkout-summary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.checkout-summary-list li {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--vellum-60);
+  padding-left: 18px;
+  position: relative;
+}
+.checkout-summary-list li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--gold);
+}
+
+.checkout-stripe {
+  background: var(--obsidian-raise);
+  border: 1px solid var(--vellum-10);
+  border-radius: 6px;
+  padding: 8px;
+  min-height: 520px;
+}
+
+/* Stripe's embedded iframe sets its own background; the wrapper
+   above provides the brand frame. The 8px padding gives the iframe
+   a hairline so it doesn't look glued to the card border. */
+
+.checkout-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: var(--vellum-60);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+.checkout-spinner {
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--vellum-10);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: checkout-spin 0.9s linear infinite;
+}
+@keyframes checkout-spin {
+  to { transform: rotate(360deg); }
+}
+
+.checkout-error {
+  margin: 24px;
+  padding: 24px;
+  border: 1px solid rgba(255, 100, 100, 0.4);
+  border-radius: 6px;
+  background: rgba(255, 100, 100, 0.06);
+}
+.checkout-error-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  color: var(--vellum);
+  margin-bottom: 8px;
+}
+.checkout-error-detail {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--vellum-60);
+}
+
+/* Return page card */
+.checkout-return-card {
+  max-width: 560px;
+  width: 100%;
+  margin: 64px auto;
+  padding: 40px;
+  background: var(--obsidian-raise);
+  border: 1px solid var(--vellum-10);
+  border-radius: 6px;
+  text-align: center;
+}
+.checkout-return-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 18px;
+}
+.checkout-return-title {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--vellum);
+  margin: 0 0 18px;
+}
+.checkout-return-body {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--vellum);
+  margin: 0 0 14px;
+}
+.checkout-return-body.muted { color: var(--vellum-60); font-size: 13px; }
+.checkout-return-email {
+  font-family: var(--font-mono);
+  color: var(--gold);
+}
+.checkout-return-link { color: var(--gold); text-decoration: underline; }
+
+/* Reuse the homepage's primary button shape so the "Back to
+   delfibot.com" CTA matches the site language without dragging
+   in homepage.css. */
+.btn-primary {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--vellum);
+  font-family: var(--font-body);
+  font-size: 13px; letter-spacing: 0.10em; text-transform: uppercase;
+  padding: 14px 26px;
+  border: 1px solid var(--gold); border-radius: 4px;
+  text-decoration: none;
+  transition: box-shadow var(--dur-base) var(--ease),
+              background var(--dur-base) var(--ease);
+}
+.btn-primary:hover {
+  box-shadow: 0 0 28px rgba(212, 175, 55, 0.28);
+  background: rgba(212, 175, 55, 0.05);
+}
+
+@media (max-width: 880px) {
+  .checkout-grid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  .checkout-summary { position: static; }
+}
