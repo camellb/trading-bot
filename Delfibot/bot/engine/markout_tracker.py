@@ -49,6 +49,31 @@ async def check_markouts() -> None:
                 if evaluated_at is None or price_yes is None or claude_p is None:
                     continue
 
+                # SQLite returns DateTime columns as strings unless
+                # the connection was opened with PARSE_DECLTYPES; the
+                # rest of the codebase deals in iso_utc strings, so
+                # we accept whatever the driver hands back and
+                # normalise here. Without this, the `evaluated_at +
+                # timedelta(...)` line below blows up every hour
+                # with: "can only concatenate str (not
+                # 'datetime.timedelta') to str". Bug fixed
+                # 2026-05-03.
+                if isinstance(evaluated_at, str):
+                    iso = evaluated_at
+                    if iso.endswith("Z"):
+                        iso = iso[:-1] + "+00:00"
+                    elif "+" not in iso[10:] and "-" not in iso[10:]:
+                        # Naive timestamp -> assume UTC.
+                        iso = iso + "+00:00"
+                    try:
+                        evaluated_at = datetime.fromisoformat(iso)
+                    except ValueError:
+                        # Unparseable timestamp - skip this row
+                        # rather than crashing the whole run.
+                        continue
+                if evaluated_at.tzinfo is None:
+                    evaluated_at = evaluated_at.replace(tzinfo=timezone.utc)
+
                 # Which hours_after values already exist?
                 existing = conn.execute(text(
                     "SELECT hours_after FROM markouts "

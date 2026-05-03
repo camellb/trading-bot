@@ -45,6 +45,42 @@ echo "[install] quitting any running Delfi..."
 osascript -e 'quit app "Delfi"' 2>/dev/null || true
 sleep 2
 
+# CRITICAL: bootout the LaunchAgent FIRST, before pkill + rsync.
+#
+# Without this, KeepAlive=true makes launchd respawn the daemon
+# every ~ThrottleInterval=10s. While we're mid-rsync (replacing
+# /Applications/Delfi.app/Contents/MacOS/delfi-sidecar and the
+# wrapped link inside DelfiSidecar.app), the just-respawned
+# daemon's PyInstaller bootloader still has the OLD archive open
+# - rsync swaps the inode under it, the bootloader's deferred
+# module reads hit "PYZ magic pattern mismatch", the daemon
+# crashes, launchd respawns it, rsync hits another in-flight
+# bootloader, repeat.
+#
+# Symptom from a 2026-05-03 outage: 30+ "[delfi] starting..."
+# lines in the log within minutes, plus stderr lines like
+# "delfi-sidecar appears to have been moved or deleted since
+# this application was launched. Continuation from this state
+# is impossible. Exiting now."
+#
+# bootout removes the agent registration so launchd stops
+# respawning. The pkill loop below then reaps any in-flight
+# daemon and stops; rsync runs safely; the LaunchAgent install
+# block at the bottom of this script bootstraps a fresh
+# registration that runs the new binary cleanly.
+USER_GUI="gui/$(id -u)"
+LAUNCH_AGENT_PLIST="$HOME/Library/LaunchAgents/com.delfi.bot.plist"
+if [[ -f "$LAUNCH_AGENT_PLIST" ]]; then
+  echo "[install] booting out LaunchAgent so launchd stops respawning during rsync..."
+  launchctl bootout "$USER_GUI" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
+  # Settle: launchctl bootout signals SIGTERM async; the daemon
+  # may take a couple of seconds to actually exit, especially
+  # mid-keychain syscall. Without this, pkill below races the
+  # daemon's normal shutdown path and we still hit the
+  # bootloader-replaced-mid-run scenario above.
+  sleep 2
+fi
+
 # Hard kill loop. A single `pkill -KILL` doesn't always reap the
 # sidecar when it's blocked inside SecItemCopyMatching waiting for a
 # macOS keychain prompt - SIGKILL is enqueued but the process stays
