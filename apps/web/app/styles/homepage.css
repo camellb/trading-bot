@@ -1137,6 +1137,75 @@ html, body { scroll-behavior: smooth; }
   color: var(--vellum-60); max-width: 760px; margin: 32px auto 0; text-align: center;
 }
 
+/* ─── Three-step onboarding ─── */
+.onboarding-steps { border-top: 1px solid var(--vellum-10); }
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.step-card {
+  background: var(--obsidian-raise);
+  border: 1px solid var(--vellum-10);
+  border-radius: 6px;
+  padding: 36px 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: border-color var(--dur-base) var(--ease),
+              background var(--dur-base) var(--ease);
+}
+.step-card:hover {
+  border-color: var(--gold-line);
+  background: var(--obsidian);
+}
+.step-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.step-icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--obsidian);
+  border: 1px solid var(--vellum-10);
+  color: var(--gold);
+  transition: border-color var(--dur-base) var(--ease);
+}
+.step-icon svg { width: 22px; height: 22px; }
+.step-card:hover .step-icon { border-color: var(--gold-line); }
+.step-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.20em;
+  color: var(--vellum-40);
+}
+.step-title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--vellum);
+  margin: 0;
+}
+.step-desc {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--vellum-60);
+  margin: 0;
+}
+
+@media (max-width: 920px) {
+  .steps-grid { grid-template-columns: 1fr; gap: 16px; max-width: 480px; }
+  .step-card { padding: 28px 24px; }
+}
+
 /* ─── Platforms (macOS + Windows) ─── */
 .platforms { border-top: 1px solid var(--vellum-10); background: var(--obsidian-sink); }
 .platforms-grid {
