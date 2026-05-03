@@ -555,6 +555,40 @@ function NewHere() {
   );
 }
 
+// ─── Testimonials ─────────────────────────────────────────
+function Testimonials() {
+  const quotes = [
+    { body: "Before Delfi I was scrolling Polymarket at 2am like an idiot. Now I scroll it once a week and check P&L. Got higher returns and less anxiety.", name: "Marcus K.", role: "Amsterdam, NL" },
+    { body: "Every Polymarket bot I looked at was a black box with marketing attached. No probability model, no sources, no sizing logic. Delfi shows all three on every trade. I can still disagree with a call, but I can't accuse the thing of being opaque. That's rare.", name: "Jenna R.", role: "Cape Coral, USA" },
+    { body: "I'd never placed a Polymarket trade before. I connected a wallet with $400, picked the conservative risk profile, and let Delfi run. Three weeks in, I'm up roughly $150 and I check the Telegram summary over coffee. I still don't really understand prediction markets.", name: "Daniel O.", role: "Singapore, SG" },
+    { body: "I tried three other Polymarket bots before Delfi. One was a copy-trading tool, one was an arbitrage scanner, one just didn't work. Delfi is the only one that actually thinks about each market.", name: "Alex T.", role: "Manchester, UK" },
+  ];
+  return (
+    <section className="section testimonials" data-screen-label="10 Testimonials">
+      <div className="container">
+        <div className="sec-head">
+          <h2 className="t-display-l balanced">Traders who stopped <br />trading by hand</h2>
+        </div>
+        <div className="test-grid">
+          {quotes.map((q) => (
+            <div className="test-card" key={q.name}>
+              <span className="test-quote-mark">&quot;</span>
+              <p className="test-body">{q.body}</p>
+              <div className="test-author">
+                <span className="test-author-dot"></span>
+                <div>
+                  <div className="test-author-name">{q.name}</div>
+                  <div className="test-author-role">{q.role}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── FAQ ──────────────────────────────────────────────────
 function FAQ() {
   const [open, setOpen] = useState(0);
@@ -702,6 +736,7 @@ export default function HomePage() {
       <Simulation />
       <NewHere />
       <Platforms />
+      <Testimonials />
       <FAQ />
       <FinalCTA />
       <Footer />
