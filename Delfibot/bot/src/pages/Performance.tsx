@@ -272,7 +272,7 @@ export default function Performance() {
           <div className="calib-header">
             <div>Confidence</div>
             <div>Trades</div>
-            <div>Win rate (50% - 100%, gold = actual, line = expected)</div>
+            <div>Win rate</div>
             <div>Won</div>
             <div>Delta</div>
           </div>
