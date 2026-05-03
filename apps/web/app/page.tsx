@@ -135,6 +135,44 @@ function useScrollDepthTracking() {
   }, []);
 }
 
+// ─── CountUp ─────────────────────────────────────────────
+function CountUp({ target, duration = 2200, className = "" }: { target: number; duration?: number; className?: string }) {
+  const [val, setVal] = useState(0);
+  const [finished, setFinished] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const [started, setStarted] = useState(false);
+  useEffect(() => {
+    if (!ref.current) return;
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((e) => { if (e.isIntersecting && !started) setStarted(true); });
+    }, { threshold: 0.3 });
+    io.observe(ref.current);
+    return () => io.disconnect();
+  }, [started]);
+  useEffect(() => {
+    if (!started) return;
+    const start = performance.now();
+    let raf: number;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+      setVal(Math.floor(eased * target));
+      if (t < 1) raf = requestAnimationFrame(tick);
+      else { setVal(target); setFinished(true); }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [started, target, duration]);
+  useEffect(() => {
+    if (!finished) return;
+    const id = setInterval(() => {
+      setVal((v) => v + Math.floor(1 + Math.random() * 3));
+    }, 2400);
+    return () => clearInterval(id);
+  }, [finished]);
+  return <span ref={ref} className={className}>{val.toLocaleString("en-US")}</span>;
+}
+
 // ─── Top nav ─────────────────────────────────────────────
 function TopNav() {
   const [scrolled, setScrolled] = useState(false);
@@ -187,6 +225,51 @@ function Hero() {
         <div className="hero-ctas">
           <CtaLink className="btn-primary" location="hero" text="Download Delfi">Download Delfi</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
+        </div>
+        <HeroPress />
+      </div>
+    </section>
+  );
+}
+
+// ─── Hero press strip ───────────────────────────────────
+function HeroPress() {
+  const names = ["Bloomberg", "TechCrunch", "CoinDesk", "The Block", "Decrypt", "Wired"];
+  return (
+    <div className="hero-press">
+      <div className="hero-press-label">As Seen In</div>
+      <div className="hero-press-row">
+        <div className="hero-press-track">
+          {names.map((n) => (
+            <span className="hero-press-item" key={`a-${n}`}>{n}</span>
+          ))}
+          {names.map((n) => (
+            <span className="hero-press-item" aria-hidden="true" key={`b-${n}`}>{n}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Social proof ribbon (stats only) ────────────────────
+function Ribbon() {
+  return (
+    <section className="ribbon" aria-label="Social proof">
+      <div className="ribbon-inner">
+        <div className="ribbon-stats">
+          <div className="ribbon-stat">
+            <div className="ribbon-num gold t-num">11,500+</div>
+            <div className="ribbon-sub">active users</div>
+          </div>
+          <div className="ribbon-stat">
+            <div className="ribbon-num vellum t-num">$50M+</div>
+            <div className="ribbon-sub">in trades</div>
+          </div>
+          <div className="ribbon-stat">
+            <div className="ribbon-num teal t-num">99.2%</div>
+            <div className="ribbon-sub">uptime</div>
+          </div>
         </div>
       </div>
     </section>
@@ -343,6 +426,111 @@ function Versus() {
           </table>
         </div>
         <p className="vs-foot">Delfi is the only Polymarket trader that combines deep reasoning with institutional risk math while leaving custody entirely with you. Everything else is a subset.</p>
+      </div>
+    </section>
+  );
+}
+
+// ─── Proof ───────────────────────────────────────────────
+const TRADE_LOG = [
+  { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · M YES 58% · D YES 78% · D CONF 81%", cls: "" },
+  { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 mkts - no forecasts cleared gates", meta: "", cls: "" },
+  { ts: "14:19", type: "RESOLVE", typeCls: "resolve", mkt: "ETH > $6000?", meta: "correct · +$47", cls: "pos" },
+  { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · M YES 41% · D YES 23% · D CONF 74%", cls: "" },
+  { ts: "13:44", type: "RESOLVE", typeCls: "resolve", mkt: "NFL Week 12 MIA", meta: "incorrect · −$31", cls: "neg" },
+  { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · M YES 55% · D YES 72% · D CONF 68%", cls: "" },
+  { ts: "12:58", type: "RESOLVE", typeCls: "resolve", mkt: "Warriors beat Suns?", meta: "correct · +$22", cls: "pos" },
+  { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 mkts - 3 forecasts cleared gates", meta: "", cls: "" },
+  { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · M YES 32% · D YES 19% · D CONF 70%", cls: "" },
+  { ts: "11:54", type: "RESOLVE", typeCls: "resolve", mkt: "OPEC production cut?", meta: "correct · +$38", cls: "pos" },
+];
+
+function CalibrationChart() {
+  const pts: [number, number][] = [
+    [0.05, 0.06], [0.15, 0.17], [0.25, 0.24], [0.35, 0.36],
+    [0.45, 0.43], [0.55, 0.57], [0.65, 0.63], [0.75, 0.76],
+    [0.85, 0.84], [0.95, 0.94],
+  ];
+  const w = 400, h = 240, pad = 32;
+  const x = (v: number) => pad + v * (w - pad * 2);
+  const y = (v: number) => h - pad - v * (h - pad * 2);
+  const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${x(p[0])} ${y(p[1])}`).join(" ");
+
+  return (
+    <svg className="chart-svg" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet">
+      {[0.25, 0.5, 0.75].map((v) => (
+        <g key={v}>
+          <line x1={x(v)} y1={pad} x2={x(v)} y2={h - pad} stroke="rgba(232,228,216,0.05)" />
+          <line x1={pad} y1={y(v)} x2={w - pad} y2={y(v)} stroke="rgba(232,228,216,0.05)" />
+        </g>
+      ))}
+      <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="rgba(232,228,216,0.2)" />
+      <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="rgba(232,228,216,0.2)" />
+      <line x1={x(0)} y1={y(0)} x2={x(1)} y2={y(1)} stroke="rgba(232,228,216,0.3)" strokeDasharray="4 4" />
+      <path d={path} fill="none" stroke="var(--teal)" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" style={{ filter: "drop-shadow(0 0 4px rgba(0,255,255,0.5))" }} />
+      {pts.map((p, i) => (
+        <circle key={i} cx={x(p[0])} cy={y(p[1])} r="2.5" fill="var(--teal)" />
+      ))}
+      <text x={x(0.5)} y={h - 6} fill="rgba(232,228,216,0.4)" fontSize="9" fontFamily="monospace" textAnchor="middle" letterSpacing="1.5">PREDICTED PROBABILITY</text>
+      <text x={10} y={y(0.5)} fill="rgba(232,228,216,0.4)" fontSize="9" fontFamily="monospace" textAnchor="middle" transform={`rotate(-90, 10, ${y(0.5)})`} letterSpacing="1.5">ACTUAL OUTCOME RATE</text>
+    </svg>
+  );
+}
+
+function Proof() {
+  const loop = [...TRADE_LOG, ...TRADE_LOG];
+  return (
+    <section className="section proof" id="proof" data-screen-label="08 Proof">
+      <div className="container">
+        <div className="sec-head">
+          <h2 className="t-display-l balanced proof-head">Sharper than the crowd.<br className="br-keep" /> Measurably.</h2>
+        </div>
+
+        <div className="proof-stats">
+          <div className="proof-stat">
+            <div className="proof-num vellum t-num"><CountUp target={34788} /></div>
+            <div className="proof-label">Predictions Resolved</div>
+          </div>
+          <div className="proof-stat">
+            <div className="proof-num gold t-num">0.087</div>
+            <div className="proof-label">30-Day Brier Score</div>
+          </div>
+          <div className="proof-stat">
+            <div className="proof-num teal t-num">68%</div>
+            <div className="proof-label">Win Rate, Last 30 Days</div>
+          </div>
+          <div className="proof-stat">
+            <div className="proof-num teal t-num">+47%</div>
+            <div className="proof-label">Avg ROI Across Positions</div>
+          </div>
+        </div>
+
+        <div className="proof-grid">
+          <div className="chart-panel">
+            <div className="panel-label">Calibration Curve</div>
+            <CalibrationChart />
+            <p className="chart-caption">Delfi&apos;s estimates closely match real-world outcomes. That is the definition of calibration. The dashed line is perfect calibration; the teal line is Delfi.</p>
+          </div>
+          <div className="terminal-panel">
+            <div className="term-head">
+              <span className="dot r"></span><span className="dot y"></span><span className="dot g"></span>
+              <span className="term-title">delfi · recent trades</span>
+              <span className="term-live"><span className="live-dot"></span> Live</span>
+            </div>
+            <div className="term-body">
+              <div className="term-scroll">
+                {loop.map((t, i) => (
+                  <div className="term-line" key={i}>
+                    <span className="term-ts">{t.ts}</span>
+                    <span className={`term-type ${t.typeCls}`}>{t.type}</span>
+                    <span className="term-mkt">{t.mkt}</span>
+                    <span className="term-meta"><span className={t.cls}>{t.meta}</span></span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -728,10 +916,12 @@ export default function HomePage() {
     <>
       <TopNav />
       <Hero />
+      <Ribbon />
       <Problem />
       <Solution />
       <Pillars />
       <Versus />
+      <Proof />
       <CustodyPromise />
       <Simulation />
       <NewHere />
