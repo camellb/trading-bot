@@ -532,11 +532,10 @@ function NewHere() {
       <div className="container">
         <div className="newhere-grid">
           <div>
-            <h2 className="newhere-head balanced">New to Polymarket?</h2>
-            <p className="newhere-body">Polymarket is a marketplace for real-world questions. Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question trading at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
-            <p className="newhere-body muted">But the markets are often wrong. People bet on what they want to be true. They anchor on headlines and ignore base rates. A patient reader can forecast outcomes more accurately than the crowd. The hard part is doing it consistently, sizing each trade correctly, and walking away when the read isn&apos;t strong enough.</p>
-            <p className="newhere-body muted">Delfi does all of that for you. It reads every tradeable market, builds its own forecast, sizes each trade, and acts when the forecast clears every gate.</p>
-            <p className="newhere-body muted">You don&apos;t need to be a prediction market expert. You just need a machine to run Delfi on.</p>
+            <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster.</h2>
+            <p className="newhere-body">Delfi reads every market on Polymarket, builds its own probability for each one, and trades the ones where the read is strong enough. You don&apos;t need to know what an order book is, what calibration means, or how to size a trade. Delfi does the work.</p>
+            <p className="newhere-body muted">The crowd is often wrong. People bet on what they want to be true, anchor on headlines, and ignore base rates. A calibrated forecaster, running 24/7, finds the gaps. That&apos;s Delfi.</p>
+            <p className="newhere-body muted">New to prediction markets? Polymarket is a marketplace for real-world questions. Each question trades between 0% and 100%, and the price is the crowd&apos;s probability. A question at 44% means the market thinks there&apos;s a 44% chance it resolves yes.</p>
             <CtaLink className="newhere-cta" location="newhere" text="Try Delfi free">Try Delfi free →</CtaLink>
           </div>
           <div className="edge-viz">
@@ -566,7 +565,7 @@ function FAQ() {
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
     { q: "How much does it cost?", a: "$199 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
-    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in your OS keychain (macOS Keychain, Windows Credential Locker), never on Delfi servers. Delfi reads it only inside your own process, only when signing a trade: never at rest, never written to logs, never transmitted off your machine. We can't withdraw funds, transfer them, or even see your wallet address. You can pause Delfi or delete the app at any time." },
+    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in your OS keychain, not on Delfi servers. Delfi reads it only inside your process, only when signing a trade: never at rest, never in logs, never transmitted. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time." },
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
     { q: "Can I turn Delfi off?", a: "Any time. The dashboard has an emergency stop button. Open positions stay open until they resolve. No new trades are placed until you turn it back on." },
     { q: "Is this legal?", a: "Polymarket and prediction markets are regulated differently in every jurisdiction. Some permit it, some restrict it, some prohibit it. Confirm legality in your own region before trading. If in doubt, consult a local advisor." },
