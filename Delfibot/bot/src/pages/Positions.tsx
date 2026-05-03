@@ -64,22 +64,8 @@ type OpenSk    = "market" | "category" | "side" | "size"
                 | "myes"  | "dyes"     | "dconf" | "closes";
 type ClosedSk  = "market" | "category" | "side" | "outcome"
                 | "entry" | "myes"     | "dyes"  | "pnl" | "settled";
-type SkippedSk = "market" | "category" | "reason" | "myes" | "dyes"
+type SkippedSk = "market" | "category" | "myes" | "dyes"
                 | "dconf" | "evaluated";
-
-// Extract the first sentence from a reasoning blob. Used by the
-// Skipped column to give the user a one-line "why" without forcing
-// them to expand the row. Falls back to the whole text when there's
-// no sentence-ending punctuation. Hard-caps at 200 chars so a
-// reasoning blob with no periods doesn't blow out the cell.
-function firstSentence(text: string | null | undefined): string {
-  const t = (text ?? "").trim();
-  if (!t) return "";
-  const m = t.match(/^[^.!?\n]*[.!?]/);
-  const s = (m ? m[0] : t).trim();
-  if (s.length <= 200) return s;
-  return s.slice(0, 197) + "...";
-}
 
 function openKpi(p: PMPosition, f: OpenSk): SortKey {
   switch (f) {
@@ -125,7 +111,6 @@ function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
   switch (f) {
     case "market":   return e.question;
     case "category": return e.category ?? "";
-    case "reason":   return firstSentence(e.reasoning);
     case "myes":     return e.market_price_yes ?? null;
     case "dyes":     return e.claude_probability ?? null;
     case "dconf":    return e.confidence ?? null;
@@ -451,7 +436,6 @@ export default function Positions() {
                 <tr>
                   <SortableTh field="market"    sort={skippedSort}>Market</SortableTh>
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
-                  <SortableTh field="reason"    sort={skippedSort}>Reason</SortableTh>
                   <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
                   <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
                   <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
@@ -466,7 +450,6 @@ export default function Positions() {
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
                   const dConfPct = e.confidence != null ? Math.round(e.confidence * 100) : null;
                   const reasoning = (e.reasoning ?? "").trim();
-                  const reasonLine = firstSentence(e.reasoning);
                   return (
                     <React.Fragment key={e.id}>
                       <tr
@@ -476,18 +459,6 @@ export default function Positions() {
                       >
                         <td>{e.question}</td>
                         <td>{e.category ?? "-"}</td>
-                        <td
-                          title={reasoning || undefined}
-                          style={{
-                            maxWidth: 360,
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap",
-                            color: reasonLine ? "var(--vellum-80, #d8d6d1)" : "var(--vellum-40)",
-                          }}
-                        >
-                          {reasonLine || "—"}
-                        </td>
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
@@ -503,7 +474,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={7} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {reasoning || "No reasoning recorded."}
