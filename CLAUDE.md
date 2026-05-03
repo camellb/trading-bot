@@ -168,6 +168,7 @@ The vault lives at `/Users/macmini/Documents/Obsidian Vault/Delfi/`. Read `START
 - About to write user-facing copy - read `50_Feedback/no_filler_subheadlines.md`.
 - About to recommend architecture that touches funds/keys/credentials - read `50_Feedback/custody_question_always_ask.md`.
 - About to write or modify a migration / sizer gate / axis-sensitive transform - read `50_Feedback/be_critical_and_intentional.md` and write the invariant block FIRST.
+- Noticed a bug, typo, stale reference, or other fixable issue mid-task - DO NOT park it. Read `50_Feedback/fix_dont_park.md`. Fix it the same turn and report the commit.
 
 ### The rule
 

@@ -764,8 +764,16 @@ def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
     if not _DDGS_AVAILABLE:
         return []
     try:
+        # DON'T pass `region="wt-wt"` here. DDG's "wt-wt" is its
+        # internal "no region" code, but ddgs splits it on "-" when
+        # routing to the Wikipedia backend and uses the first half
+        # as a Wikipedia language code - producing a bogus
+        # `wt.wikipedia.org` URL that doesn't exist. Every research
+        # query was hitting that broken URL and silently dropping
+        # the Wikipedia signal. Default region (None) gives clean
+        # routing across all backends. Bug fixed 2026-05-03.
         with DDGS() as ddg:
-            return list(ddg.text(query, max_results=max_results, region="wt-wt") or [])
+            return list(ddg.text(query, max_results=max_results) or [])
     except Exception as exc:
         print(f"[research] ddgs search failed for {query[:60]!r}: {exc}",
               file=sys.stderr)
