@@ -257,8 +257,19 @@ export default function Positions() {
                 : "Loading..."}
             </div>
           ) : (
-            <div style={{ overflowX: "auto" }}>
             <table className="table-simple">
+              <colgroup>
+                <col style={{ width: "auto" }} />
+                <col style={{ width: "12%" }} />
+                <col style={{ width: "60px" }} />
+                <col style={{ width: "70px" }} />
+                <col style={{ width: "70px" }} />
+                <col style={{ width: "70px" }} />
+                <col style={{ width: "70px" }} />
+                <col style={{ width: "80px" }} />
+                <col style={{ width: "80px" }} />
+                <col style={{ width: "28px" }} />
+              </colgroup>
               <thead>
                 <tr>
                   <SortableTh field="market"   sort={openSort}>Market</SortableTh>
@@ -270,7 +281,7 @@ export default function Positions() {
                   <SortableTh field="dconf"    sort={openSort}>D CONF</SortableTh>
                   <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
                   <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
-                  <th style={{ width: 28 }} />
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -294,8 +305,8 @@ export default function Positions() {
                         onClick={() => togglePos(p.id)}
                         style={{ cursor: "pointer" }}
                       >
-                        <td>{p.question}</td>
-                        <td>{category ?? "-"}</td>
+                        <td className="truncate" title={p.question}>{p.question}</td>
+                        <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
                         <td className="mono">${p.cost_usd.toFixed(0)}</td>
                         <td className="mono">{mYesPct}%</td>
@@ -362,7 +373,6 @@ export default function Positions() {
                 })}
               </tbody>
             </table>
-            </div>
           )}
         </div>
       )}

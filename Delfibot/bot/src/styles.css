@@ -945,29 +945,20 @@ button { font: inherit; }
 }
 .card-head-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 
-.pos-table {
-  display: flex;
-  flex-direction: column;
-  /* Allow the table to scroll horizontally if the viewport is too
-     narrow for all 10 columns. Text-overflow: ellipsis on individual
-     cells already handles graceful truncation, but a hard scroll
-     guarantees nothing falls off the right edge of the card. */
-  overflow-x: auto;
-}
+.pos-table { display: flex; flex-direction: column; }
 .pos-row {
   /* 10 cells: Market, Category, Side, Size, M YES, D YES, D CONF,
-     Opened, Closes, chevron. The two "when" columns (Opened + Closes)
-     are kept narrow because their values are short-form ("3h ago",
-     "5d 2h"). Min-width keeps the grid from collapsing under tiny
-     widths; once below, the parent .pos-table scrolls horizontally. */
+     Opened, Closes, chevron. fr units shrink to fit the card width
+     (no horizontal scroll, no min-width). The Market column is
+     ellipsis-truncated when collapsed (.pos-q already nowrap); long
+     names show on hover or when expanded. */
   display: grid;
-  grid-template-columns: 2.0fr 0.85fr 0.5fr 0.7fr 0.7fr 0.8fr 0.8fr 0.7fr 0.7fr 24px;
-  gap: 14px;
-  padding: 14px 0;
+  grid-template-columns: 1.6fr 0.7fr 0.4fr 0.6fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr 24px;
+  gap: 10px;
+  padding: 12px 0;
   align-items: center;
   border-bottom: 1px solid var(--vellum-05);
-  font-family: var(--font-body); font-size: 13.5px;
-  min-width: 820px;
+  font-family: var(--font-body); font-size: 13px;
 }
 .pos-row.expandable { cursor: pointer; transition: background var(--dur-quick) var(--ease); }
 .pos-row.expandable:hover { background: rgba(232, 228, 216, 0.025); }
@@ -1227,23 +1218,42 @@ button { font: inherit; }
   width: 100%;
   border-collapse: collapse;
   font-family: var(--font-body);
-  font-size: 14px;
+  font-size: 13px;
+  /* Fixed layout: column widths come from the first row, not from
+     content. Lets the truncate-ellipsis on .truncate cells actually
+     fire instead of letting long market names blow column widths up. */
+  table-layout: fixed;
 }
 .table-simple th {
   text-align: left;
-  padding: 12px 16px;
+  /* Tighter padding so 10 columns fit without horizontal scroll on
+     the standard window width. Was 12px 16px (32px per cell ->
+     ~320px total padding on a 10-col table). Now 8px 8px (16px per
+     cell -> ~160px). */
+  padding: 8px 8px;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--vellum-40);
   border-bottom: 1px solid var(--vellum-10);
   font-weight: 400;
+  white-space: nowrap;
 }
 .table-simple td {
-  padding: 14px 16px;
+  padding: 10px 8px;
   border-bottom: 1px solid var(--vellum-10);
   color: var(--vellum);
+}
+/* Apply to any cell that should one-line + ellipsis on overflow.
+   The market-question cell is the main user of this. max-width: 0
+   is the table-layout: fixed idiom that lets the cell shrink under
+   content size. */
+.table-simple td.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 0;
 }
 .table-simple tr.row-hover:hover td { background: rgba(232, 228, 216, 0.02); }
 .table-simple tr.expanded-row > td {
