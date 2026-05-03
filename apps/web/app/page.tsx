@@ -182,7 +182,7 @@ function Hero() {
           The future is <br />no longer <span className="hero-accent">a guess</span>
         </h1>
         <p className="hero-sub">
-          The first autonomous Polymarket trader that runs entirely on your computer. Your wallet key never leaves it. Your reasoning is yours alone.
+          The first autonomous and self-improving Polymarket bot<br />that trades for you 24/7.
         </p>
         <div className="hero-ctas">
           <CtaLink className="btn-primary" location="hero" text="Download Delfi">Download Delfi</CtaLink>
