@@ -107,6 +107,25 @@ mkdir -p "$INSTALLED"
 rsync -a --delete "$BUILD_BUNDLE/" "$INSTALLED/"
 touch "$INSTALLED"
 
+# Purge the dev-build artifact AFTER a successful rsync. The build
+# directory (target/release/bundle/macos/) is gitignored and regenerated
+# on every `cargo tauri build`, but Spotlight indexes the .app there
+# and the user sees TWO Delfi entries (one tagged "Applications",
+# one tagged "macos"). The .metadata_never_index marker at target/
+# prevents NEW indexing but doesn't purge entries Spotlight already
+# has for that path.
+#
+# Removing the artifact after deploy means the path goes away from
+# the filesystem AND Spotlight's index, leaving only /Applications/
+# Delfi.app visible. The next `cargo tauri build` recreates it at
+# the same path; this script purges it again on the next install.
+echo "[install] purging dev-build artifact at $BUILD_BUNDLE..."
+BUILD_DIR="$(dirname "$BUILD_BUNDLE")"
+rm -rf \
+  "$BUILD_BUNDLE" \
+  "$BUILD_DIR/Delfi.app.tar.gz" \
+  "$BUILD_DIR/Delfi.app.tar.gz.sig"
+
 # Wrap the sidecar in a UI-element-only sub-bundle.
 #
 # Without this, both /Applications/Delfi.app/Contents/MacOS/delfi
