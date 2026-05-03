@@ -65,7 +65,7 @@ override lets you route CTAs to one if needed.
 
 You already have:
   Product:  prod_URwEtsVQ0sSWmF
-  Price:    price_1TT2LeIB1LZX4WOxHO98wshJ ($199 one-time)
+  Price:    price_1TT2LeIB1LZX4WOxHO98wshJ ($249 one-time)
   Live publishable key (in your hand)
   Identity verified
   Stripe Tax configured

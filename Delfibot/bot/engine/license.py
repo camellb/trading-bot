@@ -77,7 +77,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 # Override-from-env path: the env var DELFI_LICENSE_PUBLIC_KEY_B64, if
 # set at process start, replaces the embedded key. Used for testing
 # with the per-machine generator without rebuilding the binary.
-EMBEDDED_PUBLIC_KEY_B64 = ""
+EMBEDDED_PUBLIC_KEY_B64 = "X3B9bL0nWTAznXfL2Rqhamd3CDgFWmor9EIvT6jOYVY="
 
 
 # ── Owner bypass ──────────────────────────────────────────────────────────

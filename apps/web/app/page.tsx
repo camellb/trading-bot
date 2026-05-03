@@ -837,7 +837,7 @@ function FAQ() {
     { q: "Where do my private keys live?", a: "In your operating system's keychain (macOS Keychain, Windows Credential Locker). Delfi reads them only inside your own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
     { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It's a reasoning-based agent that evaluates each market the way a sharp human trader would: research, probability modeling, calibrated risk sizing, and full transparency on every trade." },
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
-    { q: "How much does it cost?", a: "$199 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
+    { q: "How much does it cost?", a: "$249 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
     { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in your OS keychain, not on Delfi servers. Delfi reads it only inside your process, only when signing a trade: never at rest, never in logs, never transmitted. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time." },
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
@@ -876,7 +876,7 @@ function FinalCTA() {
       <div className="quantum-grid" />
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
-        <p className="final-sub">$199 once. All future updates included.</p>
+        <p className="final-sub">$249 once. All future updates included.</p>
         <CtaLink className="btn-primary large" location="final" text="Get Delfi">Get Delfi</CtaLink>
       </div>
     </section>
