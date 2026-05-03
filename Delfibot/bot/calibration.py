@@ -29,8 +29,17 @@ from sqlalchemy import text
 
 from db.engine import get_engine
 
-# Bucket edges for reliability diagrams - five equal-width bins in [0,1].
-RELIABILITY_BINS = [(0.0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.0)]
+# Bucket edges for reliability diagrams.
+#
+# V1 framing: bucket on Delfi's confidence in the BET's side, not on
+# raw claude_probability of YES. Under V1 the bot only enters trades
+# where Delfi agrees with the market favourite, so confidence-in-bet
+# = claude_probability when side='YES' and 1-claude_probability when
+# side='NO'. That value is always >= 0.50 by direction-agreement.
+#
+# Five equal-width 10pp bins in [0.50, 1.00]. The last bin is closed
+# on the upper end so a perfectly-confident 1.00 lands in 0.90-1.00.
+RELIABILITY_BINS = [(0.50, 0.60), (0.60, 0.70), (0.70, 0.80), (0.80, 0.90), (0.90, 1.001)]
 
 # Time-horizon buckets for Brier breakdowns - (label, lower_hours, upper_hours).
 # upper=None means no upper bound.
@@ -275,22 +284,37 @@ def get_report(
             brier        = float(agg[2]) if agg[2] is not None else None
             realized_pnl = float(agg[3]) if agg[3] is not None else None
 
+            # V1 confidence-in-bet expression: claude_probability is
+            # the probability Delfi assigned to YES; the bot's bet side
+            # is in the `side` column. Confidence in the bet's outcome
+            # = claude_probability if we bet YES, else 1 - claude_probability.
+            # Direction-agreement guarantees this is >= 0.50 for every
+            # entered trade.
+            conf_expr = (
+                "CASE WHEN side = 'YES' THEN claude_probability "
+                "ELSE 1.0 - claude_probability END"
+            )
             bins: list[dict] = []
             for lo, hi in RELIABILITY_BINS:
-                cmp_hi = "<=" if hi == 1.0 else "<"
+                # The last bin uses 1.001 as its upper bound so the half-open
+                # interval [0.90, 1.001) cleanly catches a 1.00 confidence
+                # without needing a separate <= comparator.
                 bin_sql = (
                     f"SELECT COUNT(*) AS n, "
-                    f"       AVG(claude_probability) AS mp, "
+                    f"       AVG({conf_expr}) AS mp, "
                     f"       AVG({outcome_expr}) AS ma "
                     f"FROM pm_positions {res_where} "
-                    f"  AND claude_probability >= :lo "
-                    f"  AND claude_probability {cmp_hi} :hi"
+                    f"  AND ({conf_expr}) >= :lo "
+                    f"  AND ({conf_expr}) <  :hi"
                 )
                 row = conn.execute(text(bin_sql),
                                     {**params, "lo": lo, "hi": hi}).fetchone()
                 bins.append({
                     "lo": lo,
-                    "hi": hi,
+                    # Clamp the display upper bound to 1.0 so the UI never
+                    # renders "90-100.1%". The internal SQL upper of 1.001
+                    # was just to make the half-open interval inclusive.
+                    "hi": min(hi, 1.0),
                     "n":  int(row[0] or 0),
                     "mean_pred":   float(row[1]) if row[1] is not None else None,
                     "mean_actual": float(row[2]) if row[2] is not None else None,

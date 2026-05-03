@@ -248,22 +248,57 @@ export default function Performance() {
           <div className="panel-head">
             <h2 className="panel-title">Calibration</h2>
             <span className="panel-meta">
-              {calibration.resolved} resolved · Brier {calibration.brier?.toFixed(3) ?? "-"}
+              Delfi's confidence vs actual win rate · {calibration.resolved}{" "}
+              resolved · Brier {calibration.brier?.toFixed(3) ?? "-"}
             </span>
+          </div>
+          <div className="calib-header">
+            <div>Confidence</div>
+            <div>Trades</div>
+            <div>Win rate (50% - 100%, gold = actual, line = expected)</div>
+            <div>Won</div>
+            <div>Delta</div>
           </div>
           <div>
             {calibration.bins.map((b, i) => {
-              const predPct = (b.mean_pred ?? 0) * 100;
-              const actualPct = (b.mean_actual ?? 0) * 100;
+              const loPct     = b.lo * 100;
+              const hiPct     = b.hi * 100;
+              const midPct    = (loPct + hiPct) / 2;
+              const hasData   = b.n > 0 && b.mean_actual != null;
+              const actualPct = hasData ? (b.mean_actual ?? 0) * 100 : 0;
+              const predPct   = b.n > 0 && b.mean_pred != null
+                ? (b.mean_pred ?? 0) * 100
+                : midPct;
+              // Map [50, 100] to [0, 100] so the bar fills the visible
+              // confidence range (low extreme of any V1 bet is 50%).
+              const norm = (v: number) =>
+                Math.max(0, Math.min(100, ((v - 50) / 50) * 100));
+              const actualW  = hasData ? norm(actualPct) : 0;
+              const midLeft  = norm(midPct);
+              const predLeft = norm(predPct);
+              const delta    = hasData ? actualPct - predPct : 0;
+              const deltaCls =
+                !hasData      ? "calib-delta calib-delta-zero" :
+                delta >= 1.0  ? "calib-delta calib-delta-pos"  :
+                delta <= -1.0 ? "calib-delta calib-delta-neg"  :
+                                "calib-delta calib-delta-zero";
               return (
                 <div className="calib-bin" key={i}>
-                  <div>{(b.lo * 100).toFixed(0)}-{(b.hi * 100).toFixed(0)}%</div>
+                  <div>{loPct.toFixed(0)}-{hiPct.toFixed(0)}%</div>
                   <div>{b.n} trades</div>
                   <div className="calib-bar">
-                    <div className="pred"   style={{ width: `${predPct}%` }} />
-                    <div className="actual" style={{ width: `${actualPct}%` }} />
+                    <div className="calib-mid" style={{ left: `${midLeft}%` }} />
+                    <div className="calib-actual" style={{ width: `${actualW}%` }} />
+                    {hasData && (
+                      <div className="calib-pred" style={{ left: `${predLeft}%` }} />
+                    )}
                   </div>
-                  <div>{actualPct.toFixed(0)}%</div>
+                  <div>{hasData ? `${actualPct.toFixed(0)}%` : "-"}</div>
+                  <div className={deltaCls}>
+                    {hasData
+                      ? `${delta >= 0 ? "+" : ""}${delta.toFixed(0)} pp`
+                      : "-"}
+                  </div>
                 </div>
               );
             })}

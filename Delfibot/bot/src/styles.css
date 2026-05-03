@@ -1299,9 +1299,10 @@ button { font: inherit; }
 }
 .stat-cell-delta.down { color: var(--ember); }
 
-.calib-bin {
+.calib-bin,
+.calib-header {
   display: grid;
-  grid-template-columns: 100px 80px 1fr 80px;
+  grid-template-columns: 100px 80px 1fr 60px 80px;
   gap: 12px;
   align-items: center;
   padding: 8px 0;
@@ -1310,15 +1311,54 @@ button { font: inherit; }
   font-size: 12px;
 }
 .calib-bin:last-child { border-bottom: 0; }
+.calib-header {
+  color: var(--vellum-60);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--vellum-20);
+}
 .calib-bar {
   position: relative;
-  height: 6px;
+  height: 8px;
   background: var(--surface-3);
   border-radius: var(--radius-full);
-  overflow: hidden;
+  /* visible so the predicted-marker pip can poke above and below */
+  overflow: visible;
 }
-.calib-bar > .pred   { position: absolute; top: 0; bottom: 0; background: var(--teal-dim); }
-.calib-bar > .actual { position: absolute; top: 0; bottom: 0; background: var(--gold); }
+.calib-bar > .calib-actual {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  background: var(--gold);
+  border-radius: var(--radius-full);
+}
+/* The faint vertical line at the bucket midpoint - the perfectly-
+   calibrated reference. If the gold bar ends here, Delfi's confidence
+   in this bucket matches reality. */
+.calib-bar > .calib-mid {
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 1px;
+  background: var(--vellum-30, rgba(232, 228, 216, 0.30));
+  pointer-events: none;
+}
+/* The thicker vertical pip at Delfi's average confidence in this
+   bucket. Shows what Delfi actually predicted, not just the bucket
+   midpoint - useful when sample is skewed within the bucket. */
+.calib-bar > .calib-pred {
+  position: absolute;
+  top: -2px; bottom: -2px;
+  width: 2px;
+  background: var(--vellum-60);
+  border-radius: 1px;
+  pointer-events: none;
+}
+.calib-delta { text-align: right; }
+.calib-delta-pos  { color: var(--teal); }
+.calib-delta-neg  { color: var(--ember); }
+.calib-delta-zero { color: var(--vellum-60); }
 
 .brier-spark svg { display: block; width: 100%; }
 .brier-foot      { color: var(--vellum-60); font-size: 12px; margin: 6px 0 0; font-family: var(--font-mono); }
