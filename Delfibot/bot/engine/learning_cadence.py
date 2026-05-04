@@ -355,7 +355,10 @@ def _propose_archetype_stake_multiplier(diag: dict,
         currently = float(current_map.get(archetype, 1.0))
         if abs(proposed - currently) < ARCHETYPE_MULTIPLIER_HYSTERESIS:
             continue
-        verb = "upsizing" if proposed > 1.0 else "downsizing"
+        # Compare against the user's CURRENT multiplier, not against
+        # the unscaled 1.0 base. With current=2.0x and proposed=1.25x
+        # the move is a decrease, even though 1.25 > 1.0.
+        verb = "upsizing" if proposed > currently else "downsizing"
         out.append(Proposal(
             param_name="archetype_stake_multipliers",
             current_value=currently,
