@@ -129,12 +129,39 @@
   margin: 0;
 }
 
-.checkout-summary-fineprint {
-  font-family: var(--font-body);
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--vellum-40);
+/* Trust signals row: icons + tight labels above the procedural
+   "After you pay" steps. Three rows, each one beat (no body
+   copy explaining the obvious - the labels speak for themselves). */
+.checkout-trust {
+  list-style: none;
   margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.checkout-trust-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--vellum);
+}
+.checkout-trust-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--obsidian);
+  border: 1px solid var(--vellum-10);
+  color: var(--gold);
+}
+.checkout-trust-icon svg { width: 16px; height: 16px; }
+.checkout-trust-label {
+  letter-spacing: -0.005em;
 }
 
 /* ── Right column: Stripe iframe wrapper ───────────────────────── */

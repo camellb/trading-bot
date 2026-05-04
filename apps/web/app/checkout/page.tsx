@@ -125,6 +125,35 @@ export default function CheckoutPage() {
             </p>
           </div>
 
+          <ul className="checkout-trust">
+            <li className="checkout-trust-row">
+              <span className="checkout-trust-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18.178 8C16.6 8 15.6 9 14.5 10.6 13.4 12.2 12 13.6 9.822 13.6 7.978 13.6 6.4 12.045 6.4 9.978 6.4 7.911 7.978 6.356 9.822 6.356 12 6.356 13.4 7.756 14.5 9.378 15.6 10.978 16.6 12 18.178 12 19.844 12 21.6 10.667 21.6 9 21.6 7.333 19.844 6 18.178 6"/>
+                  <path d="M5.822 12C7.4 12 8.4 13 9.5 14.6 10.6 16.2 12 17.6 14.178 17.6 16.022 17.6 17.6 16.045 17.6 13.978"/>
+                </svg>
+              </span>
+              <span className="checkout-trust-label">Lifetime access</span>
+            </li>
+            <li className="checkout-trust-row">
+              <span className="checkout-trust-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 12a9 9 0 1 0 3-6.7"/>
+                  <path d="M3 4v5h5"/>
+                </svg>
+              </span>
+              <span className="checkout-trust-label">14-day refund</span>
+            </li>
+            <li className="checkout-trust-row">
+              <span className="checkout-trust-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round">
+                  <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>
+                </svg>
+              </span>
+              <span className="checkout-trust-label">Instant delivery</span>
+            </li>
+          </ul>
+
           <div className="checkout-next">
             <div className="checkout-next-eyebrow">After you pay</div>
             <ol className="checkout-next-steps">
@@ -146,10 +175,6 @@ export default function CheckoutPage() {
               </li>
             </ol>
           </div>
-
-          <p className="checkout-summary-fineprint">
-            Includes all future updates. 14-day refund.
-          </p>
         </aside>
 
         <section className="checkout-stripe-wrap">
