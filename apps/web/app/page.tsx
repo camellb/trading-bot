@@ -262,15 +262,15 @@ function Ribbon() {
         <div className="ribbon-stats">
           <div className="ribbon-stat">
             <div className="ribbon-num gold t-num">11,500+</div>
-            <div className="ribbon-sub">active users</div>
+            <div className="ribbon-sub">downloads</div>
           </div>
           <div className="ribbon-stat">
-            <div className="ribbon-num vellum t-num">$50M+</div>
-            <div className="ribbon-sub">in trades</div>
+            <div className="ribbon-num vellum t-num">150+</div>
+            <div className="ribbon-sub">markets watched</div>
           </div>
           <div className="ribbon-stat">
-            <div className="ribbon-num teal t-num">99.2%</div>
-            <div className="ribbon-sub">uptime</div>
+            <div className="ribbon-num teal t-num">24/7</div>
+            <div className="ribbon-sub">autonomous</div>
           </div>
         </div>
       </div>
