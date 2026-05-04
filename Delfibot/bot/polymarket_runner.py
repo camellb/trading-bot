@@ -170,12 +170,19 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                 telegram_html: str | None = None
                 try:
                     from feeds import telegram_messages as _tm
-                    bankroll_after = float(executor.get_bankroll())
+                    # Pull both values from the same stats snapshot so
+                    # they agree. bankroll = cash available to deploy;
+                    # equity = cash + cost-basis of all open positions.
+                    # Earlier code passed `equity = bankroll`, which only
+                    # holds when the user has zero other open positions
+                    # at settlement time. In practice the bot usually
+                    # holds several at once, so the two numbers were
+                    # silently identical in the Telegram message.
+                    stats = executor.get_portfolio_stats()
+                    bankroll_after = float(stats.get("bankroll", 0.0))
+                    equity_after   = float(stats.get("equity",   bankroll_after))
                     cost = float(p.get("cost_usd", 0.0) or 0.0)
                     roi = (pnl / cost) if cost > 0 else 0.0
-                    # Equity = realized bankroll (no open positions for
-                    # this market - it just settled). Same number as
-                    # bankroll for the moment.
                     common = dict(
                         question=(p.get("question") or ""),
                         side=side,
@@ -183,7 +190,7 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                         pnl=pnl,
                         roi=roi,
                         bankroll=bankroll_after,
-                        equity=bankroll_after,
+                        equity=equity_after,
                         mode=p.get("mode") or "simulation",
                     )
                     if outcome == side:
