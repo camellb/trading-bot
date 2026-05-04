@@ -139,22 +139,17 @@
   flex-direction: column;
 }
 
-/* The iframe Stripe drops in is unavoidably white (until the
-   operator sets dark mode in Stripe Dashboard -> Settings ->
-   Branding). We give it a clean gold-toned border so it reads
-   as an intentional brand surface rather than a foreign popup,
-   and zero internal padding so the Stripe form fills the frame
-   edge-to-edge. */
+/* Stripe iframe wrapper. Borderless against the obsidian page;
+   relies on Stripe's own surface to provide visual separation. */
 .checkout-stripe-frame {
-  background: #ffffff;
-  border: 1px solid var(--gold-line);
+  background: transparent;
+  border: 0;
   border-radius: 6px;
   padding: 0;
   min-height: 560px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 0 0 4px rgba(212, 175, 55, 0.06),
-              0 18px 48px rgba(0, 0, 0, 0.45);
+  box-shadow: none;
 }
 
 /* Stripe's iframe fills its parent edge-to-edge now. */
