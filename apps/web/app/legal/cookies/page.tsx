@@ -23,7 +23,7 @@ export default function CookiesPage() {
         running a working site. This page explains what we use and how
         you can change your choice.
       </p>
-      <div className="content-meta">Effective 2026-04-01 &middot; Last updated 2026-04-28</div>
+      <div className="content-meta">Effective 2026-04-01 &middot; Last updated 2026-05-04</div>
 
       <div className="content-body">
         <h2>1. What is a cookie</h2>
@@ -40,16 +40,18 @@ export default function CookiesPage() {
         <h3>Necessary (always on)</h3>
         <ul>
           <li>
-            <strong>Authentication cookies</strong> on the legacy SaaS dashboard at <code>/dashboard</code>{" "}
-            and the auth flow at <code>/auth</code>. Set by Supabase. Without these, sign-in does not work.
-            These do not track you across sites.
-          </li>
-          <li>
             <strong>Cookie-consent flag</strong> in your browser&apos;s local storage under the key{" "}
             <code>delfi.cookie-consent</code>. Records whether you accepted or rejected the analytics
-            bucket. Without this we would re-prompt you on every visit.
+            bucket. Without this we would re-prompt you on every visit. This value never leaves your
+            browser.
           </li>
         </ul>
+        <p>
+          We have no signed-in marketing-site account, so there are no authentication cookies on
+          delfibot.com. Your Polymarket credentials live exclusively in your operating system&apos;s
+          keychain on the machine where you installed Delfi; they are not cookies, they are not stored on
+          our servers, and they never travel through the website.
+        </p>
 
         <h3>Analytics (only if you accept)</h3>
         <p>

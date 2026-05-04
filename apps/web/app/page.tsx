@@ -843,7 +843,7 @@ function FAQ() {
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
     { q: "Can I turn Delfi off?", a: "Any time. The dashboard has an emergency stop button. Open positions stay open until they resolve. No new trades are placed until you turn it back on." },
     { q: "Is this legal?", a: "Polymarket and prediction markets are regulated differently in every jurisdiction. Some permit it, some restrict it, some prohibit it. Confirm legality in your own region before trading. If in doubt, consult a local advisor." },
-    { q: "What's the refund policy?", a: "14 days, no questions asked, provided you have not yet placed a live trade through the app." },
+    { q: "What's the refund policy?", a: "14 days from purchase, as long as you haven't activated your license on any machine. Once activated, the digital good is delivered and the purchase is final. Email info@delfibot.com from the address used at checkout to request a refund within the eligibility window." },
   ];
   return (
     <section className="section faq" id="faq" data-screen-label="11 FAQ">

@@ -6,10 +6,12 @@ export default function PrivacyPage() {
       <div className="content-eyebrow">Legal</div>
       <h1 className="content-h1">Privacy Policy</h1>
       <p className="content-lede">
-        We take privacy seriously because you are trusting us with sensitive financial data. This policy
-        explains what we collect, why we collect it, and what choices you have.
+        WLDK Limited (&ldquo;we&rdquo;, &ldquo;us&rdquo;) operates Delfi. This policy explains what we
+        collect, why we collect it, and what choices you have. Our defining design constraint is that
+        Delfi runs entirely on your computer, so most of what would normally be collected by a SaaS
+        product never reaches us.
       </p>
-      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-04-21</div>
+      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-05-04</div>
 
       <div className="content-body">
         <h2>1. Information we collect</h2>

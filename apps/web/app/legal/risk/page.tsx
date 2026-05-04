@@ -9,7 +9,7 @@ export default function RiskPage() {
         Prediction market trading involves real financial risk. Before you enable live trading, please read
         this disclosure carefully.
       </p>
-      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-04-21</div>
+      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-05-04</div>
 
       <div className="content-body">
         <div className="content-callout">
