@@ -70,13 +70,17 @@
 .checkout-grid {
   flex: 1;
   display: grid;
-  /* Asymmetric so the Stripe iframe gets the wider column. */
-  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
-  gap: 56px;
-  max-width: 1180px;
+  /* Stripe caps the embedded form internally at ~500px regardless
+     of column width, so giving the right column more space just
+     produced sprawling white margins. Tightened to 560px so the
+     form fills the frame edge-to-edge. */
+  grid-template-columns: minmax(300px, 380px) 560px;
+  gap: 48px;
+  max-width: 980px;
   width: 100%;
   margin: 0 auto;
   align-items: start;
+  justify-content: center;
 }
 
 /* ── Left column: order summary + trust signals ─────────────────── */
@@ -135,23 +139,26 @@
   flex-direction: column;
 }
 
-/* The iframe Stripe drops in is unavoidably white. Wrap it in a
-   vellum-toned frame so it reads as an intentional surface
-   against the obsidian page rather than a foreign popup. */
+/* The iframe Stripe drops in is unavoidably white (until the
+   operator sets dark mode in Stripe Dashboard -> Settings ->
+   Branding). We give it a clean gold-toned border so it reads
+   as an intentional brand surface rather than a foreign popup,
+   and zero internal padding so the Stripe form fills the frame
+   edge-to-edge. */
 .checkout-stripe-frame {
   background: #ffffff;
-  border: 1px solid var(--vellum-10);
-  border-radius: 8px;
-  padding: 8px;
-  min-height: 580px;
+  border: 1px solid var(--gold-line);
+  border-radius: 6px;
+  padding: 0;
+  min-height: 560px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.08),
-              0 12px 40px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 4px rgba(212, 175, 55, 0.06),
+              0 18px 48px rgba(0, 0, 0, 0.45);
 }
 
-/* Stripe's iframe fills its parent. */
-.checkout-stripe-frame > div { min-height: 564px; }
+/* Stripe's iframe fills its parent edge-to-edge now. */
+.checkout-stripe-frame > div { min-height: 560px; }
 
 .checkout-loading {
   display: flex;
@@ -343,12 +350,13 @@
   }
   .checkout-stripe-wrap {
     gap: 20px;
+    width: 100%;
   }
   .checkout-stripe-frame {
     min-height: 540px;
-    padding: 4px;
+    padding: 0;
   }
-  .checkout-stripe-frame > div { min-height: 532px; }
+  .checkout-stripe-frame > div { min-height: 540px; }
   .checkout-next {
     padding: 22px 24px;
   }
