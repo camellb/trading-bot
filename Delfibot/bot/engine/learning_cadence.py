@@ -241,11 +241,20 @@ def _propose_archetype_threshold(diag: dict,
                                  current: UserConfig) -> list[Proposal]:
     """
     Flag archetypes whose Brier score exceeds the uninformed baseline with
-    a reliable sample. Proposal: add the archetype to archetype_skip_list so
-    the sizer stops trading markets the forecaster demonstrably mis-calibrates.
+    a reliable sample. Proposal: add the archetype to archetype_skip_list
+    so the sizer stops trading markets the forecaster demonstrably
+    mis-calibrates.
+
+    Skips archetypes already on the user's skip list -- proposing to add
+    something that's already there is a no-op. The earlier version
+    didn't filter, so users with an existing skip list got "Add tennis to
+    skip list" suggestions that did nothing when Applied.
     """
     out: list[Proposal] = []
     rows = diag.get("brier_by_archetype") or []
+    skip_set = {
+        str(x) for x in (getattr(current, "archetype_skip_list", ()) or ())
+    }
     for r in rows:
         n = int(r.get("n", 0) or 0)
         brier = r.get("brier")
@@ -253,6 +262,10 @@ def _propose_archetype_threshold(diag: dict,
         if n < STRICT_BUCKET_N or brier is None or not archetype:
             continue
         if brier <= ARCHETYPE_BRIER_THRESHOLD:
+            continue
+        if archetype in skip_set:
+            # Already skipped; proposing to add it again would be a
+            # no-op when applied. Don't surface as a notification.
             continue
         out.append(Proposal(
             param_name="archetype_skip_list",
@@ -497,8 +510,13 @@ def _gather_stats(user_id: str, mode: str, limit: int) -> dict:
         from sqlalchemy import text
         from db.engine import get_engine
         with get_engine().begin() as conn:
+            # Source the per-archetype slice from `market_archetype`
+            # (classifier output), not the legacy `category` column
+            # which collapses sports into 'sports'. See the docstring
+            # on `_archetype_pnl_attribution_impl` in diagnostics.py
+            # for the same fix in the diagnostic path.
             rows = conn.execute(text(
-                "SELECT cost_usd, realized_pnl_usd, category "
+                "SELECT cost_usd, realized_pnl_usd, market_archetype "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
                 "  AND status IN ('settled', 'invalid') "

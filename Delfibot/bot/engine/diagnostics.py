@@ -778,13 +778,28 @@ def archetype_pnl_attribution(user_id: Optional[str] = None) -> list[dict]:
 @lru_cache(maxsize=32)
 def _archetype_pnl_attribution_impl(user_id: Optional[str],
                                     _bucket: int) -> list[dict]:
+    """
+    P&L and trade count grouped by GRANULAR archetype (tennis,
+    basketball, esports, etc.), not Polymarket gamma's coarse
+    `pm_positions.category` column. The category column collapses
+    every sport into 'sports', which doesn't match any of the
+    canonical labels in `engine.archetype_classifier.ARCHETYPES`
+    and made the learning loop's stake-multiplier proposer emit
+    'change multiplier on archetype sports' suggestions that
+    couldn't be applied (no such archetype to set the multiplier
+    on).
+
+    Bug fixed 2026-05-04: same fix `_brier_by_archetype_impl` got
+    on 2026-05-03 (sourcing from `pm_positions.market_archetype`
+    -- the classifier's output -- rather than `category`).
+    """
     try:
         from sqlalchemy import text
         user_clause = "  AND user_id = :uid " if user_id else ""
         params: dict = {"uid": user_id} if user_id else {}
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
-                "SELECT category, "
+                "SELECT market_archetype, "
                 "       COUNT(*) AS n, "
                 "       COALESCE(SUM(realized_pnl_usd),0) AS pnl, "
                 "       COALESCE(SUM(cost_usd),0) AS cost, "
@@ -792,16 +807,17 @@ def _archetype_pnl_attribution_impl(user_id: Optional[str],
                 "FROM pm_positions "
                 "WHERE status IN ('settled','invalid') "
                 "  AND realized_pnl_usd IS NOT NULL "
+                "  AND market_archetype IS NOT NULL "
                 f"{user_clause}"
-                "GROUP BY category ORDER BY n DESC"
+                "GROUP BY market_archetype ORDER BY n DESC"
             ), params).fetchall()
         out = []
-        for cat, n, pnl, cost, wins in rows:
+        for archetype, n, pnl, cost, wins in rows:
             n = int(n or 0)
             pnl = float(pnl or 0.0)
             cost = float(cost or 0.0)
             out.append({
-                "archetype": cat or "other",
+                "archetype": archetype or "other",
                 "n":         n,
                 "pnl":       pnl,
                 "cost":      cost,

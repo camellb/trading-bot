@@ -33,6 +33,74 @@ function fmtDelta(n: number | null): string {
   return `${sign}${(n * 100).toFixed(2)}%`;
 }
 
+/** Multiplier values render with an "x" suffix and two decimals so
+ *  the dashboard reads "1.00x → 0.75x" instead of "1.000 → 0.750". */
+function fmtMultiplier(n: number | null): string {
+  if (n == null) return "-";
+  return `${n.toFixed(2)}x`;
+}
+
+/** Renders the "current → proposed" diff for a pending suggestion.
+ *
+ *  The proposer pipeline produces three operation shapes (set in
+ *  `metadata.operation` by the Python side at
+ *  `engine.learning_cadence._propose_*`):
+ *
+ *    scalar_set    -> a single numeric param (e.g. max_stake_pct).
+ *                     Render as "0.020 → 0.014".
+ *    dict_set      -> set one key on a dict-valued param (e.g.
+ *                     archetype_stake_multipliers["tennis"] = 0.75).
+ *                     Render as "tennis: 1.00x → 0.75x".
+ *    list_append   -> add items to a list-valued param (e.g.
+ *                     archetype_skip_list += ["tennis"]).
+ *                     Numeric current/proposed are NULL because the
+ *                     Proposal dataclass only carries floats. Render
+ *                     the items being added with a "+" prefix instead
+ *                     of the meaningless "— → —" the prior renderer
+ *                     produced.
+ *
+ *  Falls back to the numeric arrow for unknown / missing operations. */
+function SuggestionDiff({ s }: { s: PendingSuggestion }) {
+  const meta = (s.metadata ?? {}) as Record<string, unknown>;
+  const op = typeof meta.operation === "string" ? meta.operation : null;
+
+  if (op === "list_append") {
+    const items = Array.isArray(meta.items)
+      ? (meta.items.filter((x) => typeof x === "string") as string[])
+      : [];
+    if (items.length > 0) {
+      return (
+        <span className="intel-card-to">
+          + {items.join(", ")}
+        </span>
+      );
+    }
+  }
+
+  if (op === "dict_set") {
+    const key = typeof meta.key === "string" ? meta.key : null;
+    const isMultiplier = s.param_name === "archetype_stake_multipliers";
+    const fmt = isMultiplier ? fmtMultiplier : (n: number | null) => fmtNum(n);
+    return (
+      <>
+        {key && <span className="intel-card-from-key">{key}:&nbsp;</span>}
+        <span className="intel-card-from">{fmt(s.current_value)}</span>
+        <span className="intel-card-arrow">→</span>
+        <span className="intel-card-to">{fmt(s.proposed_value)}</span>
+      </>
+    );
+  }
+
+  // scalar_set or unknown: numeric arrow.
+  return (
+    <>
+      <span className="intel-card-from">{fmtNum(s.current_value)}</span>
+      <span className="intel-card-arrow">→</span>
+      <span className="intel-card-to">{fmtNum(s.proposed_value)}</span>
+    </>
+  );
+}
+
 function reportBodyText(body: LearningReport["body"]): string {
   if (body == null) return "";
   if (typeof body === "string") return body;
@@ -249,9 +317,7 @@ function SuggestionCard({
       <div className="intel-card-param">{s.param_name}</div>
 
       <div className="intel-card-move">
-        <span className="intel-card-from">{fmtNum(s.current_value)}</span>
-        <span className="intel-card-arrow">→</span>
-        <span className="intel-card-to">{fmtNum(s.proposed_value)}</span>
+        <SuggestionDiff s={s} />
       </div>
 
       {s.evidence && <p className="intel-card-evidence">{s.evidence}</p>}
