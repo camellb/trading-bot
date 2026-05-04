@@ -490,8 +490,8 @@ function Proof() {
 
         <div className="proof-stats">
           <div className="proof-stat">
-            <div className="proof-num vellum t-num"><CountUp target={34788} /></div>
-            <div className="proof-label">Predictions Resolved</div>
+            <div className="proof-num vellum t-num"><CountUp target={11500} /></div>
+            <div className="proof-label">Downloads</div>
           </div>
           <div className="proof-stat">
             <div className="proof-num gold t-num">0.087</div>
