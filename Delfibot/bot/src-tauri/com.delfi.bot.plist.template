@@ -64,6 +64,16 @@
         <string>__HOME__/Library/Application Support/com.delfi.desktop/delfi.db</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <!--
+            Authorise real-money order placement in live mode. With
+            this set but mode=simulation in the dashboard, no real
+            orders fire (executor falls through to simulation
+            fills). Once the user toggles mode=live AND pastes a
+            Polymarket private key into the OS keychain, _open_live
+            will route to py-clob-client-v2.
+        -->
+        <key>DELFI_LIVE_KILLSWITCH_OFF</key>
+        <string>1</string>
     </dict>
 
     <key>StandardOutPath</key>

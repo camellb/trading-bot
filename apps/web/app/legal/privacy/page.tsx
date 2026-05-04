@@ -101,9 +101,18 @@ export default function PrivacyPage() {
           clarifications are updated in place with a revised date at the top of this page.
         </p>
 
-        <h2>10. Contact</h2>
+        <h2>10. Data controller and contact</h2>
         <p>
-          Questions can be sent to <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
+          For the purposes of UK GDPR and the EU General Data Protection Regulation, the data
+          controller is <strong>WLDK Limited</strong>, a company registered in England and Wales under
+          company number 16182403, with its registered office at Lytchett House, 13 Freeland Park,
+          Wareham Road, Poole, Dorset, BH16 6FA, United Kingdom.
+        </p>
+        <p>
+          Privacy questions and requests under your applicable rights can be sent to{" "}
+          <a href="mailto:info@delfibot.com">info@delfibot.com</a>. UK and EU users may also lodge a
+          complaint with their local data protection authority. In the UK that is the Information
+          Commissioner&apos;s Office (ICO).
         </p>
       </div>
     </main>

@@ -17,9 +17,12 @@ export default function TermsPage() {
         <p>
           Delfi is an autonomous trading system that evaluates prediction markets and executes positions on
           Polymarket and similar venues on behalf of its users. The Delfi software and the delfibot.com
-          website are operated by <strong>WLDK Limited</strong> (the &ldquo;Company&rdquo;, &ldquo;we&rdquo;,
-          &ldquo;us&rdquo;, &ldquo;our&rdquo;). Throughout these terms <strong>Delfi</strong> refers to the
-          software and the website operated by us under that brand.
+          website are operated by <strong>WLDK Limited</strong>, a company registered in England and
+          Wales under company number <strong>16182403</strong>, with its registered office at Lytchett
+          House, 13 Freeland Park, Wareham Road, Poole, Dorset, BH16 6FA, United Kingdom (the
+          &ldquo;Company&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;, &ldquo;our&rdquo;). Throughout these
+          terms <strong>Delfi</strong> refers to the software and the website operated by us under that
+          brand.
         </p>
 
         <h2>2. Eligibility</h2>
@@ -146,11 +149,11 @@ export default function TermsPage() {
 
         <h2>13. Governing law and dispute resolution</h2>
         <p>
-          These terms are governed by, and construed in accordance with, the laws of the jurisdiction in
-          which the Company is registered, without regard to its conflict-of-laws principles. The exclusive
-          forum for any dispute arising out of or related to these terms is the competent courts of that
-          jurisdiction, and you consent to the personal jurisdiction of those courts. The United Nations
-          Convention on Contracts for the International Sale of Goods does not apply.
+          These terms are governed by, and construed in accordance with, the laws of England and Wales,
+          without regard to its conflict-of-laws principles. The exclusive forum for any dispute arising
+          out of or related to these terms is the competent courts of England and Wales, and you consent
+          to the personal jurisdiction of those courts. The United Nations Convention on Contracts for
+          the International Sale of Goods does not apply.
         </p>
         <p>
           <strong>Class-action and jury-trial waiver.</strong> You and the Company each agree that any
@@ -191,9 +194,16 @@ export default function TermsPage() {
           date of the change constitutes acceptance.
         </p>
 
-        <h2>17. Contact</h2>
+        <h2>17. Contact and notices</h2>
         <p>
-          Questions about these terms can be sent to <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
+          Day-to-day questions about these terms or the service can be sent to{" "}
+          <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
+        </p>
+        <p>
+          Formal legal notices to the Company must be sent in writing to: WLDK Limited, Lytchett House,
+          13 Freeland Park, Wareham Road, Poole, Dorset, BH16 6FA, United Kingdom. Notices are deemed
+          received on the third business day after posting by recorded delivery. We may give notice to
+          you at the email address you provided at checkout, deemed received on the date sent.
         </p>
       </div>
     </main>
