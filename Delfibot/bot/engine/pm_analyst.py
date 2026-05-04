@@ -537,13 +537,26 @@ class PMAnalyst:
         except Exception:
             pass
         market_pct = decision.p_win * 100.0
-        forecast_pct = evaluation.probability_yes * 100.0
+        # `probability_yes` is the forecaster's P(YES), always.
+        # `forecast_pct_yes` keeps it as P(YES) for the description
+        # log line (which labels market + forecast as YES%
+        # explicitly so context is unambiguous).
+        # `forecast_pct_side` flips to P(NO) on a NO bet so the
+        # Telegram message "Delfi forecasts: NO (X% probability)"
+        # reports the probability of the side actually bet on,
+        # not P(YES). The previous wiring passed P(YES) regardless
+        # of side, which mis-labelled every NO trade.
+        forecast_pct_yes  = evaluation.probability_yes * 100.0
+        forecast_pct_side = (
+            forecast_pct_yes if decision.side == "YES"
+            else (1.0 - evaluation.probability_yes) * 100.0
+        )
         mode = "live" if executor.mode == "live" else "simulation"
         description = (
             f"Opened {decision.side} on {market.question[:120]} "
             f"for ${decision.stake_usd:.2f} "
             f"(market {market_pct:.1f}%, "
-            f"forecast {forecast_pct:.1f}%, "
+            f"forecast {forecast_pct_yes:.1f}%, "
             f"confidence {evaluation.confidence:.2f}, "
             f"bankroll ${bankroll_after:.2f}, mode {mode}, "
             f"position={position_id})"
@@ -556,7 +569,7 @@ class PMAnalyst:
                 question=market.question,
                 side=decision.side,
                 stake_usd=float(decision.stake_usd),
-                forecast_pct=forecast_pct,
+                forecast_pct=forecast_pct_side,
                 confidence=float(evaluation.confidence or 0.0),
                 bankroll_after=bankroll_after,
                 mode=mode,
