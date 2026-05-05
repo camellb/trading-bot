@@ -6,7 +6,6 @@ import {
   PendingSuggestion,
   ReportArchetypeRow,
   ReportPosition,
-  ReportCalibrationBin,
 } from "../api";
 import { formatDate, formatDateTime } from "../lib/format";
 
@@ -404,10 +403,6 @@ function ReportCard({
       {data && (data.top_wins.length > 0 || data.top_losses.length > 0) && (
         <TopMovesGrid wins={data.top_wins} losses={data.top_losses} />
       )}
-
-      {data && data.calibration.length > 0 && (
-        <CalibrationStrip bins={data.calibration} />
-      )}
     </article>
   );
 }
@@ -506,51 +501,6 @@ function MoveRow({ pos, positive }: { pos: ReportPosition; positive: boolean }) 
         {pos.archetype ?? "-"} · {pos.side ?? "-"} resolved {pos.outcome ?? "-"}
       </div>
     </div>
-  );
-}
-
-function CalibrationStrip({ bins }: { bins: ReportCalibrationBin[] }) {
-  // Single-line explainer is the user-facing UX clarification:
-  // we read the chart at a glance, but a stranger doesn't know what
-  // it shows. Brief by design, no more than one sentence.
-  return (
-    <section className="review-section">
-      <h3 className="review-section-title">Calibration</h3>
-      <p className="review-cal-help">
-        Each bucket groups predictions by their forecast probability.
-        Closer the gold (predicted) and grey (actual) bars are, the
-        better-calibrated Delfi is in that bucket.
-      </p>
-      <div className="review-cal">
-        {bins.map((b, i) => {
-          const ap = b.avg_p ?? 0;
-          const obs = b.observed ?? 0;
-          const sparse = b.n < 3;
-          return (
-            <div
-              key={i}
-              className={`review-cal-bin ${sparse ? "sparse" : ""}`}
-              title={
-                `${b.bucket ?? "-"} · ${b.n} trades` +
-                (b.avg_p != null ? ` · predicted ${fmtPct(b.avg_p, 0)}` : "") +
-                (b.observed != null ? ` · actual ${fmtPct(b.observed, 0)}` : "")
-              }
-            >
-              <div className="review-cal-bars" aria-hidden>
-                <span className="review-cal-bar predicted" style={{ height: `${Math.round(ap * 100)}%` }} />
-                <span className="review-cal-bar observed"  style={{ height: `${Math.round(obs * 100)}%` }} />
-              </div>
-              <div className="review-cal-bin-label">{b.bucket ?? "-"}</div>
-              <div className="review-cal-bin-n">{b.n} trades</div>
-            </div>
-          );
-        })}
-      </div>
-      <div className="review-cal-legend">
-        <span><i className="dot predicted" /> Predicted</span>
-        <span><i className="dot observed"  /> Actual</span>
-      </div>
-    </section>
   );
 }
 
