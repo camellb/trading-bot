@@ -88,10 +88,18 @@ def _get_clob_client(wallet_address: str, private_key: str):
     unauthed client to derive API creds, then a fully-authed client.
     Cached in-process so we only do the round-trip once.
 
+    Cache key includes a SHA-256 of the private key so a credential
+    rotation (same wallet, new key — possible with different
+    derivation paths) does NOT return a stale client signing with the
+    old key. The full key is never logged or exposed; only its hash
+    sits in memory as a dict-key prefix.
+
     Imports are deferred so a sidecar that's never gone live doesn't
     have to load the SDK on startup.
     """
-    cache_key = wallet_address.lower()
+    import hashlib
+    key_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    cache_key = f"{wallet_address.lower()}:{key_hash}"
     cached = _CLOB_CLIENT_CACHE.get(cache_key)
     if cached is not None:
         return cached

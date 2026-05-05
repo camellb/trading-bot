@@ -146,31 +146,47 @@ def calibration_curve(scope: Scope = "all") -> dict:
 
 @lru_cache(maxsize=32)
 def _calibration_curve_impl(scope: str, _bucket: int) -> dict:
+    # Calibration curve must bin on chosen-side probability, not P(YES).
+    # `predictions.probability` is P(YES); `predictions.resolved_outcome`
+    # is the Delfi-correct bit. Without the flip, NO bets land in the
+    # wrong bin (a NO bet at p_yes=0.30 has chosen-side confidence
+    # 0.70 = bin [0.6, 0.7), not bin [0.2, 0.3)). Plus the observed
+    # rate per bin treats "Delfi-was-right" as if it were
+    # "YES-happened" - they aren't the same axis. Same fix as
+    # _brier_by_archetype_impl, applied to this curve too.
     try:
         from sqlalchemy import text
         bins: list[dict] = []
+        chosen_p = (
+            "(CASE WHEN pm.side = 'YES' THEN p.probability "
+            "      ELSE 1.0 - p.probability END)"
+        )
+        base_filters = (
+            "p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
+            "AND p.resolved_outcome IN (0,1) "
+            "AND p.probability IS NOT NULL "
+            "AND pm.side IN ('YES', 'NO') "
+            f"AND {_scope_clause(scope)}"
+        )
         with _get_engine().begin() as conn:
             total_row = conn.execute(text(
-                "SELECT COUNT(*) FROM predictions p "
-                "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
-                "  AND p.resolved_outcome IN (0,1) "
-                "  AND p.probability IS NOT NULL "
-                f"  AND {_scope_clause(scope)}"
+                "SELECT COUNT(*) "
+                "FROM predictions p "
+                "JOIN pm_positions pm ON pm.prediction_id = p.id "
+                f"WHERE {base_filters}"
             )).scalar()
             total = int(total_row or 0)
             for i, (lo, hi) in enumerate(CALIBRATION_BINS):
                 cmp_hi = "<=" if i == len(CALIBRATION_BINS) - 1 else "<"
                 row = conn.execute(text(
                     "SELECT COUNT(*) AS n, "
-                    "       AVG(p.probability) AS mp, "
+                    f"       AVG({chosen_p}) AS mp, "
                     "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
                     "FROM predictions p "
-                    "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
-                    "  AND p.resolved_outcome IN (0,1) "
-                    "  AND p.probability IS NOT NULL "
-                    f"  AND {_scope_clause(scope)} "
-                    "  AND p.probability >= :lo "
-                    f"  AND p.probability {cmp_hi} :hi"
+                    "JOIN pm_positions pm ON pm.prediction_id = p.id "
+                    f"WHERE {base_filters} "
+                    f"  AND {chosen_p} >= :lo "
+                    f"  AND {chosen_p} {cmp_hi} :hi"
                 ), {"lo": lo, "hi": hi}).fetchone()
                 n = int(row[0] or 0)
                 bins.append({
