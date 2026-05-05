@@ -725,6 +725,20 @@ function ArchetypeCard({
             setPending(null);
             if (Math.abs(v - a.multiplier) > 1e-6) onMultChange(v);
           }}
+          onKeyUp={(e) => {
+            // Keyboard users dragging via Arrow / Home / End /
+            // PageUp / PageDown never trigger mouseUp or touchEnd;
+            // without this commit handler the new value sat in
+            // `pending` and never persisted.
+            const KEYS = [
+              "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+              "Home", "End", "PageUp", "PageDown",
+            ];
+            if (!KEYS.includes(e.key)) return;
+            const v = Number((e.target as HTMLInputElement).value);
+            setPending(null);
+            if (Math.abs(v - a.multiplier) > 1e-6) onMultChange(v);
+          }}
         />
         <span className="archetype-mult-value">{shown.toFixed(2)}×</span>
         {!isDefault && (
