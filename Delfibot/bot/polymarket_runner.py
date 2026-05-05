@@ -148,9 +148,25 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
         yes_won = prices[0] >= 0.99
         no_won  = prices[1] >= 0.99
         if not (yes_won or no_won):
+            # `closed=true` is the primary finality gate, but we've
+            # observed Polymarket flag `closed=true` briefly with
+            # prices like 0.97 / 0.03 (still in the rounding tail to
+            # 1.0/0.0). Only treat as genuinely INVALID when prices
+            # are clearly mid-range (both within [0.4, 0.6]) - that's
+            # the real 50/50 refund signature. Polarised-but-not-yet-
+            # 0.99 prices mean the market is still finalising; skip
+            # the row and retry on the next tick.
+            yp, np_ = prices[0], prices[1]
+            both_mid = 0.40 <= yp <= 0.60 and 0.40 <= np_ <= 0.60
+            if not both_mid:
+                print(f"[resolve] pos #{p['id']} market={p['market_id']} "
+                      f"closed but prices not finalised "
+                      f"({yp:.2f}/{np_:.2f}); will retry next tick",
+                      flush=True)
+                continue
             print(f"[resolve] INVALID settlement for pos #{p['id']} "
                   f"market={p['market_id']} prices={prices} "
-                  f"(neither >= 0.99)", flush=True)
+                  f"(both in [0.4, 0.6])", flush=True)
             executor.settle_position(p["id"], "INVALID", 0.5)
             # INVALID is a real resolution outcome, not an error. Log
             # to the event feed so the dashboard reflects what
