@@ -45,10 +45,6 @@ function fmtPctSigned(n: number | null | undefined, digits = 1): string {
   const sign = v >= 0 ? "+" : "";
   return `${sign}${v.toFixed(digits)}%`;
 }
-function fmtUsd(n: number | null | undefined): string {
-  if (n == null) return "-";
-  return `$${Number(n).toFixed(2)}`;
-}
 function fmtUsdSigned(n: number | null | undefined): string {
   if (n == null) return "-";
   const v = Number(n);
@@ -60,14 +56,20 @@ function fmtBrier(n: number | null | undefined): string {
   return Number(n).toFixed(3);
 }
 
+// Three buckets only: Profitable / Breakeven / Unprofitable.
+// Older verdict strings (saved to learning_reports.data before the
+// collapse) map onto one of the three so old rows keep rendering.
 const VERDICT_COPY: Record<string, { label: string; tone: "profit" | "ember" | "neutral" }> = {
-  strongly_profitable: { label: "Strongly profitable", tone: "profit" },
-  profitable:          { label: "Profitable",          tone: "profit" },
-  neutral:             { label: "Near break-even",     tone: "neutral" },
-  mildly_unprofitable: { label: "Mildly unprofitable", tone: "ember" },
-  deeply_unprofitable: { label: "Deeply unprofitable", tone: "ember" },
-  mis_calibrated:      { label: "Mis-calibrated",      tone: "ember" },
-  insufficient_data:   { label: "Insufficient data",   tone: "neutral" },
+  profitable:           { label: "Profitable",   tone: "profit"  },
+  unprofitable:         { label: "Unprofitable", tone: "ember"   },
+  breakeven:            { label: "Breakeven",    tone: "neutral" },
+  // Legacy aliases (write-once compatibility for already-saved rows):
+  strongly_profitable:  { label: "Profitable",   tone: "profit"  },
+  mildly_unprofitable:  { label: "Unprofitable", tone: "ember"   },
+  deeply_unprofitable:  { label: "Unprofitable", tone: "ember"   },
+  mis_calibrated:       { label: "Unprofitable", tone: "ember"   },
+  neutral:              { label: "Breakeven",    tone: "neutral" },
+  insufficient_data:    { label: "Breakeven",    tone: "neutral" },
 };
 
 function verdictPresent(v: string | null | undefined) {
@@ -341,9 +343,7 @@ function ReportCard({
 }) {
   const data = report.data;
   const headline = data?.headline;
-  const lifetime = data?.lifetime;
   const verdict = verdictPresent(data?.verdict);
-  const cycleSize = data?.cycle_size ?? 50;
   const settledRow = report.settled_count ?? 0;
 
   const tradesLabel =
@@ -370,53 +370,30 @@ function ReportCard({
         <p className="review-thesis">{report.thesis}</p>
       )}
 
-      <div className="review-scope">This cycle · last {cycleSize} trades</div>
       <div className="review-stats cycle">
         <Stat
           label="Cycle ROI"
           value={fmtPctSigned(headline?.roi)}
           tone={(headline?.roi ?? 0) >= 0 ? "profit" : "ember"}
-          sub={`${fmtUsdSigned(headline?.pnl_usd)} on ${fmtUsd(headline?.cost_usd)} staked`}
+        />
+        <Stat
+          label="Cycle P&L"
+          value={fmtUsdSigned(headline?.pnl_usd)}
+          tone={(headline?.pnl_usd ?? 0) >= 0 ? "profit" : "ember"}
         />
         <Stat
           label="Win rate"
           value={fmtPct(headline?.win_rate, 0)}
-          sub={`${cycleSize}-trade window`}
         />
         <Stat
           label="Avg Brier"
           value={fmtBrier(headline?.brier)}
           tone={(headline?.brier ?? 0.25) > 0.25 ? "ember" : undefined}
-          sub="Lower is better, 0.25 baseline"
         />
         <Stat
           label="Cycle verdict"
           value={verdict.label}
           tone={verdict.tone === "neutral" ? undefined : verdict.tone}
-        />
-      </div>
-
-      <div className="review-scope">Lifetime · since the bot started</div>
-      <div className="review-stats lifetime">
-        <Stat
-          label="Lifetime ROI"
-          value={fmtPctSigned(lifetime?.roi)}
-          tone={(lifetime?.roi ?? 0) >= 0 ? "profit" : "ember"}
-          sub="Equity vs starting cash"
-        />
-        <Stat
-          label="Equity"
-          value={fmtUsd(lifetime?.equity ?? null)}
-          sub={`Started at ${fmtUsd(lifetime?.starting_cash ?? null)}`}
-        />
-        <Stat
-          label="Trades settled"
-          value={`${lifetime?.settled_total ?? 0}`}
-          sub={
-            lifetime?.win_rate != null
-              ? `${fmtPct(lifetime.win_rate, 0)} all-time win rate`
-              : ""
-          }
         />
       </div>
 
@@ -459,7 +436,7 @@ function PerArchetypeTable({ rows }: { rows: ReportArchetypeRow[] }) {
       <div className="review-table">
         <div className="review-tr review-thead">
           <div>Archetype</div>
-          <div className="num">n</div>
+          <div className="num">Trades</div>
           <div className="num">P&amp;L</div>
           <div className="num">ROI</div>
           <div className="num">Brier</div>
@@ -533,9 +510,17 @@ function MoveRow({ pos, positive }: { pos: ReportPosition; positive: boolean }) 
 }
 
 function CalibrationStrip({ bins }: { bins: ReportCalibrationBin[] }) {
+  // Single-line explainer is the user-facing UX clarification:
+  // we read the chart at a glance, but a stranger doesn't know what
+  // it shows. Brief by design, no more than one sentence.
   return (
     <section className="review-section">
       <h3 className="review-section-title">Calibration</h3>
+      <p className="review-cal-help">
+        Each bucket groups predictions by their forecast probability.
+        Closer the gold (predicted) and grey (actual) bars are, the
+        better-calibrated Delfi is in that bucket.
+      </p>
       <div className="review-cal">
         {bins.map((b, i) => {
           const ap = b.avg_p ?? 0;
@@ -546,9 +531,9 @@ function CalibrationStrip({ bins }: { bins: ReportCalibrationBin[] }) {
               key={i}
               className={`review-cal-bin ${sparse ? "sparse" : ""}`}
               title={
-                `${b.bucket ?? "-"} · n=${b.n}` +
+                `${b.bucket ?? "-"} · ${b.n} trades` +
                 (b.avg_p != null ? ` · predicted ${fmtPct(b.avg_p, 0)}` : "") +
-                (b.observed != null ? ` · observed ${fmtPct(b.observed, 0)}` : "")
+                (b.observed != null ? ` · actual ${fmtPct(b.observed, 0)}` : "")
               }
             >
               <div className="review-cal-bars" aria-hidden>
@@ -556,14 +541,14 @@ function CalibrationStrip({ bins }: { bins: ReportCalibrationBin[] }) {
                 <span className="review-cal-bar observed"  style={{ height: `${Math.round(obs * 100)}%` }} />
               </div>
               <div className="review-cal-bin-label">{b.bucket ?? "-"}</div>
-              <div className="review-cal-bin-n">n={b.n}</div>
+              <div className="review-cal-bin-n">{b.n} trades</div>
             </div>
           );
         })}
       </div>
       <div className="review-cal-legend">
         <span><i className="dot predicted" /> Predicted</span>
-        <span><i className="dot observed"  /> Observed</span>
+        <span><i className="dot observed"  /> Actual</span>
       </div>
     </section>
   );

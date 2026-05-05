@@ -602,19 +602,18 @@ def _shape_position(r: dict, with_reasoning: bool) -> dict:
 
 
 def _verdict(roi: float, brier: Optional[float], n: int) -> str:
-    if n < 20:
-        return "insufficient_data"
-    if brier is not None and brier > 0.25:
-        return "mis_calibrated"
-    if roi >= 0.15:
-        return "strongly_profitable"
-    if roi >= 0.05:
+    """Three buckets: profitable / breakeven / unprofitable.
+
+    Earlier versions split ROI into six tiers plus a `mis_calibrated`
+    branch off Brier; the user found that overgranular and confusing.
+    Three labels match the way profit is read end-to-end on every other
+    surface (Performance page, daily/weekly summaries).
+    """
+    if roi > 0.01:
         return "profitable"
-    if roi <= -0.10:
-        return "deeply_unprofitable"
-    if roi <= -0.03:
-        return "mildly_unprofitable"
-    return "neutral"
+    if roi < -0.01:
+        return "unprofitable"
+    return "breakeven"
 
 
 # ── Thesis generation ────────────────────────────────────────────────────────
@@ -721,34 +720,19 @@ def _fallback_thesis(data: dict) -> str:
             "resume narrating once markets resolve."
         )
 
-    # Opener language scales with the verdict tier so the prose
-    # never reads "profitable" while the pill says "neutral" (or
-    # vice versa). PnL sign alone isn't enough — a +$1 cycle is
-    # technically profitable but rounds to neutral; a -$80 cycle
-    # is deeply unprofitable, not "gave back a bit".
+    # Opener language scales with the 3-tier verdict so the prose
+    # never reads "profitable" while the pill says "breakeven" (or
+    # vice versa). One template per tier. No hedging.
     pnl_signed = f"{'+' if pnl >= 0 else '-'}${abs(pnl):.2f}"
     headline_phrase = (
         f"{pnl_signed} on {n} settled trades (ROI {_pct(roi)})"
     )
-    if verdict == "strongly_profitable":
-        opener = f"Delfi had a strong cycle: {headline_phrase}."
-    elif verdict == "profitable":
-        opener = f"Delfi ran profitably this cycle: {headline_phrase}."
-    elif verdict == "neutral":
-        opener = f"Delfi finished near break-even this cycle: {headline_phrase}."
-    elif verdict == "mildly_unprofitable":
-        opener = f"Delfi gave up a small margin this cycle: {headline_phrase}."
-    elif verdict == "deeply_unprofitable":
-        opener = f"Delfi took a material loss this cycle: {headline_phrase}."
-    elif verdict == "mis_calibrated":
-        opener = (
-            f"Delfi mis-calibrated this cycle: {headline_phrase}. "
-            "The forecaster's probabilities drifted from the observed rates."
-        )
-    elif verdict == "insufficient_data":
-        opener = f"Delfi only saw {n} settled trades this cycle ({headline_phrase})."
-    else:
-        opener = f"Delfi closed the cycle at {headline_phrase}."
+    if verdict == "profitable":
+        opener = f"Delfi was profitable this cycle: {headline_phrase}."
+    elif verdict == "unprofitable":
+        opener = f"Delfi was unprofitable this cycle: {headline_phrase}."
+    else:  # breakeven
+        opener = f"Delfi finished roughly breakeven this cycle: {headline_phrase}."
 
     per_arch = data.get("per_archetype") or []
     biggest_win = None
