@@ -349,6 +349,11 @@ def _poll_loop(token: str, chat_id: str, stop: threading.Event) -> None:
     """
     base = f"{_API_BASE}/bot{token}"
     offset = 0
+    # Track network state so we only print stderr lines on transitions
+    # (failure -> success or vice versa). The earlier code printed on
+    # every 5-second retry, drowning real errors in noise when Telegram
+    # was briefly unreachable.
+    network_failing = False
 
     # Initialize offset: skip any messages that were sent while Delfi
     # was offline. Without this, after a long stop the bot would fire
@@ -381,6 +386,11 @@ def _poll_loop(token: str, chat_id: str, stop: threading.Event) -> None:
             if not data.get("ok"):
                 stop.wait(5)
                 continue
+            # Connectivity recovered.
+            if network_failing:
+                print("[telegram_notifier] poll loop recovered",
+                      file=sys.stderr)
+                network_failing = False
             for update in data.get("result", []):
                 offset = update["update_id"] + 1
                 msg = update.get("message") or {}
@@ -404,11 +414,19 @@ def _poll_loop(token: str, chat_id: str, stop: threading.Event) -> None:
         except urllib.error.URLError as exc:
             # Network blip; back off briefly. stop.wait() returns True
             # when the event fires so we exit promptly on shutdown.
-            print(f"[telegram_notifier] poll URL error: {exc}", file=sys.stderr)
+            # Print only on the first failure of a continuous run; the
+            # subsequent retries are noise (every 5s the same error).
+            if not network_failing:
+                print(f"[telegram_notifier] poll URL error: {exc}",
+                      file=sys.stderr)
+                network_failing = True
             if stop.wait(5):
                 return
         except Exception as exc:
-            print(f"[telegram_notifier] poll loop error: {exc}", file=sys.stderr)
+            if not network_failing:
+                print(f"[telegram_notifier] poll loop error: {exc}",
+                      file=sys.stderr)
+                network_failing = True
             if stop.wait(5):
                 return
 

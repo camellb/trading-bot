@@ -543,7 +543,13 @@ async def main() -> None:
         _run_resolve_fast, IntervalTrigger(seconds=fast_resolve_sec),
         id="pm_resolve_fast",
         next_run_time=now_utc + timedelta(seconds=30),
-        max_instances=1, coalesce=True,
+        # coalesce=False: the fast resolver targets sub-1h markets,
+        # so a missed 60s tick during a stall could mean a settlement
+        # goes unrecorded past actual resolution. Correctness > cost
+        # on this one. The slow `pm_resolve` keeps coalesce=True
+        # because a 5min late re-fire on a multi-day market doesn't
+        # matter.
+        max_instances=1, coalesce=False,
         executor="threadpool",
     )
     scheduler.add_job(

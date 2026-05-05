@@ -83,8 +83,12 @@ class FeedHealthMonitor:
         prev = self._state[feed_name]["state"]
         self._state[feed_name]["state"]  = "degraded"
         self._state[feed_name]["detail"] = detail
-        print(f"[feed_health] DEGRADED: {feed_name} - {detail}", file=sys.stderr)
+        # Log only on state TRANSITION, not on every poll. The stderr
+        # spam was hiding real errors in the log: cryptopanic with no
+        # API key fired this line every news poll forever.
         if prev != "degraded":
+            print(f"[feed_health] DEGRADED: {feed_name} - {detail}",
+                  file=sys.stderr)
             db_logger.log_feed_health(feed_name, "degraded", detail)
 
         if expected or self._in_grace_period():

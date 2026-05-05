@@ -633,7 +633,36 @@ def validated_update_payload(payload: dict) -> dict:
         validate_user_config_value(key, value)
         clean[key] = value
     _validate_time_to_resolution(clean)
+    _validate_mode_credentials(clean)
     return clean
+
+
+def _validate_mode_credentials(clean: dict) -> None:
+    """Cross-field rule: mode='live' requires wallet + private key.
+
+    Without this gate, PUT /api/config {"mode":"live"} silently sets
+    mode=live with no credentials. The next scan sees `mode=live` +
+    `bot_enabled=true`, calls `_open_live`, finds no creds, returns
+    None - silent skip. The dashboard says "live mode" but no trades
+    happen and no error surfaces. Reject the mode flip up front so
+    the user sees a clear "wallet/key not set" error in the Settings
+    UI instead.
+    """
+    if clean.get("mode") != "live":
+        return
+    persisted = get_user_config()
+    new_wallet = clean.get("wallet_address", persisted.wallet_address)
+    if not new_wallet:
+        raise ValueError(
+            "live mode requires a wallet address. Set it in Settings -> "
+            "Connections before switching mode."
+        )
+    if _keyring_get(KEYRING_POLYMARKET_KEY) is None:
+        raise ValueError(
+            "live mode requires a Polymarket private key in the "
+            "keychain. Paste it in Settings -> Connections before "
+            "switching mode."
+        )
 
 
 def _validate_time_to_resolution(clean: dict) -> None:
