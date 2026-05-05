@@ -224,6 +224,23 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
         clob_tokens: Optional[tuple[str, str]] = None
         if len(token_id_list) == 2 and all(token_id_list):
             clob_tokens = (token_id_list[0], token_id_list[1])
+        # Defensive: a small minority of Polymarket binary markets ship
+        # as `outcomes=["No","Yes"]` rather than the canonical
+        # `["Yes","No"]`. Without this swap the bot reads
+        # outcome_yes="No" / yes_price=NO_price / clob_token_ids[0]=NO_token,
+        # so a "buy YES" decision actually books the NO side at the
+        # NO price (live-mode wrong-token fill; sim records the wrong
+        # side semantically). The swap fires only when the literal
+        # tokens are reversed (case-insensitive); markets using
+        # non-Yes/No labels (e.g. "Over"/"Under") pass through
+        # unchanged - same behaviour as before.
+        o0_lower = outcomes[0].strip().lower()
+        o1_lower = outcomes[1].strip().lower()
+        if o0_lower == "no" and o1_lower == "yes":
+            outcomes = [outcomes[1], outcomes[0]]
+            prices   = [prices[1], prices[0]]
+            if clob_tokens is not None:
+                clob_tokens = (clob_tokens[1], clob_tokens[0])
         return PolyMarket(
             id             = str(m.get("id") or ""),
             condition_id   = str(m.get("conditionId") or ""),
