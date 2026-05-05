@@ -302,13 +302,33 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "brier":    brier_avg,
     })
 
-    # Per-archetype breakdown from diagnostics (canonical numbers) with the
-    # cycle-window PnL attribution inlined for display.
-    try:
-        per_arch = _diag.archetype_pnl_attribution(user_id=user_id) or []
-    except Exception as exc:
-        print(f"[review_report] archetype_pnl failed: {exc}", file=sys.stderr)
-        per_arch = []
+    # Per-archetype breakdown from THIS WINDOW's rows. The earlier
+    # version pulled `archetype_pnl_attribution(user_id)` which is a
+    # LIFETIME aggregate per user, so a 50-trade cycle review surfaced
+    # archetype p&l from all 200+ trades. That's misleading: the
+    # cycle card is about what happened in the cycle. Compute from the
+    # window's rows so "Best archetype" / "Biggest drag" reflect the
+    # cycle, not lifetime.
+    arch_agg: dict[str, dict] = {}
+    for r in rows:
+        a = r.get("archetype") or "other"
+        d = arch_agg.setdefault(
+            a, {"archetype": a, "n": 0, "pnl": 0.0, "cost": 0.0, "wins": 0},
+        )
+        d["n"]    += 1
+        d["pnl"]  += float(r.get("pnl") or 0.0)
+        d["cost"] += float(r.get("cost") or 0.0)
+        if (r.get("pnl") or 0.0) > 0:
+            d["wins"] += 1
+    per_arch = []
+    for d in arch_agg.values():
+        per_arch.append({
+            "archetype": d["archetype"],
+            "n":         d["n"],
+            "pnl":       d["pnl"],
+            "roi":       d["pnl"] / d["cost"] if d["cost"] > 0 else None,
+            "win_rate":  d["wins"] / d["n"] if d["n"] else 0.0,
+        })
     try:
         brier_by_arch = _diag.brier_by_archetype("all") or []
     except Exception as exc:
@@ -701,16 +721,34 @@ def _fallback_thesis(data: dict) -> str:
             "resume narrating once markets resolve."
         )
 
-    if pnl >= 0:
+    # Opener language scales with the verdict tier so the prose
+    # never reads "profitable" while the pill says "neutral" (or
+    # vice versa). PnL sign alone isn't enough — a +$1 cycle is
+    # technically profitable but rounds to neutral; a -$80 cycle
+    # is deeply unprofitable, not "gave back a bit".
+    pnl_signed = f"{'+' if pnl >= 0 else '-'}${abs(pnl):.2f}"
+    headline_phrase = (
+        f"{pnl_signed} on {n} settled trades (ROI {_pct(roi)})"
+    )
+    if verdict == "strongly_profitable":
+        opener = f"Delfi had a strong cycle: {headline_phrase}."
+    elif verdict == "profitable":
+        opener = f"Delfi ran profitably this cycle: {headline_phrase}."
+    elif verdict == "neutral":
+        opener = f"Delfi finished near break-even this cycle: {headline_phrase}."
+    elif verdict == "mildly_unprofitable":
+        opener = f"Delfi gave up a small margin this cycle: {headline_phrase}."
+    elif verdict == "deeply_unprofitable":
+        opener = f"Delfi took a material loss this cycle: {headline_phrase}."
+    elif verdict == "mis_calibrated":
         opener = (
-            f"Delfi ran profitably this cycle: +${pnl:.2f} on {n} settled "
-            f"trades (ROI {_pct(roi)})."
+            f"Delfi mis-calibrated this cycle: {headline_phrase}. "
+            "The forecaster's probabilities drifted from the observed rates."
         )
+    elif verdict == "insufficient_data":
+        opener = f"Delfi only saw {n} settled trades this cycle ({headline_phrase})."
     else:
-        opener = (
-            f"Delfi gave back ${abs(pnl):.2f} on {n} settled trades "
-            f"(ROI {_pct(roi)})."
-        )
+        opener = f"Delfi closed the cycle at {headline_phrase}."
 
     per_arch = data.get("per_archetype") or []
     biggest_win = None
