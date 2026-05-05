@@ -172,11 +172,25 @@ def _parse_json(raw: str) -> Optional[dict]:
     return None
 
 
-def _clamp01(x, default=0.5):
+def _clamp01(x, default=0.5, *, field: str = ""):
+    """Coerce to a probability in [0,1]. Warn on out-of-range numerics
+    so a model returning `probability_yes: 1.5` (or -0.2) isn't
+    silently treated as a perfectly confident YES (or NO). The
+    earlier version clamped quietly; an OOR number is a sign the
+    model mis-formatted, worth a stderr line so the operator can
+    spot recurring patterns."""
     try:
         v = float(x)
     except (TypeError, ValueError):
         return default
+    if v < 0.0 or v > 1.0:
+        import sys as _sys
+        label = f"[{field}]" if field else ""
+        print(
+            f"[evaluator] _clamp01{label} out-of-range value {v!r}, "
+            "clamping to [0,1]",
+            file=_sys.stderr,
+        )
     return max(0.0, min(1.0, v))
 
 

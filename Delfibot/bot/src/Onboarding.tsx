@@ -140,7 +140,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
       <div className="ob-eyebrow">Welcome</div>
       <h1 className="ob-title">Delfi watches Polymarket so you don&apos;t have to.</h1>
       <p className="ob-sub">
-        Delfi backs the side the market itself favours on every tradeable
+        Delfi backs the side the market itself favours on every tradable
         contract, and steps aside whenever its own forecast disagrees with
         the price. It runs entirely on your machine.
       </p>
