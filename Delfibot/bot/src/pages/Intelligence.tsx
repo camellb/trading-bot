@@ -349,13 +349,19 @@ function ReportCard({
     range && range.to > 0
       ? `Trades ${range.from}–${range.to}`
       : `${settledRow} settled trades`;
+  const dateLabel =
+    data?.window_start && data?.window_end
+      ? `${formatDate(data.window_start)} – ${formatDate(data.window_end)}`
+      : null;
   const cycleLabel = cycle != null ? ` · Cycle ${cycle}` : "";
 
   return (
     <article className={`review-card ${hero ? "hero" : ""}`}>
       <header className="review-card-head">
         <div className="review-card-eyebrow">
-          {tradesLabel}{cycleLabel}
+          {tradesLabel}
+          {dateLabel ? ` · ${dateLabel}` : ""}
+          {cycleLabel}
         </div>
         <div className="review-card-meta">
           <span className="review-card-date">{fmtDateTime(report.created_at)}</span>

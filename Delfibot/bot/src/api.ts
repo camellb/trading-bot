@@ -431,6 +431,12 @@ export interface ReportData {
   top_losses: ReportPosition[];
   proposals: PendingSuggestion[];
   verdict: string;
+  /** ISO-8601 UTC timestamps of the earliest and latest settled trade
+   *  in this cycle's window. Rendered in the Reviews-card eyebrow as
+   *  "May 2 - May 5 · Cycle 3". Null on empty windows or rows written
+   *  before the field was added. */
+  window_start?: string | null;
+  window_end?: string | null;
 }
 
 export interface LearningReport {

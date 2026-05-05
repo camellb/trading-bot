@@ -275,6 +275,12 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "top_losses_admin":   [],
         "proposals":          [],
         "verdict":            "insufficient_data",
+        # ISO-8601 UTC timestamps of the earliest and latest settled
+        # trade in this cycle's window. The Reviews UI renders them
+        # next to the cycle number ("May 2 - May 5 · Cycle 3"). Null
+        # on empty windows.
+        "window_start":       None,
+        "window_end":         None,
     }
 
     # Always populate the lifetime block, even when the cycle window is
@@ -286,6 +292,15 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
                                cycle_size=cycle_size)
     if not rows:
         return data
+
+    # Window date range — earliest and latest settled_at in this slice.
+    # ISO-8601 strings sort chronologically.
+    settled_ats = sorted(
+        (r.get("settled_at") for r in rows if r.get("settled_at")),
+    )
+    if settled_ats:
+        data["window_start"] = settled_ats[0]
+        data["window_end"]   = settled_ats[-1]
 
     n = len(rows)
     pnl_total  = sum(float(r["pnl"] or 0.0)  for r in rows)
