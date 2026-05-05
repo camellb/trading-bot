@@ -445,14 +445,26 @@ def _compose_and_deliver_report(user_id: str, mode: str,
 
     try:
         from db.logger import log_event
+        # Rich Telegram-HTML version mirrors the Messages Spec style.
+        # Falls back to the plain description if rendering fails so a
+        # formatter bug never silently drops the user-visible event.
+        try:
+            from feeds.telegram_messages import review_report_ready as _fmt
+            telegram_html = _fmt(report)
+        except Exception as exc:
+            print(f"[learning_cadence] tg format failed: {exc}",
+                  file=sys.stderr)
+            telegram_html = None
+
         log_event(
             event_type="learning_report_ready",
             severity=20,
             description=(
-                f"50-trade review report ready (mode={mode}, "
-                f"cycle_size={cycle_size}, report_id={report_id})"
+                f"50-trade review ready ({int(report.get('settled_count') or 0)} "
+                f"settled trades, mode={mode}, report_id={report_id})"
             ),
             source="learning_cadence",
+            telegram_html=telegram_html,
         )
     except Exception as exc:
         print(f"[learning_cadence] event log write failed: {exc}",

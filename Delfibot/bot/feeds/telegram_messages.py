@@ -232,6 +232,81 @@ def calibration_proposal(
     )
 
 
+# ── 8b. Review report ready ──────────────────────────────────────────────────
+def review_report_ready(report: dict) -> str:
+    """Telegram-HTML rendering of the 50-trade review-ready event.
+
+    Takes the dict produced by `engine.review_report.compose_report` and
+    surfaces a tight summary: the thesis (clipped), the cycle headline
+    (ROI, win rate, Brier, verdict), and lifetime ROI. Tells the user
+    where the full report lives.
+
+    Mirrors the Messages Spec voice rules: no em dashes, no exclamation
+    points, Delfi is "it". 📊 status glyph reused for a review since
+    the spec emoji set is closed.
+    """
+    data = (report or {}).get("data") or {}
+    headline = data.get("headline") or {}
+    lifetime = data.get("lifetime") or {}
+    proposals = data.get("proposals") or []
+    thesis = (report or {}).get("thesis") or ""
+    verdict = data.get("verdict") or "neutral"
+
+    cycle_n = int(headline.get("n") or 0)
+
+    def _pct(v):
+        if v is None:
+            return "n/a"
+        try:
+            return f"{float(v) * 100:+.1f}%"
+        except (TypeError, ValueError):
+            return "n/a"
+
+    def _pct_unsigned(v):
+        if v is None:
+            return "n/a"
+        try:
+            return f"{float(v) * 100:.0f}%"
+        except (TypeError, ValueError):
+            return "n/a"
+
+    def _brier(v):
+        if v is None:
+            return "n/a"
+        try:
+            return f"{float(v):.3f}"
+        except (TypeError, ValueError):
+            return "n/a"
+
+    thesis_short = _clip(thesis, 280)
+    cycle_roi = _pct(headline.get("roi"))
+    cycle_win = _pct_unsigned(headline.get("win_rate"))
+    brier = _brier(headline.get("brier"))
+    lifetime_roi = _pct(lifetime.get("roi"))
+
+    n_pending = sum(1 for p in proposals if (p.get("status") == "pending"))
+    proposals_line = (
+        f"Proposals queued: {n_pending}" if n_pending else "No new proposals."
+    )
+
+    body = [
+        "📊 <b>50-trade review ready</b>",
+        "",
+    ]
+    if thesis_short:
+        body += [thesis_short, ""]
+    body += [
+        f"Cycle ROI: {cycle_roi} ({cycle_win} wins, {cycle_n} trades)",
+        f"Avg Brier: {brier} (verdict: {verdict})",
+        f"Lifetime ROI: {lifetime_roi}",
+        "",
+        proposals_line,
+        "",
+        "Open Delfi for the full report.",
+    ]
+    return "\n".join(body)
+
+
 # ── 9. Calibration applied ───────────────────────────────────────────────────
 def calibration_applied(
     *,
