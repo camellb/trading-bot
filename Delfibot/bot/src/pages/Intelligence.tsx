@@ -370,7 +370,8 @@ function ReportCard({
         <p className="review-thesis">{report.thesis}</p>
       )}
 
-      <div className="review-stats">
+      <div className="review-scope">This cycle · last {cycleSize} trades</div>
+      <div className="review-stats cycle">
         <Stat
           label="Cycle ROI"
           value={fmtPctSigned(headline?.roi)}
@@ -389,15 +390,33 @@ function ReportCard({
           sub="Lower is better, 0.25 baseline"
         />
         <Stat
+          label="Cycle verdict"
+          value={verdict.label}
+          tone={verdict.tone === "neutral" ? undefined : verdict.tone}
+        />
+      </div>
+
+      <div className="review-scope">Lifetime · since the bot started</div>
+      <div className="review-stats lifetime">
+        <Stat
           label="Lifetime ROI"
           value={fmtPctSigned(lifetime?.roi)}
           tone={(lifetime?.roi ?? 0) >= 0 ? "profit" : "ember"}
-          sub={fmtUsd(lifetime?.equity ?? null)}
+          sub="Equity vs starting cash"
         />
         <Stat
-          label="Verdict"
-          value={verdict.label}
-          tone={verdict.tone === "neutral" ? undefined : verdict.tone}
+          label="Equity"
+          value={fmtUsd(lifetime?.equity ?? null)}
+          sub={`Started at ${fmtUsd(lifetime?.starting_cash ?? null)}`}
+        />
+        <Stat
+          label="Trades settled"
+          value={`${lifetime?.settled_total ?? 0}`}
+          sub={
+            lifetime?.win_rate != null
+              ? `${fmtPct(lifetime.win_rate, 0)} all-time win rate`
+              : ""
+          }
         />
       </div>
 
