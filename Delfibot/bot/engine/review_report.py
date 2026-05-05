@@ -525,14 +525,37 @@ def _shape_per_archetype(pnl_rows: list[dict],
 
 
 def _shape_calibration(cal: dict) -> list[dict]:
+    """Reshape `engine.diagnostics.calibration_curve` output for rendering.
+
+    The diagnostic returns bins keyed `lo`, `hi`, `n`, `mean_pred`,
+    `mean_actual`, `usable`. The renderer (`render_data_tables` and
+    the API consumers) expect `bucket`, `n`, `avg_p`, `observed`.
+    Synthesise `bucket` as "lo-hi" (e.g. "0.5-0.6"), and accept the
+    earlier `bucket` / `label` / `avg_p` / `observed` / `observed_rate`
+    field names too in case any caller reshapes upstream first.
+    """
     bins = cal.get("bins") or []
     out: list[dict] = []
     for b in bins:
+        bucket = b.get("bucket") or b.get("label")
+        if bucket is None:
+            lo = b.get("lo")
+            hi = b.get("hi")
+            if lo is not None and hi is not None:
+                bucket = f"{float(lo):.1f}-{float(hi):.1f}"
+        avg_p = b.get("avg_p")
+        if avg_p is None:
+            avg_p = b.get("mean_pred")
+        observed = b.get("observed")
+        if observed is None:
+            observed = b.get("observed_rate")
+        if observed is None:
+            observed = b.get("mean_actual")
         out.append({
-            "bucket":       b.get("bucket") or b.get("label"),
-            "n":            int(b.get("n") or 0),
-            "avg_p":        b.get("avg_p"),
-            "observed":     b.get("observed") or b.get("observed_rate"),
+            "bucket":   bucket,
+            "n":        int(b.get("n") or 0),
+            "avg_p":    avg_p,
+            "observed": observed,
         })
     return out
 
