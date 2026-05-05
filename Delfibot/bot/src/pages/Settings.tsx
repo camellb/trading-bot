@@ -805,12 +805,12 @@ function LaunchStatsPanel() {
           gap: 24,
           maxWidth: 720,
         }}>
-          <Stat label="State" value={stats.state ?? "—"} />
-          <Stat label="PID" value={stats.pid != null ? String(stats.pid) : "—"} />
-          <Stat label="Total runs" value={stats.runs != null ? String(stats.runs) : "—"} />
+          <Stat label="State" value={stats.state ?? "-"} />
+          <Stat label="PID" value={stats.pid != null ? String(stats.pid) : "-"} />
+          <Stat label="Total runs" value={stats.runs != null ? String(stats.runs) : "-"} />
           <Stat
             label="Last exit code"
-            value={stats.last_exit_code != null ? String(stats.last_exit_code) : "—"}
+            value={stats.last_exit_code != null ? String(stats.last_exit_code) : "-"}
           />
         </div>
       )}
@@ -1020,7 +1020,7 @@ function ConnectionsPanel({
         <span className="panel-meta">Stored in OS keychain</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        All keys live in your operating system keychain — never on disk and
+        All keys live in your operating system keychain. Never on disk and
         never sent to Delfi servers. Leaving a field blank keeps the existing
         value.
       </p>

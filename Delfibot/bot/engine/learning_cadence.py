@@ -335,6 +335,14 @@ def _propose_archetype_stake_multiplier(diag: dict,
     the skip list (no point multiplying a zero), and skip when the proposed
     multiplier is within hysteresis of the current one.
     """
+    # Fallback for "what is the user's CURRENT multiplier on this
+    # archetype" must use the same V1 doctrine defaults the sizer
+    # falls back to. Otherwise on legacy installs (empty
+    # archetype_stake_multipliers dict) the proposer says
+    # "currently 1.0x" while the sizer trades at 1.5x basketball /
+    # 0.5x tennis — and Apply silently corrupts the V1 default.
+    from engine.user_config import V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS
+
     out: list[Proposal] = []
     rows = diag.get("archetype_pnl") or []
     current_map = dict(getattr(current, "archetype_stake_multipliers", {}) or {})
@@ -353,7 +361,8 @@ def _propose_archetype_stake_multiplier(diag: dict,
         if tier is None:
             continue
         proposed = max(lo, min(hi, float(tier)))
-        currently = float(current_map.get(archetype, 1.0))
+        default_for_arch = V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS.get(archetype, 1.0)
+        currently = float(current_map.get(archetype, default_for_arch))
         if abs(proposed - currently) < ARCHETYPE_MULTIPLIER_HYSTERESIS:
             continue
         # Compare against the user's CURRENT multiplier, not against

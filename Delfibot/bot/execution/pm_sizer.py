@@ -204,9 +204,23 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
+    # The $2 minimum floor must NOT override the user's configured
+    # max_stake_pct cap. On small bankrolls (e.g. $50 with max=2% =
+    # $1 cap) the prior `max(2.0, min(...))` silently promoted to $2
+    # = 4% bankroll, breaching the user's risk control. Skip the
+    # trade with an explicit reason instead.
+    cap = bankroll * max_pct
+    if cap < _MIN_ABSOLUTE_STAKE_USD:
+        return _skip(
+            cp, cf,
+            f"max stake cap ${cap:.2f} below ${_MIN_ABSOLUTE_STAKE_USD:.2f} "
+            f"floor (bankroll ${bankroll:.2f} * max_stake_pct "
+            f"{max_pct*100:.1f}%)",
+            side=side, entry=entry, p_win=p_win,
+        )
     stake = max(
         _MIN_ABSOLUTE_STAKE_USD,
-        min(bankroll * stake_pct, bankroll * max_pct),
+        min(bankroll * stake_pct, cap),
     )
 
     shares = stake / entry if entry > 0 else 0.0

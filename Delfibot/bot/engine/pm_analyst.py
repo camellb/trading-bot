@@ -552,11 +552,18 @@ class PMAnalyst:
             else (1.0 - evaluation.probability_yes) * 100.0
         )
         mode = "live" if executor.mode == "live" else "simulation"
+        # Description labels probabilities side-scoped (matching the
+        # Telegram message). The earlier line wrote
+        # "forecast {forecast_pct_yes}%" without an explicit side, so
+        # a NO bet showed up on the dashboard activity feed as
+        # "forecast 25%" while the Telegram message said
+        # "Delfi forecasts: NO (75% probability)" - same trade, two
+        # different numbers depending on which surface you read.
         description = (
             f"Opened {decision.side} on {market.question[:120]} "
             f"for ${decision.stake_usd:.2f} "
-            f"(market {market_pct:.1f}%, "
-            f"forecast {forecast_pct_yes:.1f}%, "
+            f"(market P(YES) {market_pct:.1f}%, "
+            f"Delfi P({decision.side}) {forecast_pct_side:.1f}%, "
             f"confidence {evaluation.confidence:.2f}, "
             f"bankroll ${bankroll_after:.2f}, mode {mode}, "
             f"position={position_id})"

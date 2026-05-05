@@ -160,7 +160,7 @@ async function request<T>(
     if (isAbort) {
       throw new Error(
         `${path}: timed out after ${Math.round(timeoutMs / 1000)}s. ` +
-          "The sidecar may be stuck — restart Delfi if this keeps happening.",
+          "The sidecar may be stuck - restart Delfi if this keeps happening.",
       );
     }
     // Connection refused. The most common cause is a daemon respawn

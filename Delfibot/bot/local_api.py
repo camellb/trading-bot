@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from aiohttp import web
@@ -764,7 +764,10 @@ class LocalAPI:
             return _err("pm_scan job is not registered", 500)
         try:
             # next_run_time=now causes APScheduler to fire on the next tick.
-            job.modify(next_run_time=datetime.utcnow())
+            # Naive `datetime.utcnow()` is interpreted in the scheduler's
+            # configured tz; if that ever drifts to local-tz the scan
+            # never fires (or fires hours late). Always use tz-aware UTC.
+            job.modify(next_run_time=datetime.now(timezone.utc))
         except Exception as exc:
             return _err(f"failed to schedule scan: {exc}", 500)
         return _ok({"queued": True})

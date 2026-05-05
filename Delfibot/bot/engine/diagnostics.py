@@ -205,18 +205,26 @@ def brier_score(
 @lru_cache(maxsize=128)
 def _brier_score_impl(scope: str, archetype: Optional[str],
                       horizon_bucket: Optional[str], _bucket: int) -> dict:
+    # Brier on the CHOSEN-SIDE probability, not P(YES). Same axis fix as
+    # `_brier_by_archetype_impl`. `predictions.probability` is P(YES);
+    # `predictions.resolved_outcome` is the Delfi-correct bit (1 if
+    # `side == settlement`). Without the flip, every NO bet inflates
+    # squared error to the point of overshooting the 0.25 baseline.
+    # `archetype` filter must hit `pm_positions.market_archetype`, not
+    # `predictions.category` (the legacy Polymarket coarse field).
     try:
         from sqlalchemy import text
         filters = [
             "p.source IN ('polymarket','polymarket_live','polymarket_simulation')",
             "p.resolved_outcome IN (0,1)",
             "p.probability IS NOT NULL",
+            "pm.side IN ('YES', 'NO')",
             _scope_clause(scope),
         ]
         params: dict = {}
         if archetype is not None:
-            filters.append("p.category = :cat")
-            params["cat"] = archetype
+            filters.append("pm.market_archetype = :arch")
+            params["arch"] = archetype
         if horizon_bucket is not None:
             lo_h, hi_h = _horizon_range(horizon_bucket)
             if lo_h is None:
@@ -231,10 +239,16 @@ def _brier_score_impl(scope: str, archetype: Optional[str],
         with _get_engine().begin() as conn:
             row = conn.execute(text(
                 "SELECT COUNT(*) AS n, "
-                "       AVG((p.probability - p.resolved_outcome) * (p.probability - p.resolved_outcome)) AS brier, "
-                "       AVG(p.probability) AS mp, "
+                "       AVG(POWER("
+                "         (CASE WHEN pm.side = 'YES' THEN p.probability "
+                "               ELSE 1.0 - p.probability END) "
+                "         - p.resolved_outcome, 2)) AS brier, "
+                "       AVG(CASE WHEN pm.side = 'YES' THEN p.probability "
+                "                ELSE 1.0 - p.probability END) AS mp, "
                 "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
-                f"FROM predictions p WHERE {where}"
+                "FROM predictions p "
+                "JOIN pm_positions pm ON pm.prediction_id = p.id "
+                f"WHERE {where}"
             ), params).fetchone()
         n = int(row[0] or 0)
         return {
@@ -292,23 +306,35 @@ def _log_score_impl(scope: str, archetype: Optional[str], _bucket: int) -> dict:
 def _fetch_resolved_rows(scope: str,
                          archetype: Optional[str] = None
                          ) -> list[tuple[float, int, Optional[str], Optional[float]]]:
-    """(probability, resolved_outcome, category, horizon_hours) tuples."""
+    """Return (chosen_side_probability, resolved_outcome, archetype,
+    horizon_hours) tuples. The first element used to be raw P(YES) and
+    the third was `predictions.category`; both have been corrected:
+    p_chosen flips for NO bets so log_score is on the right axis, and
+    archetype now filters on `pm_positions.market_archetype` to match
+    the rest of the codebase."""
     from sqlalchemy import text
     filters = [
         "p.source IN ('polymarket','polymarket_live','polymarket_simulation')",
         "p.resolved_outcome IN (0,1)",
         "p.probability IS NOT NULL",
+        "pm.side IN ('YES', 'NO')",
         _scope_clause(scope),
     ]
     params: dict = {}
     if archetype is not None:
-        filters.append("p.category = :cat")
-        params["cat"] = archetype
+        filters.append("pm.market_archetype = :arch")
+        params["arch"] = archetype
     where = " AND ".join(filters)
     with _get_engine().begin() as conn:
         rows = conn.execute(text(
-            "SELECT p.probability, p.resolved_outcome, p.category, p.horizon_hours "
-            f"FROM predictions p WHERE {where}"
+            "SELECT (CASE WHEN pm.side = 'YES' THEN p.probability "
+            "             ELSE 1.0 - p.probability END) AS p_chosen, "
+            "       p.resolved_outcome, "
+            "       pm.market_archetype, "
+            "       p.horizon_hours "
+            "FROM predictions p "
+            "JOIN pm_positions pm ON pm.prediction_id = p.id "
+            f"WHERE {where}"
         ), params).fetchall()
     return [(float(r[0]), int(r[1]),
              r[2] if r[2] is not None else None,

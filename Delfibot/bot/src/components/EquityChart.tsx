@@ -37,7 +37,7 @@ const fmtUsd = (n: number) =>
 // different zone. The thin wrappers below preserve the original
 // internal API shape (no-arg, returns string for empty input).
 const fmtDate = (s: string): string => s ? formatDate(s) : "";
-const fmtDateTime = (s: string): string => s ? formatDateTime(s) : "—";
+const fmtDateTime = (s: string): string => s ? formatDateTime(s) : "-";
 
 export function EquityChart({
   series,
