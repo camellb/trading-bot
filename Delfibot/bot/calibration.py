@@ -234,6 +234,16 @@ def get_report(
         outcome_expr = (
             "CASE WHEN settlement_outcome = side THEN 1.0 ELSE 0.0 END"
         )
+        # Brier MUST be on the chosen-side probability, not P(YES).
+        # `claude_probability` stores P(YES). For a NO bet the probability
+        # we actually committed to is 1 - claude_probability. Without this
+        # flip, every NO bet contributed a wildly inflated squared error
+        # (e.g. NO bet at p_yes=0.30 that won returned (0.30 - 1)^2 = 0.49
+        # instead of the correct (0.70 - 1)^2 = 0.09).
+        conf_expr = (
+            "CASE WHEN side = 'YES' THEN claude_probability "
+            "ELSE 1.0 - claude_probability END"
+        )
         base_filters = ["user_id = :uid"]
         params: dict = {"uid": user_id}
         if since_days and since_days > 0:
@@ -275,7 +285,7 @@ def get_report(
                 f"SELECT "
                 f"  AVG(claude_probability)                        AS mean_prob, "
                 f"  AVG({outcome_expr})                            AS mean_outcome, "
-                f"  AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                f"  AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
                 f"  SUM(realized_pnl_usd)                          AS pnl "
                 f"FROM pm_positions {res_where}"
             ), params).fetchone()
@@ -284,16 +294,8 @@ def get_report(
             brier        = float(agg[2]) if agg[2] is not None else None
             realized_pnl = float(agg[3]) if agg[3] is not None else None
 
-            # V1 confidence-in-bet expression: claude_probability is
-            # the probability Delfi assigned to YES; the bot's bet side
-            # is in the `side` column. Confidence in the bet's outcome
-            # = claude_probability if we bet YES, else 1 - claude_probability.
-            # Direction-agreement guarantees this is >= 0.50 for every
-            # entered trade.
-            conf_expr = (
-                "CASE WHEN side = 'YES' THEN claude_probability "
-                "ELSE 1.0 - claude_probability END"
-            )
+            # `conf_expr` defined above (chosen-side probability, used
+            # by both the Brier formulas and the reliability bins).
             bins: list[dict] = []
             for lo, hi in RELIABILITY_BINS:
                 # The last bin uses 1.001 as its upper bound so the half-open
@@ -326,7 +328,7 @@ def get_report(
             cat_rows = conn.execute(text(
                 f"SELECT category, "
                 f"       COUNT(*) AS n, "
-                f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
                 f"       AVG(claude_probability) AS mp, "
                 f"       AVG({outcome_expr}) AS ma, "
                 f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
@@ -356,7 +358,7 @@ def get_report(
             arch_rows = conn.execute(text(
                 f"SELECT market_archetype, "
                 f"       COUNT(*) AS n, "
-                f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
                 f"       AVG(claude_probability) AS mp, "
                 f"       AVG({outcome_expr}) AS ma, "
                 f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
@@ -399,7 +401,7 @@ def get_report(
                 # + wins so the frontend can derive ROI and win rate.
                 h_row = conn.execute(text(
                     f"SELECT COUNT(*) AS n, "
-                    f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                    f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
                     f"       AVG(claude_probability) AS mp, "
                     f"       AVG({outcome_expr}) AS ma, "
                     f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
@@ -453,7 +455,7 @@ def get_report(
                 b_where = "WHERE " + " AND ".join(band_filters)
                 b_row = conn.execute(text(
                     f"SELECT COUNT(*) AS n, "
-                    f"       AVG(POWER(claude_probability - ({outcome_expr}), 2)) AS brier, "
+                    f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
                     f"       AVG(claude_probability) AS mp, "
                     f"       AVG({outcome_expr}) AS ma, "
                     f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "

@@ -75,6 +75,10 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
     """
     result = {
         "positions_checked": 0, "positions_settled": 0,
+        # `positions_invalid` is a legitimate resolution outcome (the
+        # market itself resolved as 50/50 / void), counted separately
+        # so it doesn't pollute the `errors` bucket the way it used to.
+        "positions_invalid": 0,
         "predictions_checked": 0, "predictions_resolved": 0,
         "errors": 0,
     }
@@ -148,7 +152,26 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                   f"market={p['market_id']} prices={prices} "
                   f"(neither >= 0.99)", flush=True)
             executor.settle_position(p["id"], "INVALID", 0.5)
-            result["errors"] += 1
+            # INVALID is a real resolution outcome, not an error. Log
+            # to the event feed so the dashboard reflects what
+            # happened, and count separately so /api/scheduler stats
+            # don't flag the cycle as failing.
+            result["positions_invalid"] += 1
+            try:
+                from db.logger import log_event
+                log_event(
+                    event_type="position_invalid",
+                    severity=20,
+                    description=(
+                        f"Position #{p['id']} resolved INVALID "
+                        f"({(p.get('question') or '')[:120]}). "
+                        f"Stake refunded; no P&L."
+                    ),
+                    source="polymarket_runner",
+                )
+            except Exception as exc:
+                print(f"[resolve] log_event invalid failed: {exc}",
+                      file=sys.stderr)
             continue
         outcome = "YES" if yes_won else "NO"
         if executor.settle_position(p["id"], outcome):

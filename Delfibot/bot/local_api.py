@@ -443,7 +443,14 @@ class LocalAPI:
         return _ok(proc_health.snapshot())
 
     async def _state(self, _req: web.Request) -> web.Response:
-        cfg = get_user_config()
+        # `get_user_config()` opens a SQLite transaction. Running it
+        # inline on the aiohttp event loop blocks every other request
+        # under DB contention with the scan/resolve scheduler jobs;
+        # the GUI's 30s splash timeout fires and the user sees
+        # "Delfi could not start". Offload to the default thread pool.
+        cfg = await asyncio.get_event_loop().run_in_executor(
+            None, get_user_config,
+        )
         return _ok({
             "mode": cfg.mode,
             "bot_enabled": bool(getattr(cfg, "bot_enabled", False)),
@@ -459,7 +466,9 @@ class LocalAPI:
         })
 
     async def _get_config(self, _req: web.Request) -> web.Response:
-        cfg = get_user_config()
+        cfg = await asyncio.get_event_loop().run_in_executor(
+            None, get_user_config,
+        )
         return _ok(_config_to_dict(cfg))
 
     async def _put_config(self, req: web.Request) -> web.Response:
@@ -656,7 +665,7 @@ class LocalAPI:
             limit = 100
         limit = max(1, min(limit, 500))
 
-        try:
+        def _read() -> list[dict]:
             engine = get_engine()
             with engine.connect() as conn:
                 stmt = (
@@ -664,7 +673,10 @@ class LocalAPI:
                     .order_by(desc(pm_positions.c.created_at))
                     .limit(limit)
                 )
-                rows = [dict(r._mapping) for r in conn.execute(stmt)]
+                return [dict(r._mapping) for r in conn.execute(stmt)]
+
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(None, _read)
         except Exception as exc:
             return _err(f"failed to read positions: {exc}", 500)
         return _ok({"positions": rows})
@@ -676,7 +688,7 @@ class LocalAPI:
             limit = 200
         limit = max(1, min(limit, 1000))
 
-        try:
+        def _read() -> list[dict]:
             engine = get_engine()
             with engine.connect() as conn:
                 stmt = (
@@ -684,7 +696,10 @@ class LocalAPI:
                     .order_by(desc(event_log.c.timestamp))
                     .limit(limit)
                 )
-                rows = [dict(r._mapping) for r in conn.execute(stmt)]
+                return [dict(r._mapping) for r in conn.execute(stmt)]
+
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(None, _read)
         except Exception as exc:
             return _err(f"failed to read events: {exc}", 500)
         return _ok({"events": rows})
@@ -761,9 +776,12 @@ class LocalAPI:
         Single-user; no X-User-Id needed. Mode is always taken from
         user_config (no view-mode override in v1).
         """
-        try:
+        def _stats() -> dict:
             executor = PMExecutor(DEFAULT_USER_ID)
-            stats = executor.get_portfolio_stats()
+            return executor.get_portfolio_stats()
+
+        try:
+            stats = await asyncio.get_event_loop().run_in_executor(None, _stats)
         except Exception as exc:
             return _err(f"failed to compute portfolio stats: {exc}", 500)
 
@@ -824,9 +842,9 @@ class LocalAPI:
         Used to show whether the forecaster is getting more or less
         calibrated as more data accumulates.
         """
-        try:
+        def _query() -> list:
             with get_engine().begin() as conn:
-                rows = conn.execute(text(
+                return conn.execute(text(
                     "SELECT settled_at, claude_probability, side, "
                     "       CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END "
                     "FROM pm_positions "
@@ -836,6 +854,9 @@ class LocalAPI:
                     "  AND settlement_outcome IN ('YES', 'NO') "
                     "ORDER BY settled_at ASC"
                 ), {"uid": DEFAULT_USER_ID}).fetchall()
+
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(None, _query)
         except Exception as exc:
             return _err(f"brier-trend query failed: {exc}", 500)
 

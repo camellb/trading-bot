@@ -593,14 +593,37 @@ function buildActivity(
 
   const fromSettled: ActivityItem[] = settled.slice(0, 6).map((s) => {
     const pnl = (s.realized_pnl_usd as number | null | undefined) ?? 0;
-    const win = pnl >= 0;
+    const status = (s.status as string | null | undefined) ?? "settled";
+    // Three states: VOID for market-side invalid resolutions
+    // (refund, pnl=0), WIN for pnl > 0, LOSS for pnl < 0. The
+    // earlier `pnl >= 0` boolean labelled invalids as WIN +$0.00.
+    let label: string;
+    let tone: "profit" | "ember" | "muted";
+    let kind: ActivityItem["kind"];
+    if (status === "invalid") {
+      label = "VOID";
+      tone = "muted";
+      kind = "resolve";
+    } else if (pnl > 0) {
+      label = "WIN";
+      tone = "profit";
+      kind = "resolve";
+    } else {
+      label = "LOSS";
+      tone = "ember";
+      kind = "resolve-loss";
+    }
+    const meta =
+      status === "invalid"
+        ? "Refunded"
+        : `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)}`;
     return {
       t: fmtTime((s.settled_at as string | null | undefined) ?? null),
       sortKey: (s.settled_at as string | null | undefined) ?? "",
-      kind: win ? "resolve" : "resolve-loss",
-      text: `Closed ${win ? "WIN" : "LOSS"} · ${s.question}`,
-      meta: `${win ? "+" : ""}$${pnl.toFixed(2)}`,
-      tone: win ? "profit" : "ember",
+      kind,
+      text: `Closed ${label} · ${s.question}`,
+      meta,
+      tone,
     };
   });
 

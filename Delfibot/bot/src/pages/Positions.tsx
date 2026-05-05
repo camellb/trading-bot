@@ -163,7 +163,11 @@ export default function Positions() {
     [positions],
   );
   const settled = useMemo(
-    () => positions.filter((p) => p.status === "settled" || p.status === "closed"),
+    // `closed` is a stale status string no code path emits today;
+    // pm_executor.py only writes open / settled / invalid. The earlier
+    // filter hid every INVALID resolution from the Closed pane. Match
+    // what the Performance and Dashboard pages already do.
+    () => positions.filter((p) => p.status === "settled" || p.status === "invalid"),
     [positions],
   );
   const skipped = useMemo(

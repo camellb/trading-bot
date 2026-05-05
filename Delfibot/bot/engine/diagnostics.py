@@ -342,17 +342,31 @@ def _brier_by_archetype_impl(scope: str, flag_threshold: float,
     """
     try:
         from sqlalchemy import text
+        # Brier MUST be on the chosen-side probability, not P(YES).
+        # `predictions.probability` stores P(YES); `pm_positions.side`
+        # tells us the chosen side. For a NO bet we flip to
+        # 1 - probability. `predictions.resolved_outcome` is the
+        # Delfi-correct bit (1 if side == settlement). Without the
+        # flip, NO bets contributed wildly inflated squared error to
+        # the archetype-skip proposer's input — every "tennis Brier
+        # 0.5+" finding was an artefact of mixed-side data, not real
+        # mis-calibration.
         with _get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT pm.market_archetype AS archetype, COUNT(*) AS n, "
-                "       AVG((p.probability - p.resolved_outcome) * (p.probability - p.resolved_outcome)) AS brier, "
-                "       AVG(p.probability) AS mp, "
+                "       AVG(POWER("
+                "         (CASE WHEN pm.side = 'YES' THEN p.probability "
+                "               ELSE 1.0 - p.probability END) "
+                "         - p.resolved_outcome, 2)) AS brier, "
+                "       AVG(CASE WHEN pm.side = 'YES' THEN p.probability "
+                "                ELSE 1.0 - p.probability END) AS mp, "
                 "       AVG(CAST(p.resolved_outcome AS REAL)) AS ma "
                 "FROM predictions p "
                 "JOIN pm_positions pm ON pm.prediction_id = p.id "
                 "WHERE p.source IN ('polymarket','polymarket_live','polymarket_simulation') "
                 "  AND p.resolved_outcome IN (0,1) "
                 "  AND p.probability IS NOT NULL "
+                "  AND pm.side IN ('YES', 'NO') "
                 "  AND pm.market_archetype IS NOT NULL "
                 f"  AND {_scope_clause(scope)} "
                 "GROUP BY pm.market_archetype ORDER BY n DESC"

@@ -174,14 +174,22 @@ def size_position(
 
     # ── Archetype stake multiplier ──────────────────────────────────────────
     # User-set multiplier per archetype, clamped [0.1, 10.0]. Missing key
-    # or no archetype → 1.0 (no adjustment).
+    # falls back to the V1 doctrine defaults (basketball 1.5, tennis 0.5,
+    # everything else 1.0) so the sizer matches what the Risk Control UI
+    # advertises. Earlier versions fell back to 1.0 unconditionally;
+    # legacy installs whose `archetype_stake_multipliers` was never
+    # seeded (e.g. tour completed before 2026-04-27 V1 lock) saw the UI
+    # showing "tennis 0.5x / basketball 1.5x" but actually traded at
+    # 1.0x. Fix: import the V1 defaults so sizer and UI agree.
     arch_mult = 1.0
     if archetype is not None:
+        from engine.user_config import V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS
         multipliers = getattr(user_config, "archetype_stake_multipliers", None) or {}
+        default_for_arch = V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS.get(archetype, 1.0)
         try:
-            arch_mult = float(multipliers.get(archetype, 1.0))
+            arch_mult = float(multipliers.get(archetype, default_for_arch))
         except (TypeError, ValueError):
-            arch_mult = 1.0
+            arch_mult = default_for_arch
         arch_mult = max(0.1, min(10.0, arch_mult))
 
     # ── Stake sizing (flat) ─────────────────────────────────────────────────
