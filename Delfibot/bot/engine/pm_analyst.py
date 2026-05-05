@@ -326,6 +326,27 @@ class PMAnalyst:
         global_min = int(getattr(config, "PM_MIN_DAYS_TO_END", 0))
         global_max = int(getattr(config, "PM_MAX_DAYS_TO_END", 7))
         _uids = list_onboarded_user_ids() or []
+        # Top-of-loop early-out: if no users are onboarded OR every
+        # onboarded user has bot_enabled=False, the per-market work
+        # (research + Claude eval + size) is wasted - the executor
+        # would refuse to open anyway. Skip the whole scan instead
+        # of paying for ~20 Claude calls only to throw the answers
+        # away. The per-market `bot_enabled` check inside
+        # evaluate_market remains as a defence-in-depth gate for
+        # races where the user disables the bot mid-scan.
+        if not _uids:
+            return {
+                "fetched": 0, "analyzed": 0, "opened": 0,
+                "no_trade": 0, "skipped": 0,
+                "skip_reason": "no_onboarded_users",
+            }
+        any_enabled = any(get_user_config(u).bot_enabled for u in _uids)
+        if not any_enabled:
+            return {
+                "fetched": 0, "analyzed": 0, "opened": 0,
+                "no_trade": 0, "skipped": 0,
+                "skip_reason": "bot_disabled",
+            }
         if _uids:
             _ucfg = get_user_config(_uids[0])
             user_min = _ucfg.min_days_to_resolution

@@ -80,9 +80,19 @@ export default function Onboarding({ creds, onComplete }: Props) {
   return (
     <div className="ob-shell">
       <div className="ob-progress">
-        {ORDER.slice(0, -1).map((s, i) => (
-          <div key={s} className={`ob-step ${i < idx ? "done" : i === idx ? "current" : ""}`} />
-        ))}
+        {/* Progress dots cover the 3 form steps (llm / bankroll /
+            polymarket). Welcome is an intro, not a step; "done" is
+            the completion screen. Mismatching this with the
+            "STEP 1/2/3 of 3" eyebrows reads as a counting bug. */}
+        {ORDER.slice(1, -1).map((s) => {
+          const sIdx = ORDER.indexOf(s);
+          return (
+            <div
+              key={s}
+              className={`ob-step ${sIdx < idx ? "done" : sIdx === idx ? "current" : ""}`}
+            />
+          );
+        })}
       </div>
 
       <div className="ob-main">
