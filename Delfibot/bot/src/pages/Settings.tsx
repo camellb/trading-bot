@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   api,
   AutostartStatus,
@@ -1382,12 +1383,18 @@ function TelegramConnectorPanel() {
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Push trades, settlements, and risk events to your phone.
         Create a bot via{" "}
-        <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
+        <a
+          href="https://t.me/BotFather"
+          onClick={(e) => { e.preventDefault(); void openUrl("https://t.me/BotFather"); }}
+        >
           @BotFather
         </a>{" "}
         to get a token, then send any message to your bot so it has a
         chat id. Find your chat id via{" "}
-        <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer">
+        <a
+          href="https://t.me/userinfobot"
+          onClick={(e) => { e.preventDefault(); void openUrl("https://t.me/userinfobot"); }}
+        >
           @userinfobot
         </a>.
       </p>

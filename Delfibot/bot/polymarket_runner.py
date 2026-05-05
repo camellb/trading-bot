@@ -179,7 +179,16 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
             try:
                 from db.logger import log_event
                 side = p.get("side", "?")
-                pnl = (1.0 if outcome == side else 0.0) * p["shares"] - p["cost_usd"]
+                # Read DB-truth `realized_pnl_usd` instead of
+                # recomputing with `(1.0 if outcome==side else 0.0) *
+                # shares - cost`. The recompute assumes settlement
+                # price is exactly 1.0, which IS true today but
+                # silently drifts the moment `settle_position` ever
+                # uses a non-1.0 price (e.g. partial fills, future
+                # variant). Source-of-truth is the row.
+                pnl = _read_realized_pnl(p["id"])
+                if pnl is None:
+                    pnl = (1.0 if outcome == side else 0.0) * p["shares"] - p["cost_usd"]
                 description = (
                     f"Settled {side} on {(p.get('question') or '')[:120]}: "
                     f"outcome {outcome}, P&L ${pnl:+.2f}, "
@@ -303,6 +312,27 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
 
 
 # ── SQL helpers ──────────────────────────────────────────────────────────────
+def _read_realized_pnl(position_id: int) -> float | None:
+    """Read the persisted `realized_pnl_usd` after settlement.
+
+    Used by the resolve-loop to surface the same number the DB
+    actually stores in the dashboard event_log + Telegram message,
+    rather than recomputing from a 1.0/0.0 settlement-price
+    assumption that could drift if `settle_position`'s pricing
+    contract ever changes.
+    """
+    try:
+        with get_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT realized_pnl_usd FROM pm_positions WHERE id = :pid"
+            ), {"pid": position_id}).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+    except Exception as exc:
+        print(f"[resolve] _read_realized_pnl({position_id}) failed: {exc}",
+              file=sys.stderr)
+        return None
+
+
 def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
     try:
         with get_engine().begin() as conn:

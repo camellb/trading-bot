@@ -1212,6 +1212,7 @@ button { font: inherit; }
 .pill-open { background: var(--teal-dim);   color: var(--teal); }
 .pill-won  { background: var(--profit-dim); color: var(--profit); }
 .pill-lost { background: var(--ember-dim);  color: var(--ember); }
+.pill-void { background: rgba(255,255,255,0.04); color: var(--vellum-60); }
 .pill-skip { background: var(--vellum-05);  color: var(--vellum-60); }
 
 .table-simple {

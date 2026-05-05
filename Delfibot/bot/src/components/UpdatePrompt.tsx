@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { formatDate } from "../lib/format";
 
 /**
  * Auto-update prompt.
@@ -93,9 +94,7 @@ export function UpdatePrompt() {
           <span className="update-banner-title">New version available</span>
           <span className="update-banner-version">
             v{update.version}
-            {update.date
-              ? ` (${new Date(update.date).toLocaleDateString()})`
-              : ""}
+            {update.date ? ` (${formatDate(update.date)})` : ""}
           </span>
           {error && <span className="update-banner-error">{error}</span>}
         </div>

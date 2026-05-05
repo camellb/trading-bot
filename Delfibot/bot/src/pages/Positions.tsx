@@ -411,7 +411,24 @@ export default function Positions() {
                   const pnl = (s.realized_pnl_usd as number | null | undefined) ?? 0;
                   const outcome = s.settlement_outcome as string | null | undefined;
                   const settledAt = s.settled_at as string | null | undefined;
-                  const won = outcome ? outcome === s.side : pnl >= 0;
+                  const status = (s.status as string | null | undefined) ?? "settled";
+                  // Three states. INVALID resolutions used to render
+                  // as "LOST" because outcome="INVALID" never matched
+                  // the side. They're refunds (pnl=0), not losses.
+                  const isInvalid = status === "invalid" || outcome === "INVALID";
+                  const won = !isInvalid && (outcome ? outcome === s.side : pnl > 0);
+                  const outcomeLabel = isInvalid ? "VOID" : (won ? "WON" : "LOST");
+                  const outcomeClass = isInvalid
+                    ? "pill pill-void"
+                    : (won ? "pill pill-won" : "pill pill-lost");
+                  const pnlCellClass = pnl > 0
+                    ? "cell-up"
+                    : (pnl < 0 ? "cell-down" : "");
+                  const pnlText = pnl > 0
+                    ? `+$${pnl.toFixed(2)}`
+                    : (pnl < 0
+                        ? `-$${Math.abs(pnl).toFixed(2)}`
+                        : "$0.00");
                   const category = (s.category as string | null | undefined) ?? null;
                   // Market implied probability YES at entry. entry_price is
                   // the price paid for the chosen side, so for a NO entry
@@ -425,13 +442,11 @@ export default function Positions() {
                       <td>{s.question}</td>
                       <td>{category ?? "-"}</td>
                       <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
-                      <td><span className={won ? "pill pill-won" : "pill pill-lost"}>{won ? "WON" : "LOST"}</span></td>
+                      <td><span className={outcomeClass}>{outcomeLabel}</span></td>
                       <td className="mono">{s.entry_price.toFixed(3)}</td>
                       <td className="mono">{mYesPct}%</td>
                       <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
-                      <td className={`mono ${pnl >= 0 ? "cell-up" : "cell-down"}`}>
-                        {pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}
-                      </td>
+                      <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
                       <td className="mono">{fmt(settledAt)}</td>
                     </tr>
                   );
