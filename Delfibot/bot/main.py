@@ -405,6 +405,24 @@ async def main() -> None:
     ensure_default_user_config()
     print("[delfi] DB ready", flush=True)
 
+    # Surface live-trading killswitch state at boot. If
+    # `DELFI_LIVE_KILLSWITCH_OFF=1` is set, real CLOB orders will
+    # fire on every live-mode trade. Default is unset (kill-switch
+    # ON); the boot line lets the operator confirm intent on every
+    # restart. If a poisoned plist or env injection ever flips
+    # this without the user knowing, the alert shows up here.
+    _ks_off = os.environ.get("DELFI_LIVE_KILLSWITCH_OFF", "").strip() in ("1", "true", "True")
+    if _ks_off:
+        print(
+            "[delfi] LIVE KILLSWITCH IS OFF: real-money orders WILL fire "
+            "in live mode. If you didn't set DELFI_LIVE_KILLSWITCH_OFF=1 "
+            "yourself, audit your LaunchAgent plist + environment.",
+            flush=True,
+        )
+    else:
+        print("[delfi] live killswitch on (live mode falls through to simulation)",
+              flush=True)
+
     # One-time migration: copy any legacy macOS keychain secrets to
     # the new file-backed store. This fires the SecurityAgent prompt
     # cascade ONCE per upgrade boot, then never again - subsequent
