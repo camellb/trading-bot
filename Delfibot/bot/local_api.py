@@ -76,6 +76,7 @@ from engine.archetype_classifier import ARCHETYPES
 from engine.learning_cadence import (
     apply_suggestion,
     list_pending_suggestions,
+    list_resolved_suggestions,
     skip_suggestion,
     snooze_suggestion,
 )
@@ -367,6 +368,8 @@ class LocalAPI:
         app.router.add_get("/api/calibration",      self._get_calibration)
         app.router.add_get("/api/brier-trend",      self._get_brier_trend)
         app.router.add_get("/api/suggestions",      self._get_suggestions)
+        app.router.add_get("/api/suggestions/history",
+                            self._get_suggestions_history)
         app.router.add_post("/api/suggestions/{suggestion_id}/apply",
                             self._apply_suggestion)
         app.router.add_post("/api/suggestions/{suggestion_id}/skip",
@@ -869,6 +872,27 @@ class LocalAPI:
             )
         except Exception as exc:
             return _err(f"failed to list suggestions: {exc}", 500)
+        return _ok({"suggestions": rows})
+
+    async def _get_suggestions_history(self, req: web.Request) -> web.Response:
+        """List historically resolved (applied/skipped) proposals.
+
+        The Intelligence page reads this so it can show "you've seen
+        proposals before" context instead of the brand-new-user empty
+        state when every prior proposal has already been actioned.
+        """
+        try:
+            limit = int(req.query.get("limit", "20"))
+        except ValueError:
+            limit = 20
+        limit = max(1, min(200, limit))
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: list_resolved_suggestions(DEFAULT_USER_ID, limit=limit),
+            )
+        except Exception as exc:
+            return _err(f"failed to list resolved suggestions: {exc}", 500)
         return _ok({"suggestions": rows})
 
     async def _suggestion_action(self, req: web.Request, fn) -> web.Response:

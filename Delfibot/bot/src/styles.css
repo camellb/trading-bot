@@ -1504,6 +1504,7 @@ button { font: inherit; }
 .intel-card-status.snoozed { color: var(--vellum-60); border-color: var(--vellum-20); background: transparent; }
 .intel-card-status.applied { color: var(--profit); border-color: var(--profit-line); background: var(--profit-dim); }
 .intel-card-status.rejected { color: var(--ember); border-color: var(--ember-line); background: var(--ember-dim); }
+.intel-card-status.skipped { color: var(--vellum-60); border-color: var(--vellum-20); background: transparent; }
 .intel-card-status.mode-simulation { color: var(--teal); border-color: var(--teal-line); background: var(--teal-dim); }
 .intel-card-status.mode-live { color: var(--gold); border-color: var(--gold-line); background: var(--gold-dim); }
 .intel-card-param {

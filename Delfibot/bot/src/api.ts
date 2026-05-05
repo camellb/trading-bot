@@ -357,6 +357,10 @@ export interface PendingSuggestion {
   status: string;
   settled_count: number | null;
   metadata: Record<string, unknown> | null;
+  /** Resolution audit fields - only populated for applied/skipped rows
+   *  returned from /api/suggestions/history. Null for pending/snoozed. */
+  resolved_at?: string | null;
+  resolved_by?: string | null;
 }
 
 export interface LearningReport {
@@ -536,6 +540,10 @@ export const api = {
   },
   suggestions: () =>
     request<{ suggestions: PendingSuggestion[] }>("/api/suggestions"),
+  suggestionsHistory: (limit = 20) =>
+    request<{ suggestions: PendingSuggestion[] }>(
+      `/api/suggestions/history?limit=${limit}`,
+    ),
   applySuggestion: (id: number) =>
     request<Record<string, unknown>>(`/api/suggestions/${id}/apply`, {
       method: "POST",

@@ -110,18 +110,21 @@ function reportBodyText(body: LearningReport["body"]): string {
 export default function Intelligence() {
   const [reports, setReports]         = useState<LearningReport[] | null>(null);
   const [suggestions, setSuggestions] = useState<PendingSuggestion[] | null>(null);
+  const [history, setHistory]         = useState<PendingSuggestion[] | null>(null);
   const [error, setError]             = useState<string | null>(null);
   const [openReportId, setOpenReportId] = useState<number | null>(null);
   const [busyId, setBusyId]             = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [r1, r2] = await Promise.all([
+      const [r1, r2, r3] = await Promise.all([
         api.learningReports(20).then((x) => x.reports),
         api.suggestions().then((x) => x.suggestions),
+        api.suggestionsHistory(20).then((x) => x.suggestions),
       ]);
       setReports(r1);
       setSuggestions(r2);
+      setHistory(r3);
       // Clear error only on confirmed success (anti-flash pattern,
       // see App.tsx::refresh).
       setError(null);
@@ -146,8 +149,13 @@ export default function Intelligence() {
   );
 
   const reportsList = reports ?? [];
-  const loaded = reports !== null && suggestions !== null;
-  const hasAnything = reportsList.length > 0 || pending.length > 0 || snoozed.length > 0;
+  const historyList = history ?? [];
+  const loaded = reports !== null && suggestions !== null && history !== null;
+  const hasAnything =
+    reportsList.length > 0 ||
+    pending.length > 0 ||
+    snoozed.length > 0 ||
+    historyList.length > 0;
 
   const apply = async (id: number) => {
     setBusyId(id);
@@ -235,6 +243,24 @@ export default function Intelligence() {
           <h2 className="intel-section-title">Snoozed</h2>
           <div className="intel-list">
             {snoozed.map((s) => (
+              <SuggestionCard
+                key={s.id}
+                s={s}
+                busy={busyId === s.id}
+                onApply={() => apply(s.id)}
+                onSnooze={() => snooze(s.id)}
+                onSkip={() => skip(s.id)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {loaded && historyList.length > 0 && (
+        <section className="intel-section">
+          <h2 className="intel-section-title">History</h2>
+          <div className="intel-list">
+            {historyList.map((s) => (
               <SuggestionCard
                 key={s.id}
                 s={s}

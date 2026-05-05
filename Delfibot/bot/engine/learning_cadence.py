@@ -744,6 +744,54 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
     return out
 
 
+def list_resolved_suggestions(user_id: str = DEFAULT_USER_ID,
+                              limit: int = 20) -> list[dict]:
+    """List historically resolved (applied or skipped) suggestions.
+
+    Used by the Intelligence page to show that the user has previously
+    received recommendations even when the pending/snoozed queues are
+    empty. Without this, a user who applied or skipped every prior
+    proposal sees the same "first review is on the way" empty state as
+    a brand-new install, which contradicts what they actually saw.
+    """
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT id, created_at, param_name, current_value, "
+                "       proposed_value, evidence, backtest_delta, "
+                "       backtest_trades, status, settled_count_at_creation, "
+                "       metadata, resolved_at, resolved_by "
+                "FROM pending_suggestions "
+                "WHERE user_id = :uid AND status IN ('applied', 'skipped') "
+                "ORDER BY COALESCE(resolved_at, created_at) DESC "
+                "LIMIT :lim"
+            ), {"uid": user_id, "lim": int(limit)}).fetchall()
+    except Exception as exc:
+        print(f"[learning_cadence] list_resolved failed: {exc}", file=sys.stderr)
+        return []
+
+    out = []
+    for r in rows:
+        out.append({
+            "id":              int(r[0]),
+            "created_at":      iso_utc(r[1]),
+            "param_name":      r[2],
+            "current_value":   float(r[3]) if r[3] is not None else None,
+            "proposed_value":  float(r[4]) if r[4] is not None else None,
+            "evidence":        r[5],
+            "backtest_delta":  float(r[6]) if r[6] is not None else None,
+            "backtest_trades": int(r[7]) if r[7] is not None else None,
+            "status":          r[8],
+            "settled_count":   int(r[9]) if r[9] is not None else None,
+            "metadata":        _decode_metadata(r[10]),
+            "resolved_at":     iso_utc(r[11]) if r[11] is not None else None,
+            "resolved_by":     r[12],
+        })
+    return out
+
+
 def apply_suggestion(suggestion_id: int,
                      user_id: str = DEFAULT_USER_ID,
                      resolved_by: str = "user") -> dict:
