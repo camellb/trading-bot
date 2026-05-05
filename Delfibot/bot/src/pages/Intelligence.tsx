@@ -393,6 +393,7 @@ function ReportCard({
           label="Cycle verdict"
           value={verdict.label}
           tone={verdict.tone === "neutral" ? undefined : verdict.tone}
+          text
         />
       </div>
 
@@ -408,17 +409,22 @@ function ReportCard({
 }
 
 function Stat({
-  label, value, tone, sub,
+  label, value, tone, text, sub,
 }: {
   label: string;
   value: string;
   tone?: "profit" | "ember";
+  /** Text-style values use a smaller display font so words like
+   *  "Unprofitable" don't overflow the column at 22px mono. */
+  text?: boolean;
   sub?: string;
 }) {
   return (
     <div className="review-stat">
       <div className="review-stat-label">{label}</div>
-      <div className={`review-stat-value ${tone ?? ""}`}>{value}</div>
+      <div className={`review-stat-value ${tone ?? ""} ${text ? "text" : ""}`}>
+        {value}
+      </div>
       {sub && <div className="review-stat-sub">{sub}</div>}
     </div>
   );

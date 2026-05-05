@@ -1695,6 +1695,13 @@ button { font: inherit; }
 }
 .review-stat-value.profit { color: var(--profit); }
 .review-stat-value.ember  { color: var(--ember); }
+/* Text-style values (verdict pill etc.) need a smaller size or
+   "Unprofitable" overflows the column. */
+.review-stat-value.text {
+  font-family: var(--font-display);
+  font-size: 18px;
+  letter-spacing: 0;
+}
 .review-stat-sub {
   margin-top: 4px;
   font-family: var(--font-mono); font-size: 11px;
