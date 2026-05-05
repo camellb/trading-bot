@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { EquityChart } from "../components/EquityChart";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
+import { archetypeLabel } from "../lib/archetypes";
 
 /**
  * Performance - SaaS-parity layout.
@@ -47,37 +48,9 @@ function fmtSignedPnl(v: number): string {
   return `${sign}$${abs.toFixed(2)}`;
 }
 
-/**
- * Friendly label per archetype id. Mirrors `_ARCHETYPE_INFO` in
- * `bot/local_api.py` so the Performance page can render the same name
- * the user sees in Settings -> Risk and sizing without a second API
- * round-trip. If the id isn't in the map (e.g. a freshly added
- * archetype that hasn't been documented here yet), we humanize the id
- * itself by replacing underscores and title-casing.
- */
-const ARCHETYPE_LABELS: Record<string, string> = {
-  tennis:              "Tennis",
-  basketball:          "Basketball",
-  baseball:            "Baseball",
-  football:            "Football",
-  hockey:              "Hockey",
-  cricket:             "Cricket",
-  esports:             "Esports",
-  soccer:              "Soccer",
-  sports_other:        "Other sports",
-  price_threshold:     "Price threshold",
-  activity_count:      "Activity count",
-  geopolitical_event:  "Geopolitical event",
-  binary_event:        "Other events",
-};
-function archetypeLabel(id: string | null): string {
-  if (!id) return "Unknown";
-  if (ARCHETYPE_LABELS[id]) return ARCHETYPE_LABELS[id];
-  return id
-    .split("_")
-    .map((w) => (w.length === 0 ? w : w[0].toUpperCase() + w.slice(1)))
-    .join(" ");
-}
+// archetypeLabel + ARCHETYPE_LABELS now live in `lib/archetypes` so the
+// same map drives Performance, Intelligence, and (via /api/archetypes)
+// Risk Control. See lib/archetypes.ts for the canonical source.
 
 export default function Performance() {
   const [summary, setSummary] = useState<PerformanceSummary | null>(null);

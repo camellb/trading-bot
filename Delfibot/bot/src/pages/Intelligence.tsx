@@ -8,6 +8,7 @@ import {
   ReportPosition,
 } from "../api";
 import { formatDate, formatDateTime } from "../lib/format";
+import { archetypeLabel } from "../lib/archetypes";
 
 /**
  * Intelligence — two tabs.
@@ -453,7 +454,7 @@ function PerArchetypeTable({ rows }: { rows: ReportArchetypeRow[] }) {
           const roi = r.roi;
           return (
             <div className="review-tr" key={`${r.archetype}-${i}`}>
-              <div className="archetype">{r.archetype ?? "-"}</div>
+              <div className="archetype">{archetypeLabel(r.archetype)}</div>
               <div className="num muted">{r.n}</div>
               <div className={`num ${pnl >= 0 ? "profit" : "ember"}`}>{fmtUsdSigned(pnl)}</div>
               <div className={`num ${(roi ?? 0) >= 0 ? "profit" : "ember"}`}>
@@ -510,7 +511,7 @@ function MoveRow({ pos, positive }: { pos: ReportPosition; positive: boolean }) 
         {pos.question}
       </div>
       <div className="review-move-meta">
-        {pos.archetype ?? "-"} · {pos.side ?? "-"} resolved {pos.outcome ?? "-"}
+        {archetypeLabel(pos.archetype)} · {pos.side ?? "-"} resolved {pos.outcome ?? "-"}
       </div>
     </div>
   );
