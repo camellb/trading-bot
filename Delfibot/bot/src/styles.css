@@ -1564,6 +1564,268 @@ button { font: inherit; }
   overflow-x: auto;
 }
 
+/* Tab strip */
+.intel-tabs {
+  display: flex; gap: 6px;
+  margin: 24px 0 16px;
+  border-bottom: 1px solid var(--vellum-10);
+}
+.intel-tab {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: transparent; border: 0;
+  font-family: var(--font-display);
+  font-size: 14px; letter-spacing: 0.04em;
+  color: var(--vellum-60);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.intel-tab:hover { color: var(--vellum); }
+.intel-tab.active {
+  color: var(--vellum);
+  border-bottom-color: var(--gold);
+}
+.intel-tab-badge {
+  font-family: var(--font-mono); font-size: 11px;
+  padding: 1px 7px; border-radius: 999px;
+  background: var(--vellum-10); color: var(--vellum-60);
+}
+.intel-tab-badge.gold {
+  background: var(--gold-dim); color: var(--gold);
+  border: 1px solid var(--gold-line);
+}
+
+/* Soft empty / "all caught up" */
+.intel-empty-soft {
+  font-size: 14px; color: var(--vellum-60);
+  padding: 14px 16px;
+  border: 1px dashed var(--vellum-10);
+  border-radius: var(--radius-1);
+}
+
+/* Card variants for the proposals tab */
+.intel-card.muted { opacity: 0.7; }
+.intel-card-resolved {
+  color: var(--vellum-40);
+  font-size: 11px;
+}
+.intel-history-toggle {
+  background: transparent; border: 1px solid var(--vellum-10);
+  color: var(--vellum-60);
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  padding: 8px 14px; border-radius: var(--radius-1);
+  cursor: pointer;
+}
+.intel-history-toggle:hover {
+  color: var(--vellum); border-color: var(--vellum-20);
+}
+.intel-history { margin-top: 12px; }
+
+/* ════════════════════════════════════════════════════════════════
+   REVIEW CARD (structured)
+   ════════════════════════════════════════════════════════════════ */
+
+.review-card {
+  border: 1px solid var(--vellum-10);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-1);
+  padding: 24px 26px;
+}
+.review-card.hero {
+  border-color: var(--gold-line);
+  background:
+    linear-gradient(180deg, rgba(192, 159, 79, 0.06) 0%, rgba(255,255,255,0.02) 60%);
+}
+.review-card-head {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 16px; margin-bottom: 14px;
+}
+.review-card-eyebrow {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--gold);
+}
+.review-card-meta {
+  display: flex; align-items: center; gap: 10px;
+}
+.review-card-date {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--vellum-60); letter-spacing: 0.06em;
+}
+.review-thesis {
+  font-family: var(--font-display);
+  font-size: 17px; line-height: 1.55;
+  color: var(--vellum);
+  margin: 0 0 22px;
+  max-width: 78ch;
+}
+
+/* Stat grid */
+.review-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 22px;
+}
+@media (max-width: 1100px) {
+  .review-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .review-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.review-stat {
+  padding: 12px 14px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+  background: rgba(255,255,255,0.015);
+}
+.review-stat-label {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--vellum-40);
+  margin-bottom: 6px;
+}
+.review-stat-value {
+  font-family: var(--font-mono); font-size: 22px;
+  color: var(--vellum); line-height: 1.2;
+}
+.review-stat-value.profit { color: var(--profit); }
+.review-stat-value.ember  { color: var(--ember); }
+.review-stat-sub {
+  margin-top: 4px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--vellum-60);
+  letter-spacing: 0.04em;
+}
+
+/* Sub-section heading */
+.review-section { margin-top: 22px; }
+.review-section-title {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--vellum-60);
+  margin: 0 0 10px;
+}
+.review-section-title.profit { color: var(--profit); }
+.review-section-title.ember  { color: var(--ember); }
+
+/* Per-archetype table */
+.review-table {
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+  overflow: hidden;
+}
+.review-tr {
+  display: grid;
+  grid-template-columns: 1.6fr 0.5fr 1fr 1fr 0.7fr;
+  gap: 10px;
+  padding: 10px 14px;
+  font-family: var(--font-mono); font-size: 13px;
+  color: var(--vellum);
+  border-bottom: 1px solid var(--vellum-10);
+}
+.review-tr:last-child { border-bottom: 0; }
+.review-tr.review-thead {
+  background: rgba(255,255,255,0.025);
+  font-size: 10px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--vellum-40);
+}
+.review-tr .num { text-align: right; font-variant-numeric: tabular-nums; }
+.review-tr .archetype { color: var(--vellum); }
+.review-tr .num.muted  { color: var(--vellum-60); }
+.review-tr .num.profit { color: var(--profit); }
+.review-tr .num.ember  { color: var(--ember); }
+
+/* Top wins / Top losses two-column grid */
+.review-moves {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+@media (max-width: 800px) {
+  .review-moves { grid-template-columns: 1fr; }
+}
+.review-moves-col { display: flex; flex-direction: column; gap: 10px; }
+.review-moves-empty {
+  font-family: var(--font-mono); font-size: 12px;
+  color: var(--vellum-40); padding: 8px 0;
+}
+.review-move {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 12px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+}
+.review-move-pnl {
+  font-family: var(--font-mono); font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  align-self: start;
+}
+.review-move-pnl.profit { color: var(--profit); }
+.review-move-pnl.ember  { color: var(--ember); }
+.review-move-q {
+  color: var(--vellum); font-size: 14px; line-height: 1.4;
+}
+.review-move-meta {
+  grid-column: 2 / -1;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--vellum-60); letter-spacing: 0.04em;
+}
+
+/* Calibration strip */
+.review-cal {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 6px;
+  align-items: end;
+  padding: 14px 14px 10px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+}
+.review-cal-bin {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 4px;
+}
+.review-cal-bin.sparse { opacity: 0.45; }
+.review-cal-bars {
+  display: flex; align-items: end; gap: 2px;
+  width: 100%; height: 80px;
+}
+.review-cal-bar {
+  flex: 1; min-height: 1px;
+  border-radius: 2px 2px 0 0;
+}
+.review-cal-bar.predicted { background: var(--gold); }
+.review-cal-bar.observed  { background: var(--vellum-60); }
+.review-cal-bin-label {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--vellum-40);
+}
+.review-cal-bin-n {
+  font-family: var(--font-mono); font-size: 9px;
+  color: var(--vellum-40);
+}
+.review-cal-legend {
+  display: flex; gap: 16px;
+  margin-top: 10px;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--vellum-60);
+}
+.review-cal-legend .dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.review-cal-legend .dot.predicted { background: var(--gold); }
+.review-cal-legend .dot.observed  { background: var(--vellum-60); }
+
 /* ════════════════════════════════════════════════════════════════
    FORMS / SETTINGS
    ════════════════════════════════════════════════════════════════ */

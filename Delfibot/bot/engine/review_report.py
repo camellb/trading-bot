@@ -171,16 +171,20 @@ def list_learning_reports(user_id: str,
                           limit: int = 10,
                           include_admin: bool = False) -> list[dict]:
     """Newest-first. `include_admin=True` exposes the reasoning-bearing
-    variant and is gated by the caller (admin dashboard only)."""
+    `summary_admin` variant. The structured `data` JSON column is now
+    returned in BOTH modes — the desktop UI consumes it to render
+    proper review cards (stat grid, per-archetype, top wins/losses,
+    calibration) instead of a monospace text dump.
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
         cols = [
             "id", "created_at", "mode", "settled_count",
-            "thesis", "summary_user",
+            "thesis", "summary_user", "data",
         ]
         if include_admin:
-            cols += ["summary_admin", "data"]
+            cols.append("summary_admin")
         sql = (
             f"SELECT {', '.join(cols)} FROM learning_reports "
             "WHERE user_id = :uid ORDER BY created_at DESC LIMIT :lim"
@@ -195,6 +199,12 @@ def list_learning_reports(user_id: str,
 
     out: list[dict] = []
     for r in rows:
+        raw_data = r[6]
+        if isinstance(raw_data, (str, bytes)):
+            try:
+                raw_data = json.loads(raw_data)
+            except (TypeError, ValueError):
+                raw_data = None
         item = {
             "id":            int(r[0]),
             "created_at":    iso_utc(r[1]),
@@ -202,16 +212,10 @@ def list_learning_reports(user_id: str,
             "settled_count": int(r[3] or 0),
             "thesis":        r[4],
             "summary_user":  r[5],
+            "data":          raw_data,
         }
         if include_admin:
-            item["summary_admin"] = r[6]
-            raw = r[7]
-            if isinstance(raw, (str, bytes)):
-                try:
-                    raw = json.loads(raw)
-                except (TypeError, ValueError):
-                    raw = None
-            item["data"] = raw
+            item["summary_admin"] = r[7]
         out.append(item)
     return out
 
@@ -676,11 +680,20 @@ def _thesis_user_block(data: dict) -> str:
 
 
 def _fallback_thesis(data: dict) -> str:
+    """Deterministic narrator. Coherent across all verdict tiers.
+
+    The earlier version wrote "biggest single driver was X (loss of $32)"
+    while also saying "running profitably". When the largest absolute
+    archetype p&l happens to be a loss but the cycle was net positive
+    overall, that reads as a contradiction. The fix is to surface the
+    biggest WIN and biggest LOSS separately and label each correctly.
+    """
     headline = data.get("headline") or {}
     roi = headline.get("roi") or 0.0
     pnl = headline.get("pnl_usd") or 0.0
     n   = headline.get("n") or 0
     brier = headline.get("brier")
+    verdict = data.get("verdict")
 
     if n == 0:
         return (
@@ -688,53 +701,71 @@ def _fallback_thesis(data: dict) -> str:
             "resume narrating once markets resolve."
         )
 
-    pnl_phrase = (
-        f"returned ${pnl:.2f} on {n} settled trades "
-        f"(ROI {_pct(roi)})"
-    )
-
-    verdict = data.get("verdict")
-    if verdict == "strongly_profitable":
-        tone = "Delfi is trading well above its own baseline. "
-    elif verdict == "profitable":
-        tone = "Delfi is running profitably. "
-    elif verdict == "neutral":
-        tone = "Delfi is hovering near break-even. "
-    elif verdict == "mildly_unprofitable":
-        tone = "Delfi is giving up a small margin to the market. "
-    elif verdict == "deeply_unprofitable":
-        tone = "Delfi is losing materially. "
-    elif verdict == "mis_calibrated":
-        tone = "Delfi's probabilities are mis-calibrated across the window. "
+    if pnl >= 0:
+        opener = (
+            f"Delfi ran profitably this cycle: +${pnl:.2f} on {n} settled "
+            f"trades (ROI {_pct(roi)})."
+        )
     else:
-        tone = "Delfi has limited data this cycle. "
+        opener = (
+            f"Delfi gave back ${abs(pnl):.2f} on {n} settled trades "
+            f"(ROI {_pct(roi)})."
+        )
 
     per_arch = data.get("per_archetype") or []
-    biggest = max(
-        per_arch,
-        key=lambda r: abs(r.get("pnl_usd") or 0.0),
-        default=None,
-    ) if per_arch else None
-    biggest_phrase = ""
-    if biggest and biggest.get("archetype"):
-        direction = "profit" if (biggest.get("pnl_usd") or 0.0) >= 0 else "loss"
-        biggest_phrase = (
-            f" The biggest single driver was the '{biggest['archetype']}' "
-            f"archetype ({direction} of ${abs(biggest['pnl_usd']):.0f} on "
-            f"n={biggest.get('n')})."
+    biggest_win = None
+    biggest_loss = None
+    if per_arch:
+        sorted_by_pnl = sorted(
+            per_arch,
+            key=lambda r: float(r.get("pnl_usd") or 0.0),
+            reverse=True,
         )
+        if sorted_by_pnl:
+            top = sorted_by_pnl[0]
+            if (top.get("pnl_usd") or 0.0) > 0 and top.get("archetype"):
+                biggest_win = top
+            bot = sorted_by_pnl[-1]
+            if (bot.get("pnl_usd") or 0.0) < 0 and bot.get("archetype"):
+                biggest_loss = bot
+
+    driver_parts: list[str] = []
+    if biggest_win:
+        driver_parts.append(
+            f"Best archetype: {biggest_win['archetype']} "
+            f"(+${biggest_win['pnl_usd']:.0f} on n={biggest_win.get('n')})"
+        )
+    if biggest_loss:
+        verb = "Biggest drag" if pnl >= 0 else "Biggest loss"
+        driver_parts.append(
+            f"{verb}: {biggest_loss['archetype']} "
+            f"(-${abs(biggest_loss['pnl_usd']):.0f} on n={biggest_loss.get('n')})"
+        )
+    drivers = ""
+    if driver_parts:
+        drivers = " " + ". ".join(driver_parts) + "."
 
     brier_phrase = ""
     if brier is not None:
-        brier_phrase = f" Average Brier came in at {_fmt_brier(brier)}."
+        brier_phrase = f" Average Brier {_fmt_brier(brier)}."
 
-    focus = (
-        " Next cycle will refine sizing on profitable archetypes and "
-        "prune any archetype whose Brier stays above the uninformed "
-        "baseline."
-    )
-    return (tone + "Delfi " + pnl_phrase + "." + biggest_phrase
-            + brier_phrase + focus)
+    if verdict == "mis_calibrated":
+        focus = (
+            " Next cycle will tighten the forecast filter on archetypes "
+            "where Brier exceeds the uninformed baseline."
+        )
+    elif verdict in ("deeply_unprofitable", "mildly_unprofitable"):
+        focus = (
+            " Next cycle will trim sizing on losing archetypes and "
+            "review the skip list."
+        )
+    else:
+        focus = (
+            " Next cycle continues the V1 follow-market filter; sizing "
+            "tweaks will queue for any archetype crossing thresholds."
+        )
+
+    return opener + drivers + brier_phrase + focus
 
 
 def _sanitise_thesis(text_val: str) -> str:

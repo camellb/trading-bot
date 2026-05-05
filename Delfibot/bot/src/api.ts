@@ -363,6 +363,76 @@ export interface PendingSuggestion {
   resolved_by?: string | null;
 }
 
+export interface ReportArchetypeRow {
+  archetype: string | null;
+  n: number;
+  pnl_usd: number;
+  roi: number | null;
+  win_rate: number | null;
+  brier: number | null;
+}
+
+export interface ReportPosition {
+  id: number;
+  question: string;
+  archetype: string | null;
+  side: string | null;
+  cost_usd: number;
+  pnl_usd: number;
+  outcome: string | null;
+  p_win: number | null;
+}
+
+export interface ReportCalibrationBin {
+  bucket: string | null;
+  n: number;
+  avg_p: number | null;
+  observed: number | null;
+}
+
+export interface ReportHeadline {
+  n: number;
+  pnl_usd: number;
+  cost_usd: number;
+  roi: number | null;
+  win_rate: number | null;
+  brier: number | null;
+}
+
+export interface ReportLifetime {
+  settled_total: number;
+  wins: number;
+  win_rate: number | null;
+  realized_pnl: number;
+  starting_cash: number | null;
+  equity: number | null;
+  roi: number | null;
+}
+
+export interface ReportCostValidation {
+  n?: number | null;
+  assumed_cost?: number | null;
+  implied_cost?: number | null;
+}
+
+export interface ReportData {
+  mode: string | null;
+  cycle_size: number;
+  /** Window size = trades in this report's slice (always cycle_size when
+   *  populated). NOT the same as the row-level settled_count bookmark on
+   *  LearningReport, which is the global pm_positions count at fire time. */
+  settled_count: number;
+  headline: ReportHeadline;
+  lifetime: ReportLifetime;
+  per_archetype: ReportArchetypeRow[];
+  calibration: ReportCalibrationBin[];
+  cost_validation: ReportCostValidation | null;
+  top_wins: ReportPosition[];
+  top_losses: ReportPosition[];
+  proposals: PendingSuggestion[];
+  verdict: string;
+}
+
 export interface LearningReport {
   id: number;
   created_at: string | null;
@@ -373,9 +443,14 @@ export interface LearningReport {
   mode: string | null;
   thesis: string | null;
   /** User-facing rendered report (thesis + deterministic tables +
-   *  footer). The model-reasoning excerpts variant lives in
-   *  `summary_admin` and is not exposed on this client. */
+   *  footer). Kept for back-compat; the structured `data` field below
+   *  is what the redesigned UI renders. */
   summary_user: string | null;
+  /** Structured cycle data — headline / lifetime / per-archetype /
+   *  calibration / top wins+losses / verdict. Drives the polished
+   *  review-card layout. Null on rows written before the API exposed
+   *  the column. */
+  data: ReportData | null;
 }
 
 export interface ArchetypeEntry {
