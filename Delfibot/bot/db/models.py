@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
     text as sa_text,
 )
 
@@ -299,6 +300,12 @@ learning_reports = Table(
     Column("summary_user", Text, nullable=False),
     Column("summary_admin", Text, nullable=True),
     Column("data", JSON, nullable=True),
+    # Bookmark constraint: one review per (user, mode, settled_count).
+    # `engine.review_report.save_report` does INSERT ... ON CONFLICT
+    # (user_id, mode, settled_count) DO NOTHING, which silently fails
+    # against any DB that lacks this matching constraint.
+    UniqueConstraint("user_id", "mode", "settled_count",
+                     name="uq_learning_reports_bookmark"),
 )
 
 
@@ -455,6 +462,15 @@ def create_all_tables() -> None:
         # Learning reports.
         "CREATE INDEX IF NOT EXISTS idx_learning_reports_user "
         "ON learning_reports(user_id, created_at DESC)",
+        # Backfills the UNIQUE constraint on (user_id, mode,
+        # settled_count) for DBs created before that constraint was
+        # added to the Table declaration. Without it, save_report's
+        # INSERT ... ON CONFLICT (...) DO NOTHING raises
+        # "ON CONFLICT clause does not match any PRIMARY KEY or
+        # UNIQUE constraint" and every review-cycle save fails
+        # silently.
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_learning_reports_bookmark "
+        "ON learning_reports(user_id, mode, settled_count)",
         # User config singleton lookup.
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
         "ON user_config(user_id)",

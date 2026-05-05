@@ -143,6 +143,7 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
             report_id = _compose_and_deliver_report(
                 user_id=user_id, mode=mode,
                 cycle_size=LEARNING_CYCLE_TRADE_INTERVAL,
+                settled_count_bookmark=settled_now,
             )
 
             return {
@@ -388,7 +389,9 @@ def _pick_multiplier_tier(roi: float) -> Optional[float]:
 
 # ── Review-report composition + delivery ─────────────────────────────────────
 def _compose_and_deliver_report(user_id: str, mode: str,
-                                cycle_size: int) -> Optional[int]:
+                                cycle_size: int,
+                                settled_count_bookmark: Optional[int] = None,
+                                ) -> Optional[int]:
     """
     Compose the 50-trade review report, persist it to `learning_reports`,
     and emit a single event_log row pointing the dashboard at the new
@@ -401,6 +404,14 @@ def _compose_and_deliver_report(user_id: str, mode: str,
     bookmark already exists. That makes the constraint a hard gate
     against duplicate event-log rows, even if the bookmark logic ever
     regresses again.
+
+    `settled_count_bookmark` is the global settled-count at cycle-fire
+    time. compose_report internally sets `report["settled_count"]` to
+    the cycle window size (always cycle_size), which would collide on
+    every cycle once the unique constraint exists. Override it here
+    with the global bookmark before save so the deduplication works
+    on actual cycle-fire boundaries (50, 100, 150, ...) rather than
+    the constant window size.
     """
     try:
         from engine import review_report
@@ -410,6 +421,9 @@ def _compose_and_deliver_report(user_id: str, mode: str,
     except Exception as exc:
         print(f"[learning_cadence] compose_report failed: {exc}", file=sys.stderr)
         return None
+
+    if settled_count_bookmark is not None:
+        report["settled_count"] = int(settled_count_bookmark)
 
     report_id: Optional[int] = None
     try:

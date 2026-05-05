@@ -101,10 +101,8 @@ function SuggestionDiff({ s }: { s: PendingSuggestion }) {
   );
 }
 
-function reportBodyText(body: LearningReport["body"]): string {
-  if (body == null) return "";
-  if (typeof body === "string") return body;
-  try { return JSON.stringify(body, null, 2); } catch { return String(body); }
+function reportBodyText(body: LearningReport["summary_user"]): string {
+  return body ?? "";
 }
 
 export default function Intelligence() {
@@ -284,8 +282,8 @@ function ReportCard({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const body = reportBodyText(report.body);
-  const settled = (report as { settled_count_at_creation: number | null }).settled_count_at_creation ?? 0;
+  const body = reportBodyText(report.summary_user);
+  const settled = report.settled_count ?? 0;
   return (
     <article className="intel-card">
       <header className="intel-card-head">

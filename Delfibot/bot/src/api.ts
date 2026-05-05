@@ -366,10 +366,16 @@ export interface PendingSuggestion {
 export interface LearningReport {
   id: number;
   created_at: string | null;
-  settled_count_at_creation: number | null;
+  /** Global pm_positions settled-count at the moment this cycle fired.
+   *  Stored as the bookmark column the unique constraint dedups on
+   *  (user_id, mode, settled_count). */
+  settled_count: number | null;
+  mode: string | null;
   thesis: string | null;
-  body: Record<string, unknown> | string | null;
-  user_id: string;
+  /** User-facing rendered report (thesis + deterministic tables +
+   *  footer). The model-reasoning excerpts variant lives in
+   *  `summary_admin` and is not exposed on this client. */
+  summary_user: string | null;
 }
 
 export interface ArchetypeEntry {
