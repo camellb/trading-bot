@@ -1231,17 +1231,24 @@ def _keyring_get(key: str) -> Optional[str]:
 
 def _keyring_set(key: str, value: Optional[str]) -> None:
     """Write/clear a secret. Always file-backed. Best-effort wipes the
-    legacy keychain entry too so a stale value can't override the file."""
+    legacy keychain entry too so a stale value can't override the file.
+
+    File-write failures RAISE rather than silently log. Earlier
+    behaviour was: on file-write failure, print to stderr + return
+    None. Upstream `set_anthropic_api_key` /
+    `set_user_polymarket_creds` therefore reported success;
+    `local_api._put_credentials` returned 200 OK to the UI. The
+    user thought their key was saved and the next live trade
+    discovered it wasn't. Now the exception propagates to the
+    route's try/except and the UI sees a clear 500 with the
+    failure reason.
+    """
     secrets = _read_secrets()
     if value is None or value == "":
         secrets.pop(key, None)
     else:
         secrets[key] = value
-    try:
-        _write_secrets(secrets)
-    except Exception as exc:
-        print(f"[user_config] secrets file write failed: {exc}",
-              file=sys.stderr)
+    _write_secrets(secrets)
     # Best-effort: clear any legacy keychain entry. Cheap on a clean
     # install (entry doesn't exist, delete is a no-op); on upgrade
     # this purges the legacy copy so reads short-circuit at the file.
