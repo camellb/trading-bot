@@ -185,9 +185,16 @@ def list_learning_reports(user_id: str,
         ]
         if include_admin:
             cols.append("summary_admin")
+        # Newest cycle first by BOOKMARK, not by row created_at. The
+        # backfill script can insert all rows within one second, which
+        # makes created_at a degenerate sort key (SQLite falls back to
+        # id ASC, listing oldest cycle first). The UI assumes
+        # newest-first to compute "Trades N-M · Cycle X" labels, so
+        # ordering by settled_count is the canonical contract.
         sql = (
             f"SELECT {', '.join(cols)} FROM learning_reports "
-            "WHERE user_id = :uid ORDER BY created_at DESC LIMIT :lim"
+            "WHERE user_id = :uid "
+            "ORDER BY settled_count DESC, created_at DESC LIMIT :lim"
         )
         with get_engine().begin() as conn:
             rows = conn.execute(
