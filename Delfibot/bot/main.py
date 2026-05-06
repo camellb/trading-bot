@@ -401,8 +401,10 @@ async def main() -> None:
     # 2026-05-06 was the trigger), the watchdog dumps tracebacks to
     # sidecar.err and SIGKILL's the process. launchd's KeepAlive
     # respawns within ~10s and the GUI auto-reconnects via the
-    # refresh_api_port Tauri command.
-    LoopHeartbeat(loop).start()
+    # refresh_api_port Tauri command. The handle is forwarded to
+    # LocalAPI so /api/health can surface pump latency for monitoring.
+    watchdog = LoopHeartbeat(loop)
+    watchdog.start()
 
     bot_start_time = datetime.now(timezone.utc)
     monitor.set_bot_start_time(bot_start_time)
@@ -462,7 +464,9 @@ async def main() -> None:
     # talks to this port; nothing else on the machine should reach it.
     api_host = "127.0.0.1"
     api_port = int(os.environ.get("DELFI_PORT", "0"))
-    api = LocalAPI(analyst=analyst, host=api_host, port=api_port)
+    api = LocalAPI(
+        analyst=analyst, host=api_host, port=api_port, watchdog=watchdog,
+    )
     bound_port = await api.start()
     # Two channels for the Tauri shell to find us:
     #   1. stdout line - works in dev mode where Tauri spawns us

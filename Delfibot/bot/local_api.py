@@ -286,7 +286,14 @@ class LocalAPI:
     shutdown.
     """
 
-    def __init__(self, analyst, host: str = "127.0.0.1", port: int = 0) -> None:
+    def __init__(
+        self,
+        analyst,
+        host: str = "127.0.0.1",
+        port: int = 0,
+        *,
+        watchdog: Optional[Any] = None,
+    ) -> None:
         self._analyst = analyst
         self._host = host
         self._requested_port = port
@@ -295,13 +302,17 @@ class LocalAPI:
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
         self._bound_port: int = 0
+        # Optional handle to the loop watchdog so /api/health can
+        # surface pump latency. Any-typed to avoid hardcoding the
+        # watchdog's import in this module's import graph.
+        self._watchdog = watchdog
 
     def set_scheduler(self, scheduler) -> None:
         self._scheduler = scheduler
 
     async def start(self) -> int:
         """Bind the socket and start serving. Returns the actual bound port."""
-        self._app = web.Application()
+        self._app = web.Application(middlewares=[self._slow_handler_middleware])
         self._wire_routes(self._app)
 
         self._runner = web.AppRunner(self._app)
@@ -438,9 +449,66 @@ class LocalAPI:
             )
         app.router.add_route("OPTIONS", "/{tail:.*}", _options)
 
+    # ── Executor offload helper ─────────────────────────────────────────────
+    async def _offload(self, fn, *args, **kwargs):
+        """Run a sync callable on the default executor.
+
+        Every handler that touches SQLite, the keychain, or the
+        filesystem MUST go through here. Sync calls on the asyncio
+        loop accumulate latency, and a single slow call (SQLite WAL
+        contention with the scheduler, a half-open keychain prompt)
+        wedges every other endpoint until it returns. The 5-hour
+        outage of 2026-05-06 was the trigger to make this universal.
+        """
+        loop = asyncio.get_event_loop()
+        if args or kwargs:
+            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
+        return await loop.run_in_executor(None, fn)
+
+    # ── Middleware ──────────────────────────────────────────────────────────
+    @web.middleware
+    async def _slow_handler_middleware(self, request, handler):
+        """Per-request stopwatch.
+
+        Most API handlers complete in <50ms. Anything past 5s is either
+        an external HTTP call gone slow, an executor that's saturated,
+        or the start of a wedge. We log the path + duration so the
+        next sidecar.err tail tells us which endpoint went bad before
+        the watchdog fired.
+
+        Doesn't kill the request - aiohttp + the request's own
+        deadline handle that. Just observability.
+        """
+        import time as _t
+        started = _t.monotonic()
+        try:
+            return await handler(request)
+        finally:
+            elapsed = _t.monotonic() - started
+            if elapsed > 5.0:
+                import sys as _sys
+                print(
+                    f"[slow-handler] {request.method} {request.path} "
+                    f"took {elapsed:.1f}s",
+                    file=_sys.stderr, flush=True,
+                )
+
     # ── Handlers ────────────────────────────────────────────────────────────
     async def _health(self, _req: web.Request) -> web.Response:
-        return _ok(proc_health.snapshot())
+        snap = proc_health.snapshot()
+        # Surface loop pump latency. The watchdog updates a timestamp
+        # every 5s; large values (>10s) mean the loop is starting to
+        # wedge. /api/health is the cheapest endpoint, so an external
+        # probe (curl in a loop, monitoring tool) can read this without
+        # hammering DB-backed handlers.
+        if self._watchdog is not None:
+            try:
+                snap["loop_silence_s"] = round(
+                    float(self._watchdog.silence_seconds()), 2
+                )
+            except Exception:
+                pass
+        return _ok(snap)
 
     async def _state(self, _req: web.Request) -> web.Response:
         # `get_user_config()` opens a SQLite transaction. Running it
@@ -483,9 +551,10 @@ class LocalAPI:
         except ValueError as exc:
             return _err(str(exc), 400)
         if not changes:
-            return _ok(_config_to_dict(get_user_config()))
+            cfg = await self._offload(get_user_config)
+            return _ok(_config_to_dict(cfg))
         try:
-            cfg = update_user_config(**changes)
+            cfg = await self._offload(lambda: update_user_config(**changes))
         except ValueError as exc:
             return _err(str(exc), 400)
         except Exception as exc:
@@ -514,8 +583,13 @@ class LocalAPI:
         next call short-circuits without ever touching keychain again.
         Cache is per-process (lives until sidecar exit). PUT
         /api/credentials invalidates it after a successful write.
+
+        Note: the get_user_config() read also goes through the
+        executor. SQLite read on the loop is fast in steady state,
+        but contended with a scheduler thread mid-write it can stall
+        long enough to time out the GUI's 30s splash window.
         """
-        cfg = get_user_config()
+        cfg = await self._offload(get_user_config)
 
         cache = getattr(self, "_creds_cache", None)
         if cache is not None:
@@ -572,9 +646,11 @@ class LocalAPI:
                 return _err(err, 400)
         if pm_key is not None or wallet is not None:
             try:
-                set_user_polymarket_creds(
-                    private_key=pm_key,
-                    wallet_address=wallet,
+                await self._offload(
+                    lambda: set_user_polymarket_creds(
+                        private_key=pm_key,
+                        wallet_address=wallet,
+                    )
                 )
                 if pm_key is not None:
                     wrote.append("polymarket_private_key")
@@ -596,7 +672,7 @@ class LocalAPI:
                 if err:
                     return _err(err, 400)
             try:
-                set_anthropic_api_key(llm)
+                await self._offload(set_anthropic_api_key, llm)
                 wrote.append("llm_api_key")
             except Exception as exc:
                 return _err(f"failed to write llm key: {exc}", 500)
@@ -609,7 +685,7 @@ class LocalAPI:
                 if err:
                     return _err(err, 400)
             try:
-                set_llm_backup_key(llm_backup)
+                await self._offload(set_llm_backup_key, llm_backup)
                 wrote.append("llm_backup_key")
             except Exception as exc:
                 return _err(f"failed to write llm backup key: {exc}", 500)
@@ -622,7 +698,7 @@ class LocalAPI:
                 if err:
                     return _err(err, 400)
             try:
-                set_newsapi_key(newsapi)
+                await self._offload(set_newsapi_key, newsapi)
                 wrote.append("newsapi_key")
             except Exception as exc:
                 return _err(f"failed to write newsapi key: {exc}", 500)
@@ -635,7 +711,7 @@ class LocalAPI:
                 if err:
                     return _err(err, 400)
             try:
-                set_cryptopanic_key(cryptopanic)
+                await self._offload(set_cryptopanic_key, cryptopanic)
                 wrote.append("cryptopanic_key")
             except Exception as exc:
                 return _err(f"failed to write cryptopanic key: {exc}", 500)
@@ -645,18 +721,22 @@ class LocalAPI:
         if hasattr(self, "_creds_cache"):
             self._creds_cache = None
 
-        cfg = get_user_config()
-        has_llm = get_anthropic_api_key() is not None
-        return _ok({
-            "wrote":                  wrote,
-            "wallet_address":         cfg.wallet_address,
-            "has_polymarket_key":     _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
-            "has_anthropic_key":      has_llm,
-            "has_llm_key":            has_llm,
-            "has_llm_backup_key":     get_llm_backup_key() is not None,
-            "has_newsapi_key":        get_newsapi_key() is not None,
-            "has_cryptopanic_key":    get_cryptopanic_key() is not None,
-        })
+        # Read everything we need for the response in one offloaded
+        # batch. Per-getter offload would be 6 round-trips through the
+        # executor for one request - measurably slower than batching.
+        def _read_all_post_write():
+            cfg = get_user_config()
+            return {
+                "wallet_address":      cfg.wallet_address,
+                "has_polymarket_key":  _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
+                "has_anthropic_key":   get_anthropic_api_key() is not None,
+                "has_llm_backup_key":  get_llm_backup_key() is not None,
+                "has_newsapi_key":     get_newsapi_key() is not None,
+                "has_cryptopanic_key": get_cryptopanic_key() is not None,
+            }
+        snap = await self._offload(_read_all_post_write)
+        snap["has_llm_key"] = snap["has_anthropic_key"]
+        return _ok({"wrote": wrote, **snap})
 
     async def _get_positions(self, req: web.Request) -> web.Response:
         try:
@@ -724,16 +804,16 @@ class LocalAPI:
             reason = license_status.get("reason") or "license is not valid"
             return _err(f"license check failed: {reason}", 403)
 
-        cfg = get_user_config()
-        if get_anthropic_api_key() is None:
+        cfg = await self._offload(get_user_config)
+        if (await self._offload(get_anthropic_api_key)) is None:
             return _err("LLM API key is not set", 400)
         if cfg.mode == "live":
             if not cfg.wallet_address:
                 return _err("wallet_address is not set", 400)
-            if _keyring_get(KEYRING_POLYMARKET_KEY) is None:
+            if (await self._offload(_keyring_get, KEYRING_POLYMARKET_KEY)) is None:
                 return _err("polymarket private key is not in the keychain", 400)
         try:
-            cfg = update_user_config(bot_enabled=True)
+            cfg = await self._offload(lambda: update_user_config(bot_enabled=True))
         except ValueError as exc:
             return _err(str(exc), 400)
         except Exception as exc:
@@ -993,7 +1073,7 @@ class LocalAPI:
         button knows what to set), and the user's current effective
         skip flag and multiplier value.
         """
-        cfg = get_user_config()
+        cfg = await self._offload(get_user_config)
         skip_set = set(cfg.archetype_skip_list or ())
         mults = dict(cfg.archetype_stake_multipliers or {})
         # Per-archetype price-band overrides. Stored as a tuple of
@@ -1042,7 +1122,7 @@ class LocalAPI:
             limit = 100
         limit = max(1, min(limit, 500))
 
-        try:
+        def _read():
             engine = get_engine()
             with engine.connect() as conn:
                 stmt = (
@@ -1050,14 +1130,16 @@ class LocalAPI:
                     .order_by(desc(market_evaluations.c.evaluated_at))
                     .limit(limit)
                 )
-                rows = [dict(r._mapping) for r in conn.execute(stmt)]
+                return [dict(r._mapping) for r in conn.execute(stmt)]
+        try:
+            rows = await self._offload(_read)
         except Exception as exc:
             return _err(f"failed to read evaluations: {exc}", 500)
         return _ok({"evaluations": rows})
 
     # ── Notification prefs (per-category toggles) ───────────────────────
     async def _get_notifications(self, _req: web.Request) -> web.Response:
-        cfg = get_user_config()
+        cfg = await self._offload(get_user_config)
         prefs = dict(cfg.notification_prefs or {})
         # Categories not present in the stored prefs default to True so
         # a fresh install gets every notification until the user opts
@@ -1083,13 +1165,13 @@ class LocalAPI:
         if not isinstance(prefs, dict):
             return _err("notification_prefs must be a JSON object", 400)
         try:
-            update_user_config(notification_prefs=prefs)
+            await self._offload(lambda: update_user_config(notification_prefs=prefs))
         except ValueError as exc:
             return _err(str(exc), 400)
         except Exception as exc:
             return _err(f"update failed: {exc}", 500)
 
-        cfg = get_user_config()
+        cfg = await self._offload(get_user_config)
         full = {cat: bool((cfg.notification_prefs or {}).get(cat, True))
                 for cat in NOTIFICATION_CATEGORIES}
         return _ok({
@@ -1105,7 +1187,7 @@ class LocalAPI:
         binary state (configured or not); the actual token is read by
         the notifier from the keychain on each send.
         """
-        return _ok(get_user_telegram_config())
+        return _ok(await self._offload(get_user_telegram_config))
 
     async def _put_telegram_config(self, req: web.Request) -> web.Response:
         """Save the bot token + chat id without testing first.
@@ -1126,7 +1208,9 @@ class LocalAPI:
         if chat_id is not None and not isinstance(chat_id, str):
             return _err("chat_id must be a string", 400)
         try:
-            set_user_telegram_config(bot_token=token, chat_id=chat_id)
+            await self._offload(
+                lambda: set_user_telegram_config(bot_token=token, chat_id=chat_id)
+            )
         except ValueError as exc:
             return _err(str(exc), 400)
         except Exception as exc:
@@ -1135,10 +1219,10 @@ class LocalAPI:
         # outbound notifications still work, just not commands.
         try:
             from feeds.telegram_notifier import start_command_listener
-            start_command_listener()
+            await self._offload(start_command_listener)
         except Exception as exc:
             print(f"[telegram] listener restart failed: {exc}", file=sys.stderr)
-        return _ok(get_user_telegram_config())
+        return _ok(await self._offload(get_user_telegram_config))
 
     async def _post_telegram_test(self, req: web.Request) -> web.Response:
         """Send a real probe message. NEVER persists.
@@ -1168,9 +1252,9 @@ class LocalAPI:
         # `bot_token` in the body just means "use the saved one".
         if not token:
             from engine.user_config import get_telegram_bot_token
-            token = (get_telegram_bot_token() or "").strip()
+            token = ((await self._offload(get_telegram_bot_token)) or "").strip()
         if not chat_id:
-            cfg = get_user_config()
+            cfg = await self._offload(get_user_config)
             chat_id = (cfg.telegram_chat_id or "").strip()
 
         if not token:
@@ -1341,7 +1425,7 @@ class LocalAPI:
         cascading evaluation/markout rows we joined in to keep stats
         clean).
         """
-        try:
+        def _do_reset():
             engine = get_engine()
             with engine.begin() as conn:
                 # Open simulation positions: cancel them so the new run
@@ -1357,6 +1441,8 @@ class LocalAPI:
                     "  WHERE user_id = :uid"
                     ")"
                 ), {"uid": DEFAULT_USER_ID})
+        try:
+            await self._offload(_do_reset)
         except Exception as exc:
             return _err(f"reset failed: {exc}", 500)
         return _ok({"ok": True, "detail": "simulation positions reset"})
@@ -1606,12 +1692,14 @@ class LocalAPI:
         # are appended-only and macOS launchd doesn't rotate them
         # by default, so they CAN grow indefinitely. To stay sane
         # we read at most the last 2 MiB.
-        try:
-            size = os.path.getsize(path)
+        def _read_tail():
+            sz = os.path.getsize(path)
             with open(path, "rb") as f:
-                if size > 2 * 1024 * 1024:
-                    f.seek(size - 2 * 1024 * 1024)
-                blob = f.read()
+                if sz > 2 * 1024 * 1024:
+                    f.seek(sz - 2 * 1024 * 1024)
+                return f.read()
+        try:
+            blob = await self._offload(_read_tail)
             text_blob = blob.decode("utf-8", "replace")
             tail = text_blob.splitlines()[-n:]
         except Exception as exc:
@@ -1667,7 +1755,7 @@ class LocalAPI:
                 f"parent directory does not exist: {parent}", 400,
             )
 
-        try:
+        def _do_vacuum():
             engine = get_engine()
             with engine.begin() as conn:
                 # VACUUM INTO requires a literal path string -
@@ -1676,6 +1764,8 @@ class LocalAPI:
                 # overwriting the live DB; quoting handles the rest.
                 escaped = dest.replace("'", "''")
                 conn.execute(text(f"VACUUM INTO '{escaped}'"))
+        try:
+            await self._offload(_do_vacuum)
         except Exception as exc:
             return _err(f"backup failed: {exc}", 500)
 
@@ -1919,10 +2009,10 @@ class LocalAPI:
         import csv
         import io
 
-        try:
+        def _read():
             engine = get_engine()
             with engine.begin() as conn:
-                rows = conn.execute(text(
+                return conn.execute(text(
                     "SELECT id, created_at, prediction_id, market_id, "
                     "       slug, question, category, market_archetype, "
                     "       side, shares, entry_price, cost_usd, "
@@ -1933,6 +2023,8 @@ class LocalAPI:
                     "FROM pm_positions WHERE user_id = :uid "
                     "ORDER BY created_at DESC"
                 ), {"uid": DEFAULT_USER_ID}).mappings().all()
+        try:
+            rows = await self._offload(_read)
         except Exception as exc:
             return _err(f"export failed: {exc}", 500)
 

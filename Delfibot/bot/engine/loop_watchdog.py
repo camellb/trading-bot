@@ -60,19 +60,36 @@ class LoopHeartbeat:
         loop: asyncio.AbstractEventLoop,
         *,
         heartbeat_interval_s: float = 5.0,
+        early_warning_s: float = 30.0,
         max_silence_s: float = 120.0,
-        check_interval_s: float = 15.0,
+        check_interval_s: float = 5.0,
     ) -> None:
         self._loop = loop
         self._heartbeat_interval_s = heartbeat_interval_s
+        self._early_warning_s = early_warning_s
         self._max_silence_s = max_silence_s
         self._check_interval_s = check_interval_s
         self._last_pump = time.monotonic()
+        # Track whether we've already emitted an early-warning dump for
+        # the current "slow period". Reset when the loop pumps again.
+        self._warned_for_period = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
+    def silence_seconds(self) -> float:
+        """How long since the last loop pump (in seconds).
+
+        Surfaced via /api/health so the dashboard / external probes can
+        measure how close we are to a wedge. A healthy loop pumps every
+        ~5s, so silence > 10s is already suspicious.
+        """
+        return time.monotonic() - self._last_pump
+
     def _pump(self) -> None:
         self._last_pump = time.monotonic()
+        # Loop is alive again - reset the warning gate so the next slow
+        # period can produce a fresh early-warning dump.
+        self._warned_for_period = False
         if not self._stop.is_set():
             self._loop.call_later(self._heartbeat_interval_s, self._pump)
 
@@ -83,6 +100,28 @@ class LoopHeartbeat:
             if silence > self._max_silence_s:
                 self._abort(silence)
                 return
+            if silence > self._early_warning_s and not self._warned_for_period:
+                self._warn(silence)
+                self._warned_for_period = True
+
+    def _warn(self, silence: float) -> None:
+        """Slow-but-not-dead: dump tracebacks WITHOUT killing.
+
+        Most wedges develop over seconds, not instantly. By dumping at
+        30s silence we capture the live frame of whatever sync code is
+        blocking the loop while the daemon is still alive and the user
+        can recover. If the silence keeps growing past max_silence_s,
+        _abort takes over."""
+        try:
+            print(
+                f"[watchdog] event loop silent for {silence:.0f}s "
+                f"(early warning at {self._early_warning_s:.0f}s). "
+                "Dumping tracebacks; daemon still running.",
+                file=sys.stderr, flush=True,
+            )
+            faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        except Exception:
+            pass
 
     def _abort(self, silence: float) -> None:
         msg = (
