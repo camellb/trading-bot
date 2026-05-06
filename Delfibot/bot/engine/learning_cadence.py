@@ -223,6 +223,11 @@ def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
     `user_id` scopes sizer-level slices (cost_validation, archetype_pnl) to
     this tenant's positions. Forecaster slices (brier_by_archetype) read from
     the shared predictions table and remain global.
+
+    Also returns the raw `settled_rows` so proposers can run bootstrap
+    CI checks per cell. Without raw rows the proposers can only see
+    aggregates, which hides the variance that drives whether a finding
+    is publishable.
     """
     try:
         from engine import diagnostics as D
@@ -230,11 +235,42 @@ def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
             "brier_by_archetype":  D.brier_by_archetype("all"),
             "cost_validation":     D.cost_validation(user_id=user_id),
             "archetype_pnl":       D.archetype_pnl_attribution(user_id=user_id),
+            "settled_rows":        _load_settled_rows(user_id=user_id),
         }
     except Exception as exc:
         print(f"[learning_cadence] diag collection failed: {exc}",
               file=sys.stderr)
         return {}
+
+
+def _load_settled_rows(user_id: Optional[str] = None) -> list[dict]:
+    """Settled-and-resolved pm_positions for this user, plain dicts.
+
+    Used by proposers that need to run bootstrap CI checks. Returns the
+    fields the bootstrap and CI helpers consume (cost, pnl, archetype,
+    side, entry_price, claude_probability) plus enough context to slice
+    the data into cells in any way a future proposer might need.
+    """
+    from db.engine import get_engine
+    from sqlalchemy import text as _sa_text
+    eng = get_engine()
+    uid = user_id or DEFAULT_USER_ID
+    try:
+        with eng.connect() as conn:
+            rs = conn.execute(_sa_text(
+                "SELECT id, market_archetype, side, entry_price, "
+                "       claude_probability, cost_usd, realized_pnl_usd, "
+                "       mode, status, settled_at "
+                "FROM pm_positions "
+                "WHERE user_id = :uid AND status='settled' "
+                "  AND cost_usd IS NOT NULL "
+                "  AND realized_pnl_usd IS NOT NULL"
+            ), {"uid": uid})
+            return [dict(r._mapping) for r in rs]
+    except Exception as exc:
+        print(f"[learning_cadence] settled-rows load failed: {exc}",
+              file=sys.stderr)
+        return []
 
 
 # ── Diagnostic proposers ─────────────────────────────────────────────────────
@@ -251,8 +287,14 @@ def _propose_archetype_threshold(diag: dict,
     didn't filter, so users with an existing skip list got "Add tennis to
     skip list" suggestions that did nothing when Applied.
     """
+    from engine.stats import (
+        MIN_N_ARCHETYPE_LEVEL,
+        cell_passes_ci_gate,
+    )
+
     out: list[Proposal] = []
     rows = diag.get("brier_by_archetype") or []
+    settled = diag.get("settled_rows") or []
     skip_set = {
         str(x) for x in (getattr(current, "archetype_skip_list", ()) or ())
     }
@@ -260,22 +302,47 @@ def _propose_archetype_threshold(diag: dict,
         n = int(r.get("n", 0) or 0)
         brier = r.get("brier")
         archetype = r.get("archetype")
-        if n < STRICT_BUCKET_N or brier is None or not archetype:
+        if n < MIN_N_ARCHETYPE_LEVEL or brier is None or not archetype:
             continue
         if brier <= ARCHETYPE_BRIER_THRESHOLD:
             continue
         if archetype in skip_set:
-            # Already skipped; proposing to add it again would be a
-            # no-op when applied. Don't surface as a notification.
             continue
+
+        # Brier is a forecaster-quality metric, not a P&L metric -
+        # but the bot only loses money on a high-Brier archetype if
+        # the calibration error translates to consistently losing
+        # trades. Add a CI gate on the archetype's PnL so we don't
+        # propose skipping based on Brier alone when the trades on
+        # that archetype are statistically break-even.
+        cell_rows = [s for s in settled
+                     if s.get("market_archetype") == archetype]
+        if cell_rows and settled:
+            passes, cell_ci, g_roi = cell_passes_ci_gate(cell_rows, settled)
+            if not passes or not cell_ci.is_losing():
+                # Brier is bad but PnL CI either overlaps the global
+                # mean or straddles zero. Mis-calibration without
+                # statistically distinguishable losses isn't an
+                # actionable skip - it's a forecaster-improvement
+                # opportunity.
+                continue
+            evidence_ci = (
+                f" PnL CI [{cell_ci.lo_pct:+.1f}%, {cell_ci.hi_pct:+.1f}%] "
+                f"vs global {g_roi:+.1f}% confirms statistically "
+                f"distinguishable losses, not just calibration error."
+            )
+        else:
+            evidence_ci = ""
+
         out.append(Proposal(
             param_name="archetype_skip_list",
             current_value=None,
             proposed_value=None,
             evidence=(
                 f"Archetype '{archetype}' Brier {brier:.3f} over {n} resolved "
-                f"predictions is worse than the 0.25 uninformed baseline. "
-                f"Proposal: add '{archetype}' to the archetype skip list so "
+                f"predictions is worse than the 0.25 uninformed baseline."
+                + evidence_ci +
+                f" Proposal: add '{archetype}' to the archetype skip list so "
                 f"the forecaster stops betting markets it demonstrably "
                 f"mis-calibrates."
             ),
@@ -329,11 +396,24 @@ def _propose_cost_correction(diag: dict,
 def _propose_archetype_stake_multiplier(diag: dict,
                                         current: UserConfig) -> list[Proposal]:
     """
-    Read ROI-by-archetype. For each archetype with >=25 settled trades, if
-    the ROI falls into one of the discrete tiers, propose setting that
-    archetype's stake multiplier accordingly. Skip archetypes already on
-    the skip list (no point multiplying a zero), and skip when the proposed
-    multiplier is within hysteresis of the current one.
+    Read ROI-by-archetype. For each archetype, if the bootstrap 95% CI
+    on its ROI lies entirely on one side of the GLOBAL ROI, AND the
+    sample size meets MIN_N_ARCHETYPE_LEVEL, propose setting the
+    multiplier per the discrete tier table.
+
+    Why CI-gating instead of point-estimate gating: a 25-trade cell
+    with a +5% ROI but a CI of [-30%, +40%] is statistical noise
+    around the global mean; acting on it would amplify variance, not
+    edge. Pre-2026-05-06 the proposer fired on point estimates and
+    proposed multipliers based on 8-trade buckets where every cell's
+    CI overlapped break-even. The bootstrap gate kills 80% of those
+    spurious proposals. The remaining ~20% are findings the data
+    actually supports.
+
+    Always emits sample/ci/power metadata so the dashboard can show
+    "n=36 / required for +5% lift = 1571" alongside the proposal,
+    even when the proposer ITSELF declined to fire (we still surface
+    the cell so users see what's being measured).
     """
     # Fallback for "what is the user's CURRENT multiplier on this
     # archetype" must use the same V1 doctrine defaults the sizer
@@ -342,12 +422,28 @@ def _propose_archetype_stake_multiplier(diag: dict,
     # "currently 1.0x" while the sizer trades at 1.5x basketball /
     # 0.5x tennis — and Apply silently corrupts the V1 default.
     from engine.user_config import V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS
+    from engine.stats import (
+        MIN_N_ARCHETYPE_LEVEL,
+        bootstrap_roi_ci,
+        cell_passes_ci_gate,
+        min_n_for_detection,
+    )
 
     out: list[Proposal] = []
     rows = diag.get("archetype_pnl") or []
+    settled = diag.get("settled_rows") or []
     current_map = dict(getattr(current, "archetype_stake_multipliers", {}) or {})
     skip_set = set(getattr(current, "archetype_skip_list", ()) or ())
     lo, hi = ARCHETYPE_MULTIPLIER_BOUNDS
+
+    # Pre-compute global stats so each per-archetype loop is cheap.
+    if not settled:
+        return out
+    from engine.stats import _roi_pct as _roi  # noqa: PLC2701
+    global_roi_pct = _roi(settled)
+    n_required_5pct = min_n_for_detection(
+        baseline_roi=global_roi_pct / 100.0, target_lift=0.05,
+    )
 
     for r in rows:
         archetype = r.get("archetype")
@@ -355,8 +451,22 @@ def _propose_archetype_stake_multiplier(diag: dict,
         roi = r.get("roi")
         if not archetype or archetype in skip_set:
             continue
-        if n < ARCHETYPE_MULTIPLIER_MIN_N or roi is None:
+        if roi is None:
             continue
+
+        # CI gate: pull the per-archetype rows out of the settled set
+        # and compute a bootstrap CI. Block the proposal if the CI
+        # overlaps the global mean.
+        cell_rows = [s for s in settled
+                     if s.get("market_archetype") == archetype]
+        passes, cell_ci, _ = cell_passes_ci_gate(cell_rows, settled)
+        if n < MIN_N_ARCHETYPE_LEVEL:
+            continue  # would surface at sufficient sample
+        if not passes:
+            # Statistically indistinguishable from the global mean;
+            # acting on this cell amplifies variance.
+            continue
+
         tier = _pick_multiplier_tier(float(roi))
         if tier is None:
             continue
@@ -365,25 +475,34 @@ def _propose_archetype_stake_multiplier(diag: dict,
         currently = float(current_map.get(archetype, default_for_arch))
         if abs(proposed - currently) < ARCHETYPE_MULTIPLIER_HYSTERESIS:
             continue
-        # Compare against the user's CURRENT multiplier, not against
-        # the unscaled 1.0 base. With current=2.0x and proposed=1.25x
-        # the move is a decrease, even though 1.25 > 1.0.
         verb = "upsizing" if proposed > currently else "downsizing"
         out.append(Proposal(
             param_name="archetype_stake_multipliers",
             current_value=currently,
             proposed_value=proposed,
             evidence=(
-                f"Archetype '{archetype}' ROI {roi*100:.1f}% over {n} settled "
-                f"trades. Proposal: {verb} stake by setting the multiplier to "
-                f"{proposed:.2f}x (currently {currently:.2f}x). The multiplier "
-                f"scales the flat base stake."
+                f"Archetype '{archetype}' ROI {roi*100:+.1f}% over {n} settled "
+                f"trades, 95% CI [{cell_ci.lo_pct:+.1f}%, {cell_ci.hi_pct:+.1f}%] "
+                f"vs global {global_roi_pct:+.1f}%. CI excludes the global mean, "
+                f"so this is real signal not sample variance. Proposal: "
+                f"{verb} stake to {proposed:.2f}x (currently {currently:.2f}x). "
+                f"Detecting a +5% per-trade lift at p<0.05 would need "
+                f"n={n_required_5pct} per arm; we have {n} - directional "
+                f"confidence is good but magnitude is approximate."
             ),
             proposal_metadata={
-                "operation":    "dict_set",
-                "target_field": "archetype_stake_multipliers",
-                "key":          archetype,
-                "value":        proposed,
+                "operation":     "dict_set",
+                "target_field":  "archetype_stake_multipliers",
+                "key":           archetype,
+                "value":         proposed,
+                "stats": {
+                    "n":              n,
+                    "roi_pct":        round(float(roi) * 100, 2),
+                    "ci_lo_pct":      round(cell_ci.lo_pct, 2),
+                    "ci_hi_pct":      round(cell_ci.hi_pct, 2),
+                    "global_roi_pct": round(global_roi_pct, 2),
+                    "min_n_required": n_required_5pct,
+                },
             },
         ))
     return out

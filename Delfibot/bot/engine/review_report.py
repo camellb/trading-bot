@@ -356,7 +356,13 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     except Exception as exc:
         print(f"[review_report] brier_by_arch failed: {exc}", file=sys.stderr)
         brier_by_arch = []
-    data["per_archetype"] = _shape_per_archetype(per_arch, brier_by_arch)
+    # Pass the cycle's raw rows so the per-archetype shaper can run
+    # bootstrap CI + power calc per cell. Surfaces ci_lo_pct,
+    # ci_hi_pct, min_n_required, block_reason, verdict alongside the
+    # aggregates - the dashboard uses these to mark thin/noisy cells.
+    data["per_archetype"] = _shape_per_archetype(
+        per_arch, brier_by_arch, raw_rows=rows,
+    )
 
     # Calibration curve.
     try:
@@ -550,22 +556,73 @@ def _outcome_bit(side, settlement) -> Optional[int]:
 
 # ── Shaping helpers ──────────────────────────────────────────────────────────
 def _shape_per_archetype(pnl_rows: list[dict],
-                         brier_rows: list[dict]) -> list[dict]:
+                         brier_rows: list[dict],
+                         raw_rows: list[dict] | None = None) -> list[dict]:
+    """Per-archetype rows for the review report.
+
+    When `raw_rows` is provided (the cycle's settled positions in the
+    raw shape `{archetype, pnl, cost, ...}`), we compute per-cell
+    bootstrap CI + power-calc sample-size required and surface those
+    on every row. The dashboard renders these so the user can see why
+    a cell with apparently-good ROI is still classified noise (CI
+    overlaps the global mean, or n < min_n_required).
+
+    Without raw_rows we fall back to the legacy aggregate-only shape -
+    keeps backwards compat for older callers / saved reports that
+    didn't include the raw data.
+    """
     brier_map = {
         str(r.get("archetype") or "").lower(): r.get("brier")
         for r in brier_rows
     }
+
+    # Optional CI augmentation. Lazy-import so the legacy path doesn't
+    # pull in stats helpers when raw_rows is None.
+    arch_to_rows: dict[str, list[dict]] = {}
+    global_rows: list[dict] = []
+    summarize_cell = None
+    if raw_rows:
+        try:
+            from engine.stats import summarize_cell as _summarize_cell
+            summarize_cell = _summarize_cell
+            for r in raw_rows:
+                # The cycle-level raw rows use {pnl, cost} (cycle math).
+                # summarize_cell expects {realized_pnl_usd, cost_usd}.
+                # Adapt rather than duplicate the cycle-aggregation code.
+                row = {
+                    "cost_usd":         float(r.get("cost") or 0.0),
+                    "realized_pnl_usd": float(r.get("pnl")  or 0.0),
+                }
+                global_rows.append(row)
+                a = r.get("archetype") or "other"
+                arch_to_rows.setdefault(a, []).append(row)
+        except Exception as exc:
+            print(f"[review_report] CI augment failed: {exc}", file=sys.stderr)
+            summarize_cell = None
+
     shaped: list[dict] = []
     for r in pnl_rows:
         key = str(r.get("archetype") or "").lower()
-        shaped.append({
+        out_row = {
             "archetype": r.get("archetype"),
             "n":         int(r.get("n") or 0),
             "pnl_usd":   float(r.get("pnl") or 0.0),
             "roi":       r.get("roi"),
             "win_rate":  r.get("win_rate"),
             "brier":     brier_map.get(key),
-        })
+        }
+        if summarize_cell is not None and global_rows:
+            try:
+                cell = arch_to_rows.get(r.get("archetype"), [])
+                summary = summarize_cell(cell, global_rows)
+                out_row["ci_lo_pct"]      = summary["ci_lo_pct"]
+                out_row["ci_hi_pct"]      = summary["ci_hi_pct"]
+                out_row["min_n_required"] = summary["min_n_required"]
+                out_row["block_reason"]   = summary["block_reason"]
+                out_row["verdict"]        = summary["verdict"]
+            except Exception:
+                pass
+        shaped.append(out_row)
     shaped.sort(key=lambda x: x.get("pnl_usd") or 0.0, reverse=True)
     return shaped
 
