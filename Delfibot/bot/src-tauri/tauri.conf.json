@@ -52,7 +52,7 @@
         "language": "en-US"
       }
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
 
   "plugins": {
