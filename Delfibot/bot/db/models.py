@@ -103,6 +103,18 @@ pm_positions = Table(
     Column("reasoning",     Text, nullable=True),
     Column("venue",         Text, nullable=False,
            server_default=sa_text("'polymarket'")),
+    # Per-trade richness (added 2026-05-06 for analysis-dimension
+    # purposes). Nullable because rows from before the migration
+    # don't have these. Both come straight off the PolyMarket
+    # gamma row at trade time:
+    #   volume_24h_at_entry: 24-hour CLOB dollar volume. Lets us
+    #     slice ROI by thinness - thin markets eat spread.
+    #   liquidity_at_entry: gamma's `liquidityNum`. Proxy for the
+    #     orderbook depth at entry without a separate RPC.
+    # True bid-ask spread requires a separate orderbook fetch and
+    # is deferred to a later commit.
+    Column("volume_24h_at_entry", Float, nullable=True),
+    Column("liquidity_at_entry",  Float, nullable=True),
 )
 
 
@@ -628,6 +640,16 @@ def create_all_tables() -> None:
         if "redeem_tx_hash" not in existing_pm_positions_cols:
             conn.execute(sa_text(
                 "ALTER TABLE pm_positions ADD COLUMN redeem_tx_hash TEXT"
+            ))
+        if "volume_24h_at_entry" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN "
+                "volume_24h_at_entry REAL"
+            ))
+        if "liquidity_at_entry" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN "
+                "liquidity_at_entry REAL"
             ))
 
         # Seed the singleton row if absent. Local install always has

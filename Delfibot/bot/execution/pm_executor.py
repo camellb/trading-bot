@@ -354,13 +354,15 @@ class PMExecutor:
                     "  side, shares, entry_price, cost_usd, "
                     "  claude_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug, "
-                    "  market_archetype, venue"
+                    "  market_archetype, venue, "
+                    "  volume_24h_at_entry, liquidity_at_entry"
                     ") VALUES ("
                     "  :user_id, :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
                     "  :mode, 'open', :exp, :reason, :event_slug, "
-                    "  :arch, :venue"
+                    "  :arch, :venue, "
+                    "  :vol24h, :liq"
                     ") RETURNING id"
                 ), {
                     "user_id": self.user_id,
@@ -399,6 +401,12 @@ class PMExecutor:
                     # change mid-session would be picked up by the NEXT
                     # executor instance, not this one.
                     "venue": getattr(self._user_config, "venue", "polymarket"),
+                    # Per-trade richness: market thinness signals at
+                    # entry time. Lets future ROI analysis slice by
+                    # volume / liquidity bands. NULL-safe: a missing
+                    # value on a malformed gamma row stays NULL, not 0.
+                    "vol24h": getattr(market, "volume_24h_clob", None),
+                    "liq":    getattr(market, "liquidity_num", None),
                 }).fetchone()
                 return int(row[0]) if row else None
         except Exception as exc:
@@ -608,13 +616,15 @@ class PMExecutor:
                     "  side, shares, entry_price, cost_usd, "
                     "  claude_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug, "
-                    "  market_archetype, venue, clob_order_id, tx_hash"
+                    "  market_archetype, venue, clob_order_id, tx_hash, "
+                    "  volume_24h_at_entry, liquidity_at_entry"
                     ") VALUES ("
                     "  :user_id, :pid, :mid, :cid, :slug, :q, :cat, "
                     "  :side, :shares, :ep, :cost, "
                     "  :cp, :ev_bps, :conf, "
                     "  'live', 'open', :exp, :reason, :event_slug, "
-                    "  :arch, :venue, :order_id, :tx_hash"
+                    "  :arch, :venue, :order_id, :tx_hash, "
+                    "  :vol24h, :liq"
                     ") RETURNING id"
                 ), {
                     "user_id": self.user_id,
@@ -638,6 +648,10 @@ class PMExecutor:
                     "venue":   getattr(self._user_config, "venue", "polymarket"),
                     "order_id": clob_order_id,
                     "tx_hash": tx_hash,
+                    # Per-trade richness mirrors _open_simulation. See
+                    # the comment there.
+                    "vol24h":  getattr(market, "volume_24h_clob", None),
+                    "liq":     getattr(market, "liquidity_num", None),
                 }).fetchone()
                 return int(row[0]) if row else None
         except Exception as exc:
