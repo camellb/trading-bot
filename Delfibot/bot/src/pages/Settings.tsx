@@ -233,11 +233,42 @@ function AppPanel() {
 function DiagnosticsPanel() {
   return (
     <>
+      <HelpPanel />
       <RestartPanel />
       <DbBackupPanel />
       <LogsPanel />
       <LaunchStatsPanel />
     </>
+  );
+}
+
+// ── Help / Contact support ─────────────────────────────────────────────
+
+const SUPPORT_EMAIL = "info@delfibot.com";
+
+/** Opens the user's mail client with a pre-filled support address.
+ *  Surfaced at the top of Diagnostics so a user hitting an unrecoverable
+ *  state (wedge that survived the watchdog, license dispute, billing
+ *  question) can reach a human in one click. */
+function HelpPanel() {
+  const subject = "Delfi support";
+  const href = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}`;
+  const open = () => { void openUrl(href); };
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Need help</h2>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        If something looks broken and Restart Delfi below didn't fix it,
+        email us and we'll respond.
+      </p>
+      <div className="form-actions">
+        <button type="button" className="btn small" onClick={open}>
+          Email {SUPPORT_EMAIL}
+        </button>
+      </div>
+    </div>
   );
 }
 

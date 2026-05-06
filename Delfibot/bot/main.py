@@ -56,6 +56,7 @@ _aiohttp_resolver.DefaultResolver = _aiohttp_resolver.ThreadedResolver
 
 import config
 from db.models import create_all_tables
+from engine.loop_watchdog import LoopHeartbeat
 from engine.markout_tracker import check_markouts
 from engine.pm_analyst import PMAnalyst
 from engine.user_config import (
@@ -394,6 +395,14 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(
         max_workers=20, thread_name_prefix="delfi"))
+
+    # Arm the loop-wedge watchdog as soon as the loop is alive. If the
+    # asyncio loop ever stops pumping for >120s (the 5-hour wedge of
+    # 2026-05-06 was the trigger), the watchdog dumps tracebacks to
+    # sidecar.err and SIGKILL's the process. launchd's KeepAlive
+    # respawns within ~10s and the GUI auto-reconnects via the
+    # refresh_api_port Tauri command.
+    LoopHeartbeat(loop).start()
 
     bot_start_time = datetime.now(timezone.utc)
     monitor.set_bot_start_time(bot_start_time)
