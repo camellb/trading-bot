@@ -85,7 +85,7 @@ fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
 /// error string the UI renders; we don't have a Windows / Linux
 /// daemon supervisor wired up yet.
 #[tauri::command]
-async fn restart_sidecar(_app: tauri::AppHandle) -> Result<(), String> {
+async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         return Err(
             "Restart from the GUI is currently macOS-only. \
@@ -93,13 +93,47 @@ async fn restart_sidecar(_app: tauri::AppHandle) -> Result<(), String> {
                 .into(),
         );
     }
+    // Read the port file BEFORE we kill anything, so we can target
+    // the actual port-holder by lsof. This handles the case where
+    // a Tauri-spawned orphan from a prior session is the one
+    // wedging the API: a plain `launchctl kickstart -k` only
+    // touches the launchd-managed slot and leaves the orphan up,
+    // so the GUI keeps timing out forever (incident 2026-05-06).
+    let port = read_existing_sidecar_port(&app).await;
+
     // Use std::process::Command (not the Tauri shell plugin) so we
     // don't have to widen capabilities/default.json's shell-execute
     // allowlist beyond the sidecar binary. Wrapped in spawn_blocking
     // because std::process::Command::output() is synchronous and we
     // shouldn't block the Tauri runtime.
-    async_runtime::spawn_blocking(|| {
+    async_runtime::spawn_blocking(move || {
         use std::process::Command;
+
+        // Step 1: kill whatever process is currently bound to the
+        // sidecar port. lsof -nP -iTCP:<port> -sTCP:LISTEN -t prints
+        // PID-only. We SIGKILL each one. Any failure here is
+        // non-fatal - kickstart still runs.
+        if let Some(p) = port {
+            if let Ok(out) = Command::new("/usr/sbin/lsof")
+                .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-t",
+                       &format!("-iTCP:{p}")])
+                .output()
+            {
+                let pids = String::from_utf8_lossy(&out.stdout);
+                for line in pids.lines() {
+                    let pid = line.trim();
+                    if pid.is_empty() { continue; }
+                    let _ = Command::new("/bin/kill")
+                        .args(["-9", pid])
+                        .output();
+                }
+            }
+        }
+
+        // Step 2: ensure the LaunchAgent slot itself is fresh by
+        // running kickstart -k. This SIGTERMs the launchd-managed
+        // daemon (if any survived step 1) and starts a new one;
+        // KeepAlive then takes over for subsequent crashes.
         let uid_out = Command::new("/usr/bin/id")
             .arg("-u")
             .output()
@@ -352,82 +386,117 @@ fn main() {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
 
-                // Path 2: spawn a sidecar ourselves.
+                // Path 2: depends on build mode.
                 //
-                // Note: in production this fallback usually exits
-                // immediately at the singleton lock check inside
-                // main.py, because the launchd daemon got there
-                // first. The spawned process gets to "lock held by
-                // pid=X, exiting cleanly" and never emits a READY
-                // line. We handle that by ALSO polling the port
-                // file in parallel - the spawned sidecar's exit is
-                // not a failure if the daemon is already up.
-                println!(
-                    "[delfi] no daemon found via port file - falling \
-                     back to spawning a sidecar from the GUI"
-                );
-                let port = portpicker::pick_unused_port().unwrap_or(0);
-                let db_path = resolve_db_path(&app_handle);
-                let (ready_tx, ready_rx) = oneshot::channel::<u16>();
-
-                let child = match spawn_sidecar(
-                    &app_handle, port, &db_path, ready_tx,
-                ) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("[delfi] sidecar spawn failed: {e}");
-                        return;
-                    }
-                };
-                {
-                    let state = app_handle.state::<ApiState>();
-                    *state.child.lock().unwrap() = Some(child);
-                }
-
-                // Wait for either:
-                //   (a) READY line on stdout from our spawned child
-                //       - means we are the bot (no daemon was up)
-                //   (b) port file appearing - means the launchd
-                //       daemon finished booting after our Path 1
-                //       probe gave up; we connect to it instead and
-                //       our spawned child has already (or will
-                //       shortly) exit at the singleton lock
-                // 120s overall timeout.
-                let app_handle_for_poll = app_handle.clone();
-                let port_file_watcher = async move {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        if let Some(p) = read_existing_sidecar_port(&app_handle_for_poll).await {
-                            return p;
+                // RELEASE: never spawn. Doing so creates a Tauri-owned
+                // sidecar that competes with the launchd-managed one.
+                // The Tauri spawn binds the port first; launchd's
+                // daemon hits the singleton lock and exits, launchd
+                // respawns it, hits the lock again, exits, and so on
+                // forever. The "Restart Delfi" button only kicks the
+                // launchd slot, leaving the Tauri orphan up - so to
+                // the user it looks like nothing happened. This was
+                // the 2026-05-06 incident.
+                //
+                // DEV: keep the spawn fallback. Dev mode runs
+                // `python main.py` with no LaunchAgent supervision,
+                // so the GUI itself is the only path to a running
+                // sidecar.
+                if cfg!(debug_assertions) {
+                    println!(
+                        "[delfi] no daemon found via port file - falling \
+                         back to spawning a sidecar from the GUI (dev mode)"
+                    );
+                    let port = portpicker::pick_unused_port().unwrap_or(0);
+                    let db_path = resolve_db_path(&app_handle);
+                    let (ready_tx, ready_rx) = oneshot::channel::<u16>();
+                    let child = match spawn_sidecar(
+                        &app_handle, port, &db_path, ready_tx,
+                    ) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("[delfi] sidecar spawn failed: {e}");
+                            return;
                         }
+                    };
+                    {
+                        let state = app_handle.state::<ApiState>();
+                        *state.child.lock().unwrap() = Some(child);
                     }
-                };
-                let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
-                tokio::select! {
-                    res = ready_rx => {
-                        match res {
-                            Ok(bound_port) => {
+                    let app_handle_for_poll = app_handle.clone();
+                    let port_file_watcher = async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            if let Some(p) = read_existing_sidecar_port(&app_handle_for_poll).await {
+                                return p;
+                            }
+                        }
+                    };
+                    let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
+                    tokio::select! {
+                        res = ready_rx => {
+                            if let Ok(bound_port) = res {
                                 let state = app_handle.state::<ApiState>();
                                 *state.port.lock().unwrap() = Some(bound_port);
                                 println!("[delfi] spawned sidecar ready on 127.0.0.1:{bound_port}");
-                            }
-                            Err(_) => {
+                            } else {
                                 eprintln!("[delfi] sidecar ready channel dropped before READY line");
                             }
                         }
+                        bound_port = port_file_watcher => {
+                            let state = app_handle.state::<ApiState>();
+                            *state.port.lock().unwrap() = Some(bound_port);
+                            println!(
+                                "[delfi] daemon came online after probe window - \
+                                 connected on 127.0.0.1:{bound_port}"
+                            );
+                        }
+                        _ = timeout => {
+                            eprintln!("[delfi] sidecar did not become ready within 120s");
+                        }
                     }
-                    bound_port = port_file_watcher => {
-                        let state = app_handle.state::<ApiState>();
-                        *state.port.lock().unwrap() = Some(bound_port);
-                        println!(
-                            "[delfi] daemon came online after probe window - \
-                             connected on 127.0.0.1:{bound_port} (our spawn \
-                             will exit at the singleton lock)"
-                        );
+                } else {
+                    // Release: kickstart launchd's LaunchAgent in case
+                    // it has crashed and is mid-throttle, then keep
+                    // polling the port file for another 60s. If still
+                    // nothing, surface the error to the splash screen
+                    // and let the user click Restart.
+                    eprintln!(
+                        "[delfi] no daemon after 30s probe - kickstarting \
+                         launchd LaunchAgent and continuing to wait"
+                    );
+                    let _ = std::process::Command::new("/usr/bin/id")
+                        .arg("-u")
+                        .output()
+                        .ok()
+                        .and_then(|o| {
+                            if !o.status.success() { return None; }
+                            let uid = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                            if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+                                return None;
+                            }
+                            std::process::Command::new("/bin/launchctl")
+                                .args(["kickstart", &format!("gui/{uid}/com.delfi.bot")])
+                                .output()
+                                .ok()
+                        });
+                    // Continue probing for another 60s.
+                    for _ in 0..120 {
+                        if let Some(p) = read_existing_sidecar_port(&app_handle).await {
+                            let state = app_handle.state::<ApiState>();
+                            *state.port.lock().unwrap() = Some(p);
+                            println!(
+                                "[delfi] connected to launchd daemon on 127.0.0.1:{p} \
+                                 after kickstart"
+                            );
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
-                    _ = timeout => {
-                        eprintln!("[delfi] sidecar did not become ready within 120s");
-                    }
+                    eprintln!(
+                        "[delfi] launchd daemon failed to come up within 90s of \
+                         total probing - the GUI will surface 'Delfi could not start'"
+                    );
                 }
             });
 
