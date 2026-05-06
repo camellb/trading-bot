@@ -68,42 +68,42 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
   const text = [
     `DELFI`,
     ``,
-    `Welcome to Delfi.`,
+    `You're in.`,
     ``,
     `Hi ${email},`,
     ``,
-    `Thanks for buying Delfi. Your license key is below. You'll`,
+    `Thanks for choosing Delfi. You just bought yourself a forecaster`,
+    `that runs while you sleep. Your license key is below, you'll`,
     `need it the first time you open the app.`,
     ``,
-    `--- Your Delfi license (begin) ---`,
+    `--- YOUR DELFI LICENSE (keep this safe) ---`,
     blob,
-    `--- Your Delfi license (end) ---`,
+    `--- end license ---`,
     ``,
     `Download Delfi:`,
     `  macOS:    ${macUrl}`,
     `  Windows:  ${winUrl}`,
     ``,
     `Getting started:`,
-    `  1. Install Delfi for your platform.`,
-    `  2. Open it and paste your license key.`,
-    `  3. Delfi launches in Simulation mode by default. Synthetic`,
-    `     capital, real forecasts and risk logic. Watch it run for`,
-    `     as long as you want before going live.`,
-    `  4. When you're ready, switch to Live and connect your`,
-    `     Polymarket account. Your private key sits in your OS`,
-    `     keychain and never leaves your computer.`,
+    `  1. Open Delfi and paste your license key.`,
+    `  2. Delfi starts in Simulation. Watch it trade for as long as`,
+    `     you want.`,
+    `  3. When the numbers convince you, switch to Live and connect`,
+    `     your Polymarket account. Your private keys never leave`,
+    `     your computer.`,
     ``,
-    `A few things worth knowing:`,
-    `  - Delfi runs entirely on your machine. No cloud, no phone-home.`,
-    `  - Your funds, wallet, and Polymarket account stay with you.`,
-    `  - Delfi learns from every settled trade and proposes config`,
-    `    changes for your review. It never updates its own rules`,
-    `    without your approval.`,
+    `  - Delfi runs entirely on your machine.`,
+    `  - Your funds, wallet, and Polymarket account never leave your`,
+    `    control.`,
+    `  - Delfi learns from every settled trade and proposes`,
+    `    adjustments, but it never changes its own rules without`,
+    `    your approval.`,
     ``,
-    `Questions, problems, or feedback: reply to this email.`,
-    `${SUPPORT_INBOX} lands directly with us.`,
+    `You picked the right side of the trade.`,
     ``,
-    `Delfi`,
+    `Any questions, just reply to this email. It comes straight to us.`,
+    ``,
+    `- The Delfi team`,
     `${SUPPORT_INBOX}`,
     `https://delfibot.com`,
   ].join("\n");
@@ -122,7 +122,7 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
 <title>${escapeHtml(subject)}</title>
 </head>
 <body style="margin:0;padding:0;background:#0a0a0c;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;color:#e9e6dd;-webkit-font-smoothing:antialiased;">
-  <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;font-size:1px;line-height:1px;mso-hide:all;">Your Delfi license is inside. Install the app, paste the key, watch it run in Simulation mode.</span>
+  <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;font-size:1px;line-height:1px;mso-hide:all;">You're in. Your Delfi license is inside. Watch it trade in Simulation, then go live when the numbers convince you.</span>
 
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#0a0a0c;">
     <tr>
@@ -140,20 +140,20 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
           <tr>
             <td style="background:#0e0f14;border:1px solid #1f2026;border-radius:10px;padding:44px 36px 36px 36px;">
 
-              <h1 style="font-family:'Newsreader',Georgia,'Times New Roman',serif;font-size:30px;font-weight:500;letter-spacing:-0.005em;color:#daaa4c;margin:0 0 20px 0;line-height:1.15;">
-                Welcome to Delfi.
+              <h1 style="font-family:'Newsreader',Georgia,'Times New Roman',serif;font-size:32px;font-weight:500;letter-spacing:-0.01em;color:#daaa4c;margin:0 0 22px 0;line-height:1.1;">
+                You're in.
               </h1>
 
               <p style="font-size:15px;line-height:1.65;color:#e9e6dd;margin:0 0 14px 0;">
                 Hi ${safeEmail},
               </p>
               <p style="font-size:15px;line-height:1.7;color:#cfcabd;margin:0 0 28px 0;">
-                Thanks for buying Delfi. Your license key is below. You'll need it the first time you open the app.
+                Thanks for choosing Delfi. You just bought yourself a forecaster that runs while you sleep. Your license key is below, you'll need it the first time you open the app.
               </p>
 
               <div style="background:#13141a;border:1px solid #2a2c34;border-left:2px solid #daaa4c;border-radius:6px;padding:22px 22px 20px 22px;margin:0 0 32px 0;">
                 <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 12px 0;">
-                  Your Delfi license
+                  Your Delfi license <span style="color:#5c574d;text-transform:none;letter-spacing:0;font-size:11px;">(keep this safe)</span>
                 </div>
                 <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.6;color:#daaa4c;white-space:pre-wrap;word-break:break-all;margin:0;">${safeBlob}</pre>
               </div>
@@ -180,22 +180,31 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
                 Getting started
               </div>
               <ol style="font-size:14px;line-height:1.7;color:#cfcabd;margin:0 0 32px 0;padding-left:20px;">
-                <li style="margin:0 0 10px 0;">Install Delfi for your platform.</li>
-                <li style="margin:0 0 10px 0;">Open it and paste your license key.</li>
-                <li style="margin:0 0 10px 0;">Delfi launches in Simulation mode by default. Synthetic capital, real forecasts and risk logic. Watch it run for as long as you want before going live.</li>
-                <li style="margin:0;">When you're ready, switch to Live and connect your Polymarket account. Your private key sits in your OS keychain and never leaves your computer.</li>
+                <li style="margin:0 0 10px 0;">Open Delfi and paste your license key.</li>
+                <li style="margin:0 0 10px 0;">Delfi starts in Simulation. Watch it trade for as long as you want.</li>
+                <li style="margin:0;">When the numbers convince you, switch to Live and connect your Polymarket account. Your private keys never leave your computer.</li>
               </ol>
 
-              <div style="height:1px;background:#1f2026;margin:0 0 28px 0;font-size:0;line-height:0;">&nbsp;</div>
+              <div style="height:1px;background:#1f2026;margin:0 0 24px 0;font-size:0;line-height:0;">&nbsp;</div>
 
-              <ul style="font-size:13px;line-height:1.75;color:#8c8675;margin:0 0 20px 0;padding-left:18px;">
-                <li style="margin:0 0 6px 0;">Delfi runs entirely on your machine. No cloud, no phone-home.</li>
-                <li style="margin:0 0 6px 0;">Your funds, wallet, and Polymarket account stay with you.</li>
-                <li style="margin:0;">Delfi learns from every settled trade and proposes config changes for your review. It never updates its own rules without your approval.</li>
+              <ul style="font-size:13px;line-height:1.75;color:#8c8675;margin:0 0 28px 0;padding-left:18px;">
+                <li style="margin:0 0 8px 0;">Delfi runs entirely on your machine.</li>
+                <li style="margin:0 0 8px 0;">Your funds, wallet, and Polymarket account never leave your control.</li>
+                <li style="margin:0;">Delfi learns from every settled trade and proposes adjustments, but it never changes its own rules without your approval.</li>
               </ul>
 
-              <p style="font-size:13px;line-height:1.7;color:#8c8675;margin:0;">
-                Questions, problems, or feedback: just reply to this email. <a href="mailto:${escapeHtml(SUPPORT_INBOX)}" style="color:#daaa4c;text-decoration:none;">${escapeHtml(SUPPORT_INBOX)}</a> lands directly with us.
+              <div style="height:1px;background:#1f2026;margin:0 0 24px 0;font-size:0;line-height:0;">&nbsp;</div>
+
+              <p style="font-family:'Newsreader',Georgia,'Times New Roman',serif;font-size:17px;font-style:italic;line-height:1.5;color:#daaa4c;margin:0 0 22px 0;">
+                You picked the right side of the trade.
+              </p>
+
+              <p style="font-size:13px;line-height:1.7;color:#8c8675;margin:0 0 22px 0;">
+                Any questions, just reply to this email. It comes straight to us.
+              </p>
+
+              <p style="font-size:13px;line-height:1.7;color:#cfcabd;margin:0;">
+                - The Delfi team
               </p>
 
             </td>
