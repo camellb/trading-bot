@@ -157,6 +157,120 @@ def _start_parent_death_watchdog_OLD() -> None:
     t.start()
 
 
+_LAUNCHD_PATH_MARKER = "Library/Daemon/DelfiSidecar.app"
+
+
+def _singleton_lock_path():
+    """Canonical path for the singleton lock, INVARIANT across env vars.
+
+    Critical: this MUST NOT depend on DELFI_DB_PATH. The launchd
+    daemon's plist sets DELFI_DB_PATH to the Tauri AppData
+    (`com.delfi.desktop/`). A sidecar spawned without that env (a
+    Tauri-shell fallback, a manual `python main.py`) would otherwise
+    fall back to the legacy default (`Delfi/`) and lock a DIFFERENT
+    inode, letting two daemons coexist - the 2026-05-06 incident.
+    Anchor the lock to the canonical Tauri bundle identifier dir
+    regardless of env so every sidecar contends for the same flock.
+    """
+    import platform
+    from pathlib import Path
+    home = Path.home()
+    sysname = platform.system()
+    if sysname == "Darwin":
+        d = home / "Library" / "Application Support" / "com.delfi.desktop"
+    elif sysname == "Windows":
+        base = Path(os.environ.get("APPDATA") or (home / "AppData" / "Roaming"))
+        d = base / "com.delfi.desktop"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME") or (home / ".local" / "share"))
+        d = base / "com.delfi.desktop"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "sidecar.lock"
+
+
+def _exec_path_of(pid: int) -> str:
+    """Best-effort read of a process's executable path.
+
+    Uses `ps -p PID -o comm=` which returns the binary path on macOS.
+    Returns "" on any failure - the caller treats unknown paths as
+    "not launchd-managed" so we err on the side of NOT killing anything
+    we can't positively identify as an orphan.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True, text=True, timeout=2,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _kill_orphan_sidecars() -> None:
+    """Kill every delfi-sidecar process whose executable path is NOT
+    inside the launchd-managed `.../Library/Daemon/DelfiSidecar.app/...`
+    bundle.
+
+    The launchd-managed daemon (this very binary, when launched via the
+    LaunchAgent) is the ONLY canonical sidecar. Anything else - a
+    Tauri-spawned orphan from the legacy fallback, a manual
+    `python main.py`, a sidecar started under the wrong path - is by
+    definition wrong and gets SIGKILL'd here.
+
+    This runs at every sidecar startup. The flock that follows handles
+    the corner case of two launchd respawns racing (e.g. during install
+    bootout/bootstrap). End state: at most one daemon alive at any time.
+    """
+    import subprocess
+    my_pid = os.getpid()
+    try:
+        my_pgid = os.getpgrp()
+    except Exception:
+        my_pgid = None
+
+    try:
+        out = subprocess.run(
+            ["pgrep", "-x", "delfi-sidecar"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception as exc:
+        print(f"[delfi] orphan-kill pgrep failed: {exc}", flush=True)
+        return
+
+    for tok in out.stdout.split():
+        try:
+            pid = int(tok.strip())
+        except ValueError:
+            continue
+        if pid == my_pid:
+            continue
+        # Skip our own process group (PyInstaller bootloader + child).
+        try:
+            their_pgid = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+        if my_pgid is not None and their_pgid == my_pgid:
+            continue
+        # The discriminator: is this process running from the launchd
+        # path? If yes, leave it alone - the flock that follows will
+        # serialise the race. If no, it's an orphan from the Tauri
+        # fallback or a manual run - kill it.
+        path = _exec_path_of(pid)
+        if _LAUNCHD_PATH_MARKER in path:
+            continue
+        try:
+            import signal as _sig
+            os.kill(pid, _sig.SIGKILL)
+            print(
+                f"[delfi] killed non-launchd-path sidecar pid={pid} "
+                f"path={path!r}",
+                flush=True,
+            )
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def _acquire_singleton_lock() -> Optional[object]:
     """Take an exclusive flock so a second sidecar can't start.
 
@@ -174,8 +288,11 @@ def _acquire_singleton_lock() -> Optional[object]:
     except ImportError:
         return None  # Windows: no fcntl, skip the lock
     try:
-        from db.engine import app_data_dir
-        lock_path = app_data_dir() / "sidecar.lock"
+        # Canonical path INDEPENDENT of DELFI_DB_PATH. Without this,
+        # the launchd daemon (env-DELFI_DB_PATH=com.delfi.desktop/) and
+        # a manual sidecar (no env, fallback to Delfi/) would lock
+        # different inodes, letting two daemons coexist.
+        lock_path = _singleton_lock_path()
     except Exception as exc:
         print(f"[delfi] singleton lock open failed: {exc}", flush=True)
         return None
@@ -191,6 +308,11 @@ def _acquire_singleton_lock() -> Optional[object]:
             print(f"[delfi] singleton lock open failed: {exc}", flush=True)
             return None
 
+        print(
+            f"[delfi] singleton lock attempt path={lock_path} "
+            f"fd={f.fileno()} pid={os.getpid()}",
+            flush=True,
+        )
         try:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -233,6 +355,10 @@ def _acquire_singleton_lock() -> Optional[object]:
 
         # Got the lock. Stamp our PID inside so future launches can
         # tell whether the holder is a legit process or an orphan.
+        print(
+            f"[delfi] singleton lock ACQUIRED pid={os.getpid()}",
+            flush=True,
+        )
         try:
             f.seek(0)
             f.truncate()
@@ -377,9 +503,24 @@ def _seed_env_from_keychain() -> None:
 
 
 async def main() -> None:
-    # Refuse to start if another sidecar is already running. Holds
-    # the lock for the lifetime of this process. Stops orphan
-    # sidecars from contending with a fresh launch on the SQLite DB.
+    # Step 1: kill any delfi-sidecar process whose executable path is
+    # NOT inside the launchd-managed Daemon bundle. The launchd-managed
+    # daemon is the canonical sidecar; anything else is a Tauri orphan,
+    # a manual run, or a leftover from a legacy install. We err on the
+    # side of NOT killing - if we can't read a process's exec path we
+    # leave it alone, and the flock below handles the rest.
+    _kill_orphan_sidecars()
+
+    # Step 2: acquire the flock. Two cases left after step 1:
+    #   - We're a launchd-managed daemon and the flock is free: we get
+    #     it, we run.
+    #   - We're a launchd-managed daemon and another launchd-managed
+    #     daemon is already alive (race during install bootout->bootstrap):
+    #     flock blocks, we exit cleanly via _acquire_singleton_lock().
+    #   - We're a non-launchd sidecar (manual `python main.py`) and the
+    #     launchd daemon is alive: flock blocks, we exit cleanly. The
+    #     manual user has to bootout the LaunchAgent first if they want
+    #     to take over.
     _SINGLETON_LOCK_FD = _acquire_singleton_lock()  # noqa: F841 - keep ref
 
     # Watch the parent (Tauri shell). Exit if it dies, so a Tauri
