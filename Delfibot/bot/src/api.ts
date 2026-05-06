@@ -90,6 +90,34 @@ async function refreshPort(): Promise<boolean> {
   return false;
 }
 
+/**
+ * User-initiated restart of the launchd-supervised daemon, via the
+ * Tauri `restart_sidecar` command (which shells out to
+ * `launchctl kickstart -k gui/<uid>/com.delfi.bot`).
+ *
+ * Why this exists separately from the API-side `api.restart()`:
+ * when the daemon's HTTP loop is wedged, `api.restart()` is
+ * unreachable - the splash screen and the inline timeout banner
+ * have no way to call it. This goes through Tauri IPC instead, so
+ * the user can recover even when the API is fully down.
+ *
+ * macOS-only. On other platforms the Rust command returns an
+ * error string that the caller surfaces to the UI. Outside of
+ * Tauri (e.g. vite dev in a browser) this throws.
+ */
+export async function tauriRestartSidecar(): Promise<void> {
+  if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
+    throw new Error(
+      "Restart is only available inside the desktop app.",
+    );
+  }
+  // Clear cached port too: a successful restart picks a fresh
+  // random port, and the old cache would point at a dead one.
+  cachedPort = null;
+  portPromise = null;
+  await invoke("restart_sidecar");
+}
+
 /** True if `err.message` looks like a daemon-not-reachable error
  *  rather than an application-level error. The page-level error
  *  banners use this to suppress the global connection error and let

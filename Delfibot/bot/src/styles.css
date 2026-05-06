@@ -2188,6 +2188,12 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   line-height: 1.6;
   letter-spacing: 0.04em;
 }
+.boot-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 18px;
+  align-items: center;
+}
 .boot-progress {
   width: 200px; height: 1px;
   background: var(--vellum-10);

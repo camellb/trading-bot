@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { api, AutostartStatus, BotState, Credentials, isConnectionError } from "./api";
+import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
@@ -271,12 +271,73 @@ function ConnectionBanner({
       </div>
     );
   }
+  // Connection-class error: offer Restart inline. The user can't open
+  // Settings while the API is wedged, so the only recovery path UX-
+  // wise needs to live right here on the banner.
+  if (isConn) {
+    return <ConnErrorBannerWithRestart error={error} />;
+  }
   return <div className="error">{error}</div>;
+}
+
+function ConnErrorBannerWithRestart({ error }: { error: string }) {
+  const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const onRestart = async () => {
+    setRestarting(true);
+    setRestartError(null);
+    try {
+      await tauriRestartSidecar();
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (e) {
+      setRestartError(e instanceof Error ? e.message : String(e));
+      setRestarting(false);
+    }
+  };
+  return (
+    <div
+      className="error"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        flexWrap: "wrap",
+      }}
+    >
+      <span style={{ flex: 1 }}>
+        {restartError ? `${error} Restart failed: ${restartError}` : error}
+      </span>
+      <button
+        type="button"
+        className="btn small"
+        onClick={onRestart}
+        disabled={restarting}
+      >
+        {restarting ? "Restarting..." : "Restart Delfi"}
+      </button>
+    </div>
+  );
 }
 
 // ── Boot screen ────────────────────────────────────────────────────────
 
 function BootScreen({ error }: { error: string | null }) {
+  const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const onRestart = async () => {
+    setRestarting(true);
+    setRestartError(null);
+    try {
+      await tauriRestartSidecar();
+      // Force the app back into "Launching..." state. Reload picks
+      // up the fresh sidecar.port that the respawned daemon writes
+      // and the GUI re-runs its boot probe with no stale cache.
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (e) {
+      setRestartError(e instanceof Error ? e.message : String(e));
+      setRestarting(false);
+    }
+  };
   return (
     <div className="boot">
       <img src="/brand/mark.svg" alt="" className="boot-mark" />
@@ -285,7 +346,32 @@ function BootScreen({ error }: { error: string | null }) {
         {error ? "Delfi could not start" : "Launching..."}
       </p>
       {error ? (
-        <p className="boot-detail">{error}</p>
+        <>
+          <p className="boot-detail">{error}</p>
+          <div className="boot-actions">
+            <button
+              type="button"
+              className="btn small"
+              onClick={onRestart}
+              disabled={restarting}
+            >
+              {restarting ? "Restarting..." : "Restart Delfi"}
+            </button>
+            <a
+              className="btn ghost small"
+              href={`mailto:info@delfibot.com?subject=${encodeURIComponent(
+                "Delfi will not start",
+              )}&body=${encodeURIComponent(`Error: ${error}`)}`}
+            >
+              Email support
+            </a>
+          </div>
+          {restartError && (
+            <p className="boot-detail" style={{ color: "var(--danger, #d33)" }}>
+              Restart failed: {restartError}
+            </p>
+          )}
+        </>
       ) : (
         <>
           <p className="boot-detail">This may take up to 30 seconds</p>

@@ -68,6 +68,67 @@ fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
     }
 }
 
+/// User-initiated restart of the launchd-supervised daemon.
+///
+/// Why this exists separate from /api/system/restart: when the
+/// daemon's HTTP loop is wedged, /api/system/restart is unreachable
+/// - the React shell can't even open Settings to find the button.
+/// The "Delfi could not start" splash and the inline "/api/X timed
+/// out" banner both expose this command instead, so a paying user
+/// with no terminal access can recover from a wedge in one click.
+///
+/// macOS-only. Runs `launchctl kickstart -k gui/<uid>/com.delfi.bot`,
+/// which sends SIGTERM to the running daemon (if any) and starts a
+/// fresh one. The LaunchAgent's KeepAlive + RunAtLoad take it from
+/// there. UID is resolved via `id -u` through the shell plugin so
+/// we don't need a libc dep. On non-macOS platforms returns an
+/// error string the UI renders; we don't have a Windows / Linux
+/// daemon supervisor wired up yet.
+#[tauri::command]
+async fn restart_sidecar(_app: tauri::AppHandle) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err(
+            "Restart from the GUI is currently macOS-only. \
+             On other platforms, quit and re-launch Delfi manually."
+                .into(),
+        );
+    }
+    // Use std::process::Command (not the Tauri shell plugin) so we
+    // don't have to widen capabilities/default.json's shell-execute
+    // allowlist beyond the sidecar binary. Wrapped in spawn_blocking
+    // because std::process::Command::output() is synchronous and we
+    // shouldn't block the Tauri runtime.
+    async_runtime::spawn_blocking(|| {
+        use std::process::Command;
+        let uid_out = Command::new("/usr/bin/id")
+            .arg("-u")
+            .output()
+            .map_err(|e| format!("failed to invoke id: {e}"))?;
+        if !uid_out.status.success() {
+            return Err("id -u returned non-zero".into());
+        }
+        let uid = String::from_utf8_lossy(&uid_out.stdout).trim().to_string();
+        if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+            return Err(format!("unexpected uid from id -u: {uid:?}"));
+        }
+        let service = format!("gui/{uid}/com.delfi.bot");
+        let out = Command::new("/bin/launchctl")
+            .args(["kickstart", "-k", &service])
+            .output()
+            .map_err(|e| format!("failed to invoke launchctl: {e}"))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            return Err(format!(
+                "launchctl kickstart returned non-zero: {}",
+                stderr.trim()
+            ));
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("restart task panicked: {e}"))?
+}
+
 /// Re-resolve the daemon's listening port and update ApiState.
 ///
 /// Why this exists: each daemon respawn picks a fresh random port
@@ -249,7 +310,11 @@ fn main() {
             port: Mutex::new(None),
             child: Mutex::new(None),
         })
-        .invoke_handler(tauri::generate_handler![get_api_port, refresh_api_port])
+        .invoke_handler(tauri::generate_handler![
+            get_api_port,
+            refresh_api_port,
+            restart_sidecar,
+        ])
         .setup(|app| {
             // Two paths to a running sidecar:
             //
