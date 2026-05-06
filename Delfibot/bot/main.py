@@ -393,8 +393,18 @@ async def main() -> None:
 
     from concurrent.futures import ThreadPoolExecutor
     loop = asyncio.get_running_loop()
+    # 100 workers, not 20: the GUI loads 20+ panels simultaneously on
+    # mount and each panel hits at least one /api endpoint that goes
+    # through `_offload(...)`. With only 20 workers and a single slow
+    # call, the pool saturates, queued handlers block, the client
+    # gives up at its 30s ceiling, and we drown in CLOSE_WAIT
+    # leaks. 100 workers is generous - sync work is short in steady
+    # state (file reads, SQLite reads), and the threads are cheap
+    # (~16KB stack each). Verified 2026-05-06: a 27-request burst
+    # against the 20-worker pool wedged the daemon; the same burst
+    # at 100 workers absorbs cleanly.
     loop.set_default_executor(ThreadPoolExecutor(
-        max_workers=20, thread_name_prefix="delfi"))
+        max_workers=100, thread_name_prefix="delfi"))
 
     # Arm the loop-wedge watchdog as soon as the loop is alive. If the
     # asyncio loop ever stops pumping for >120s (the 5-hour wedge of

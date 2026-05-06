@@ -471,7 +471,7 @@ class LocalAPI:
     # ── Middleware ──────────────────────────────────────────────────────────
     @web.middleware
     async def _timeout_middleware(self, request, handler):
-        """Hard 30s ceiling on every handler.
+        """Hard 25s ceiling on every handler.
 
         Without this, a handler that awaits forever (executor task
         that never returns, pending future that never resolves)
@@ -481,21 +481,29 @@ class LocalAPI:
         asyncio task. Six of those is enough to wedge accept() in
         practice (CLOSE_WAIT seen 2026-05-06 incident).
 
-        30s is generous: even worst-case Lemon Squeezy license
-        round-trips fit in 10s. Anything past 30s is a bug.
+        25s is deliberately under the React fetch wrapper's 30s
+        ceiling (src/api.ts). The client and server racing the same
+        deadline means the client almost always wins (network
+        latency loss), the client sends FIN, and the server has no
+        chance to write a 504 - same CLOSE_WAIT leak in a different
+        outfit. Five seconds of cushion lets the server's 504 reach
+        the client before its abort fires.
+
+        Even worst-case Lemon Squeezy license round-trips fit in
+        10s. Anything past 25s is a bug.
         """
         try:
-            return await asyncio.wait_for(handler(request), timeout=30.0)
+            return await asyncio.wait_for(handler(request), timeout=25.0)
         except asyncio.TimeoutError:
             import sys as _sys
             print(
                 f"[handler-timeout] {request.method} {request.path} "
-                "exceeded 30s and was aborted. Likely a stuck executor "
+                "exceeded 25s and was aborted. Likely a stuck executor "
                 "task or a pending future that never resolved.",
                 file=_sys.stderr, flush=True,
             )
             return _err(
-                f"{request.path} took longer than 30s on the server. "
+                f"{request.path} took longer than 25s on the server. "
                 "Try again; if it persists, restart Delfi from Settings.",
                 504,
             )
