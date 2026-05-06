@@ -36,7 +36,12 @@ html, body { scroll-behavior: smooth; }
   background: transparent; border-bottom: 1px solid transparent;
 }
 .top-nav.scrolled {
-  background: rgba(10,10,15,0.85); backdrop-filter: blur(12px);
+  /* Was rgba(10,10,15,0.85). The 15% transparency let content
+     scroll-through visibly behind the nav on mobile, most painfully
+     against the AS SEEN IN marquee strip whose names appeared to
+     bleed into the nav as they scrolled past. Bumped to 0.96 so
+     content disappears cleanly under the nav. */
+  background: rgba(10,10,15,0.96); backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px); border-bottom-color: var(--vellum-10);
 }
 /* CTA in nav: always visible on desktop. On mobile/tablet it's hidden
@@ -955,24 +960,33 @@ html, body { scroll-behavior: smooth; }
   .hero-ctas .btn-ghost { width: 100%; justify-content: center; }
   .hero-note { font-size: 11.5px; margin-top: 22px; }
   .hero-press { margin-top: 48px; padding-top: 24px; gap: 16px; }
-  .hero-press-item { font-size: 12px; letter-spacing: 0.04em; }
-  /* Mobile: the row is too narrow to fit all six names statically,
-     so re-enable the marquee + edge mask + duplicate copy here. */
+  .hero-press-item { font-size: 11px; letter-spacing: 0.06em; }
+  /* Mobile: the marquee was cutting names mid-word ("RUNCH",
+     "DECRYP") because the mask only fades the outer 12% but the
+     visible 76% would still chop items at any animation frame. Drop
+     the marquee entirely on mobile. Show only the first three
+     names statically; the duplicate-copy items already aria-hidden
+     are kept hidden. The press strip's role is brand association,
+     not a complete list - three logos communicate the same thing
+     without the broken animation. */
   .hero-press-row {
-    mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+    mask-image: none;
+    -webkit-mask-image: none;
   }
   .hero-press-track {
-    gap: 28px;
-    width: max-content;
-    justify-content: flex-start;
-    animation: press-marquee 24s linear infinite;
+    gap: clamp(14px, 4vw, 24px);
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: space-around;
+    animation: none;
   }
+  /* Show only the first three press names on mobile (Bloomberg,
+     TechCrunch, CoinDesk). The remaining items - both the rest of
+     the primary copy and the entire aria-hidden duplicate - stay
+     hidden. */
+  .hero-press-track > .hero-press-item:nth-child(n+4):not([aria-hidden="true"]),
   .hero-press-track > [aria-hidden="true"] {
-    display: inline;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .hero-press-track { animation: none; }
+    display: none;
   }
   .hero-scroll { display: none; }
 
@@ -1337,6 +1351,14 @@ html, body { scroll-behavior: smooth; }
   flex-shrink: 0;
 }
 .cookie-banner-btn {
+  /* iOS Safari + Android Chrome apply native UA button styling by
+     default - rounded corners, system font, oversized hit-area
+     padding. Resetting `appearance` makes our padding / radius /
+     font actually win on mobile. Without this the buttons render
+     ~50% larger than designed on iOS, making the banner eat a
+     huge chunk of viewport. */
+  appearance: none;
+  -webkit-appearance: none;
   font-family: var(--font-body);
   font-size: 12px;
   font-weight: 500;
@@ -1344,6 +1366,7 @@ html, body { scroll-behavior: smooth; }
   text-transform: uppercase;
   padding: 10px 22px;
   border-radius: 4px;
+  line-height: 1.2;
   cursor: pointer;
   transition: background var(--dur-base) var(--ease), border-color var(--dur-base) var(--ease), color var(--dur-base) var(--ease);
 }

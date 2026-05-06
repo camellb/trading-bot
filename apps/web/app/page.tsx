@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import QuantumNetworkSection from "./components/QuantumNetworkSection";
 import "./styles/homepage.css";
 
 // Checkout destination. Default is the embedded checkout at
@@ -969,13 +968,11 @@ export default function HomePage() {
     <>
       <TopNav />
       <Hero />
-      <QuantumNetworkSection variant="hero-to-ribbon" />
       <Ribbon />
       <Problem />
       <Solution />
       <Pillars />
       <Versus />
-      <QuantumNetworkSection variant="versus-to-proof" />
       <Proof />
       <CustodyPromise />
       <Simulation />
