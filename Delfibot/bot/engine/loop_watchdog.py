@@ -95,6 +95,10 @@ class LoopHeartbeat:
         early_warning_s: float = 30.0,
         max_silence_s: float = 120.0,
         check_interval_s: float = 5.0,
+        api_port_getter=None,
+        self_probe_interval_s: float = 30.0,
+        self_probe_timeout_s: float = 5.0,
+        self_probe_max_failures: int = 3,
     ) -> None:
         self._loop = loop
         self._heartbeat_interval_s = heartbeat_interval_s
@@ -107,6 +111,21 @@ class LoopHeartbeat:
         self._warned_for_period = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # Self-probe: detects the "loop alive but accept stopped"
+        # wedge. The asyncio loop can be in selectors.select (idle,
+        # heartbeat happily firing) while aiohttp's listener has
+        # stalled - new TCP connects time out, GUI sees "Delfi could
+        # not start". The heartbeat alone misses this because the
+        # loop IS pumping. The self-probe makes an actual HTTP
+        # request to /api/health from the watchdog thread (NOT the
+        # asyncio loop). After self_probe_max_failures consecutive
+        # timeouts, we SIGKILL self and let launchd respawn.
+        self._api_port_getter = api_port_getter
+        self._self_probe_interval_s = self_probe_interval_s
+        self._self_probe_timeout_s = self_probe_timeout_s
+        self._self_probe_max_failures = self_probe_max_failures
+        self._self_probe_failures = 0
+        self._self_probe_last_attempt = time.monotonic()
 
     def silence_seconds(self) -> float:
         """How long since the last loop pump (in seconds).
@@ -130,11 +149,62 @@ class LoopHeartbeat:
             time.sleep(self._check_interval_s)
             silence = time.monotonic() - self._last_pump
             if silence > self._max_silence_s:
-                self._abort(silence)
+                self._abort(silence, reason="loop silent")
                 return
             if silence > self._early_warning_s and not self._warned_for_period:
                 self._warn(silence)
                 self._warned_for_period = True
+            # Self-probe: catches the "loop alive but accept stopped"
+            # wedge that the heartbeat alone misses.
+            now = time.monotonic()
+            if (self._api_port_getter is not None
+                    and now - self._self_probe_last_attempt
+                        >= self._self_probe_interval_s):
+                self._self_probe_last_attempt = now
+                ok = self._self_probe()
+                print(
+                    f"[watchdog] self-probe ok={ok} "
+                    f"port={self._api_port_getter()} "
+                    f"failures={self._self_probe_failures}",
+                    file=sys.stderr, flush=True,
+                )
+                if ok:
+                    self._self_probe_failures = 0
+                else:
+                    self._self_probe_failures += 1
+                    if self._self_probe_failures >= self._self_probe_max_failures:
+                        self._abort(
+                            silence,
+                            reason=(
+                                f"{self._self_probe_failures} consecutive "
+                                "/api/health probe timeouts (listener wedged)"
+                            ),
+                        )
+                        return
+
+    def _self_probe(self) -> bool:
+        """Make an actual HTTP request to /api/health from this thread.
+
+        Uses urllib (sync) so we don't depend on the asyncio loop. The
+        watchdog runs in a regular Python thread, separate from the
+        asyncio loop. If the loop's listener is wedged, this request
+        will time out - that's our signal to SIGKILL self.
+        """
+        try:
+            port = self._api_port_getter() if self._api_port_getter else None
+        except Exception:
+            return False
+        if not port or port <= 0:
+            return False
+        import urllib.request, urllib.error
+        url = f"http://127.0.0.1:{port}/api/health"
+        try:
+            with urllib.request.urlopen(
+                url, timeout=self._self_probe_timeout_s,
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
 
     def _warn(self, silence: float) -> None:
         """Slow-but-not-dead: dump tracebacks WITHOUT killing.
@@ -172,10 +242,10 @@ class LoopHeartbeat:
         except Exception:
             pass
 
-    def _abort(self, silence: float) -> None:
+    def _abort(self, silence: float, reason: str = "loop silent") -> None:
         msg = (
-            f"[watchdog] event loop silent for {silence:.0f}s "
-            f"(threshold {self._max_silence_s:.0f}s). "
+            f"[watchdog] aborting: {reason} "
+            f"(silence={silence:.0f}s, max_silence={self._max_silence_s:.0f}s). "
             "Dumping Python tracebacks then exiting; launchd will respawn."
         )
         try:

@@ -554,7 +554,16 @@ async def main() -> None:
     # respawns within ~10s and the GUI auto-reconnects via the
     # refresh_api_port Tauri command. The handle is forwarded to
     # LocalAPI so /api/health can surface pump latency for monitoring.
-    watchdog = LoopHeartbeat(loop)
+    #
+    # The watchdog also self-probes /api/health every 30s. If three
+    # consecutive probes time out, that's the "loop alive but accept
+    # stopped" wedge - the heartbeat alone misses it. The self-probe
+    # needs the bound port; we publish it via a mutable holder that
+    # the LocalAPI section below populates after binding.
+    _api_port_holder = {"port": 0}
+    watchdog = LoopHeartbeat(
+        loop, api_port_getter=lambda: _api_port_holder["port"],
+    )
     watchdog.start()
 
     bot_start_time = datetime.now(timezone.utc)
@@ -619,6 +628,9 @@ async def main() -> None:
         analyst=analyst, host=api_host, port=api_port, watchdog=watchdog,
     )
     bound_port = await api.start()
+    # Tell the watchdog where to self-probe. Until this is set the
+    # self-probe is a no-op; safe during the cold-start window.
+    _api_port_holder["port"] = bound_port
     # Two channels for the Tauri shell to find us:
     #   1. stdout line - works in dev mode where Tauri spawns us
     #      directly and reads our stdout via piped CommandEvent.
