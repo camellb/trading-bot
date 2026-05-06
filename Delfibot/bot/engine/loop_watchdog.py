@@ -47,6 +47,38 @@ import threading
 import time
 
 
+def _dump_asyncio_tasks() -> None:
+    """Print every pending asyncio task's traceback to stderr.
+
+    Runs on the asyncio loop thread (call_soon_threadsafe schedules
+    it). faulthandler can only walk thread frames; pending tasks
+    aren't thread-attached. This fills the gap.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        return
+    try:
+        tasks = list(asyncio.all_tasks(loop))
+    except Exception:
+        return
+    print(
+        f"[watchdog] {len(tasks)} pending asyncio tasks at warning time:",
+        file=sys.stderr, flush=True,
+    )
+    for i, t in enumerate(tasks, 1):
+        try:
+            coro_name = getattr(t.get_coro(), "__qualname__", "?")
+            print(
+                f"  [task {i}/{len(tasks)}] {coro_name} done={t.done()}",
+                file=sys.stderr, flush=True,
+            )
+            t.print_stack(file=sys.stderr)
+        except Exception as exc:
+            print(f"  [task {i}] dump failed: {exc!r}",
+                  file=sys.stderr, flush=True)
+
+
 class LoopHeartbeat:
     """Detects asyncio event-loop wedges and SIGKILL's the process.
 
@@ -111,7 +143,16 @@ class LoopHeartbeat:
         30s silence we capture the live frame of whatever sync code is
         blocking the loop while the daemon is still alive and the user
         can recover. If the silence keeps growing past max_silence_s,
-        _abort takes over."""
+        _abort takes over.
+
+        Also schedules a dump of every pending asyncio task on the
+        loop. faulthandler only sees thread frames, but asyncio
+        handlers all share the main thread and are invisible to it.
+        If the wedge is "loop alive in selectors.select but listener
+        stopped accepting" (CLOSE_WAIT leak pattern observed
+        2026-05-06), the task dump is what tells us which await is
+        stuck.
+        """
         try:
             print(
                 f"[watchdog] event loop silent for {silence:.0f}s "
@@ -120,6 +161,14 @@ class LoopHeartbeat:
                 file=sys.stderr, flush=True,
             )
             faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        except Exception:
+            pass
+        # Schedule a task dump on the loop. If the loop is fully
+        # wedged this never fires; that's fine - the thread dump
+        # already captured the wedge frame. If the loop is just slow
+        # the call eventually runs and dumps every awaiting handler.
+        try:
+            self._loop.call_soon_threadsafe(_dump_asyncio_tasks)
         except Exception:
             pass
 

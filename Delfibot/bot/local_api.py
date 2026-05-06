@@ -312,7 +312,10 @@ class LocalAPI:
 
     async def start(self) -> int:
         """Bind the socket and start serving. Returns the actual bound port."""
-        self._app = web.Application(middlewares=[self._slow_handler_middleware])
+        self._app = web.Application(middlewares=[
+            self._timeout_middleware,
+            self._slow_handler_middleware,
+        ])
         self._wire_routes(self._app)
 
         self._runner = web.AppRunner(self._app)
@@ -467,6 +470,37 @@ class LocalAPI:
 
     # ── Middleware ──────────────────────────────────────────────────────────
     @web.middleware
+    async def _timeout_middleware(self, request, handler):
+        """Hard 30s ceiling on every handler.
+
+        Without this, a handler that awaits forever (executor task
+        that never returns, pending future that never resolves)
+        leaks the connection: the GUI gives up, sends FIN, but the
+        daemon never calls close() because the handler is still
+        running. Each leak holds a fd + an executor worker + an
+        asyncio task. Six of those is enough to wedge accept() in
+        practice (CLOSE_WAIT seen 2026-05-06 incident).
+
+        30s is generous: even worst-case Lemon Squeezy license
+        round-trips fit in 10s. Anything past 30s is a bug.
+        """
+        try:
+            return await asyncio.wait_for(handler(request), timeout=30.0)
+        except asyncio.TimeoutError:
+            import sys as _sys
+            print(
+                f"[handler-timeout] {request.method} {request.path} "
+                "exceeded 30s and was aborted. Likely a stuck executor "
+                "task or a pending future that never resolved.",
+                file=_sys.stderr, flush=True,
+            )
+            return _err(
+                f"{request.path} took longer than 30s on the server. "
+                "Try again; if it persists, restart Delfi from Settings.",
+                504,
+            )
+
+    @web.middleware
     async def _slow_handler_middleware(self, request, handler):
         """Per-request stopwatch.
 
@@ -508,6 +542,14 @@ class LocalAPI:
                 )
             except Exception:
                 pass
+        # Open file descriptors. CLOSE_WAIT leaks (handler tasks that
+        # never returned) show up here as a steady climb. Healthy
+        # baseline is ~150-200 on macOS; >500 means a leak in flight.
+        try:
+            import os as _os
+            snap["open_fd_count"] = len(_os.listdir("/dev/fd"))
+        except Exception:
+            pass
         return _ok(snap)
 
     async def _state(self, _req: web.Request) -> web.Response:
