@@ -5,10 +5,19 @@ import Link from "next/link";
 
 // First-visit cookie consent banner.
 //
-// Shows at bottom of viewport when no consent has been recorded.
-// Two choices: "Accept" (full analytics) or "Reject" (no
-// non-essential cookies). Choice persists in localStorage; banner
+// Shows at bottom of viewport ONLY when:
+//   1. The visitor is in a jurisdiction that requires consent for
+//      non-essential cookies (EU/EEA/UK/CH; the `consentRequired`
+//      prop is computed server-side in app/layout.tsx from the
+//      Vercel edge geo header).
+//   2. AND no choice has been recorded yet.
+//
+// Visitors outside the consent-required set see no banner; the
+// matching ConsentGate auto-mounts analytics for them. The banner
 // stays hidden on subsequent visits unless the user clears storage.
+//
+// Two choices: "Accept" (full analytics) or "Reject" (no
+// non-essential cookies). Choice persists in localStorage.
 //
 // Pairs with <ConsentGate> which actually gates the Analytics +
 // SpeedInsights components on the consent value. The banner only
@@ -49,7 +58,14 @@ export function clearConsent(): void {
   }
 }
 
-export function CookieBanner() {
+export function CookieBanner({
+  consentRequired,
+}: {
+  /** Server-rendered geo decision: true if the visitor is in a
+   *  jurisdiction that requires explicit consent (EU/EEA/UK/CH).
+   *  False short-circuits the banner entirely. */
+  consentRequired: boolean;
+}) {
   // `"loading"` until the first effect runs, so we don't flash the
   // banner during hydration on a returning visitor (the server can't
   // see localStorage).
@@ -58,6 +74,11 @@ export function CookieBanner() {
   );
 
   useEffect(() => {
+    // Skip wiring storage listeners for visitors who never see the
+    // banner. The choice can still be set later (e.g. from the
+    // cookies policy page) but cross-tab sync isn't needed when the
+    // banner can't render.
+    if (!consentRequired) return;
     setConsent(readConsent());
     // Cross-tab sync: banner reappears in this tab if consent is
     // cleared elsewhere (e.g. the cookies policy page in another
@@ -74,8 +95,10 @@ export function CookieBanner() {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("delfi:consent-changed", onLocal);
     };
-  }, []);
+  }, [consentRequired]);
 
+  // Geo says consent isn't required: never render the banner.
+  if (!consentRequired) return null;
   // Hide while resolving + once a choice has been made.
   if (consent === "loading" || consent !== null) return null;
 

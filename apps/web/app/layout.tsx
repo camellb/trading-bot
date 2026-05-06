@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { ConsentGate } from "./components/ConsentGate";
 import { CookieBanner } from "./components/CookieBanner";
+import { consentRequiredForCountry } from "@/lib/regions";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,11 +17,18 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // Vercel sets `x-vercel-ip-country` (ISO 3166-1 alpha-2) at the
+  // edge. When absent (local dev, custom proxies) we treat the
+  // visitor as in scope for consent so the banner still appears.
+  const h = await headers();
+  const country = h.get("x-vercel-ip-country");
+  const consentRequired = consentRequiredForCountry(country);
+
   return (
     <html lang="en">
       <head>
@@ -36,8 +45,8 @@ export default function RootLayout({
       </head>
       <body>
         {children}
-        <CookieBanner />
-        <ConsentGate />
+        <CookieBanner consentRequired={consentRequired} />
+        <ConsentGate consentRequired={consentRequired} />
       </body>
     </html>
   );
