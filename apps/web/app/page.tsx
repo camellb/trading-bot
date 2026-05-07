@@ -222,7 +222,7 @@ function Hero() {
           The future is <br />no longer <span className="hero-accent">a guess</span>
         </h1>
         <p className="hero-sub">
-          The first autonomous and self-improving Polymarket bot<br />that trades for you 24/7.
+          Self-improving autonomous Polymarket bot<br />that trades for you 24/7.
         </p>
         <div className="hero-ctas">
           <CtaLink className="btn-primary" location="hero" text="Try It Today">Try It Today</CtaLink>
@@ -877,7 +877,7 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">$249 once. All future updates included.</p>
-        <CtaLink className="btn-primary large" location="final" text="Get Delfi">Get Delfi</CtaLink>
+        <CtaLink className="btn-primary large" location="final" text="Try Delfi today">Try Delfi today</CtaLink>
       </div>
     </section>
   );
@@ -894,7 +894,7 @@ function Footer() {
               <img src="/brand/mark.svg" alt="" className="wordmark-mark" />
               <span className="wordmark-text">DELFI</span>
             </Link>
-            <p className="foot-tag">Autonomous Polymarket trader. Runs on your machine. Your keys never leave.</p>
+            <p className="foot-tag">Self-improving autonomous Polymarket bot that trades for you 24/7.</p>
             <span className="foot-contact">info@delfibot.com</span>
           </div>
           <div className="foot-meta">
