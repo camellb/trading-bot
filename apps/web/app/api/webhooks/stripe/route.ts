@@ -59,6 +59,7 @@ import {
   DELFI_SKU_PERSONAL_V1,
 } from "@/lib/license";
 import { sendLicenseEmail } from "@/lib/email/license-issued";
+import { createInvoiceForPurchase, recordRefund } from "@/lib/zoho";
 
 export const runtime = "nodejs"; // crypto + pg need Node, not edge
 
@@ -274,6 +275,51 @@ export async function POST(request: Request): Promise<NextResponse> {
             email,
             sku: DELFI_SKU_PERSONAL_V1,
           });
+
+          // Mirror the sale into Zoho Books. NEVER throws out of
+          // here: a Zoho outage must not block the webhook (which
+          // would make Stripe retry the entire event and risk
+          // re-emailing the buyer). If this fails, the license is
+          // already issued and emailed; we just log loudly so the
+          // operator can backfill the invoice manually.
+          try {
+            const piId =
+              typeof session.payment_intent === "string"
+                ? session.payment_intent
+                : session.payment_intent?.id ?? "";
+            const amountMajor =
+              session.amount_total != null
+                ? session.amount_total / 100
+                : 0;
+            if (piId && amountMajor > 0 && session.currency) {
+              const { invoiceId } = await createInvoiceForPurchase({
+                email,
+                amount:           amountMajor,
+                currency:         session.currency.toUpperCase(),
+                sessionId:        session.id,
+                paymentIntentId:  piId,
+              });
+              console.log("[stripe-webhook] zoho invoice recorded", {
+                invoiceId,
+                sessionId: session.id,
+              });
+            } else {
+              console.warn(
+                "[stripe-webhook] skip zoho: missing fields",
+                {
+                  hasPi:       Boolean(piId),
+                  amountMajor,
+                  currency:    session.currency,
+                },
+              );
+            }
+          } catch (e) {
+            console.error("[stripe-webhook] zoho invoice failed", {
+              sessionId: session.id,
+              email,
+              err: e instanceof Error ? e.message : String(e),
+            });
+          }
         } else {
           console.log("[stripe-webhook] duplicate session; skip email", {
             licenseId: license.id,
@@ -300,6 +346,34 @@ export async function POST(request: Request): Promise<NextResponse> {
           paymentIntentId: piId,
           rowsAffected: n,
         });
+
+        // Record the refund in Zoho Books as a Credit Note against
+        // the original invoice. Same isolation as the purchase path:
+        // log-and-continue, never throw.
+        try {
+          const refundMajor =
+            charge.amount_refunded != null
+              ? charge.amount_refunded / 100
+              : 0;
+          if (refundMajor > 0 && charge.currency) {
+            const result = await recordRefund({
+              paymentIntentId: piId,
+              amount:          refundMajor,
+              currency:        charge.currency.toUpperCase(),
+            });
+            if (result) {
+              console.log("[stripe-webhook] zoho credit note recorded", {
+                creditNoteId:    result.creditNoteId,
+                paymentIntentId: piId,
+              });
+            }
+          }
+        } catch (e) {
+          console.error("[stripe-webhook] zoho refund failed", {
+            paymentIntentId: piId,
+            err: e instanceof Error ? e.message : String(e),
+          });
+        }
         break;
       }
 
