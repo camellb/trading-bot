@@ -1477,27 +1477,26 @@ class LocalAPI:
     async def _reset_simulation(self, _req: web.Request) -> web.Response:
         """Wipe simulation-mode positions so the user can start a fresh sim.
 
-        Live positions are untouched - the SQL is mode-scoped. This is
-        the local equivalent of the SaaS "reset simulation" button.
-        Settled simulation positions get hard-deleted (along with their
-        cascading evaluation/markout rows we joined in to keep stats
-        clean).
+        Live positions are untouched - the SQL is mode-scoped. Shared
+        research artifacts (market_evaluations, markouts, news,
+        sentiment, macro) are also untouched: an evaluation cost a
+        real Anthropic call and the forecast it produced doesn't
+        change based on whether you'd play it with paper or USDC.
+        Reset is for the sandbox's money ledger only; the bot's
+        accumulated knowledge about markets stays.
+
+        Earlier behaviour also issued `DELETE FROM markouts WHERE
+        evaluation_id IN (every-evaluation-by-this-user)`, which was
+        wrong twice over: it wasn't mode-scoped (it wiped markouts
+        attached to live positions too) and it conflicted with the
+        "user can only clear simulation, never live" rule.
         """
         def _do_reset():
             engine = get_engine()
             with engine.begin() as conn:
-                # Open simulation positions: cancel them so the new run
-                # starts cleanly. Settled simulation positions: drop them
-                # so the simulation Brier / ROI restarts from zero.
                 conn.execute(text(
                     "DELETE FROM pm_positions WHERE mode = 'simulation' "
                     "  AND user_id = :uid"
-                ), {"uid": DEFAULT_USER_ID})
-                conn.execute(text(
-                    "DELETE FROM markouts WHERE evaluation_id IN ("
-                    "  SELECT id FROM market_evaluations "
-                    "  WHERE user_id = :uid"
-                    ")"
                 ), {"uid": DEFAULT_USER_ID})
         try:
             await self._offload(_do_reset)
