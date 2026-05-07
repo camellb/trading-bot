@@ -1676,6 +1676,15 @@ class LocalAPI:
         sidecar.port; the GUI's request retry logic picks it up
         without the user having to do anything.
 
+        Self-restart is a deadlock trap: `launchctl kickstart -k`
+        blocks until the killed process exits, and we ARE that
+        process, blocked inside subprocess.run waiting for launchctl
+        to return. A 5s timeout used to fire before either side
+        moved, so the restart never happened. The fix detaches
+        launchctl into a background shell with a brief pre-sleep,
+        which gives us time to send this HTTP response before
+        launchd SIGTERMs us.
+
         macOS-only for now. On Windows we'd need to terminate the
         process and rely on the user's manually-launched fallback,
         or wire a Windows Service equivalent.
@@ -1687,16 +1696,40 @@ class LocalAPI:
             return _err("Restart is currently macOS-only.", 400)
 
         _, service_id = self._autostart_paths()
+
+        # Probe the LaunchAgent before scheduling the kill. If the
+        # service isn't bootstrapped, launchctl kickstart will silently
+        # do nothing and the daemon will never come back, leaving the
+        # user with a dead app.
         try:
-            r = subprocess.run(
-                ["launchctl", "kickstart", "-k", service_id],
-                capture_output=True, timeout=5,
+            probe = subprocess.run(
+                ["launchctl", "print", service_id],
+                capture_output=True, timeout=3,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            return _err(f"restart failed: {exc}", 500)
-        if r.returncode != 0:
-            err_text = (r.stderr or b"").decode("utf-8", "replace").strip()
-            return _err(f"launchctl kickstart failed: {err_text}", 500)
+            return _err(f"launchctl probe failed: {exc}", 500)
+        if probe.returncode != 0:
+            return _err(
+                "Daemon isn't bootstrapped under launchd. Turn on "
+                "'Start Delfi at login' in Settings, then try again.",
+                400,
+            )
+
+        # Fire-and-forget the kickstart. The 1s sleep buys us enough
+        # runway to finish writing this HTTP response before launchd
+        # SIGTERMs us. start_new_session=True detaches the shell from
+        # our process group so it survives our death.
+        try:
+            subprocess.Popen(
+                ["sh", "-c",
+                 f"sleep 1; exec launchctl kickstart -k {service_id}"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            return _err(f"failed to spawn restart: {exc}", 500)
+
         return _ok({"ok": True, "detail": "Restart signal sent. The daemon "
                     "will be back online in a few seconds."})
 
