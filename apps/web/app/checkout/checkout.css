@@ -357,6 +357,30 @@
   background: rgba(212, 175, 55, 0.05);
 }
 
+/* Terms-acknowledgement line below the Stripe embedded form. Implicit
+   consent: no checkbox, just informs the buyer that placing the order
+   means they agree to our legal pages. Sized small + muted so it
+   doesn't compete with the Stripe Pay button visually. */
+.checkout-terms {
+  font-family: var(--font-body);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--vellum-60);
+  margin: 16px 0 0;
+  text-align: center;
+}
+.checkout-terms a {
+  color: var(--vellum);
+  text-decoration: underline;
+  text-decoration-color: var(--vellum-30, rgba(232, 228, 216, 0.3));
+  text-underline-offset: 2px;
+  transition: color var(--dur-base) var(--ease);
+}
+.checkout-terms a:hover {
+  color: var(--gold);
+  text-decoration-color: var(--gold);
+}
+
 /* Download buttons block on the post-purchase /checkout/return page.
    Two buttons (macOS / Windows) sit side by side on desktop, stack
    vertically on mobile (handled by the existing 480px breakpoint

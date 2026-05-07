@@ -209,6 +209,13 @@ export default function CheckoutPage() {
               </EmbeddedCheckoutProvider>
             )}
           </div>
+
+          <p className="checkout-terms">
+            By placing this order, you agree to our{" "}
+            <a href="/legal/terms" target="_blank" rel="noopener">Terms</a>,{" "}
+            <a href="/legal/privacy" target="_blank" rel="noopener">Privacy Policy</a>, and{" "}
+            <a href="/legal/risk" target="_blank" rel="noopener">Risk Notice</a>.
+          </p>
         </section>
       </div>
     </main>
