@@ -60,6 +60,15 @@ import {
 } from "@/lib/license";
 import { sendLicenseEmail } from "@/lib/email/license-issued";
 import { createInvoiceForPurchase, recordRefund } from "@/lib/zoho";
+import {
+  markPurchaseSynced,
+  markPurchaseFailed,
+  markRefundSynced,
+  markRefundFailed,
+  syncPendingPurchases,
+  syncPendingRefunds,
+} from "@/lib/zoho-sync";
+import { after } from "next/server";
 
 export const runtime = "nodejs"; // crypto + pg need Node, not edge
 
@@ -279,9 +288,10 @@ export async function POST(request: Request): Promise<NextResponse> {
           // Mirror the sale into Zoho Books. NEVER throws out of
           // here: a Zoho outage must not block the webhook (which
           // would make Stripe retry the entire event and risk
-          // re-emailing the buyer). If this fails, the license is
-          // already issued and emailed; we just log loudly so the
-          // operator can backfill the invoice manually.
+          // re-emailing the buyer). On failure we persist the
+          // attempt count + last error on the license row so the
+          // sweep (lib/zoho-sync.ts, fired below via after()) can
+          // retry it later.
           try {
             const piId =
               typeof session.payment_intent === "string"
@@ -299,6 +309,10 @@ export async function POST(request: Request): Promise<NextResponse> {
                 sessionId:        session.id,
                 paymentIntentId:  piId,
               });
+              await markPurchaseSynced({
+                licenseId: license.id,
+                invoiceId,
+              });
               console.log("[stripe-webhook] zoho invoice recorded", {
                 invoiceId,
                 sessionId: session.id,
@@ -314,11 +328,24 @@ export async function POST(request: Request): Promise<NextResponse> {
               );
             }
           } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
             console.error("[stripe-webhook] zoho invoice failed", {
               sessionId: session.id,
               email,
-              err: e instanceof Error ? e.message : String(e),
+              err: msg,
             });
+            // Persist the attempt so the sweep can retry it.
+            try {
+              await markPurchaseFailed({
+                licenseId: license.id,
+                error:     msg,
+              });
+            } catch {
+              // DB write failed too; nothing more we can do here
+              // without taking down the webhook. The license row
+              // has zoho_synced_at=NULL by default so the sweep
+              // will still find it.
+            }
           }
         } else {
           console.log("[stripe-webhook] duplicate session; skip email", {
@@ -349,27 +376,61 @@ export async function POST(request: Request): Promise<NextResponse> {
 
         // Record the refund in Zoho Books as a Credit Note against
         // the original invoice. Same isolation as the purchase path:
-        // log-and-continue, never throw.
+        // log-and-continue, never throw. Sync state is persisted on
+        // the matching license row so the sweep can retry on Zoho
+        // outages.
         try {
           const refundMajor =
             charge.amount_refunded != null
               ? charge.amount_refunded / 100
               : 0;
-          if (refundMajor > 0 && charge.currency) {
-            const result = await recordRefund({
-              paymentIntentId: piId,
-              amount:          refundMajor,
-              currency:        charge.currency.toUpperCase(),
-            });
-            if (result) {
-              console.log("[stripe-webhook] zoho credit note recorded", {
-                creditNoteId:    result.creditNoteId,
+
+          const licenseRow = await db().query<{ id: string }>(
+            `SELECT id FROM licenses WHERE stripe_payment_intent = $1 LIMIT 1`,
+            [piId],
+          );
+          const licenseId = licenseRow.rows[0]?.id;
+
+          if (refundMajor > 0 && charge.currency && licenseId) {
+            try {
+              const result = await recordRefund({
                 paymentIntentId: piId,
+                amount:          refundMajor,
+                currency:        charge.currency.toUpperCase(),
               });
+              if (result) {
+                await markRefundSynced({
+                  licenseId,
+                  creditNoteId: result.creditNoteId,
+                });
+                console.log("[stripe-webhook] zoho credit note recorded", {
+                  creditNoteId:    result.creditNoteId,
+                  paymentIntentId: piId,
+                });
+              } else {
+                // recordRefund returned null: no matching invoice in
+                // Zoho. Mark with a soft error so the sweep retries
+                // (e.g. once the invoice itself has been backfilled).
+                await markRefundFailed({
+                  licenseId,
+                  error: "no matching invoice found in zoho",
+                });
+              }
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              console.error("[stripe-webhook] zoho refund failed", {
+                paymentIntentId: piId,
+                err: msg,
+              });
+              try {
+                await markRefundFailed({ licenseId, error: msg });
+              } catch {
+                // DB write failed too; sweep can still find it.
+              }
             }
           }
         } catch (e) {
-          console.error("[stripe-webhook] zoho refund failed", {
+          console.error("[stripe-webhook] zoho refund outer failed", {
             paymentIntentId: piId,
             err: e instanceof Error ? e.message : String(e),
           });
@@ -449,6 +510,30 @@ export async function POST(request: Request): Promise<NextResponse> {
     // DB or Resend hiccup.
     return NextResponse.json({ error: "handler error" }, { status: 500 });
   }
+
+  // Lazy retry sweep for prior Zoho outages. Runs AFTER the response
+  // is sent to Stripe (Next.js after() API), so this never adds
+  // latency to the webhook response and never causes Stripe retries.
+  // If Zoho was down at the moment of an earlier purchase, the row
+  // is still in licenses with zoho_synced_at=NULL; this sweep
+  // catches it on the next webhook fire.
+  after(async () => {
+    try {
+      const purchases = await syncPendingPurchases(5);
+      const refunds   = await syncPendingRefunds(5);
+      if (purchases.pending > 0 || refunds.pending > 0) {
+        console.log("[stripe-webhook] zoho sweep ran", {
+          purchases,
+          refunds,
+        });
+      }
+    } catch (e) {
+      // Never throw out of after(); function is already done.
+      console.error("[stripe-webhook] zoho sweep failed", {
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
+  });
 
   return NextResponse.json({ ok: true });
 }
