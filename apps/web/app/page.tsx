@@ -225,7 +225,7 @@ function Hero() {
           The first autonomous and self-improving Polymarket bot<br />that trades for you 24/7.
         </p>
         <div className="hero-ctas">
-          <CtaLink className="btn-primary" location="hero" text="Download Delfi">Download Delfi</CtaLink>
+          <CtaLink className="btn-primary" location="hero" text="Try It Today">Try It Today</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
         <HeroPress />
