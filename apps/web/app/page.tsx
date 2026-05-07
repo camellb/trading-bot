@@ -381,12 +381,12 @@ function Versus() {
   const rows: [string, string, string, string, string][] = [
     ["Trades 24/7 automatically", "x", "✓", "✓", "✓"],
     ["Reasoning transparent per trade", "partial", "x", "x", "✓"],
-    ["Probability-based", "✓", "x", "partial", "✓"],
+    ["Probability-based", "partial", "x", "partial", "✓"],
     ["Institutional risk sizing", "x", "partial", "x", "✓"],
     ["Self-calibrating over time", "x", "x", "x", "✓"],
-    ["No coding required", "✓", "x", "✓", "✓"],
-    ["Full control of risk parameters", "✓", "x", "partial", "✓"],
-    ["Works across all market categories", "partial", "x", "partial", "✓"],
+    ["No coding required", "✓", "partial", "✓", "✓"],
+    ["Full control of risk parameters", "✓", "partial", "partial", "✓"],
+    ["Works across all market categories", "partial", "x", "partial", "partial"],
     ["Runs on your machine", "✓", "x", "x", "✓"],
     ["Your private key never leaves", "✓", "x", "x", "✓"],
   ];
