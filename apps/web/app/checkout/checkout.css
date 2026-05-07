@@ -432,6 +432,21 @@
   .checkout-return-title {
     font-size: 28px;
   }
+  .checkout-return-body {
+    font-size: 14px;
+  }
+  /* Download buttons stack full-width on tablets/phones; the
+     "DOWNLOAD FOR MACOS / WINDOWS" labels are wide enough that
+     side-by-side overflows narrow viewports. */
+  .checkout-return-downloads {
+    gap: 10px;
+    flex-direction: column;
+  }
+  .checkout-return-download-btn {
+    width: 100%;
+    padding: 13px 16px;
+    letter-spacing: 0.06em;
+  }
 }
 
 @media (max-width: 480px) {
@@ -440,4 +455,10 @@
     gap: 22px;
   }
   .checkout-summary-list { padding: 18px 0; }
+  .checkout-return-card {
+    padding: 24px 18px;
+    margin: 16px auto;
+  }
+  .checkout-return-title { font-size: 24px; }
+  .checkout-terms { font-size: 11.5px; }
 }
