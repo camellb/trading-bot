@@ -470,10 +470,37 @@
 .tweak-seg button.on { background: var(--gold); color: var(--obsidian); }
 
 /* ─── Responsive ─── */
+
+/* min-width: 0 lets these grid items actually shrink to the viewport
+   instead of expanding to their min-content width on narrow screens. */
+.auth-context,
+.auth-form-panel { min-width: 0; }
+
 @media (max-width: 960px) {
   .auth-shell { grid-template-columns: 1fr; }
   .auth-context { border-right: none; border-bottom: 1px solid var(--vellum-10); padding: 72px 32px 40px; }
   .auth-context-body { margin-top: 40px; }
   .auth-form-panel { padding: 48px 32px 72px; }
   .auth-back { top: 18px; left: 20px; }
+}
+
+/* Phone-tight: drop padding, scale headline down, stack stats. */
+@media (max-width: 480px) {
+  .auth-context { padding: 32px 20px 28px; }
+  .auth-context-body { margin-top: 24px; gap: 28px; }
+  .auth-context-head { font-size: clamp(28px, 7vw, 36px); }
+  .auth-context-sub { font-size: 14px; }
+  .auth-context-stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 18px 0;
+  }
+  .auth-stat { padding-right: 12px; }
+  .auth-stat-num { font-size: 18px; }
+  .auth-context-foot {
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    margin-top: 24px;
+  }
+  .auth-form-panel { padding: 28px 20px 56px; }
 }
