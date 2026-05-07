@@ -118,7 +118,7 @@ function AuthContext({ mode }: { mode: Mode }) {
         </div>
 
         <ul className="auth-context-points">
-          <li><span className="auth-point-dot"></span>Free to start. Works in simulation mode until you&apos;re ready.</li>
+          <li><span className="auth-point-dot"></span>Starts in simulation mode. Switch to Live when the numbers convince you.</li>
           <li><span className="auth-point-dot"></span>Every trade comes with full reasoning.</li>
           <li><span className="auth-point-dot"></span>Connect Telegram and get summaries wherever you are.</li>
         </ul>
@@ -277,7 +277,7 @@ function AuthForm({ mode, setMode, tweaks }: { mode: Mode; setMode: (m: Mode) =>
           </h2>
           <p className="auth-form-sub">
             {isSignup
-              ? "Free to register. No Polymarket account required."
+              ? "No Polymarket account required to register."
               : "Sign in to your Delfi dashboard."}
           </p>
         </div>

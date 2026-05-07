@@ -685,7 +685,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <CtaLink className="sim-cta" location="sim" text="Start free in Simulation">Start free in Simulation →</CtaLink>
+            <CtaLink className="sim-cta" location="sim" text="Start in Simulation">Start in Simulation →</CtaLink>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -776,7 +776,7 @@ function NewHere() {
             <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster</h2>
             <p className="newhere-body">Delfi is an autonomous prediction market trader. It watches Polymarket, follows the market favourite on every tradeable market its forecaster also points at, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. You don&apos;t need to understand order books, calibration, or position sizing. Delfi handles all of it.</p>
             <p className="newhere-body muted">The crowd is right more often than not, but it has blind spots. People bet on what they want to be true, anchor on recent headlines, and ignore base rates. Sharp traders noticed a long time ago. Fourteen of the twenty most profitable Polymarket wallets are bots. Delfi competes on that side of the table, with research, math, and discipline instead of emotion. And it learns from every settled trade. The longer it runs, the sharper its filter gets.</p>
-            <CtaLink className="newhere-cta" location="newhere" text="Try Delfi free">Try Delfi free →</CtaLink>
+            <CtaLink className="newhere-cta" location="newhere" text="Try Delfi today">Try Delfi today →</CtaLink>
           </div>
           <div className="edge-viz">
             <div className="edge-q">Fed cuts rates in December?</div>
