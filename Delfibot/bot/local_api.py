@@ -682,15 +682,28 @@ class LocalAPI:
 
         wrote: list[str] = []
 
+        # Whitespace-only input on any credential field is a no-op:
+        # the previous implementation skipped validation in that case
+        # but still called the keychain setter, which silently
+        # overwrote the stored key with whitespace. The UI already
+        # trims and only includes fields with content, so the only
+        # paths producing whitespace are typos (curl, programmatic
+        # callers, automated tests) and they should not corrupt
+        # stored secrets.
+        def _clean(field: str) -> Optional[str]:
+            v = payload.get(field)
+            if not isinstance(v, str):
+                return None
+            s = v.strip()
+            return s if s else None
+
         # Polymarket private key + wallet address. The DB only stores the
         # wallet (the public 0x address); the private key is keychain-only.
         # Validate locally before persisting so a typo can't end up in
         # the keychain unnoticed.
-        pm_key = payload.get("polymarket_private_key")
-        wallet = payload.get("wallet_address")
-        # Treat empty string as "clear this slot" — only run the
-        # derivation check when the user actually pasted something.
-        if pm_key is not None and pm_key.strip():
+        pm_key = _clean("polymarket_private_key")
+        wallet = _clean("wallet_address")
+        if pm_key is not None:
             err = _validate_polymarket_private_key(pm_key, wallet)
             if err:
                 return _err(err, 400)
@@ -713,14 +726,11 @@ class LocalAPI:
         # `llm_api_key` field and the legacy `anthropic_api_key` field;
         # the keychain entry name itself stays `anthropic_api_key` so
         # existing installs don't lose their stored key.
-        llm = payload.get("llm_api_key")
-        if llm is None:
-            llm = payload.get("anthropic_api_key")
+        llm = _clean("llm_api_key") or _clean("anthropic_api_key")
         if llm is not None:
-            if llm.strip():
-                err = _validate_llm_key_shape(llm, "LLM API key")
-                if err:
-                    return _err(err, 400)
+            err = _validate_llm_key_shape(llm, "LLM API key")
+            if err:
+                return _err(err, 400)
             try:
                 await self._offload(set_anthropic_api_key, llm)
                 wrote.append("llm_api_key")
@@ -728,12 +738,11 @@ class LocalAPI:
                 return _err(f"failed to write llm key: {exc}", 500)
 
         # Optional secondary LLM (failover / hedge against rate limits).
-        llm_backup = payload.get("llm_backup_key")
+        llm_backup = _clean("llm_backup_key")
         if llm_backup is not None:
-            if llm_backup.strip():
-                err = _validate_llm_key_shape(llm_backup, "Backup LLM key")
-                if err:
-                    return _err(err, 400)
+            err = _validate_llm_key_shape(llm_backup, "Backup LLM key")
+            if err:
+                return _err(err, 400)
             try:
                 await self._offload(set_llm_backup_key, llm_backup)
                 wrote.append("llm_backup_key")
@@ -741,12 +750,11 @@ class LocalAPI:
                 return _err(f"failed to write llm backup key: {exc}", 500)
 
         # Optional NewsAPI key (breaking news context).
-        newsapi = payload.get("newsapi_key")
+        newsapi = _clean("newsapi_key")
         if newsapi is not None:
-            if newsapi.strip():
-                err = _validate_llm_key_shape(newsapi, "NewsAPI key")
-                if err:
-                    return _err(err, 400)
+            err = _validate_llm_key_shape(newsapi, "NewsAPI key")
+            if err:
+                return _err(err, 400)
             try:
                 await self._offload(set_newsapi_key, newsapi)
                 wrote.append("newsapi_key")
@@ -754,12 +762,11 @@ class LocalAPI:
                 return _err(f"failed to write newsapi key: {exc}", 500)
 
         # Optional CryptoPanic key (crypto-specific news).
-        cryptopanic = payload.get("cryptopanic_key")
+        cryptopanic = _clean("cryptopanic_key")
         if cryptopanic is not None:
-            if cryptopanic.strip():
-                err = _validate_llm_key_shape(cryptopanic, "CryptoPanic key")
-                if err:
-                    return _err(err, 400)
+            err = _validate_llm_key_shape(cryptopanic, "CryptoPanic key")
+            if err:
+                return _err(err, 400)
             try:
                 await self._offload(set_cryptopanic_key, cryptopanic)
                 wrote.append("cryptopanic_key")
