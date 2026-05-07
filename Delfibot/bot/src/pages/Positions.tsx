@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, isConnectionError, MarketEvaluation, PMPosition } from "../api";
+import { api, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
 import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
@@ -129,6 +129,12 @@ export default function Positions() {
   const [filter, setFilter] = useState<Filter>("all");
   const [positions, setPositions] = useState<PMPosition[]>([]);
   const [evals, setEvals] = useState<MarketEvaluation[]>([]);
+  // Server-side aggregate counts. Used for chip labels so the chip
+  // numbers reconcile with the Dashboard tile (which also reads from
+  // /api/summary). Without this, the chips show counts limited to
+  // the fetched 100 positions / 50 evals and disagree with the
+  // Dashboard for any user with more history.
+  const [summary, setSummary] = useState<PerformanceSummary | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedPos, setExpandedPos] = useState<Set<number>>(new Set());
@@ -136,12 +142,14 @@ export default function Positions() {
 
   const refresh = useCallback(async () => {
     try {
-      const [p, e] = await Promise.all([
+      const [p, e, s] = await Promise.all([
         api.positions(100).then((r) => r.positions),
         api.evaluations(50).then((r) => r.evaluations),
+        api.summary(),
       ]);
       setPositions(p);
       setEvals(e);
+      setSummary(s);
       setLoaded(true);
       // Clear error only on confirmed success - prevents the 0.3s
       // flash where a stale error vanishes pre-await and then the
@@ -235,13 +243,13 @@ export default function Positions() {
             All
           </button>
           <button className={`chip ${filter === "open" ? "on" : ""}`} onClick={() => setFilter("open")}>
-            Open ({open.length})
+            Open ({summary?.open_positions ?? open.length})
           </button>
           <button className={`chip ${filter === "closed" ? "on" : ""}`} onClick={() => setFilter("closed")}>
-            Closed ({settled.length})
+            Closed ({summary?.settled_total ?? settled.length})
           </button>
           <button className={`chip ${filter === "skipped" ? "on" : ""}`} onClick={() => setFilter("skipped")}>
-            Skipped ({skipped.length})
+            Skipped ({summary?.skipped_total ?? skipped.length})
           </button>
         </div>
       </div>

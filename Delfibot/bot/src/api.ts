@@ -315,6 +315,11 @@ export interface PerformanceSummary {
   open_cost: number | null;
   settled_total: number | null;
   settled_wins: number | null;
+  /** Total skipped evaluations for this user (server-side aggregate
+   *  over the full market_evaluations table, not the limited
+   *  /api/evaluations feed). Used by both the Dashboard summary tile
+   *  and the Positions chip filter so the totals reconcile. */
+  skipped_total: number | null;
   win_rate: number | null;
   realized_pnl: number | null;
   roi: number | null;

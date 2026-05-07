@@ -943,6 +943,7 @@ class LocalAPI:
             "open_cost":      stats.get("open_cost"),
             "settled_total":  stats.get("settled_total"),
             "settled_wins":   stats.get("settled_wins"),
+            "skipped_total":  stats.get("skipped_total"),
             "win_rate":       stats.get("win_rate"),
             "realized_pnl":   stats.get("realized_pnl"),
             "roi":            roi,

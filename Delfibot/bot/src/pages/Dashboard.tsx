@@ -203,17 +203,18 @@ export default function Dashboard({ state, goto }: Props) {
   );
   const openTrades = Math.round(numberOr(summary?.open_positions, open.length));
 
-  // Skipped count from the recent evaluations feed. Mirrors the
-  // filter the Positions page uses (recommendation neither BUY_YES
-  // nor BUY_NO -> skip). Capped at whatever the evaluations endpoint
-  // returns (default 25, plenty for the dashboard tile).
-  const skippedTrades = useMemo(
-    () => evaluations.filter((e) => {
+  // Skipped count: prefer the server-side aggregate (summary.skipped_total)
+  // so the Dashboard tile and the Positions chips reconcile. The local
+  // /api/evaluations feed is capped at ~25 rows and was producing a
+  // misleadingly low count here. Fall back to the local filter only if
+  // the sidecar predates the skipped_total field.
+  const skippedTrades = useMemo(() => {
+    if (summary?.skipped_total != null) return summary.skipped_total;
+    return evaluations.filter((e) => {
       const r = (e.recommendation ?? "").toUpperCase();
       return r !== "BUY_YES" && r !== "YES" && r !== "BUY_NO" && r !== "NO";
-    }).length,
-    [evaluations],
-  );
+    }).length;
+  }, [summary?.skipped_total, evaluations]);
 
   return (
     <div className="dash">

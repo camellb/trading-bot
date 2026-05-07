@@ -274,10 +274,25 @@ class PMExecutor:
                 open_cost = float(row[2] or 0)
                 realized  = float(row[3] or 0)
                 wins      = int(row[4] or 0)
+
+                # Skipped evaluations live in market_evaluations, not
+                # pm_positions (a skip never opens a position). Anything
+                # whose recommendation isn't BUY_YES / BUY_NO / YES / NO
+                # is a skip. Both the Dashboard summary tile and the
+                # Positions chip filter read this so the totals
+                # reconcile across pages.
+                skipped_row = conn.execute(text(
+                    "SELECT COUNT(*) "
+                    "  FROM market_evaluations "
+                    " WHERE user_id = :uid "
+                    "   AND COALESCE(UPPER(recommendation), '') NOT IN "
+                    "       ('BUY_YES', 'YES', 'BUY_NO', 'NO')"
+                ), {"uid": self.user_id}).fetchone()
+                skipped_n = int(skipped_row[0] or 0)
         except Exception as exc:
             print(f"[pm_executor] get_portfolio_stats({self.user_id}) failed: {exc}",
                   file=sys.stderr)
-            open_n = settled_n = wins = 0
+            open_n = settled_n = wins = skipped_n = 0
             open_cost = realized = 0.0
         bankroll = float(starting) + realized - open_cost
         return {
@@ -289,6 +304,7 @@ class PMExecutor:
             "open_cost":       open_cost,
             "settled_total":   settled_n,
             "settled_wins":    wins,
+            "skipped_total":   skipped_n,
             "win_rate":        (wins / settled_n) if settled_n else None,
             "realized_pnl":    realized,
             "ready":           True,
