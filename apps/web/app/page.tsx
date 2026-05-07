@@ -386,7 +386,7 @@ function Versus() {
     ["Self-calibrating over time", "x", "x", "x", "✓"],
     ["No coding required", "✓", "partial", "✓", "✓"],
     ["Full control of risk parameters", "✓", "partial", "partial", "✓"],
-    ["Works across all market categories", "partial", "x", "partial", "partial"],
+    ["Works across all market categories", "partial", "x", "partial", "✓"],
     ["Runs on your machine", "✓", "x", "x", "✓"],
     ["Your private key never leaves", "✓", "x", "x", "✓"],
   ];
