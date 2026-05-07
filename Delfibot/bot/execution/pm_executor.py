@@ -260,27 +260,38 @@ class PMExecutor:
         starting = self.get_starting_cash()
         try:
             with get_engine().begin() as conn:
-                row = conn.execute(text(
+                # Money math is mode-scoped: bankroll, realized P&L,
+                # and locked open cost reflect the user's current
+                # trading mode (sim cash and live cash never blend).
+                money = conn.execute(text(
+                    "SELECT "
+                    "  COALESCE(SUM(cost_usd) FILTER (WHERE status = 'open'), 0) AS open_cost, "
+                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized "
+                    "FROM pm_positions WHERE user_id = :uid AND mode = :m"
+                ), {"uid": self.user_id, "m": self.mode}).fetchone()
+                open_cost = float(money[0] or 0)
+                realized  = float(money[1] or 0)
+
+                # Trade counts are LIFETIME (no mode filter). The
+                # Dashboard hero tile and the Positions chips both
+                # read these and they must always agree, never
+                # flicker when the sim/live toggle moves. A trade
+                # is a trade the bot took, period.
+                counts = conn.execute(text(
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid')) AS settled_n, "
-                    "  COALESCE(SUM(cost_usd) FILTER (WHERE status = 'open'), 0) AS open_cost, "
-                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid') AND realized_pnl_usd > 0) AS wins "
-                    "FROM pm_positions WHERE user_id = :uid AND mode = :m"
-                ), {"uid": self.user_id, "m": self.mode}).fetchone()
-                open_n    = int(row[0] or 0)
-                settled_n = int(row[1] or 0)
-                open_cost = float(row[2] or 0)
-                realized  = float(row[3] or 0)
-                wins      = int(row[4] or 0)
+                    "FROM pm_positions WHERE user_id = :uid"
+                ), {"uid": self.user_id}).fetchone()
+                open_n    = int(counts[0] or 0)
+                settled_n = int(counts[1] or 0)
+                wins      = int(counts[2] or 0)
 
                 # Skipped evaluations live in market_evaluations, not
                 # pm_positions (a skip never opens a position). Anything
                 # whose recommendation isn't BUY_YES / BUY_NO / YES / NO
-                # is a skip. Both the Dashboard summary tile and the
-                # Positions chip filter read this so the totals
-                # reconcile across pages.
+                # is a skip. Lifetime, like the other counts.
                 skipped_row = conn.execute(text(
                     "SELECT COUNT(*) "
                     "  FROM market_evaluations "
