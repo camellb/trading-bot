@@ -357,6 +357,20 @@
   background: rgba(212, 175, 55, 0.05);
 }
 
+/* Download buttons block on the post-purchase /checkout/return page.
+   Two buttons (macOS / Windows) sit side by side on desktop, stack
+   vertically on mobile (handled by the existing 480px breakpoint
+   further down via flex-wrap). */
+.checkout-return-downloads {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 24px;
+}
+.checkout-return-download-btn {
+  margin-top: 0;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────── */
 
 @media (max-width: 920px) {

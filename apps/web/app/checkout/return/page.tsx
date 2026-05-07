@@ -112,18 +112,38 @@ function ReturnInner() {
         <div className="checkout-return-eyebrow">Payment confirmed</div>
         <h1 className="checkout-return-title">Welcome to Delfi.</h1>
         <p className="checkout-return-body">
-          Your license is on its way to{" "}
+          Your license key is on its way to{" "}
           <span className="checkout-return-email">
             {status.email ?? "the email you entered"}
           </span>
-          . The email contains the license key and the macOS / Windows
-          download links. Paste the key on first launch and you&apos;re live.
+          . While you wait, install Delfi for your platform.
+        </p>
+
+        <div className="checkout-return-downloads">
+          <a
+            className="btn-primary checkout-return-download-btn"
+            href="https://github.com/camellb/trading-bot/releases/latest"
+            rel="noopener"
+          >
+            Download for macOS
+          </a>
+          <a
+            className="btn-primary checkout-return-download-btn"
+            href="https://github.com/camellb/trading-bot/releases/latest"
+            rel="noopener"
+          >
+            Download for Windows
+          </a>
+        </div>
+
+        <p className="checkout-return-body muted">
+          Open the app, paste the license key from your email on first
+          launch, and you&apos;re live.
         </p>
         <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes? Check spam, then reply to
           info@delfibot.com and we&apos;ll resend.
         </p>
-        <a className="btn-primary" href="/">Back to delfibot.com</a>
       </div>
     );
   }
