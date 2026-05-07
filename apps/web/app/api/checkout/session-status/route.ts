@@ -46,6 +46,17 @@ export async function GET(req: Request): Promise<NextResponse> {
       status:        session.status,         // "complete" | "open" | "expired"
       paymentStatus: session.payment_status, // "paid" | "unpaid" | "no_payment_required"
       email:         session.customer_details?.email ?? null,
+      // Order total in MAJOR units (e.g. 249 for USD 249.00) and
+      // ISO 4217 currency. The /checkout/return page passes these
+      // straight into the Pixel `Purchase` event for ad ROAS.
+      // Stripe gives us amount_total in MINOR units (cents); divide
+      // here so the client doesn't have to guess.
+      amountTotal:   session.amount_total != null
+                       ? session.amount_total / 100
+                       : null,
+      currency:      session.currency
+                       ? session.currency.toUpperCase()
+                       : null,
     });
   } catch (e) {
     console.error("[session-status] stripe error", {

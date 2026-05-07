@@ -19,12 +19,15 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { trackPurchase } from "@/lib/track";
 import "../checkout.css";
 
 interface SessionStatus {
   status?:        "complete" | "open" | "expired";
   paymentStatus?: "paid" | "unpaid" | "no_payment_required";
   email?:         string | null;
+  amountTotal?:   number | null;
+  currency?:      string | null;
   error?:         string;
 }
 
@@ -57,6 +60,22 @@ function ReturnInner() {
       cancelled = true;
     };
   }, [sessionId]);
+
+  // Fire the Pixel + GA4 `Purchase` event the moment we confirm
+  // the session completed and was paid. trackPurchase() has its
+  // own once()-keyed-by-sessionId dedup, so a re-render or a
+  // refresh of this page won't double-count the conversion.
+  useEffect(() => {
+    if (!sessionId) return;
+    if (status?.status !== "complete") return;
+    if (status?.paymentStatus !== "paid") return;
+    if (status.amountTotal == null || !status.currency) return;
+    trackPurchase({
+      eventId:  sessionId,
+      value:    status.amountTotal,
+      currency: status.currency,
+    });
+  }, [sessionId, status]);
 
   if (loadError) {
     return (

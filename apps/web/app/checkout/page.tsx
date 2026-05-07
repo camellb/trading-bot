@@ -30,6 +30,7 @@ import {
   EmbeddedCheckoutProvider,
   EmbeddedCheckout,
 } from "@stripe/react-stripe-js";
+import { trackInitiateCheckout } from "@/lib/track";
 import "./checkout.css";
 
 // loadStripe is async + idempotent; cache the promise at the module
@@ -86,7 +87,13 @@ export default function CheckoutPage() {
         if (!res.ok || !body.clientSecret) {
           throw new Error(body.error || `HTTP ${res.status}`);
         }
-        if (!cancelled) setClientSecret(body.clientSecret);
+        if (!cancelled) {
+          setClientSecret(body.clientSecret);
+          // Mid-funnel signal: Stripe session minted, buyer is at
+          // the embedded form. `once()` inside trackInitiateCheckout
+          // dedupes if React StrictMode runs the effect twice.
+          if (body.sessionId) trackInitiateCheckout(body.sessionId);
+        }
       })
       .catch((e: unknown) => {
         if (!cancelled) {
