@@ -685,7 +685,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <CtaLink className="sim-cta" location="sim" text="Start in Simulation">Start in Simulation →</CtaLink>
+            <CtaLink className="sim-cta" location="sim" text="Try Delfi today">Try Delfi today →</CtaLink>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
