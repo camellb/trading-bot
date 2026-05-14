@@ -805,6 +805,21 @@ class LocalAPI:
                 self._analyst.evaluator = PolymarketEvaluator()
             except Exception as exc:
                 print(f"[creds] evaluator reset failed: {exc}", flush=True)
+        # research/fetcher.py caches its OWN anthropic.Anthropic()
+        # client as a module-level global (_anthropic_kw_client) for
+        # claude-driven keyword extraction. The polymarket_evaluator
+        # reset above only handles the trade-decision path; the
+        # research keyword path stays bound to the stale key unless
+        # we also null this out. Setting it to None forces the next
+        # `_extract_keywords_claude` call to construct a fresh client
+        # against the now-current ANTHROPIC_API_KEY.
+        if llm is not None:
+            try:
+                import research.fetcher as _rf
+                _rf._anthropic_kw_client = None
+            except Exception as exc:
+                print(f"[creds] research client reset failed: {exc}",
+                      flush=True)
 
         # Invalidate the cached existence booleans so the next
         # /api/credentials read picks up whatever just got written.
