@@ -162,12 +162,32 @@ class LoopHeartbeat:
                         >= self._self_probe_interval_s):
                 self._self_probe_last_attempt = now
                 ok = self._self_probe()
+                # Secondary signal: count CLOSE_WAIT + FIN_WAIT_2
+                # sockets on our listen port. 2026-05-14 we hit a
+                # wedge where the in-process probe reported ok=True
+                # for hours while external clients timed out and
+                # CLOSE_WAIT piled up past 30+30. The leak signature
+                # is forensically obvious and catches the wedge even
+                # when the probe gets fooled. Threshold = 40 is well
+                # above normal (the Tauri GUI typically holds <10
+                # connections) but well below kernel SOMAXCONN.
+                leaked = self._count_leaked_sockets()
                 print(
                     f"[watchdog] self-probe ok={ok} "
                     f"port={self._api_port_getter()} "
-                    f"failures={self._self_probe_failures}",
+                    f"failures={self._self_probe_failures} "
+                    f"leaked_sockets={leaked}",
                     file=sys.stderr, flush=True,
                 )
+                if leaked >= 40:
+                    self._abort(
+                        silence,
+                        reason=(
+                            f"{leaked} CLOSE_WAIT/FIN_WAIT_2 sockets "
+                            "on listen port (handler-cleanup wedge)"
+                        ),
+                    )
+                    return
                 if ok:
                     self._self_probe_failures = 0
                 else:
@@ -181,6 +201,42 @@ class LoopHeartbeat:
                             ),
                         )
                         return
+
+    def _count_leaked_sockets(self) -> int:
+        """Count CLOSE_WAIT + FIN_WAIT_2 sockets on our listen port.
+
+        These states accumulate when aiohttp accepts a TCP
+        connection but the per-request handler never properly
+        closes it (client side closed, server side never followed
+        up). A healthy daemon has <10 of them at any time; >40 is
+        a strong signal that something has wedged in the request
+        path and the listener will start dropping new connections
+        soon. Hard signal to SIGKILL — launchd respawns in <10s.
+        """
+        try:
+            port = self._api_port_getter() if self._api_port_getter else None
+        except Exception:
+            return 0
+        if not port or port <= 0:
+            return 0
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["/usr/sbin/netstat", "-an", "-p", "tcp"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            return 0
+        if r.returncode != 0:
+            return 0
+        port_str = f".{port} "
+        count = 0
+        for line in r.stdout.decode("utf-8", "replace").splitlines():
+            if port_str not in line:
+                continue
+            if "CLOSE_WAIT" in line or "FIN_WAIT_2" in line:
+                count += 1
+        return count
 
     def _self_probe(self) -> bool:
         """Probe /api/health via a subprocess curl, not in-process urllib.

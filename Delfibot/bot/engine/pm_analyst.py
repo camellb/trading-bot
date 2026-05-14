@@ -89,10 +89,29 @@ class PMAnalyst:
         or None on any failure / skip.
         """
         try:
-            research = await fetch_research(
-                market.question, market.category_hint,
-                days_to_resolution=market.days_to_end,
+            # Hard wall-clock ceiling on the research phase. Without
+            # this, one stuck network call (observed 2026-05-14:
+            # pycares getaddrinfo hung indefinitely on a Wikipedia
+            # fetch) holds the whole scan, and APScheduler's
+            # max_instances=1 means every subsequent scan gets
+            # dropped. wait_for cancels the awaiting task even when
+            # aiohttp's ClientTimeout fails to propagate into a
+            # wedged resolver. We continue with an empty research
+            # bundle on timeout — the forecaster falls back to its
+            # own reasoning, which is degraded but better than the
+            # bot freezing.
+            research = await asyncio.wait_for(
+                fetch_research(
+                    market.question, market.category_hint,
+                    days_to_resolution=market.days_to_end,
+                ),
+                timeout=30,
             )
+        except asyncio.TimeoutError:
+            print(f"[pm_analyst] research exceeded 30s for {market.id} "
+                  f"- aborted, continuing with empty bundle",
+                  file=sys.stderr)
+            research = ResearchBundle(question=market.question)
         except Exception as exc:
             print(f"[pm_analyst] research failed for {market.id}: {exc}",
                   file=sys.stderr)

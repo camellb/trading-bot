@@ -680,14 +680,35 @@ async def main() -> None:
     resolve_interval_min = int(getattr(config, "PM_RESOLVE_INTERVAL_MINUTES", 15))
     fast_resolve_sec = int(getattr(config, "PM_RESOLVE_FAST_INTERVAL_SECONDS", 60))
 
+    # Wall-clock ceiling for each scheduled job. APScheduler has
+    # max_instances=1 per job, so if ONE call sticks forever (e.g.
+    # pycares getaddrinfo wedge in a Wikipedia fetch, observed
+    # 2026-05-14), every subsequent scheduled run gets dropped and
+    # the bot silently stops trading. Wrapping in asyncio.wait_for
+    # with a hard ceiling guarantees the coroutine is cancelled
+    # after N seconds and the worker thread is freed even when a
+    # downstream library is unresponsive to graceful cancellation.
+    async def _bounded(coro, timeout_s: int, label: str):
+        try:
+            await _asyncio_module.wait_for(coro, timeout=timeout_s)
+        except _asyncio_module.TimeoutError:
+            print(f"[delfi] {label} exceeded {timeout_s}s wall-clock "
+                  f"ceiling - aborted to keep the scheduler healthy",
+                  file=sys.stderr, flush=True)
+            raise
+
     def _run_scan():
         if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
             return
         try:
-            _asyncio_module.run(scan_and_analyze(
-                limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
-                min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
-                analyst        = analyst,
+            _asyncio_module.run(_bounded(
+                scan_and_analyze(
+                    limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
+                    min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
+                    analyst        = analyst,
+                ),
+                timeout_s=240,
+                label="scan",
             ))
             proc_health.record_job_ok("pm_scan")
         except Exception as exc:
@@ -696,7 +717,9 @@ async def main() -> None:
 
     def _run_resolve():
         try:
-            _asyncio_module.run(resolve_positions())
+            _asyncio_module.run(_bounded(
+                resolve_positions(), timeout_s=180, label="resolve",
+            ))
             proc_health.record_job_ok("pm_resolve")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve")
@@ -704,7 +727,10 @@ async def main() -> None:
 
     def _run_resolve_fast():
         try:
-            _asyncio_module.run(resolve_positions(short_horizon_only=True))
+            _asyncio_module.run(_bounded(
+                resolve_positions(short_horizon_only=True),
+                timeout_s=45, label="resolve_fast",
+            ))
             proc_health.record_job_ok("pm_resolve_fast")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve_fast")
