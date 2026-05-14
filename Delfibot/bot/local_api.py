@@ -773,6 +773,39 @@ class LocalAPI:
             except Exception as exc:
                 return _err(f"failed to write cryptopanic key: {exc}", 500)
 
+        # Hot-reload the running process so the new keys take effect
+        # WITHOUT a daemon restart. Two things need to happen:
+        #
+        #  1. os.environ — research/fetcher.py and feeds/news_feed.py
+        #     read ANTHROPIC_API_KEY / NEWS_API_KEY / CRYPTOPANIC_API_KEY
+        #     directly off the env. main.py only seeds these at startup
+        #     (`_seed_env_from_keychain`). Without this hot-reload, a
+        #     user who saves a new key sees secrets.json updated and
+        #     `has_anthropic_key: true`, but the running process still
+        #     has the old (or empty) env var — every scan logs "Could
+        #     not resolve authentication method" until restart.
+        #
+        #  2. PMAnalyst.evaluator — PolymarketEvaluator caches an
+        #     `anthropic.Anthropic()` client at construction time. The
+        #     SDK reads ANTHROPIC_API_KEY into the client THEN and
+        #     never re-reads it. Even after we update os.environ, the
+        #     cached client still hits the API with no auth header.
+        #     Reset the analyst's evaluator so the next evaluate()
+        #     constructs a fresh client against the now-current env.
+        import os as _os
+        if llm is not None:
+            _os.environ["ANTHROPIC_API_KEY"] = llm
+        if newsapi is not None:
+            _os.environ["NEWS_API_KEY"] = newsapi
+        if cryptopanic is not None:
+            _os.environ["CRYPTOPANIC_API_KEY"] = cryptopanic
+        if llm is not None and self._analyst is not None:
+            try:
+                from engine.polymarket_evaluator import PolymarketEvaluator
+                self._analyst.evaluator = PolymarketEvaluator()
+            except Exception as exc:
+                print(f"[creds] evaluator reset failed: {exc}", flush=True)
+
         # Invalidate the cached existence booleans so the next
         # /api/credentials read picks up whatever just got written.
         if hasattr(self, "_creds_cache"):
