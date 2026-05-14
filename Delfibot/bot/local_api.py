@@ -799,26 +799,18 @@ class LocalAPI:
             _os.environ["NEWS_API_KEY"] = newsapi
         if cryptopanic is not None:
             _os.environ["CRYPTOPANIC_API_KEY"] = cryptopanic
-        if llm is not None and self._analyst is not None:
-            try:
-                from engine.polymarket_evaluator import PolymarketEvaluator
-                self._analyst.evaluator = PolymarketEvaluator()
-            except Exception as exc:
-                print(f"[creds] evaluator reset failed: {exc}", flush=True)
-        # research/fetcher.py caches its OWN anthropic.Anthropic()
-        # client as a module-level global (_anthropic_kw_client) for
-        # claude-driven keyword extraction. The polymarket_evaluator
-        # reset above only handles the trade-decision path; the
-        # research keyword path stays bound to the stale key unless
-        # we also null this out. Setting it to None forces the next
-        # `_extract_keywords_claude` call to construct a fresh client
-        # against the now-current ANTHROPIC_API_KEY.
+        # All LLM calls (forecaster + research keyword extraction) go
+        # through the engine.llm_client singleton. Resetting it drops
+        # the cached Anthropic and Gemini SDK clients in one place;
+        # the next call constructs fresh against the now-current
+        # ANTHROPIC_API_KEY + backup keychain entry. Failover between
+        # the two providers is handled internally by llm_client.
         if llm is not None:
             try:
-                import research.fetcher as _rf
-                _rf._anthropic_kw_client = None
+                from engine.llm_client import reset_llm
+                reset_llm()
             except Exception as exc:
-                print(f"[creds] research client reset failed: {exc}",
+                print(f"[creds] llm_client reset failed: {exc}",
                       flush=True)
 
         # Invalidate the cached existence booleans so the next

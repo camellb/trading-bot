@@ -22,16 +22,14 @@ Design goals:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
-import anthropic
-
 import config
+from engine.llm_client import get_llm
 from feeds.polymarket_feed import PolyMarket
 
 
@@ -196,51 +194,42 @@ def _clamp01(x, default=0.5, *, field: str = ""):
 
 class PolymarketEvaluator:
     """
-    Thin Claude wrapper - the bot already imports anthropic elsewhere,
-    so we reuse the env-configured client (ANTHROPIC_API_KEY).
+    Per-market forecaster. Delegates the actual LLM call to
+    engine.llm_client (provider-routed, primary/backup failover,
+    Anthropic prompt caching on the system block).
+
+    No more self._client: state lives in the llm_client singleton.
+    Credential hot-reload calls llm_client.reset_llm() so the next
+    evaluate() picks up the new key without a daemon restart.
     """
 
-    def __init__(self, client: Optional[anthropic.Anthropic] = None):
-        self._client = client
-        if self._client is None:
-            try:
-                self._client = anthropic.Anthropic()
-            except Exception as exc:
-                print(f"[polymarket_eval] client init failed: {exc}",
-                      file=sys.stderr)
-                self._client = None
+    def __init__(self) -> None:
+        # Kept as a no-op for back-compat with `PolymarketEvaluator()`
+        # call sites. No per-instance state.
+        pass
 
     async def evaluate(
         self,
         market: PolyMarket,
         research_block: Optional[str] = None,
     ) -> Optional[MarketEvaluation]:
-        if self._client is None:
-            return None
-
         user = self._build_prompt(market, research_block)
-        loop = asyncio.get_running_loop()
-        raw = None
-        for attempt in range(3):
-            try:
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self._client.messages.create(
-                        model      = config.CLAUDE_MODEL,
-                        max_tokens = 2000,
-                        system     = _system_prompt(),
-                        messages   = [{"role": "user", "content": user}],
-                    ),
-                )
-                raw = response.content[0].text
-                break
-            except Exception as exc:
-                if attempt == 2:
-                    print(f"[polymarket_eval] Claude failed after 3 attempts "
-                          f"on {market.id}: {exc}", file=sys.stderr)
-                    return None
-                await asyncio.sleep(2 ** attempt)
-        if raw is None:
+        # cache_system=True is the prompt-caching win: the ~1500-token
+        # system prompt is identical for every market in a scan, so
+        # the first call writes the cache (1.25x once) and the next
+        # 50+ calls within the 5-min ephemeral TTL hit it at 0.1x
+        # input pricing. llm_client logs cache write/read tokens to
+        # stderr when present so we can confirm the savings.
+        raw = await get_llm().call(
+            system       = _system_prompt(),
+            user         = user,
+            max_tokens   = 2000,
+            cache_system = True,
+        )
+        if not raw:
+            print(f"[polymarket_eval] no usable LLM response for "
+                  f"{market.id} (every provider failed; see "
+                  f"earlier [llm_client] lines)", file=sys.stderr)
             return None
 
         obj = _parse_json(raw)

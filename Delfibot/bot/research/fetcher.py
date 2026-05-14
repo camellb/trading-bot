@@ -487,7 +487,6 @@ async def _extract_keywords_llm(
 
 
 _gemini_client = None
-_anthropic_kw_client = None
 
 
 async def _extract_keywords_gemini(question: str) -> Optional[dict]:
@@ -514,24 +513,37 @@ async def _extract_keywords_gemini(question: str) -> Optional[dict]:
 
 
 async def _extract_keywords_claude(question: str) -> Optional[dict]:
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None
-    global _anthropic_kw_client
-    if _anthropic_kw_client is None:
-        import anthropic
-        _anthropic_kw_client = anthropic.Anthropic(api_key=api_key)
+    """Keyword extraction via the shared LLM client.
+
+    Goes through engine.llm_client so it gets primary/backup failover
+    automatically — if Anthropic 401s or rate-limits, the same call
+    is retried against whatever Gemini key the user stored under
+    "Backup LLM" in Settings. Previously this held its own cached
+    anthropic.Anthropic() and silently dropped every call on auth
+    failure with no fallback.
+    """
+    from engine.llm_client import get_llm
 
     prompt = f"Question: {question}\n\n{_KW_EXTRACTION_PROMPT}"
-    client = _anthropic_kw_client
-
-    def _call():
-        return client.messages.create(
-            model=config.CLAUDE_MODEL, max_tokens=500, temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        ).content[0].text
-
-    return await _extract_keywords_llm(question, _call, "claude")
+    raw = ""
+    try:
+        raw = await get_llm().call(
+            system      = None,
+            user        = prompt,
+            max_tokens  = 500,
+            temperature = 0,
+        ) or ""
+        if not raw:
+            return None
+        obj = _tolerant_json_object(raw)
+        if isinstance(obj, dict) and "search_terms" in obj:
+            return obj
+        print(f"[research] claude keyword parse miss - "
+              f"raw[:200]={raw[:200]!r}", file=sys.stderr)
+    except Exception as exc:
+        print(f"[research] claude keyword extraction failed: {exc} - "
+              f"raw[:200]={raw[:200]!r}", file=sys.stderr)
+    return None
 
 
 # ── ESPN sports data ────────────────────────────────────────────────────────
