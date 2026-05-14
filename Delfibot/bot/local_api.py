@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -208,6 +209,44 @@ def _ok(payload: Any, status: int = 200) -> web.Response:
 
 def _err(message: str, status: int = 400) -> web.Response:
     return _ok({"error": message}, status=status)
+
+
+def _log_bot_toggle_request(action: str, req: web.Request) -> None:
+    """Audit log every POST /api/bot/start | /api/bot/stop.
+
+    Captures who is asking the daemon to flip bot_enabled. The flag
+    is the single most consequential user-facing setting and we hit
+    a bug 2026-05-14 where it was flipping ON without an explicit
+    user action — every callable code path needs to be traceable so
+    we can chase that down.
+
+    Logged fields: HTTP method, remote peer address, User-Agent
+    (Tauri webview vs curl vs something else), Referer (which UI
+    page issued the request), and the asyncio task name (often
+    contains the handler call site). Output goes to stderr with
+    flush=True so it lands in the daemon's launchd-captured log
+    immediately rather than getting buffered behind the next
+    write.
+    """
+    import asyncio as _asyncio
+    try:
+        task_name = _asyncio.current_task().get_name()
+    except Exception:
+        task_name = "?"
+    headers = req.headers
+    ua = headers.get("User-Agent", "?")
+    ref = headers.get("Referer", "?")
+    xff = headers.get("X-Forwarded-For", "?")
+    try:
+        peer = req.transport.get_extra_info("peername") or ("?", "?")
+    except Exception:
+        peer = ("?", "?")
+    print(
+        f"[bot_toggle_audit] action=/api/bot/{action} "
+        f"method={req.method} peer={peer[0]}:{peer[1]} "
+        f"task={task_name} ua={ua!r} referer={ref!r} xff={xff!r}",
+        file=sys.stderr, flush=True,
+    )
 
 
 def _validate_polymarket_private_key(private_key: str, wallet_address: Optional[str]) -> Optional[str]:
@@ -881,7 +920,7 @@ class LocalAPI:
             return _err(f"failed to read events: {exc}", 500)
         return _ok({"events": rows})
 
-    async def _bot_start(self, _req: web.Request) -> web.Response:
+    async def _bot_start(self, req: web.Request) -> web.Response:
         """Enable the bot (set user_config.bot_enabled = True).
 
         Validates that the user has the credentials they actually need
@@ -892,6 +931,7 @@ class LocalAPI:
         itself is a separate operation: PUT /api/config with
         `{"mode": "live"}` or `{"mode": "simulation"}`.
         """
+        _log_bot_toggle_request("start", req)
         # License is a hard gate — any non-valid status here means
         # the LicenseGate should be re-shown by the React shell. We
         # still return a clear error string so curl users see the
@@ -917,13 +957,14 @@ class LocalAPI:
             return _err(f"update failed: {exc}", 500)
         return _ok({"bot_enabled": True, "mode": cfg.mode})
 
-    async def _bot_stop(self, _req: web.Request) -> web.Response:
+    async def _bot_stop(self, req: web.Request) -> web.Response:
         """Disable the bot (set user_config.bot_enabled = False).
 
         The scheduler keeps running scan/resolve jobs but the executor
         refuses to open new positions while bot_enabled is False (see
         UserConfig.ready_to_trade). Existing positions still settle.
         """
+        _log_bot_toggle_request("stop", req)
         try:
             cfg = update_user_config(bot_enabled=False)
         except ValueError as exc:

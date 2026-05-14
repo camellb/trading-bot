@@ -1064,6 +1064,17 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
 
     from sqlalchemy import text
     from db.engine import get_engine
+
+    # Snapshot the bot_enabled value BEFORE the write so the audit
+    # entry can record old → new. Only matters when bot_enabled is
+    # actually in this update; we skip the extra DB read otherwise.
+    prev_enabled: Optional[bool] = None
+    if "bot_enabled" in clean:
+        try:
+            prev_enabled = get_user_config(user_id).bot_enabled
+        except Exception:
+            prev_enabled = None
+
     with get_engine().begin() as conn:
         conn.execute(text(
             "INSERT INTO user_config (user_id) VALUES (:uid) "
@@ -1074,6 +1085,53 @@ def update_user_config(user_id: str = DEFAULT_USER_ID, **changes) -> UserConfig:
             f"updated_at = CURRENT_TIMESTAMP "
             f"WHERE user_id = :uid"
         ), params)
+
+        # Audit trail for bot_enabled toggles. The flag is the
+        # single most consequential user-facing setting (it's
+        # literally "is the bot running"), and 2026-05-14 we hit a
+        # bug where the bot was flipping ON without a user action.
+        # Capturing every change with caller info + an event_log
+        # row makes the next occurrence forensically obvious.
+        if "bot_enabled" in clean:
+            new_enabled = bool(clean["bot_enabled"])
+            if new_enabled != prev_enabled:
+                import traceback
+                # extract_stack returns frames outer→inner; the
+                # last entry is this function. Take the 8 most
+                # recent caller frames — enough to show the call
+                # chain (handler → asyncio offload → here) without
+                # spamming the log.
+                stack = traceback.extract_stack()[:-1][-8:]
+                stack_lines = " | ".join(
+                    f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno} {f.name}"
+                    for f in stack
+                )
+                print(
+                    f"[bot_enabled_audit] {prev_enabled} -> {new_enabled} "
+                    f"for user={user_id} | stack: {stack_lines}",
+                    file=sys.stderr, flush=True,
+                )
+                # Best-effort event_log write. If the table schema
+                # has drifted or the connection is wedged, swallow
+                # the exception — the stderr line above is the
+                # primary audit channel; this is the persisted
+                # backup.
+                try:
+                    conn.execute(text(
+                        "INSERT INTO event_log "
+                        "(user_id, timestamp, event_type, severity, "
+                        " description, source) "
+                        "VALUES (:uid, CURRENT_TIMESTAMP, "
+                        " 'bot_enabled_changed', 'info', :desc, :src)"
+                    ), {
+                        "uid":  user_id,
+                        "desc": f"{prev_enabled} -> {new_enabled}",
+                        "src":  stack_lines[:500],
+                    })
+                except Exception as exc:
+                    print(f"[bot_enabled_audit] event_log insert "
+                          f"failed (non-fatal): {exc}",
+                          file=sys.stderr, flush=True)
 
     return get_user_config(user_id)
 

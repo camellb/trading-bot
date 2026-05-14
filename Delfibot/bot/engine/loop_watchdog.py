@@ -183,12 +183,22 @@ class LoopHeartbeat:
                         return
 
     def _self_probe(self) -> bool:
-        """Make an actual HTTP request to /api/health from this thread.
+        """Probe /api/health via a subprocess curl, not in-process urllib.
 
-        Uses urllib (sync) so we don't depend on the asyncio loop. The
-        watchdog runs in a regular Python thread, separate from the
-        asyncio loop. If the loop's listener is wedged, this request
-        will time out - that's our signal to SIGKILL self.
+        Why out-of-process: we hit an "asyncio listener wedged"
+        pattern repeatedly during 2026-05-14's incidents where the
+        daemon's TCP accept loop stopped draining, but an
+        in-process urllib.request.urlopen call from this thread to
+        127.0.0.1 STILL succeeded (probably via a kernel loopback
+        fast-path tied to the same process). The watchdog kept
+        reporting ok=True while every external client (the Tauri
+        GUI, our curl probes) timed out. So we never SIGKILL'd, and
+        the user saw an unrecoverable wedge.
+
+        Forking curl puts the probe in a separate process. The
+        connect goes through the same path external clients use, so
+        if external clients can't reach the listener neither can
+        this probe — exactly the signal we want.
         """
         try:
             port = self._api_port_getter() if self._api_port_getter else None
@@ -196,15 +206,35 @@ class LoopHeartbeat:
             return False
         if not port or port <= 0:
             return False
-        import urllib.request, urllib.error
-        url = f"http://127.0.0.1:{port}/api/health"
+
+        import subprocess
+        # Hard-coded curl path: avoids $PATH lookup overhead and
+        # surprise if /usr/local/bin/curl shadows the system one.
+        # Macs always have /usr/bin/curl; Linux has it too.
+        cmd = [
+            "/usr/bin/curl", "-sS",
+            "--max-time", str(int(self._self_probe_timeout_s)),
+            "-o", "/dev/null",
+            "-w", "%{http_code}",
+            f"http://127.0.0.1:{port}/api/health",
+        ]
         try:
-            with urllib.request.urlopen(
-                url, timeout=self._self_probe_timeout_s,
-            ) as resp:
-                return resp.status == 200
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                # +2s envelope on top of curl's own --max-time so the
+                # subprocess.run timeout fires only if curl itself is
+                # hung (extremely rare). curl's timeout is what we
+                # want to detect a wedge.
+                timeout=int(self._self_probe_timeout_s) + 2,
+            )
+        except subprocess.TimeoutExpired:
+            return False
         except Exception:
             return False
+        if r.returncode != 0:
+            return False
+        return r.stdout.strip() == b"200"
 
     def _warn(self, silence: float) -> None:
         """Slow-but-not-dead: dump tracebacks WITHOUT killing.
