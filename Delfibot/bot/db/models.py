@@ -155,6 +155,16 @@ market_evaluations = Table(
     # live-trading roll-out.
     Column("mode",             Text, nullable=False,
            server_default=sa_text("'simulation'")),
+    # Resolved outcome of the underlying Polymarket market, filled
+    # in by the skipped-eval resolver once the market closes.
+    # NULL while the market is still trading. Values: 'YES', 'NO',
+    # 'INVALID'. Used to surface "would Delfi have won?" counter-
+    # factuals on the Intelligence page so the user can audit the
+    # forecaster's skip decisions. Independent of pm_positions: a
+    # skipped evaluation never opens a position, so the outcome
+    # has to be back-filled from gamma rather than read from the
+    # position-settler.
+    Column("settlement_outcome", Text, nullable=True),
 )
 
 
@@ -677,6 +687,15 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE market_evaluations ADD COLUMN mode TEXT "
                 "NOT NULL DEFAULT 'simulation'"
+            ))
+        # Counterfactual outcomes for skipped evaluations. Filled in
+        # asynchronously after the market resolves so the user can see
+        # "would Delfi have won this trade if it hadn't skipped?" on
+        # the Intelligence page. Nullable, no default — only the
+        # resolver writes here.
+        if "settlement_outcome" not in existing_eval_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE market_evaluations ADD COLUMN settlement_outcome TEXT"
             ))
 
         # Seed the singleton row if absent. Local install always has

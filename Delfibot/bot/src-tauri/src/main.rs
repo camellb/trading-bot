@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::async_runtime;
 use tauri::path::BaseDirectory;
-use tauri::{Manager, RunEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
@@ -349,6 +349,38 @@ fn main() {
             refresh_api_port,
             restart_sidecar,
         ])
+        // Window close button = hide, NOT quit.
+        //
+        // The bot runs 24/7 in a launchd-supervised daemon. The Tauri
+        // shell is a viewer for that daemon. If clicking the red close
+        // (X) button actually QUIT the app, two bad things happen:
+        //   1. The user thinks they paused trading. They didn't; the
+        //      daemon kept going. Confusion + a real-money risk surface.
+        //   2. Even if they meant to "close the window for now", they
+        //      now have to re-launch Delfi from /Applications to see
+        //      positions or pause the bot. That's friction we can avoid.
+        //
+        // Instead, we intercept the close request, prevent the default
+        // (which on macOS exits the process), and hide the window. The
+        // dock icon stays so a single click brings it back; the
+        // RunEvent::Reopen handler below also covers the case where
+        // the user clicks the dock icon while no windows are visible.
+        //
+        // On Windows / Linux we still hide; the user uses Alt-Tab or
+        // the taskbar to bring it back. No system-tray icon yet —
+        // intentionally out of scope, the daemon is the source of
+        // truth and you don't need a tray indicator to know it's
+        // running.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                // Don't let the OS close-handler tear down the
+                // window. Hide it instead. Errors here are non-
+                // fatal: if hide() fails the window stays open,
+                // which is the safer default.
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             // Two paths to a running sidecar:
             //
@@ -528,6 +560,22 @@ fn main() {
             // port file, the next GUI launch will find it, and (once
             // the LaunchAgent has been bootstrapped by install.sh)
             // it will be supervised on subsequent reboots.
+            // macOS dock-click while the window is hidden.
+            //
+            // On macOS, clicking the dock icon for an app that's
+            // already running but has no visible windows fires
+            // RunEvent::Reopen. By default Tauri does nothing here,
+            // so once the user has hidden Delfi (via the X button)
+            // there's no path back to the UI short of relaunching.
+            // We re-show + focus the main window so the dock icon
+            // behaves like every other macOS app.
+            if let RunEvent::Reopen { .. } = event {
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+
             if let RunEvent::Exit = event {
                 if cfg!(debug_assertions) {
                     let state = app_handle.state::<ApiState>();

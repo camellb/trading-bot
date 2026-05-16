@@ -69,7 +69,11 @@ from feeds.feed_health_monitor import monitor
 from feeds.news_feed import NewsFeed
 from feeds.macro_calendar import MacroCalendar
 from local_api import LocalAPI
-from polymarket_runner import resolve_positions, scan_and_analyze
+from polymarket_runner import (
+    resolve_positions,
+    resolve_skipped_evaluations,
+    scan_and_analyze,
+)
 from process_health import health as proc_health
 
 
@@ -744,6 +748,24 @@ async def main() -> None:
             proc_health.record_job_error("markout_check")
             print(f"[delfi] markout failed: {exc}", file=sys.stderr, flush=True)
 
+    def _run_resolve_skipped():
+        """Back-fill outcomes for skipped market_evaluations.
+
+        Runs slow (every 15 min by default) because skipped markets
+        are not time-critical for the user — they're a "would I have
+        won?" audit surface, not a trading hot path. 120s budget is
+        plenty for a 200-row batch against gamma."""
+        try:
+            _asyncio_module.run(_bounded(
+                resolve_skipped_evaluations(), timeout_s=120,
+                label="resolve_skipped",
+            ))
+            proc_health.record_job_ok("pm_resolve_skipped")
+        except Exception as exc:
+            proc_health.record_job_error("pm_resolve_skipped")
+            print(f"[delfi] resolve_skipped failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     now_utc = datetime.now(timezone.utc)
     scheduler.add_job(
         _run_scan, IntervalTrigger(minutes=scan_interval_min),
@@ -776,6 +798,15 @@ async def main() -> None:
         _run_markouts, IntervalTrigger(hours=1),
         id="markout_check",
         next_run_time=now_utc + timedelta(minutes=7),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    scheduler.add_job(
+        _run_resolve_skipped, IntervalTrigger(minutes=15),
+        id="pm_resolve_skipped",
+        # First fire 2 minutes after boot — give the position resolver
+        # priority on a fresh start, then catch up on skipped evals.
+        next_run_time=now_utc + timedelta(minutes=2),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )
