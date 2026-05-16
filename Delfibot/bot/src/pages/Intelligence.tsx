@@ -3,7 +3,6 @@ import {
   api,
   isConnectionError,
   LearningReport,
-  MarketEvaluation,
   PendingSuggestion,
   ReportArchetypeRow,
   ReportPosition,
@@ -115,13 +114,12 @@ function SuggestionDiff({ s }: { s: PendingSuggestion }) {
   );
 }
 
-type Tab = "reviews" | "proposals" | "skipped";
+type Tab = "reviews" | "proposals";
 
 export default function Intelligence() {
   const [reports, setReports]         = useState<LearningReport[] | null>(null);
   const [suggestions, setSuggestions] = useState<PendingSuggestion[] | null>(null);
   const [history, setHistory]         = useState<PendingSuggestion[] | null>(null);
-  const [evals, setEvals]             = useState<MarketEvaluation[] | null>(null);
   const [error, setError]             = useState<string | null>(null);
   const [busyId, setBusyId]           = useState<number | null>(null);
   const [tab, setTab]                 = useState<Tab>("reviews");
@@ -129,18 +127,14 @@ export default function Intelligence() {
 
   const refresh = useCallback(async () => {
     try {
-      const [r1, r2, r3, r4] = await Promise.all([
+      const [r1, r2, r3] = await Promise.all([
         api.learningReports(20).then((x) => x.reports),
         api.suggestions().then((x) => x.suggestions),
         api.suggestionsHistory(20).then((x) => x.suggestions),
-        // Pull more rows than we'll show so the per-mode + skipped
-        // filter at render time still has a useful population.
-        api.evaluations(300).then((x) => x.evaluations),
       ]);
       setReports(r1);
       setSuggestions(r2);
       setHistory(r3);
-      setEvals(r4);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -164,24 +158,12 @@ export default function Intelligence() {
 
   const reportsList = reports ?? [];
   const historyList = history ?? [];
-  // Skipped evaluations = the forecaster ran on the market but
-  // decided not to trade. We surface these so the user can audit
-  // "would Delfi have won if it had played anyway?" against the
-  // resolved outcome. Counterfactual logic lives inside SkippedPane.
-  const skippedRows = useMemo(() => {
-    const TRADE_VERBS = new Set(["BUY_YES", "YES", "BUY_NO", "NO"]);
-    return (evals ?? []).filter((e) => {
-      const rec = (e.recommendation || "").toUpperCase();
-      return !TRADE_VERBS.has(rec);
-    });
-  }, [evals]);
-  const loaded      = reports !== null && suggestions !== null && history !== null && evals !== null;
+  const loaded      = reports !== null && suggestions !== null && history !== null;
   const hasAnything =
     reportsList.length > 0 ||
     pending.length > 0 ||
     snoozed.length > 0 ||
-    historyList.length > 0 ||
-    skippedRows.length > 0;
+    historyList.length > 0;
 
   // Auto-jump to Proposals when there's pending work and no reviews yet.
   useEffect(() => {
@@ -287,18 +269,6 @@ export default function Intelligence() {
               </span>
             )}
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "skipped"}
-            className={`intel-tab ${tab === "skipped" ? "active" : ""}`}
-            onClick={() => setTab("skipped")}
-          >
-            Skipped
-            {skippedRows.length > 0 && (
-              <span className="intel-tab-badge">{skippedRows.length}</span>
-            )}
-          </button>
         </div>
       )}
 
@@ -323,107 +293,7 @@ export default function Intelligence() {
           onSkip={skip}
         />
       )}
-
-      {loaded && hasAnything && tab === "skipped" && (
-        <SkippedPane rows={skippedRows} />
-      )}
     </div>
-  );
-}
-
-// ── Skipped pane ────────────────────────────────────────────────────────────
-//
-// Renders every market_evaluation row where Delfi DECLINED to trade,
-// alongside the eventual market outcome and a counterfactual win/loss
-// pill. The pill answers: if Delfi had backed the market favourite
-// (the side with implied probability >= 0.50) on this market, would
-// it have been a winner?
-//
-// Three pill states:
-//   "Would have won"    — counterfactual side matches the settled
-//                         outcome. Rendered teal.
-//   "Would have lost"   — counterfactual side disagrees. Rendered amber.
-//   "Pending"           — the market hasn't resolved yet.
-//   "Void"              — Polymarket resolved the market as INVALID.
-//
-// We deliberately don't show estimated P&L for the counterfactual.
-// The bot uses dynamic per-archetype sizing; back-computing what
-// stake the sizer would have picked at the time of the eval is
-// brittle and the user mostly wants to see the win/loss bit.
-function SkippedPane({ rows }: { rows: MarketEvaluation[] }) {
-  if (rows.length === 0) {
-    return (
-      <section className="intel-empty">
-        <div className="intel-empty-pill">NO SKIPS YET</div>
-        <h2 className="intel-empty-head">Delfi hasn&apos;t skipped any markets yet</h2>
-        <p className="intel-empty-body">
-          Once Delfi declines a trade, the market and what eventually
-          happened will appear here.
-        </p>
-      </section>
-    );
-  }
-
-  return (
-    <section className="intel-section">
-      <div className="intel-section-head">
-        <h2>Skipped markets</h2>
-        <p className="intel-section-sub">
-          The forecaster looked at these and decided not to trade. Once
-          the market resolves, you can see whether backing the market
-          favourite would have won.
-        </p>
-      </div>
-
-      <div className="intel-skipped-list">
-        {rows.map((row) => {
-          const marketFavSide = row.market_price_yes >= 0.5 ? "YES" : "NO";
-          const settled = row.settlement_outcome
-            ? row.settlement_outcome.toUpperCase()
-            : null;
-          let pillLabel: string;
-          let pillClass: string;
-          if (!settled) {
-            pillLabel = "Pending";
-            pillClass = "intel-skip-pill pending";
-          } else if (settled === "INVALID") {
-            pillLabel = "Void";
-            pillClass = "intel-skip-pill void";
-          } else if (settled === marketFavSide) {
-            pillLabel = "Would have won";
-            pillClass = "intel-skip-pill win";
-          } else {
-            pillLabel = "Would have lost";
-            pillClass = "intel-skip-pill loss";
-          }
-          return (
-            <div key={row.id} className="intel-skip-row">
-              <div className="intel-skip-main">
-                <div className="intel-skip-q">{row.question}</div>
-                <div className="intel-skip-meta">
-                  <span>{formatDateTime(row.evaluated_at)}</span>
-                  <span>·</span>
-                  <span>
-                    Market: {(row.market_price_yes * 100).toFixed(0)}% YES
-                  </span>
-                  <span>·</span>
-                  <span>
-                    Delfi: {(row.claude_probability * 100).toFixed(0)}% YES
-                  </span>
-                  {row.market_archetype && (
-                    <>
-                      <span>·</span>
-                      <span>{archetypeLabel(row.market_archetype)}</span>
-                    </>
-                  )}
-                </div>
-              </div>
-              <div className={pillClass}>{pillLabel}</div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 

@@ -2509,89 +2509,35 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   color: var(--profit);
 }
 
-/* ── Intelligence > Skipped tab ──────────────────────────────────────── */
+/* ── Positions > Skipped > Result pill ───────────────────────────────── */
 
-.intel-section-head {
-  margin-bottom: 16px;
-}
-.intel-section-head h2 {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--vellum);
-  margin: 0 0 4px 0;
-}
-.intel-section-sub {
-  font-size: 13px;
-  color: var(--vellum-60);
-  margin: 0;
-}
-
-.intel-skipped-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.intel-skip-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
-  background: var(--obsidian-raise);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-
-.intel-skip-main {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-  flex: 1;
-}
-.intel-skip-q {
-  font-size: 14px;
-  color: var(--vellum);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.intel-skip-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--vellum-60);
-  flex-wrap: wrap;
-}
-
-.intel-skip-pill {
+.skip-result {
+  display: inline-block;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 999px;
   border: 1px solid var(--border);
   white-space: nowrap;
 }
-.intel-skip-pill.pending {
+.skip-result.pending {
   color: var(--vellum-60);
-  background: var(--obsidian-sink);
+  background: transparent;
 }
-.intel-skip-pill.void {
-  color: var(--vellum-60);
-  background: var(--obsidian-sink);
-  border-style: dashed;
-}
-.intel-skip-pill.win {
+.skip-result.yes {
   color: var(--profit);
   background: var(--profit-dim);
   border-color: var(--profit-line);
 }
-.intel-skip-pill.loss {
+.skip-result.no {
   color: var(--ember);
   background: var(--ember-dim);
   border-color: var(--ember-line);
+}
+.skip-result.void {
+  color: var(--vellum-60);
+  background: transparent;
+  border-style: dashed;
 }

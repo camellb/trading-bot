@@ -485,6 +485,7 @@ export default function Positions() {
                   <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
                   <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
                   <SortableTh field="evaluated" sort={skippedSort}>Evaluated</SortableTh>
+                  <th>Result</th>
                   <th style={{ width: 28 }} />
                 </tr>
               </thead>
@@ -508,6 +509,23 @@ export default function Positions() {
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
                         <td className="mono">{fmt(e.evaluated_at)}</td>
+                        <td>
+                          {(() => {
+                            // RESULT pill: PENDING / YES / NO / VOID.
+                            //
+                            // Back-filled by resolve_skipped_evaluations
+                            // every 15 min once the market closes. NULL
+                            // = market still open. INVALID = the market
+                            // resolved as 50/50 / void on Polymarket.
+                            const o = (e.settlement_outcome || "").toUpperCase();
+                            let label = "PENDING";
+                            let cls = "skip-result pending";
+                            if (o === "YES") { label = "YES"; cls = "skip-result yes"; }
+                            else if (o === "NO") { label = "NO";  cls = "skip-result no";  }
+                            else if (o === "INVALID") { label = "VOID"; cls = "skip-result void"; }
+                            return <span className={cls}>{label}</span>;
+                          })()}
+                        </td>
                         <td className="mono" style={{ textAlign: "right" }}>
                           <span style={{
                             display: "inline-block",
@@ -519,7 +537,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={7} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {reasoning || "No reasoning recorded."}
