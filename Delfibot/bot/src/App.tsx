@@ -94,15 +94,17 @@ export default function App() {
   // to type LIVE explicitly. This is a footgun guard: an accidental
   // click on the Live button used to silently flip the mode and the
   // next scan would place real Polymarket orders.
-  const [pendingLiveSwitch, setPendingLiveSwitch] = useState(false);
-  const setMode = async (next: "simulation" | "live") => {
+  // Mode-switch confirmation. Both directions require a click-to-
+  // confirm so an accidental click on the Sidebar's Sim/Live button
+  // can't silently flip the bot — switching INTO live starts firing
+  // real Polymarket orders on the next scan, switching back to sim
+  // stops them. Either is a meaningful action worth a second beat.
+  const [pendingMode, setPendingMode] =
+    useState<"simulation" | "live" | null>(null);
+  const setMode = (next: "simulation" | "live") => {
     if (modeBusy) return;
     if (state?.mode === next) return;
-    if (next === "live") {
-      setPendingLiveSwitch(true);
-      return;
-    }
-    await applyMode(next);
+    setPendingMode(next);
   };
   const applyMode = async (next: "simulation" | "live") => {
     setModeBusy(true);
@@ -115,11 +117,12 @@ export default function App() {
       setModeBusy(false);
     }
   };
-  const confirmLiveSwitch = async () => {
-    setPendingLiveSwitch(false);
-    await applyMode("live");
+  const confirmModeSwitch = async () => {
+    const target = pendingMode;
+    setPendingMode(null);
+    if (target) await applyMode(target);
   };
-  const cancelLiveSwitch = () => setPendingLiveSwitch(false);
+  const cancelModeSwitch = () => setPendingMode(null);
 
   // Bot on/off. Calls /api/bot/start (sets bot_enabled=true; validates
   // creds for the current mode) or /api/bot/stop (sets bot_enabled=false).
@@ -169,10 +172,11 @@ export default function App() {
     <LicenseGate>
     <div className="app-shell">
       <UpdatePrompt />
-      {pendingLiveSwitch && (
-        <LiveConfirmModal
-          onConfirm={confirmLiveSwitch}
-          onCancel={cancelLiveSwitch}
+      {pendingMode && (
+        <ModeConfirmModal
+          targetMode={pendingMode}
+          onConfirm={confirmModeSwitch}
+          onCancel={cancelModeSwitch}
         />
       )}
       <Sidebar
@@ -181,7 +185,14 @@ export default function App() {
         setPage={setPage}
         setSettingsTab={setSettingsTab}
         mode={mode}
-        canTradeLive={state?.can_trade_live ?? false}
+        // live_creds_ready is "do we have wallet + key" regardless
+        // of current mode. Use it to gate the Live toggle so the
+        // user can actually switch INTO live (the older
+        // can_trade_live required mode=live, creating a chicken-
+        // and-egg where the Live button was permanently disabled
+        // in simulation). Fall back to can_trade_live for older
+        // sidecars that don't surface the new field.
+        canTradeLive={state?.live_creds_ready ?? state?.can_trade_live ?? false}
         botEnabled={state?.bot_enabled ?? false}
         setMode={setMode}
         toggleBotEnabled={toggleBotEnabled}
@@ -577,15 +588,17 @@ function BotStatusPill({
 // LIVE in all caps before flipping the mode. Cancel button + Escape
 // + clicking the backdrop all dismiss without flipping.
 
-function LiveConfirmModal({
-  onConfirm, onCancel,
+function ModeConfirmModal({
+  targetMode, onConfirm, onCancel,
 }: {
+  targetMode: "simulation" | "live";
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const [typed, setTyped] = useState("");
-  const enabled = typed === "LIVE";
+  const isLive = targetMode === "live";
 
+  // Escape dismisses; backdrop click also dismisses; clicks inside
+  // the card don't bubble out.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -593,6 +606,24 @@ function LiveConfirmModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onCancel]);
+
+  // Focus the primary action by default so Enter confirms. Going to
+  // sim is harmless, so the primary is the "go ahead" button on
+  // both paths; cancel is one Tab back or Escape.
+  const confirmRef = (el: HTMLButtonElement | null) => {
+    if (el) el.focus();
+  };
+
+  const title = isLive
+    ? "Switch to live trading?"
+    : "Switch to simulation?";
+  const body = isLive
+    ? "Delfi will place real Polymarket orders on the next scan using the wallet you connected. Make sure the wallet is funded and your risk settings are tight enough for real-money exposure."
+    : "Delfi will stop placing real Polymarket orders. Existing live positions stay open on-chain until they resolve; only NEW trades will be paper from here.";
+  const confirmLabel = isLive ? "Switch to live" : "Switch to simulation";
+  // Match the SaaS visual language: live confirmation gets a more
+  // assertive (gold) action button, simulation gets the neutral one.
+  const confirmClass = isLive ? "btn small" : "btn small ghost";
 
   return (
     <div
@@ -618,42 +649,10 @@ function LiveConfirmModal({
           boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
         }}
       >
-        <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>
-          Switch to live trading?
-        </h2>
-        <p style={{ margin: "0 0 16px", color: "var(--vellum-70, #b8b6b1)" }}>
-          Delfi will place real Polymarket orders on the next scan
-          using the wallet you connected. Make sure you have funded
-          the wallet and reviewed your risk settings.
+        <h2 style={{ margin: "0 0 12px", fontSize: 20 }}>{title}</h2>
+        <p style={{ margin: "0 0 20px", color: "var(--vellum-70, #b8b6b1)" }}>
+          {body}
         </p>
-        <p style={{
-          margin: "0 0 8px",
-          color: "var(--vellum-60, #888)",
-          fontSize: 13,
-        }}>
-          Type <strong>LIVE</strong> to confirm.
-        </p>
-        <input
-          type="text"
-          autoFocus
-          value={typed}
-          onChange={(e) => setTyped(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && enabled) onConfirm();
-          }}
-          style={{
-            width: "100%",
-            padding: "8px 12px",
-            background: "var(--obsidian-100, #050505)",
-            color: "inherit",
-            border: "1px solid var(--obsidian-70, #2a2a2c)",
-            borderRadius: 4,
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            letterSpacing: "0.1em",
-            marginBottom: 16,
-          }}
-          placeholder="LIVE"
-        />
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <button
             type="button"
@@ -663,13 +662,12 @@ function LiveConfirmModal({
             Cancel
           </button>
           <button
+            ref={confirmRef}
             type="button"
-            className="btn small"
+            className={confirmClass}
             onClick={onConfirm}
-            disabled={!enabled}
-            style={enabled ? {} : { opacity: 0.5, cursor: "not-allowed" }}
           >
-            Switch to live
+            {confirmLabel}
           </button>
         </div>
       </div>

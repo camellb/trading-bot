@@ -608,6 +608,18 @@ class LocalAPI:
         cfg = await asyncio.get_event_loop().run_in_executor(
             None, get_user_config,
         )
+        # `can_trade_live` is gated on `mode == 'live'` (correct for
+        # the sizer's "am I actually live right now" check) but that
+        # makes it useless for the UI's "can I switch to live"
+        # question — there's a chicken-and-egg where the Live button
+        # is disabled in simulation, so the user can never flip it.
+        # Add a separate `live_creds_ready` that only checks the
+        # credentials, independent of current mode. UI uses this to
+        # enable the Live toggle.
+        live_creds_ready = bool(
+            cfg.wallet_address
+            and _keyring_get(KEYRING_POLYMARKET_KEY) is not None
+        )
         return _ok({
             "mode": cfg.mode,
             "bot_enabled": bool(getattr(cfg, "bot_enabled", False)),
@@ -616,6 +628,7 @@ class LocalAPI:
             "wallet_address": cfg.wallet_address,
             "is_onboarded": cfg.is_onboarded,
             "can_trade_live": cfg.can_trade_live,
+            "live_creds_ready": live_creds_ready,
             "uptime_s": proc_health.uptime_seconds,
             "started_at": (proc_health.start_time.isoformat()
                            if proc_health.start_time else None),

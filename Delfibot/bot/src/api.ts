@@ -250,7 +250,16 @@ export interface BotState {
   starting_cash: number | null;
   wallet_address: string | null;
   is_onboarded: boolean;
+  /** Currently in live mode AND has the credentials needed to trade.
+   *  Gated on `mode === 'live'` — useful for the sizer, useless for
+   *  "can the user switch to live from sim" UI gating (chicken and
+   *  egg). For that, use `live_creds_ready` below. */
   can_trade_live: boolean;
+  /** Has the wallet + polymarket private key needed to trade live,
+   *  independent of current mode. UI uses this to enable the Live
+   *  mode toggle when the user is currently in simulation. Older
+   *  sidecars don't surface it; the UI defaults missing to false. */
+  live_creds_ready?: boolean;
   uptime_s: number;
   started_at: string | null;
   error_count: number;
