@@ -729,31 +729,41 @@ async def _fetch_live_market_data(
     days_to_resolution:  Optional[float],
 ) -> tuple[Optional[str], list[str]]:
     """
-    Gate live crypto (<2 days) and live equity (<3 days) fetches.
+    Always fetch live crypto when the question mentions a tracked
+    symbol (BTC/ETH/SOL). Equity (yfinance) stays gated to <3 days
+    because yfinance is slower, rate-limited, and the current S&P
+    level matters less on a 30-day question than spot BTC does.
 
-    Returns (block, sources). Both empty when no applicable symbol/ticker
-    matches or both adapters fail.
+    Returns (block, sources). Both empty when no applicable
+    symbol/ticker matches or both adapters fail.
+
+    Why crypto is no longer gated by horizon (2026-05-16): a 6-day
+    BTC price-threshold market needs the current price even more
+    than a 1-day one, because the LLM has to reason about
+    "$74k threshold vs current $82k" rather than "$74k vs current
+    $X". The previous `days_to_resolution < 2.0` gate caused the
+    forecaster to fall back to scraped CoinMarketCap HTML, which
+    contains loading placeholders instead of actual numbers, and
+    produced skip reasons like "research crucially lacks the
+    current Bitcoin price." The OKX adapter is cached 15s and
+    basically free, so always firing is the right default.
     """
-    if days_to_resolution is None:
-        return None, []
-
     blocks: list[str] = []
     sources: list[str] = []
 
-    if days_to_resolution < 2.0:
-        symbols = _detect_crypto_symbols(question)
-        if symbols:
-            results = await asyncio.gather(
-                *(asyncio.wait_for(live_crypto.get_context(s), timeout=10)
-                  for s in symbols),
-                return_exceptions=True,
-            )
-            for sym, ctx in zip(symbols, results):
-                if isinstance(ctx, live_crypto.LiveCryptoContext):
-                    blocks.append(ctx.to_prompt_block())
-                    sources.append(f"okx:{sym}")
+    symbols = _detect_crypto_symbols(question)
+    if symbols:
+        results = await asyncio.gather(
+            *(asyncio.wait_for(live_crypto.get_context(s), timeout=10)
+              for s in symbols),
+            return_exceptions=True,
+        )
+        for sym, ctx in zip(symbols, results):
+            if isinstance(ctx, live_crypto.LiveCryptoContext):
+                blocks.append(ctx.to_prompt_block())
+                sources.append(f"okx:{sym}")
 
-    if days_to_resolution < 3.0:
+    if days_to_resolution is not None and days_to_resolution < 3.0:
         tickers = _detect_equity_tickers(question)
         if tickers:
             results = await asyncio.gather(
