@@ -88,28 +88,59 @@ def _get_clob_client(wallet_address: str, private_key: str):
     unauthed client to derive API creds, then a fully-authed client.
     Cached in-process so we only do the round-trip once.
 
-    Cache key includes a SHA-256 of the private key so a credential
-    rotation (same wallet, new key — possible with different
-    derivation paths) does NOT return a stale client signing with the
-    old key. The full key is never logged or exposed; only its hash
-    sits in memory as a dict-key prefix.
+    Polymarket account shapes:
+        signature_type=0  EOA               (MetaMask users)
+        signature_type=1  POLY_PROXY        (the default Polymarket
+                                             Magic-account proxy, most
+                                             users)
+        signature_type=2  POLY_GNOSIS_SAFE  (newer Safe-magic accounts)
+    We don't know up-front which one applies. polymarket_wallet.py
+    probes /balance-allowance for each sig_type and caches the answer
+    for 5 minutes; we read it here so orders are signed against the
+    same on-chain account that actually holds the user's collateral.
+    Without this, a Magic-account user with funds in their proxy
+    would get every order rejected for "insufficient collateral"
+    because the EOA-default client would query a $0 EOA wallet.
+
+    Cache key includes a SHA-256 of the private key AND the resolved
+    signature_type so a key rotation or shape change does NOT return
+    a stale client. The full key is never logged or exposed; only its
+    hash sits in memory as a dict-key prefix.
 
     Imports are deferred so a sidecar that's never gone live doesn't
     have to load the SDK on startup.
     """
     import hashlib
+    # Detect signature_type + funder once; cached upstream for 5 min.
+    sig_type = 0
+    funder: Optional[str] = None
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        info = get_poly_signer_info(private_key)
+        if info:
+            sig_type = int(info.get("signature_type", 0) or 0)
+            funder = info.get("funder") or None
+    except Exception as exc:
+        print(
+            f"[pm_executor] signer probe failed, defaulting to EOA: {exc}",
+            file=sys.stderr,
+        )
     key_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
-    cache_key = f"{wallet_address.lower()}:{key_hash}"
+    cache_key = f"{wallet_address.lower()}:{key_hash}:sig{sig_type}"
     cached = _CLOB_CLIENT_CACHE.get(cache_key)
     if cached is not None:
         return cached
     from py_clob_client_v2.client import ClobClient   # type: ignore
-    seed = ClobClient(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
+    seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
+    if sig_type != 0:
+        seed_kwargs["signature_type"] = sig_type
+        if funder:
+            seed_kwargs["funder"] = funder
+    seed = ClobClient(**seed_kwargs)
     creds = seed.create_or_derive_api_key()
-    client = ClobClient(
-        host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID,
-        key=private_key, creds=creds,
-    )
+    client_kwargs = dict(seed_kwargs)
+    client_kwargs["creds"] = creds
+    client = ClobClient(**client_kwargs)
     _CLOB_CLIENT_CACHE[cache_key] = client
     return client
 

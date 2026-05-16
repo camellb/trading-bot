@@ -162,82 +162,157 @@ async def get_live_usdc_balance(wallet_address: str) -> Optional[float]:
 
 
 def clear_cache() -> None:
-    """Dump the wallet cache. Useful for tests and manual refresh."""
+    """Dump every per-key cache in this module. Useful for tests and
+    for forcing a re-probe after the user funds their Polymarket
+    account (the 5-min sig-type cache would otherwise hold stale
+    'balance=0' info)."""
     _CACHE.clear()
     _CLOB_BALANCE_CACHE.clear()
+    _POLY_SIGNER_CACHE.clear()
 
 
 # ── CLOB-side balance (authoritative for live trading) ──────────────────────
 #
-# `get_live_usdc_balance` above queries USDC contracts directly via
-# eth_call. That works if the user holds collateral at their EOA. It
-# does NOT work for funds the user has deposited into their Polymarket
-# Account (a proxy / Magic wallet derived from the EOA) — and that's
-# where every Polymarket UI deposit actually lands. The CLOB's
-# `/balance-allowance` endpoint knows the proxy and returns the
-# balance the bot can actually trade with, which is exactly what the
-# Dashboard "Balance" tile needs to show.
+# Polymarket users have one of three account shapes, all signed by
+# the same EOA private key but holding funds at different on-chain
+# addresses:
+#
+#   signature_type=0  EOA               (MetaMask-connect users)
+#   signature_type=1  POLY_PROXY        (the classic Polymarket Magic
+#                                        proxy contract — default for
+#                                        anyone who signed up via the
+#                                        Polymarket UI)
+#   signature_type=2  POLY_GNOSIS_SAFE  (newer Gnosis-Safe magic
+#                                        accounts)
+#
+# We don't know up-front which one applies. So we PROBE: call
+# /balance-allowance once with each signature_type, pick the one
+# that reports a non-zero balance. The result is cached for 5
+# minutes; that's long enough to skip re-probing on every
+# Dashboard poll but short enough that a fresh deposit shows up
+# quickly. The bot's order-placement path reads the same cache so
+# orders are signed with the correct signature_type — otherwise
+# the CLOB would reject every order with "insufficient collateral"
+# even though the user has funds at their proxy.
 
 _CLOB_BALANCE_CACHE: Dict[str, Tuple[float, float]] = {}
 _CLOB_BALANCE_TTL_SECONDS = 60.0
 
+_POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
+_POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
 
-def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
-    """
-    Ask Polymarket's CLOB how much collateral this signer can spend.
 
-    Source-of-truth for live-mode bankroll. Caches per-key in-memory
-    for 60 s so the Dashboard's poll loop doesn't slam the CLOB API.
-    Returns USD float on success, None on any failure (key missing,
-    SDK error, network) — caller decides what to display.
+def _build_clob_client(
+    private_key: str,
+    signature_type: int = -1,
+    funder: Optional[str] = None,
+):
+    """Two-step construction per the py-clob-client-v2 SDK: derive an
+    api-key with the signing key first, then build the fully-authed
+    client. Helpers in this module use it; pm_executor builds its
+    own cached version for order placement."""
+    from py_clob_client_v2.client import ClobClient
+    CLOB_HOST = "https://clob.polymarket.com"
+    POLYGON_CHAIN_ID = 137
+    seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
+    if signature_type != -1:
+        seed_kwargs["signature_type"] = signature_type
+        if funder:
+            seed_kwargs["funder"] = funder
+    seed = ClobClient(**seed_kwargs)
+    creds = seed.create_or_derive_api_key()
+    client_kwargs = dict(seed_kwargs)
+    client_kwargs["creds"] = creds
+    return ClobClient(**client_kwargs)
 
-    Synchronous (the SDK is sync); call sites wrap it in an executor
-    when running on the asyncio loop.
+
+def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
+    """Detect the user's Polymarket account shape.
+
+    Returns a dict ``{signature_type, funder, balance}`` describing
+    the on-chain account this signing key controls. balance is in
+    USD (6-decimal converted). funder is the EOA address derived
+    from the private key — Polymarket uses it both as the EOA for
+    sig_type=0 and as the "underlying owner" of sig_type=1 / 2
+    proxy contracts.
+
+    Probing strategy: call /balance-allowance for sig_types 0, 1, 2
+    in order. Return the first that reports balance > 0. If all
+    three return 0, return {sig_type=0, balance=0} as the "safe
+    EOA default" — the user is unfunded; any of the three answers
+    is equivalent.
+
+    Cached per-key for 5 minutes. Failure (no key, SDK error,
+    network) returns None so callers can fall back gracefully.
     """
     if not private_key or not isinstance(private_key, str):
         return None
     import hashlib
     cache_key = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
     now = time.monotonic()
-    cached = _CLOB_BALANCE_CACHE.get(cache_key)
+    cached = _POLY_SIGNER_CACHE.get(cache_key)
     if cached is not None:
-        bal, ts = cached
-        if now - ts < _CLOB_BALANCE_TTL_SECONDS:
-            return bal
+        info, ts = cached
+        if now - ts < _POLY_SIGNER_TTL_SECONDS:
+            return info
 
     try:
-        from py_clob_client_v2.client import ClobClient
         from py_clob_client_v2.clob_types import (
             AssetType, BalanceAllowanceParams,
         )
-        # Two-step construction per the SDK README: derive API key
-        # from the signing key, then build a fully-authed client.
-        # Lifecycle is short — used once per /api/summary poll inside
-        # the 60 s cache window. We don't try to share pm_executor's
-        # cached client to avoid coupling the read path on the
-        # executor's internals.
-        CLOB_HOST = "https://clob.polymarket.com"
-        POLYGON_CHAIN_ID = 137
-        seed = ClobClient(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
-        creds = seed.create_or_derive_api_key()
-        client = ClobClient(
-            host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID,
-            key=private_key, creds=creds,
-        )
-        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
-        result = client.get_balance_allowance(params) or {}
-        raw = result.get("balance")
-        if raw is None:
-            return None
-        # CLOB returns the raw uint256 string in 6-decimal USDC units.
-        try:
-            value = int(raw) / (10 ** _USDC_DECIMALS)
-        except (TypeError, ValueError):
-            return None
+        # Derive the EOA from the key first — used as the funder for
+        # proxy queries.
+        seed_client = _build_clob_client(private_key)
+        eoa = seed_client.get_address()
     except Exception as exc:
-        print(f"[polymarket_wallet] CLOB balance fetch failed: {exc}",
+        print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
               file=sys.stderr)
         return None
 
-    _CLOB_BALANCE_CACHE[cache_key] = (float(value), now)
-    return float(value)
+    chosen: Optional[dict] = None
+    for sig_type in (0, 1, 2):
+        try:
+            client = _build_clob_client(
+                private_key, signature_type=sig_type, funder=eoa,
+            )
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL, signature_type=sig_type,
+            )
+            result = client.get_balance_allowance(params) or {}
+            raw = result.get("balance")
+            if raw is None:
+                continue
+            try:
+                value = int(raw) / (10 ** _USDC_DECIMALS)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                chosen = {
+                    "signature_type": sig_type,
+                    "funder":         eoa,
+                    "balance":        float(value),
+                }
+                break
+        except Exception as exc:
+            print(f"[polymarket_wallet] probe sig_type={sig_type} failed: {exc}",
+                  file=sys.stderr)
+            continue
+
+    if chosen is None:
+        # All three probed clean / zero. Default to EOA shape so the
+        # bot has something to use; the user can fund any of the
+        # three account types and the next probe will catch it.
+        chosen = {"signature_type": 0, "funder": eoa, "balance": 0.0}
+
+    _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
+    return chosen
+
+
+def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
+    """Backwards-compat shim returning just the balance number.
+
+    New code should call get_poly_signer_info directly; that's the
+    function that also exposes signature_type for order placement.
+    """
+    info = get_poly_signer_info(private_key)
+    return float(info["balance"]) if info else None
