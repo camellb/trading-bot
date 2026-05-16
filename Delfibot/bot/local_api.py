@@ -1047,32 +1047,38 @@ class LocalAPI:
         except Exception:
             brier = {"brier": None, "resolved": 0, "total": 0}
 
-        # Live-mode balance overlay. In simulation, the bankroll is a
-        # synthetic number ("how would Delfi do with $1000?") and the
-        # DB-derived value is correct. In live, the displayed balance
-        # MUST reflect the actual USDC sitting in the user's Polymarket
-        # wallet — not a config-stored starting_cash. We query the
-        # wallet directly via polymarket_wallet.get_live_usdc_balance,
-        # which has its own 60s in-memory cache so this stays cheap.
-        # If the RPC is unreachable the overlay falls through to the
-        # DB-derived numbers rather than flashing $0.
+        # Live-mode balance overlay. In simulation the synthetic
+        # starting_cash is correct ("how would Delfi do with $1000?")
+        # but in live we MUST show what's actually spendable on
+        # Polymarket. Funds deposited via the Polymarket UI sit in a
+        # proxy / Magic Account, NOT at the user's EOA — so a direct
+        # USDC eth_call against the EOA returns 0 even when the user
+        # is funded. The authoritative source is Polymarket's CLOB
+        # `/balance-allowance` endpoint, which knows the proxy and
+        # returns the collateral the bot can actually trade with.
+        # Helper has a 60 s in-memory cache so the Dashboard poll
+        # loop doesn't slam the CLOB. On any failure we leave the
+        # DB-derived value alone (don't flash $0 on a network
+        # hiccup).
         bankroll = stats.get("bankroll")
         equity   = stats.get("equity")
         open_cost = float(stats.get("open_cost") or 0.0)
         if stats.get("mode") == "live":
             try:
-                from feeds.polymarket_wallet import get_live_usdc_balance
-                cfg = await self._offload(get_user_config)
-                wallet = (cfg.wallet_address or "").strip()
-                if wallet:
-                    wallet_balance = await get_live_usdc_balance(wallet)
-                    if wallet_balance is not None:
-                        bankroll = float(wallet_balance)
+                from feeds.polymarket_wallet import get_live_clob_balance
+                pm_key = await self._offload(
+                    _keyring_get, KEYRING_POLYMARKET_KEY,
+                )
+                if pm_key:
+                    clob_balance = await asyncio.get_event_loop().run_in_executor(
+                        None, get_live_clob_balance, pm_key,
+                    )
+                    if clob_balance is not None:
+                        bankroll = float(clob_balance)
                         equity = bankroll + open_cost
             except Exception as exc:
-                # Don't break the dashboard on a flaky RPC; the
-                # DB-derived numbers are a safe fallback.
-                print(f"[summary] live wallet overlay failed: {exc}",
+                # Don't break the dashboard if the CLOB API blips.
+                print(f"[summary] live CLOB balance overlay failed: {exc}",
                       flush=True)
 
         starting = float(stats.get("starting_cash") or 0.0)

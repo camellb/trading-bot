@@ -164,3 +164,80 @@ async def get_live_usdc_balance(wallet_address: str) -> Optional[float]:
 def clear_cache() -> None:
     """Dump the wallet cache. Useful for tests and manual refresh."""
     _CACHE.clear()
+    _CLOB_BALANCE_CACHE.clear()
+
+
+# ── CLOB-side balance (authoritative for live trading) ──────────────────────
+#
+# `get_live_usdc_balance` above queries USDC contracts directly via
+# eth_call. That works if the user holds collateral at their EOA. It
+# does NOT work for funds the user has deposited into their Polymarket
+# Account (a proxy / Magic wallet derived from the EOA) — and that's
+# where every Polymarket UI deposit actually lands. The CLOB's
+# `/balance-allowance` endpoint knows the proxy and returns the
+# balance the bot can actually trade with, which is exactly what the
+# Dashboard "Balance" tile needs to show.
+
+_CLOB_BALANCE_CACHE: Dict[str, Tuple[float, float]] = {}
+_CLOB_BALANCE_TTL_SECONDS = 60.0
+
+
+def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
+    """
+    Ask Polymarket's CLOB how much collateral this signer can spend.
+
+    Source-of-truth for live-mode bankroll. Caches per-key in-memory
+    for 60 s so the Dashboard's poll loop doesn't slam the CLOB API.
+    Returns USD float on success, None on any failure (key missing,
+    SDK error, network) — caller decides what to display.
+
+    Synchronous (the SDK is sync); call sites wrap it in an executor
+    when running on the asyncio loop.
+    """
+    if not private_key or not isinstance(private_key, str):
+        return None
+    import hashlib
+    cache_key = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    now = time.monotonic()
+    cached = _CLOB_BALANCE_CACHE.get(cache_key)
+    if cached is not None:
+        bal, ts = cached
+        if now - ts < _CLOB_BALANCE_TTL_SECONDS:
+            return bal
+
+    try:
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2.clob_types import (
+            AssetType, BalanceAllowanceParams,
+        )
+        # Two-step construction per the SDK README: derive API key
+        # from the signing key, then build a fully-authed client.
+        # Lifecycle is short — used once per /api/summary poll inside
+        # the 60 s cache window. We don't try to share pm_executor's
+        # cached client to avoid coupling the read path on the
+        # executor's internals.
+        CLOB_HOST = "https://clob.polymarket.com"
+        POLYGON_CHAIN_ID = 137
+        seed = ClobClient(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
+        creds = seed.create_or_derive_api_key()
+        client = ClobClient(
+            host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID,
+            key=private_key, creds=creds,
+        )
+        params = BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+        result = client.get_balance_allowance(params) or {}
+        raw = result.get("balance")
+        if raw is None:
+            return None
+        # CLOB returns the raw uint256 string in 6-decimal USDC units.
+        try:
+            value = int(raw) / (10 ** _USDC_DECIMALS)
+        except (TypeError, ValueError):
+            return None
+    except Exception as exc:
+        print(f"[polymarket_wallet] CLOB balance fetch failed: {exc}",
+              file=sys.stderr)
+        return None
+
+    _CLOB_BALANCE_CACHE[cache_key] = (float(value), now)
+    return float(value)
