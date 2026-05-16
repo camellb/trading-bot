@@ -490,20 +490,20 @@ function Proof() {
 
         <div className="proof-stats">
           <div className="proof-stat">
-            <div className="proof-num vellum t-num"><CountUp target={11500} /></div>
+            <div className="proof-num vellum t-num">11,500+</div>
             <div className="proof-label">Downloads</div>
           </div>
           <div className="proof-stat">
-            <div className="proof-num gold t-num">0.087</div>
+            <div className="proof-num gold t-num">0.167</div>
             <div className="proof-label">30-Day Brier Score</div>
           </div>
           <div className="proof-stat">
-            <div className="proof-num teal t-num">68%</div>
-            <div className="proof-label">Win Rate, Last 30 Days</div>
+            <div className="proof-num teal t-num">76%</div>
+            <div className="proof-label">Avg 30-Day Win Rate</div>
           </div>
           <div className="proof-stat">
-            <div className="proof-num teal t-num">+47%</div>
-            <div className="proof-label">Avg ROI Across Positions</div>
+            <div className="proof-num teal t-num">+8%</div>
+            <div className="proof-label">Average Monthly ROI</div>
           </div>
         </div>
 
