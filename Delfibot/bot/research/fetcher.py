@@ -107,7 +107,16 @@ class ResearchBundle:
     sources:          list[str]     = field(default_factory=list)
 
     def to_prompt_block(self) -> str:
-        """Format everything into a compact context block for Claude."""
+        """Format everything into a context block for the forecaster.
+
+        Doctrine (2026-05-17): the user pays the LLM bill, accuracy
+        beats token cost. Show everything we fetched. Old caps
+        (web_pages[:3], web_search[:8], news[:8], external_news[:5])
+        were artefacts of an SaaS-era "keep prompt small" instinct
+        that no longer applies under BYO-keys. The fetcher itself
+        still caps per-source fetch volume; this method just stops
+        re-truncating what we already collected.
+        """
         parts: list[str] = []
         if self.live_market_data:
             parts.append(
@@ -115,10 +124,10 @@ class ResearchBundle:
                 f"{self.live_market_data.strip()}"
             )
         if self.web_pages:
-            pages = "\n\n".join(self.web_pages[:3])
+            pages = "\n\n".join(self.web_pages)
             parts.append(f"-- Detailed web research --\n{pages}")
         if self.web_search:
-            web = "\n".join(f"• {s}" for s in self.web_search[:8])
+            web = "\n".join(f"• {s}" for s in self.web_search)
             parts.append(f"-- Web search results (current) --\n{web}")
         # CoinGecko spot fallback - only if live_market_data did not fire.
         if self.crypto_prices and not self.live_market_data:
@@ -128,10 +137,10 @@ class ResearchBundle:
         if self.wikipedia:
             parts.append(f"-- Wikipedia --\n{self.wikipedia.strip()}")
         if self.news_snippets:
-            headlines = "\n".join(f"• {h}" for h in self.news_snippets[:8])
+            headlines = "\n".join(f"• {h}" for h in self.news_snippets)
             parts.append(f"-- Recent headlines (RSS) --\n{headlines}")
         if self.external_news:
-            ext = "\n".join(f"• {h}" for h in self.external_news[:5])
+            ext = "\n".join(f"• {h}" for h in self.external_news)
             parts.append(f"-- Recent headlines (NewsAPI) --\n{ext}")
         if self.base_rate_note:
             parts.append(f"-- Historical base rate --\n{self.base_rate_note}")
@@ -323,7 +332,7 @@ async def _fetch_wikipedia(session: aiohttp.ClientSession,
 
 
 # ── News headlines from RSS cache ────────────────────────────────────────────
-def _fetch_rss_matches(keywords: list[str], limit: int = 8) -> list[str]:
+def _fetch_rss_matches(keywords: list[str], limit: int = 25) -> list[str]:
     """
     Look for recent rss-cached headlines whose title contains any keyword.
     We query news_event_log (populated by the news feed) for the last 48h.
@@ -364,7 +373,7 @@ def _fetch_rss_matches(keywords: list[str], limit: int = 8) -> list[str]:
 async def _fetch_newsapi(session: aiohttp.ClientSession,
                          keyword: str,
                          api_key: str,
-                         limit: int = 5) -> list[str]:
+                         limit: int = 25) -> list[str]:
     """
     Optional: fetch top headlines via newsapi.org (free tier, 100 req/day).
     Only called if NEWSAPI_KEY is set.
@@ -1010,7 +1019,7 @@ async def _fetch_web_search_raw(
 
 
 
-def _extract_text_from_html(html: str, max_chars: int = 3000) -> str:
+def _extract_text_from_html(html: str, max_chars: int = 8000) -> str:
     """Extract main content from HTML using trafilatura, with regex fallback."""
     if _TRAFILATURA_AVAILABLE:
         extracted = trafilatura.extract(html, include_comments=False,
@@ -1115,7 +1124,7 @@ def _scrub_polymarket_text(text: str) -> str:
 async def _fetch_page_text(
     session: aiohttp.ClientSession,
     url: str,
-    max_chars: int = 3000,
+    max_chars: int = 8000,
 ) -> Optional[str]:
     """Fetch a URL and extract its text content."""
     try:
@@ -1154,7 +1163,7 @@ async def _fetch_top_pages(
     session: aiohttp.ClientSession,
     search_results: list[dict],
     category: Optional[str] = None,
-    max_pages: int = 3,
+    max_pages: int = 5,
 ) -> list[str]:
     """Fetch full text content from the most relevant search result pages."""
     urls = _pick_urls_for_category(search_results, category, max_urls=max_pages)
@@ -1178,7 +1187,7 @@ async def _fetch_top_pages(
 async def fetch_research(
     question:            str,
     category:            Optional[str] = None,
-    max_wiki_kws:        int           = 2,
+    max_wiki_kws:        int           = 4,
     days_to_resolution:  Optional[float] = None,
 ) -> ResearchBundle:
     """
@@ -1258,7 +1267,7 @@ async def fetch_research(
         newsapi_task = None
         if newsapi_key and bundle.keywords:
             newsapi_task = asyncio.create_task(
-                _fetch_newsapi(session, bundle.keywords[0], newsapi_key, limit=5))
+                _fetch_newsapi(session, bundle.keywords[0], newsapi_key, limit=25))
 
         # Collect DB results.
         bundle.base_rate_note = await base_rate_fut
@@ -1276,7 +1285,7 @@ async def fetch_research(
             bundle.sources.append(f"ddg_web:{len(bundle.web_search)}")
 
         page_task = asyncio.create_task(
-            _fetch_top_pages(session, web_raw, category=detected_category, max_pages=3)
+            _fetch_top_pages(session, web_raw, category=detected_category, max_pages=5)
         ) if web_raw else None
 
         # Await all remaining tasks (most already running).
