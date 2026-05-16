@@ -655,6 +655,14 @@ class LocalAPI:
         if not changes:
             cfg = await self._offload(get_user_config)
             return _ok(_config_to_dict(cfg))
+
+        # Snapshot the prior mode so we can detect a flip and notify
+        # Telegram after the write succeeds. Offloaded because
+        # get_user_config touches SQLite; doing it inline would stall
+        # the aiohttp event loop under scheduler write contention.
+        prior_cfg = await self._offload(get_user_config)
+        prior_mode = (prior_cfg.mode or "").strip().lower() if prior_cfg else ""
+
         try:
             cfg = await self._offload(lambda: update_user_config(**changes))
         except ValueError as exc:
@@ -664,7 +672,68 @@ class LocalAPI:
             # default handler return a text/plain 500: the React UI
             # expects JSON for every response.
             return _err(f"update failed: {exc}", 500)
+
+        new_mode = (cfg.mode or "").strip().lower() if cfg else ""
+        if new_mode and prior_mode and new_mode != prior_mode:
+            # Mode flip. Surface to whatever Telegram chat the user
+            # has wired (no-op if Telegram isn't configured). Best
+            # effort: a notifier outage must never block or fail the
+            # config update. The DB write is the source of truth; the
+            # GUI is about to refresh state anyway.
+            self._notify_mode_switch_async(prior_mode, new_mode)
+
         return _ok(_config_to_dict(cfg))
+
+    def _notify_mode_switch_async(self, prior_mode: str, new_mode: str) -> None:
+        """Fire a Telegram message about a SIMULATION ↔ LIVE flip.
+
+        Runs on the default thread-pool because telegram_notifier.notify
+        is sync (it does a blocking HTTPS POST to api.telegram.org).
+        Wrapped so a notifier exception never leaks back into the
+        request handler.
+        """
+        def _send() -> None:
+            try:
+                from feeds.telegram_notifier import notify as _tg_notify
+            except Exception:
+                return  # telegram_notifier missing - configured off
+            label_old = "Live" if prior_mode == "live" else "Simulation"
+            label_new = "Live"  if new_mode  == "live" else "Simulation"
+            if new_mode == "live":
+                body = (
+                    f"<b>Delfi switched to {label_new}</b>\n"
+                    f"From: {label_old}\n\n"
+                    f"Real-money orders will fire on the next scan if "
+                    f"a market clears the forecaster's filter. Make "
+                    f"sure your wallet is funded and risk settings "
+                    f"are set correctly."
+                )
+            else:
+                body = (
+                    f"<b>Delfi switched to {label_new}</b>\n"
+                    f"From: {label_old}\n\n"
+                    f"Live trading paused. Delfi will keep forecasting "
+                    f"but no real-money orders will be placed."
+                )
+            try:
+                _tg_notify(body)
+            except Exception as exc:
+                print(
+                    f"[local_api] telegram mode-switch notify failed: "
+                    f"{exc}",
+                    file=sys.stderr,
+                )
+
+        # Fire-and-forget on the default executor. Don't await; the
+        # config-update response should not block on a third-party
+        # HTTPS call.
+        try:
+            asyncio.get_event_loop().run_in_executor(None, _send)
+        except Exception as exc:
+            print(
+                f"[local_api] could not dispatch telegram notify: {exc}",
+                file=sys.stderr,
+            )
 
     async def _get_credentials(self, _req: web.Request) -> web.Response:
         """Return existence booleans for each keychain credential.
