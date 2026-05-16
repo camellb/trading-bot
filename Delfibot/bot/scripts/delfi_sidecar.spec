@@ -46,6 +46,17 @@ bundled_pkgs = [
     "eth_abi",
     "eth_typing",
 
+    # coincurve provides the native secp256k1 binding eth_keys uses
+    # for signing (CoinCurveECCBackend). Static analysis misses the
+    # native .so files (_libsecp256k1, _cffi_backend) entirely, so
+    # without explicit collection the bundle imports eth_keys but
+    # fails at the first sign call with "coincurve library not
+    # available". That breaks live Polymarket order placement
+    # (every CLOB request would 400 on /auth/api-key) and the
+    # signer-shape probe the live-mode balance overlay uses.
+    # collect_all drags in both .so binaries plus the Python wrappers.
+    "coincurve",
+
     # py-clob-client-v2 is the Polymarket V2 SDK (post-2026-04-28
     # cutover). Imports order/sign helpers by string in places, so
     # explicit collection avoids "module not found" at runtime.
