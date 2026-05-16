@@ -226,6 +226,49 @@ def _build_clob_client(
     return ClobClient(**client_kwargs)
 
 
+def _derive_poly_proxy(eoa: str) -> str:
+    """Derive the user's POLY_PROXY (sig_type=1) address from their EOA.
+
+    Polymarket's ProxyWalletFactory deploys a CREATE2 clone for each
+    EOA on first deposit. The proxy is the address that actually
+    holds the user's pUSD; it's what gets set as the `maker` field
+    of every order. Without using this (and signing with the EOA),
+    the CLOB rejects orders with "maker address not allowed".
+
+    Constants extracted from the Polymarket V2 web bundle (chunk
+    012oy0ftdrorf.js, deriveProxyWallet function).
+    """
+    from eth_utils import keccak, to_checksum_address
+    PROXY_FACTORY = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052"
+    PROXY_INIT_CODE_HASH = "0xd21df8dc65880a8606f09fe0ce3df9b8869287ab0b058be05aa9e8af6330a00b"
+    # salt = keccak256(packed(eoa)) — 20 raw bytes, NOT abi-encoded.
+    eoa_packed = bytes.fromhex(eoa.lower().replace("0x", ""))
+    salt = keccak(eoa_packed)
+    factory_bytes = bytes.fromhex(PROXY_FACTORY.lower().replace("0x", ""))
+    init_code_hash = bytes.fromhex(PROXY_INIT_CODE_HASH.replace("0x", ""))
+    addr = keccak(b"\xff" + factory_bytes + salt + init_code_hash)[12:]
+    return to_checksum_address(addr)
+
+
+def _derive_poly_safe(eoa: str) -> str:
+    """Derive the user's POLY_GNOSIS_SAFE (sig_type=2) address from their EOA.
+
+    Newer Polymarket Magic accounts use a Gnosis Safe instead of the
+    ProxyWallet. Same CREATE2 idea, different factory + init code
+    hash + salt encoding (abi-encoded 32-byte address vs packed 20).
+    """
+    from eth_utils import keccak, to_checksum_address
+    SAFE_FACTORY = "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b"
+    SAFE_INIT_CODE_HASH = "0x2bce2127ff07fb632d16c8347c4ebf501f4841168bed00d9e6ef715ddb6fcecf"
+    # salt = keccak256(abi.encode(eoa)) — 32-byte left-padded.
+    eoa_padded = bytes.fromhex(eoa.lower().replace("0x", "").rjust(64, "0"))
+    salt = keccak(eoa_padded)
+    factory_bytes = bytes.fromhex(SAFE_FACTORY.lower().replace("0x", ""))
+    init_code_hash = bytes.fromhex(SAFE_INIT_CODE_HASH.replace("0x", ""))
+    addr = keccak(b"\xff" + factory_bytes + salt + init_code_hash)[12:]
+    return to_checksum_address(addr)
+
+
 def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
     """Detect the user's Polymarket account shape.
 
@@ -269,29 +312,51 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
               file=sys.stderr)
         return None
 
+    # The funder we pass to the SDK is what ends up as the order's
+    # `maker` field. For sig_type=1 it must be the POLY_PROXY (not
+    # the EOA); for sig_type=2 it must be the GNOSIS_SAFE. We use
+    # the EOA only for sig_type=0 (true EOA accounts). For balance
+    # queries the CLOB also accepts the proxy/safe directly via
+    # the `funder` param paired with the right sig_type.
+    funder_by_sig = {
+        0: eoa,
+        1: _derive_poly_proxy(eoa),
+        2: _derive_poly_safe(eoa),
+    }
+
     chosen: Optional[dict] = None
     for sig_type in (0, 1, 2):
+        funder = funder_by_sig[sig_type]
         try:
             client = _build_clob_client(
-                private_key, signature_type=sig_type, funder=eoa,
+                private_key, signature_type=sig_type, funder=funder,
             )
             params = BalanceAllowanceParams(
                 asset_type=AssetType.COLLATERAL, signature_type=sig_type,
             )
             result = client.get_balance_allowance(params) or {}
             raw = result.get("balance")
+            raw_allow = result.get("allowance")
             if raw is None:
                 continue
             try:
                 value = int(raw) / (10 ** _USDC_DECIMALS)
+                allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
             except (TypeError, ValueError):
                 continue
             if value > 0:
                 chosen = {
                     "signature_type": sig_type,
-                    "funder":         eoa,
+                    "funder":         funder,
+                    "eoa":            eoa,
                     "balance":        float(value),
+                    "allowance":      float(allowance),
                 }
+                print(
+                    f"[polymarket_wallet] account shape: sig_type={sig_type} "
+                    f"funder={funder} balance=${value:.4f} allowance=${allowance:.4f}",
+                    file=sys.stderr,
+                )
                 break
         except Exception as exc:
             print(f"[polymarket_wallet] probe sig_type={sig_type} failed: {exc}",
@@ -299,10 +364,16 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
             continue
 
     if chosen is None:
-        # All three probed clean / zero. Default to EOA shape so the
-        # bot has something to use; the user can fund any of the
-        # three account types and the next probe will catch it.
-        chosen = {"signature_type": 0, "funder": eoa, "balance": 0.0}
+        # All three probed clean / zero. Default to POLY_PROXY shape
+        # (the modal case for Polymarket UI users); a fresh deposit
+        # will land in the proxy and the next probe catches it.
+        chosen = {
+            "signature_type": 1,
+            "funder":         funder_by_sig[1],
+            "eoa":            eoa,
+            "balance":        0.0,
+            "allowance":      0.0,
+        }
 
     _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
     return chosen

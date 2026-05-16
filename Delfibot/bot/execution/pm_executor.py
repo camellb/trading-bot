@@ -594,6 +594,22 @@ class PMExecutor:
             size=size_shares,
         )
 
+        # Diagnostic: confirm the SDK is signing with the right maker.
+        # For sig_type=1 (POLY_PROXY) and sig_type=2 (POLY_GNOSIS_SAFE)
+        # this must be the derived proxy/safe address, NOT the EOA, or
+        # Polymarket rejects with "maker address not allowed".
+        try:
+            builder = getattr(client, "builder", None)
+            print(
+                f"[pm_executor][live] placing order maker={getattr(builder,'funder',None)!r} "
+                f"sig_type={getattr(builder,'signature_type',None)!r} "
+                f"market={market.id} side={decision.side} "
+                f"price={entry_price} size={size_shares}",
+                flush=True,
+            )
+        except Exception:
+            pass
+
         try:
             resp = client.create_and_post_order(
                 order_args=order_args,
