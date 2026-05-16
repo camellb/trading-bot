@@ -811,14 +811,129 @@ def _build_modified_config(prop: Proposal,
     return dataclasses.replace(current, **{target: value})
 
 
+def _suggestion_fingerprint(
+    param_name: str, metadata: Optional[dict]
+) -> tuple[str, str, str]:
+    """Identity key for a logical suggestion.
+
+    Two suggestions hit the same fingerprint iff they're "the same
+    recommendation" from the user's perspective — e.g. both tweak
+    max_stake_pct, both set the tennis multiplier, both add
+    'esports' to the skip list. Used to dedupe (refresh the date
+    when proposed value is identical) and supersede (mark older
+    rows stale when the new proposal has a different value).
+
+    Tuple shape (param_name, operation, secondary_key):
+      scalar_set     → (param, 'scalar_set', '')
+      dict_set       → (param, 'dict_set',  <key>)
+      list_append    → (param, 'list_append', <first item>)
+      unknown/None   → (param, '', '')
+    """
+    meta = metadata or {}
+    op = str(meta.get("operation") or "")
+    if op == "dict_set":
+        secondary = str(meta.get("key") or "")
+    elif op == "list_append":
+        items = meta.get("items") or []
+        secondary = str(items[0]) if items else ""
+    else:
+        secondary = ""
+    return (param_name, op, secondary)
+
+
 def _store_pending_suggestion(prop: Proposal, user_id: str,
                               settled_count: int) -> bool:
+    """Persist a proposal, deduplicating against existing pending rows.
+
+    The earlier behaviour was a blind INSERT, so the same proposal
+    surfacing on two consecutive scan cycles created two rows in
+    the Intelligence panel ("May 9 · max_stake 0.034 → 0.024" and
+    "May 13 · max_stake 0.034 → 0.024" both pending at the same
+    time, observed 2026-05-16). Now:
+
+      • Same fingerprint AND same proposed_value: refresh the
+        existing row's created_at and evidence — user sees ONE row
+        with the latest date.
+      • Same fingerprint, different proposed_value: mark the older
+        row as 'superseded' (kept in the DB for audit but hidden
+        from the Pending list) and insert the new one. The newer
+        proposal has fresher data and wins.
+      • New fingerprint: INSERT as before.
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
         meta_json = json.dumps(prop.proposal_metadata) \
             if prop.proposal_metadata else None
+        new_fp = _suggestion_fingerprint(
+            prop.param_name, prop.proposal_metadata,
+        )
         with get_engine().begin() as conn:
+            # All candidate rows for this user + param. Status filter
+            # includes both 'pending' (default) and 'snoozed' (user
+            # asked us to remind later). We never re-issue against a
+            # row that's already been applied or skipped.
+            candidates = conn.execute(text(
+                "SELECT id, proposed_value, metadata "
+                "FROM pending_suggestions "
+                "WHERE user_id = :uid AND param_name = :p "
+                "  AND status IN ('pending', 'snoozed')"
+            ), {"uid": user_id, "p": prop.param_name}).fetchall()
+
+            same_fp_ids: list[int] = []
+            identical_id: Optional[int] = None
+            for cid, cval, cmeta in candidates:
+                cmeta_dict = _decode_metadata(cmeta)
+                if _suggestion_fingerprint(prop.param_name, cmeta_dict) != new_fp:
+                    continue
+                same_fp_ids.append(int(cid))
+                # Treat numeric proposed_value as equal within 1e-9;
+                # round-trips through JSON / SQLite reals can wobble.
+                if (
+                    prop.proposed_value is not None
+                    and cval is not None
+                    and abs(float(cval) - float(prop.proposed_value)) < 1e-9
+                ):
+                    identical_id = int(cid)
+                elif prop.proposed_value is None and cval is None:
+                    # Both proposed_value None (e.g. list_append):
+                    # the fingerprint alone identifies them, so any
+                    # same-fingerprint row IS identical.
+                    identical_id = int(cid)
+
+            if identical_id is not None:
+                # Identical recommendation already pending. Refresh
+                # the date + evidence so the user sees the latest
+                # justification (sample sizes grow over time).
+                conn.execute(text(
+                    "UPDATE pending_suggestions SET "
+                    "  created_at = CURRENT_TIMESTAMP, "
+                    "  evidence = :ev, "
+                    "  settled_count_at_creation = :sc, "
+                    "  metadata = :meta "
+                    "WHERE id = :id"
+                ), {
+                    "ev":   prop.evidence[:4000],
+                    "sc":   settled_count,
+                    "meta": meta_json,
+                    "id":   identical_id,
+                })
+                return True
+
+            if same_fp_ids:
+                # Same logical knob, different proposed value — the
+                # older proposals were drawn from less data; supersede
+                # them silently and insert the fresh one.
+                placeholders = ", ".join(f":id{i}" for i in range(len(same_fp_ids)))
+                up_params = {f"id{i}": v for i, v in enumerate(same_fp_ids)}
+                conn.execute(text(
+                    f"UPDATE pending_suggestions SET "
+                    f"  status = 'superseded', "
+                    f"  resolved_at = CURRENT_TIMESTAMP, "
+                    f"  resolved_by = 'system:newer-proposal' "
+                    f"WHERE id IN ({placeholders})"
+                ), up_params)
+
             conn.execute(text(
                 "INSERT INTO pending_suggestions "
                 "(user_id, param_name, current_value, proposed_value, "
