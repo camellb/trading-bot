@@ -250,6 +250,42 @@ def _derive_poly_proxy(eoa: str) -> str:
     return to_checksum_address(addr)
 
 
+def _derive_deposit_wallet(eoa: str) -> str:
+    """Derive the V2 Polymarket DepositWallet address for this EOA.
+
+    Polymarket's 2026-04-28 V2 upgrade introduced a new account type
+    ("DepositWallet") that users get migrated to on first V2 trade.
+    Their UI shows the prompt "you need to upgrade to continue
+    trading"; after the user accepts, post-migration orders MUST use
+    this address as their maker.
+
+    Derivation ported from polymarket.com's frontend bundle
+    (chunk 012oy0ftdrorf.js, deriveDepositWallet function). It's a
+    Solady CWIA (Clone With Immutable Args) CREATE2 with the EOA
+    encoded into the deployment salt + initcode.
+    """
+    from eth_utils import keccak, to_checksum_address
+    from eth_abi import encode
+    FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+    IMPL    = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+    # salt = keccak256(abi.encode(factory, padded_eoa))
+    eoa_padded = bytes.fromhex(eoa.lower().replace("0x", "").rjust(64, "0"))
+    d = encode(["address", "bytes32"], [FACTORY, eoa_padded])
+    salt = keccak(d)
+    # initcode = Solady CWIA prefix + impl + tail + d (immutable args)
+    c = len(d)  # = 64
+    header10 = (0x61003d3d8160233d3973 + (c << 56)).to_bytes(10, "big")
+    impl_bytes = bytes.fromhex(IMPL.lower().replace("0x", ""))
+    mid1 = bytes.fromhex("6009")
+    mid2 = bytes.fromhex("5155f3363d3d373d3d363d7f360894a13ba1a3210667c828492db98dca3e2076")
+    mid3 = bytes.fromhex("cc3735a920a3ca505d382bbc545af43d6000803e6038573d6000fd5b3d6000f3")
+    initcode = header10 + impl_bytes + mid1 + mid2 + mid3 + d
+    bytecode_hash = keccak(initcode)
+    factory_bytes = bytes.fromhex(FACTORY.lower().replace("0x", ""))
+    addr = keccak(b"\xff" + factory_bytes + salt + bytecode_hash)[12:]
+    return to_checksum_address(addr)
+
+
 def _derive_poly_safe(eoa: str) -> str:
     """Derive the user's POLY_GNOSIS_SAFE (sig_type=2) address from their EOA.
 
@@ -313,20 +349,42 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
         return None
 
     # The funder we pass to the SDK is what ends up as the order's
-    # `maker` field. For sig_type=1 it must be the POLY_PROXY (not
-    # the EOA); for sig_type=2 it must be the GNOSIS_SAFE. We use
-    # the EOA only for sig_type=0 (true EOA accounts). For balance
-    # queries the CLOB also accepts the proxy/safe directly via
-    # the `funder` param paired with the right sig_type.
-    funder_by_sig = {
-        0: eoa,
-        1: _derive_poly_proxy(eoa),
-        2: _derive_poly_safe(eoa),
-    }
+    # `maker` field. We try every known Polymarket account shape:
+    #
+    #   sig=0 + EOA            classic MetaMask user
+    #   sig=1 + POLY_PROXY     legacy V1 Magic-account proxy
+    #   sig=2 + GNOSIS_SAFE    older Gnosis-Safe magic account
+    #   sig=1/2/3 + DEPOSIT_WALLET
+    #                          NEW V2 account (2026-04-28 cutover).
+    #                          Polymarket's UI prompts users to
+    #                          "upgrade to continue trading" on
+    #                          first V2 order; that migration
+    #                          deploys this contract. Which
+    #                          sig_type the CLOB expects for the
+    #                          DepositWallet isn't documented;
+    #                          probe sig=1, sig=2, and sig=3
+    #                          (POLY_1271, the EIP-1271 path used
+    #                          by smart-contract wallets).
+    poly_proxy     = _derive_poly_proxy(eoa)
+    poly_safe      = _derive_poly_safe(eoa)
+    deposit_wallet = _derive_deposit_wallet(eoa)
+
+    # Order matters: a freshly-migrated user has $0 at the old proxy
+    # but the CLOB will report the right balance when probed at the
+    # DepositWallet. We probe DepositWallet candidates FIRST so a
+    # post-migration user gets the V2 shape, not a stale V1 hit
+    # from before the migration cleared.
+    probe_candidates = [
+        (1, deposit_wallet, "DepositWallet+sig1"),
+        (2, deposit_wallet, "DepositWallet+sig2"),
+        (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271)"),
+        (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
+        (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
+        (0, eoa,            "EOA+sig0"),
+    ]
 
     chosen: Optional[dict] = None
-    for sig_type in (0, 1, 2):
-        funder = funder_by_sig[sig_type]
+    for sig_type, funder, label in probe_candidates:
         try:
             client = _build_clob_client(
                 private_key, signature_type=sig_type, funder=funder,
@@ -344,6 +402,11 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                 allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
             except (TypeError, ValueError):
                 continue
+            print(
+                f"[polymarket_wallet] probe {label:32} sig={sig_type} "
+                f"funder={funder} → balance=${value:.4f}",
+                file=sys.stderr,
+            )
             if value > 0:
                 chosen = {
                     "signature_type": sig_type,
@@ -354,22 +417,24 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                 }
                 print(
                     f"[polymarket_wallet] account shape: sig_type={sig_type} "
-                    f"funder={funder} balance=${value:.4f} allowance=${allowance:.4f}",
+                    f"funder={funder} ({label}) balance=${value:.4f} "
+                    f"allowance=${allowance:.4f}",
                     file=sys.stderr,
                 )
                 break
         except Exception as exc:
-            print(f"[polymarket_wallet] probe sig_type={sig_type} failed: {exc}",
+            print(f"[polymarket_wallet] probe {label} failed: {exc}",
                   file=sys.stderr)
             continue
 
     if chosen is None:
-        # All three probed clean / zero. Default to POLY_PROXY shape
-        # (the modal case for Polymarket UI users); a fresh deposit
-        # will land in the proxy and the next probe catches it.
+        # Everything probed zero. Default to the V2 DepositWallet
+        # shape — that's the path Polymarket's UI now pushes every
+        # new user through. A fresh deposit will land there and the
+        # next probe catches it.
         chosen = {
             "signature_type": 1,
-            "funder":         funder_by_sig[1],
+            "funder":         deposit_wallet,
             "eoa":            eoa,
             "balance":        0.0,
             "allowance":      0.0,
