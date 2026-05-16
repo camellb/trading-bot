@@ -146,6 +146,15 @@ market_evaluations = Table(
     Column("event_slug",       Text, nullable=True),
     Column("venue",            Text, nullable=False,
            server_default=sa_text("'polymarket'")),
+    # The trading mode the bot was in when this evaluation ran.
+    # Without this column, the Dashboard / Positions / Performance
+    # views can't show clean per-mode skipped counts — sim and live
+    # data bleed together for any user who switches modes. Default
+    # 'simulation' is the safe backfill for legacy rows: every
+    # evaluation that existed before this column predates the
+    # live-trading roll-out.
+    Column("mode",             Text, nullable=False,
+           server_default=sa_text("'simulation'")),
 )
 
 
@@ -650,6 +659,24 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE pm_positions ADD COLUMN "
                 "liquidity_at_entry REAL"
+            ))
+
+        # ── market_evaluations backfills ────────────────────────────────
+        # Add the `mode` column so per-mode skipped counts and Dashboard
+        # views can be cleanly mode-scoped (2026-05-16: switching to
+        # live for the first time exposed that sim/live data was
+        # bleeding together on every screen — user fix required).
+        # Legacy rows backfill to 'simulation' because every existing
+        # evaluation predates live trading.
+        existing_eval_cols = {
+            r[1] for r in conn.execute(
+                sa_text("PRAGMA table_info(market_evaluations)")
+            ).fetchall()
+        }
+        if "mode" not in existing_eval_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE market_evaluations ADD COLUMN mode TEXT "
+                "NOT NULL DEFAULT 'simulation'"
             ))
 
         # Seed the singleton row if absent. Local install always has

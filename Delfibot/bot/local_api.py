@@ -894,11 +894,21 @@ class LocalAPI:
             limit = 100
         limit = max(1, min(limit, 500))
 
+        # Mode-scoped. User rule (2026-05-16): the dashboard surfaces
+        # CURRENT mode only — sim and live ledgers stay separate.
+        # Read the current mode here rather than caching it on the
+        # handler so a mode toggle mid-session takes effect on the
+        # next request.
+        current_mode = (
+            (await self._offload(get_user_config)).mode or "simulation"
+        )
+
         def _read() -> list[dict]:
             engine = get_engine()
             with engine.connect() as conn:
                 stmt = (
                     select(pm_positions)
+                    .where(pm_positions.c.mode == current_mode)
                     .order_by(desc(pm_positions.c.created_at))
                     .limit(limit)
                 )
@@ -1019,13 +1029,19 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to compute portfolio stats: {exc}", 500)
 
-        # Brier on this user's settled positions. Source filter is
-        # 'polymarket' to match the bucket that drives sizing decisions.
+        # Brier on this user's settled positions, scoped to the
+        # CURRENT mode. Source filter is 'polymarket' to match the
+        # bucket that drives sizing decisions. Mode-scoping was added
+        # 2026-05-16 alongside the rest of the per-mode dashboard
+        # changes — Brier shown on the Dashboard hero must reflect
+        # only the trades you actually took in this mode.
+        _stats_mode = stats.get("mode") or "simulation"
         try:
             brier = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: calibration.get_report(
                     source="polymarket", user_id=DEFAULT_USER_ID,
+                    mode=_stats_mode,
                 ),
             )
         except Exception:
@@ -1054,10 +1070,20 @@ class LocalAPI:
         })
 
     async def _get_calibration(self, req: web.Request) -> web.Response:
-        """Full calibration report (Brier + reliability buckets)."""
+        """Full calibration report (Brier + reliability buckets).
+
+        Mode-scoped to the user's current trading mode — the
+        Performance page's By Category / By Horizon / By Price-Band
+        tables now reflect only the trades you actually took in
+        this mode. (User rule 2026-05-16: no sim/live data
+        mixing.)
+        """
         source = req.query.get("source") or "polymarket"
         since_raw = req.query.get("since_days")
         since_int = int(since_raw) if since_raw and since_raw.isdigit() else None
+        current_mode = (
+            (await self._offload(get_user_config)).mode or "simulation"
+        )
         try:
             report = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -1065,6 +1091,7 @@ class LocalAPI:
                     source=None if source == "all" else source,
                     since_days=since_int,
                     user_id=DEFAULT_USER_ID,
+                    mode=current_mode,
                 ),
             )
         except Exception as exc:
@@ -1075,8 +1102,14 @@ class LocalAPI:
         """
         Running Brier over settled positions, in chronological order.
         Used to show whether the forecaster is getting more or less
-        calibrated as more data accumulates.
+        calibrated as more data accumulates. Mode-scoped — the
+        Performance page shows the curve for the user's current
+        mode only (no sim/live bleed).
         """
+        current_mode = (
+            (await self._offload(get_user_config)).mode or "simulation"
+        )
+
         def _query() -> list:
             with get_engine().begin() as conn:
                 return conn.execute(text(
@@ -1084,11 +1117,12 @@ class LocalAPI:
                     "       CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END "
                     "FROM pm_positions "
                     "WHERE user_id = :uid "
+                    "  AND mode = :m "
                     "  AND settled_at IS NOT NULL "
                     "  AND claude_probability IS NOT NULL "
                     "  AND settlement_outcome IN ('YES', 'NO') "
                     "ORDER BY settled_at ASC"
-                ), {"uid": DEFAULT_USER_ID}).fetchall()
+                ), {"uid": DEFAULT_USER_ID, "m": current_mode}).fetchall()
 
         try:
             rows = await asyncio.get_event_loop().run_in_executor(None, _query)
@@ -2184,14 +2218,23 @@ class LocalAPI:
 
     # ── Positions CSV export ────────────────────────────────────────────────
     async def _get_positions_csv(self, req: web.Request) -> web.Response:
-        """Return a CSV of all positions for the current user.
+        """Return a CSV of positions for the current user, current mode.
 
         Used by Performance > Export. We deliberately stream the
         whole table - typical user has hundreds to a few thousand
         rows, well under the streaming threshold.
+
+        Mode-scoped per the 2026-05-16 rule: the export matches what
+        the dashboard shows (current mode only). Users who want
+        full cross-mode dumps can run a direct SQLite query against
+        <app-data>/delfi.db.
         """
         import csv
         import io
+
+        current_mode = (
+            (await self._offload(get_user_config)).mode or "simulation"
+        )
 
         def _read():
             engine = get_engine()
@@ -2205,8 +2248,9 @@ class LocalAPI:
                     "       settlement_outcome, settlement_price, "
                     "       realized_pnl_usd, venue "
                     "FROM pm_positions WHERE user_id = :uid "
+                    "  AND mode = :m "
                     "ORDER BY created_at DESC"
-                ), {"uid": DEFAULT_USER_ID}).mappings().all()
+                ), {"uid": DEFAULT_USER_ID, "m": current_mode}).mappings().all()
         try:
             rows = await self._offload(_read)
         except Exception as exc:

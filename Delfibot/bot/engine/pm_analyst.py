@@ -245,7 +245,7 @@ class PMAnalyst:
             market=market, evaluation=evaluation, decision=decision,
             research_sources=research.sources, prediction_id=prediction_id,
             recommendation=recommendation, market_archetype=archetype,
-            user_id=user_id,
+            user_id=user_id, mode=user_config.mode,
         )
 
         if not decision.should_trade:
@@ -667,10 +667,17 @@ def _log_market_evaluation(
     recommendation:   str,
     market_archetype: Optional[str] = None,
     user_id:          Optional[str] = None,
+    mode:             Optional[str] = None,
 ) -> Optional[int]:
     if user_id is None:
         from engine.user_config import DEFAULT_USER_ID
         user_id = DEFAULT_USER_ID
+    # Default mode to whatever the user is currently in. The hot-path
+    # caller (`_maybe_trade_for_user`) passes it explicitly so we
+    # avoid a second DB read per scanned market.
+    if mode is None:
+        from engine.user_config import get_user_config
+        mode = get_user_config(user_id).mode or "simulation"
     try:
         with get_engine().begin() as conn:
             row = conn.execute(text(
@@ -678,12 +685,14 @@ def _log_market_evaluation(
                 "  user_id, market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
                 "  ev_bps, recommendation, reasoning, reasoning_short, "
-                "  research_sources, prediction_id, market_archetype, event_slug"
+                "  research_sources, prediction_id, market_archetype, event_slug, "
+                "  mode"
                 ") VALUES ("
                 "  :user_id, :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
                 "  :ev_bps, :rec, :reason, :reason_short, "
-                "  :srcs, :pid, :arch, :event_slug"
+                "  :srcs, :pid, :arch, :event_slug, "
+                "  :mode"
                 ") RETURNING id"
             ), {
                 "user_id": user_id,
@@ -703,6 +712,7 @@ def _log_market_evaluation(
                 "pid":  prediction_id,
                 "arch": market_archetype,
                 "event_slug": getattr(market, "event_slug", None),
+                "mode": mode,
             }).fetchone()
             return int(row[0]) if row else None
     except Exception as exc:

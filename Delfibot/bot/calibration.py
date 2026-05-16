@@ -193,6 +193,7 @@ def get_report(
     source: Optional[str] = None,
     since_days: Optional[int] = None,
     user_id: Optional[str] = None,
+    mode: Optional[str] = None,
 ) -> dict:
     """
     Return the calibration card for a single user.
@@ -246,6 +247,15 @@ def get_report(
         )
         base_filters = ["user_id = :uid"]
         params: dict = {"uid": user_id}
+        # Mode-scoped when caller supplies one. Per the 2026-05-16
+        # rule ("WE CAN'T MIX ANY SIMULATION AND LIVE DATA TOGETHER"),
+        # the Performance page passes the user's current mode; the
+        # report only includes rows from that mode. Callers passing
+        # None get lifetime behaviour (used by code that genuinely
+        # wants cross-mode aggregates — none ship today).
+        if mode:
+            base_filters.append("mode = :m")
+            params["m"] = mode
         if since_days and since_days > 0:
             # Anchor on settled_at for resolved aggregates; keep created_at
             # for totals so the bucket reflects "entered in the last N days".
