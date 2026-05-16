@@ -729,24 +729,23 @@ async def _fetch_live_market_data(
     days_to_resolution:  Optional[float],
 ) -> tuple[Optional[str], list[str]]:
     """
-    Always fetch live crypto when the question mentions a tracked
-    symbol (BTC/ETH/SOL). Equity (yfinance) stays gated to <3 days
-    because yfinance is slower, rate-limited, and the current S&P
-    level matters less on a 30-day question than spot BTC does.
+    Always fetch live data when the question mentions a tracked
+    crypto symbol (BTC/ETH/SOL via OKX) or equity ticker
+    (S&P/NDX/QQQ/SPY/DJI via yfinance). No horizon gating.
 
     Returns (block, sources). Both empty when no applicable
     symbol/ticker matches or both adapters fail.
 
-    Why crypto is no longer gated by horizon (2026-05-16): a 6-day
-    BTC price-threshold market needs the current price even more
-    than a 1-day one, because the LLM has to reason about
-    "$74k threshold vs current $82k" rather than "$74k vs current
-    $X". The previous `days_to_resolution < 2.0` gate caused the
-    forecaster to fall back to scraped CoinMarketCap HTML, which
-    contains loading placeholders instead of actual numbers, and
-    produced skip reasons like "research crucially lacks the
-    current Bitcoin price." The OKX adapter is cached 15s and
-    basically free, so always firing is the right default.
+    DOCTRINE (2026-05-16): if Delfi has a cheap, accurate, fresh
+    data source for a piece of information the model needs, that
+    data MUST reach the prompt every time. No "only if the market
+    resolves in <N days" gates. No silent skips. Anything else
+    produces skip rationales like "research crucially lacks the
+    current Bitcoin price" while the bot literally has that price
+    in a 15-second cache. OKX live_crypto and yfinance live_equity
+    both cache (15s and 60s respectively) and are essentially
+    free; pay the call. The `days_to_resolution` parameter is
+    kept on the signature for callers but is no longer consulted.
     """
     blocks: list[str] = []
     sources: list[str] = []
@@ -763,18 +762,17 @@ async def _fetch_live_market_data(
                 blocks.append(ctx.to_prompt_block())
                 sources.append(f"okx:{sym}")
 
-    if days_to_resolution is not None and days_to_resolution < 3.0:
-        tickers = _detect_equity_tickers(question)
-        if tickers:
-            results = await asyncio.gather(
-                *(asyncio.wait_for(live_equity.get_context(t), timeout=10)
-                  for t in tickers),
-                return_exceptions=True,
-            )
-            for tk, ctx in zip(tickers, results):
-                if isinstance(ctx, live_equity.LiveEquityContext):
-                    blocks.append(ctx.to_prompt_block())
-                    sources.append(f"yfinance:{tk}")
+    tickers = _detect_equity_tickers(question)
+    if tickers:
+        results = await asyncio.gather(
+            *(asyncio.wait_for(live_equity.get_context(t), timeout=10)
+              for t in tickers),
+            return_exceptions=True,
+        )
+        for tk, ctx in zip(tickers, results):
+            if isinstance(ctx, live_equity.LiveEquityContext):
+                blocks.append(ctx.to_prompt_block())
+                sources.append(f"yfinance:{tk}")
 
     if not blocks:
         return None, sources
