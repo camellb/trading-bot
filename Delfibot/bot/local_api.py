@@ -1047,14 +1047,42 @@ class LocalAPI:
         except Exception:
             brier = {"brier": None, "resolved": 0, "total": 0}
 
+        # Live-mode balance overlay. In simulation, the bankroll is a
+        # synthetic number ("how would Delfi do with $1000?") and the
+        # DB-derived value is correct. In live, the displayed balance
+        # MUST reflect the actual USDC sitting in the user's Polymarket
+        # wallet — not a config-stored starting_cash. We query the
+        # wallet directly via polymarket_wallet.get_live_usdc_balance,
+        # which has its own 60s in-memory cache so this stays cheap.
+        # If the RPC is unreachable the overlay falls through to the
+        # DB-derived numbers rather than flashing $0.
+        bankroll = stats.get("bankroll")
+        equity   = stats.get("equity")
+        open_cost = float(stats.get("open_cost") or 0.0)
+        if stats.get("mode") == "live":
+            try:
+                from feeds.polymarket_wallet import get_live_usdc_balance
+                cfg = await self._offload(get_user_config)
+                wallet = (cfg.wallet_address or "").strip()
+                if wallet:
+                    wallet_balance = await get_live_usdc_balance(wallet)
+                    if wallet_balance is not None:
+                        bankroll = float(wallet_balance)
+                        equity = bankroll + open_cost
+            except Exception as exc:
+                # Don't break the dashboard on a flaky RPC; the
+                # DB-derived numbers are a safe fallback.
+                print(f"[summary] live wallet overlay failed: {exc}",
+                      flush=True)
+
         starting = float(stats.get("starting_cash") or 0.0)
         realized = float(stats.get("realized_pnl") or 0.0)
         roi = (realized / starting) if starting > 0 else None
 
         return _ok({
             "mode":           stats.get("mode"),
-            "bankroll":       stats.get("bankroll"),
-            "equity":         stats.get("equity"),
+            "bankroll":       bankroll,
+            "equity":         equity,
             "starting_cash":  stats.get("starting_cash"),
             "open_positions": stats.get("open_positions"),
             "open_cost":      stats.get("open_cost"),
