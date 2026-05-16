@@ -618,7 +618,7 @@ function ModeConfirmModal({
     ? "Switch to live trading?"
     : "Switch to simulation?";
   const body = isLive
-    ? "Delfi will place real Polymarket orders on the next scan using the wallet you connected. Make sure the wallet is funded and your risk settings are tight enough for real-money exposure."
+    ? "Delfi will place real Polymarket orders on the next scan using the wallet you connected. Make sure the wallet is funded and your risk settings are set correctly."
     : "Delfi will stop placing real Polymarket orders. Existing live positions stay open on-chain until they resolve; only NEW trades will be paper from here.";
   const confirmLabel = isLive ? "Switch to live" : "Switch to simulation";
   // Match the SaaS visual language: live confirmation gets a more
