@@ -220,6 +220,12 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     "weekly_summary",
     "calibration",
     "risk_event",
+    # Fires whenever a LIVE order is rejected by the CLOB (e.g.
+    # "maker address not allowed", "insufficient collateral",
+    # tick-size mismatch). Without this the bot can silently fail
+    # dozens of orders in a row and the user only finds out by
+    # noticing the dashboard isn't growing. Defaults ON.
+    "order_error",
 )
 
 ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)

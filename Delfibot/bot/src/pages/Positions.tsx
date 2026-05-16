@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
+import { api, EventLogRow, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
 import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
@@ -30,7 +30,7 @@ function openExternal(url: string): void {
  * clickable to expand reasoning + key-value detail.
  */
 
-type Filter = "all" | "open" | "closed" | "skipped";
+type Filter = "all" | "open" | "closed" | "skipped" | "errors";
 
 // Local aliases that delegate to the central tz-aware formatters
 // (src/lib/format.ts). Kept as small wrappers so the rest of the
@@ -129,6 +129,7 @@ export default function Positions() {
   const [filter, setFilter] = useState<Filter>("all");
   const [positions, setPositions] = useState<PMPosition[]>([]);
   const [evals, setEvals] = useState<MarketEvaluation[]>([]);
+  const [events, setEvents] = useState<EventLogRow[]>([]);
   // Server-side aggregate counts. Used for chip labels so the chip
   // numbers reconcile with the Dashboard tile (which also reads from
   // /api/summary). Without this, the chips show counts limited to
@@ -142,14 +143,19 @@ export default function Positions() {
 
   const refresh = useCallback(async () => {
     try {
-      const [p, e, s] = await Promise.all([
+      const [p, e, s, ev] = await Promise.all([
         api.positions(100).then((r) => r.positions),
         api.evaluations(50).then((r) => r.evaluations),
         api.summary(),
+        // Pull a generous slice so the Errors tab has history. We
+        // filter client-side to order_error rows below; everything
+        // else from event_log we ignore.
+        api.events(200).then((r) => r.events),
       ]);
       setPositions(p);
       setEvals(e);
       setSummary(s);
+      setEvents(ev);
       setLoaded(true);
       // Clear error only on confirmed success - prevents the 0.3s
       // flash where a stale error vanishes pre-await and then the
@@ -181,6 +187,12 @@ export default function Positions() {
   const skipped = useMemo(
     () => evals.filter((e) => decision(e.recommendation) === "SKIP"),
     [evals],
+  );
+  // Order errors from event_log. Most-recent-first ordering is
+  // preserved by the server (api.events() returns DESC by id).
+  const errors = useMemo(
+    () => events.filter((e) => e.event_type === "order_error"),
+    [events],
   );
 
   // Sort states. One per table so they're independent. Defaults
@@ -250,6 +262,9 @@ export default function Positions() {
           </button>
           <button className={`chip ${filter === "skipped" ? "on" : ""}`} onClick={() => setFilter("skipped")}>
             Skipped ({summary?.skipped_total ?? skipped.length})
+          </button>
+          <button className={`chip ${filter === "errors" ? "on" : ""}`} onClick={() => setFilter("errors")}>
+            Errors ({errors.length})
           </button>
         </div>
       </div>
@@ -548,6 +563,41 @@ export default function Positions() {
                     </React.Fragment>
                   );
                 })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {(filter === "all" || filter === "errors") && (
+        <div className="panel">
+          <div className="panel-header">
+            <h2 className="panel-title">Errors</h2>
+            <span className="panel-meta">{errors.length} order errors</span>
+          </div>
+          {errors.length === 0 ? (
+            <div className="empty-row">
+              {loaded ? "No order errors. Every live order has been accepted by Polymarket." : "Loading..."}
+            </div>
+          ) : (
+            <table className="table-simple">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Source</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {errors.map((row) => (
+                  <tr key={row.id}>
+                    <td className="mono" style={{ whiteSpace: "nowrap" }}>{fmt(row.timestamp)}</td>
+                    <td className="mono" style={{ color: "var(--vellum-60)", whiteSpace: "nowrap" }}>
+                      {row.source}
+                    </td>
+                    <td style={{ color: "var(--vellum)" }}>{row.description}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           )}

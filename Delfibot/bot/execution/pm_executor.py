@@ -621,6 +621,33 @@ class PMExecutor:
                 f"[pm_executor] _open_live: create_and_post_order failed: {exc}",
                 file=sys.stderr,
             )
+            # Surface the failure to the user. Until now these would
+            # disappear into stderr and the user only noticed because
+            # the dashboard wasn't growing. log_event writes a row to
+            # event_log AND fires Telegram (when configured) via the
+            # "order_error" notification category. The description
+            # captures the market, side, size, and exact Polymarket
+            # error so it's actionable from the Errors tab.
+            try:
+                from db.logger import log_event
+                err_msg = str(exc)[:600]
+                question_short = (market.question or "")[:80]
+                description = (
+                    f"Order rejected on '{question_short}': "
+                    f"{decision.side} {size_shares:.2f}@${entry_price:.3f}. "
+                    f"{err_msg}"
+                )
+                log_event(
+                    event_type="order_error",
+                    severity=2,  # warning, not fatal
+                    description=description,
+                    source="pm_executor._open_live",
+                )
+            except Exception as log_exc:
+                print(
+                    f"[pm_executor] could not log order_error event: {log_exc}",
+                    file=sys.stderr,
+                )
             return None
         if not isinstance(resp, dict):
             print(f"[pm_executor] _open_live: unexpected order response shape: {resp!r}",
