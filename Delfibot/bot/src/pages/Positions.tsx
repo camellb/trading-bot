@@ -571,33 +571,66 @@ export default function Positions() {
 
       {(filter === "all" || filter === "errors") && (
         <div className="panel">
-          <div className="panel-header">
-            <h2 className="panel-title">Errors</h2>
-            <span className="panel-meta">{errors.length} order errors</span>
+          <div className="panel-head">
+            <h2 className="panel-title">Order errors</h2>
+            <span className="panel-meta">{errors.length} rejected by Polymarket</span>
           </div>
           {errors.length === 0 ? (
-            <div className="empty-row">
-              {loaded ? "No order errors. Every live order has been accepted by Polymarket." : "Loading..."}
+            <div className="empty-state">
+              {loaded
+                ? "No order errors. Every live order has been accepted by Polymarket."
+                : "Loading..."}
             </div>
           ) : (
             <table className="table-simple">
               <thead>
                 <tr>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Stake</th>
+                  <th>Reason</th>
                   <th>When</th>
-                  <th>Source</th>
-                  <th>Detail</th>
                 </tr>
               </thead>
               <tbody>
-                {errors.map((row) => (
-                  <tr key={row.id}>
-                    <td className="mono" style={{ whiteSpace: "nowrap" }}>{fmt(row.timestamp)}</td>
-                    <td className="mono" style={{ color: "var(--vellum-60)", whiteSpace: "nowrap" }}>
-                      {row.source}
-                    </td>
-                    <td style={{ color: "var(--vellum)" }}>{row.description}</td>
-                  </tr>
-                ))}
+                {errors.map((row) => {
+                  // Parse the description written by
+                  // pm_executor._open_live. Format:
+                  //   "Order rejected on '<question>': <SIDE>
+                  //    <size>@$<price>. <error message>"
+                  const desc = row.description || "";
+                  const m = desc.match(
+                    /^Order rejected on '(.+?)':\s*(\S+)\s+([\d.]+)@\$([\d.]+)\.\s*(.*)$/
+                  );
+                  const question = m?.[1] ?? "—";
+                  const side     = m?.[2] ?? "—";
+                  const size     = m?.[3] ?? null;
+                  const price    = m?.[4] ?? null;
+                  const reasonRaw = m?.[5] ?? desc;
+                  // Pull the human-readable error out of the SDK's
+                  // PolyApiException wrapper for prettier display.
+                  const polyErr = reasonRaw.match(
+                    /error_message=\{'error':\s*'(.+?)'\}/
+                  );
+                  const reason = polyErr?.[1] ?? reasonRaw;
+                  const sideClass =
+                    side === "YES" ? "side-yes"
+                    : side === "NO" ? "side-no"
+                    : "";
+                  return (
+                    <tr key={row.id}>
+                      <td>{question}</td>
+                      <td className={`mono ${sideClass}`}>{side}</td>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
+                        {size && price ? `${size} @ $${price}` : "—"}
+                      </td>
+                      <td style={{ color: "var(--vellum-60)" }}>{reason}</td>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
+                        {fmt(row.timestamp)}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

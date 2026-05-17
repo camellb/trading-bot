@@ -630,6 +630,7 @@ class PMExecutor:
             # error so it's actionable from the Errors tab.
             try:
                 from db.logger import log_event
+                from feeds import telegram_messages as _tm
                 err_msg = str(exc)[:600]
                 question_short = (market.question or "")[:80]
                 description = (
@@ -637,11 +638,25 @@ class PMExecutor:
                     f"{decision.side} {size_shares:.2f}@${entry_price:.3f}. "
                     f"{err_msg}"
                 )
+                # Rich Telegram-HTML matches the rest of the message
+                # spec (new_position / settled_win / settled_loss).
+                try:
+                    telegram_html = _tm.order_rejected(
+                        question=market.question or "(unknown market)",
+                        side=decision.side,
+                        stake_usd=decision.stake_usd,
+                        price=entry_price,
+                        error_text=err_msg,
+                        mode=self.trading_mode,
+                    )
+                except Exception:
+                    telegram_html = None
                 log_event(
                     event_type="order_error",
                     severity=2,  # warning, not fatal
                     description=description,
                     source="pm_executor._open_live",
+                    telegram_html=telegram_html,
                 )
             except Exception as log_exc:
                 print(

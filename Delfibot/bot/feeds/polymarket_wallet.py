@@ -202,15 +202,34 @@ _POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
 _POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
 
 
+# Process-level tracking of which (sig_type, funder) tuple we've
+# rotated the api-key under. Polymarket binds each api-key to the
+# (signer, funder) context it was created in; if we switch funder
+# (e.g. user goes through the V2 migration POLY_PROXY → DepositWallet)
+# and keep the OLD api-key, orders get rejected with "the order
+# signer address has to be the address of the API KEY". Force-rotate
+# once per context change so subsequent orders pass.
+_API_KEY_ROTATED_CTX: dict = {}
+
+
 def _build_clob_client(
     private_key: str,
     signature_type: int = -1,
     funder: Optional[str] = None,
+    rotate_api_key: bool = False,
 ):
     """Two-step construction per the py-clob-client-v2 SDK: derive an
     api-key with the signing key first, then build the fully-authed
     client. Helpers in this module use it; pm_executor builds its
-    own cached version for order placement."""
+    own cached version for order placement.
+
+    `rotate_api_key=True` deletes the existing api-key (if any) and
+    creates a fresh one under the current (sig_type, funder)
+    context. Set this when the caller knows the api-key context
+    changed (e.g. post-migration). The rotation runs at most once
+    per process per (sig_type, funder) tuple — repeated calls with
+    the same tuple are no-ops.
+    """
     from py_clob_client_v2.client import ClobClient
     CLOB_HOST = "https://clob.polymarket.com"
     POLYGON_CHAIN_ID = 137
@@ -220,6 +239,41 @@ def _build_clob_client(
         if funder:
             seed_kwargs["funder"] = funder
     seed = ClobClient(**seed_kwargs)
+
+    # Optional one-time api-key rotation. Gated by an in-process
+    # cache so we don't churn the api-key on every probe.
+    import hashlib
+    pk_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    rotate_key = (pk_hash, signature_type, (funder or "").lower())
+    if rotate_api_key and rotate_key not in _API_KEY_ROTATED_CTX:
+        try:
+            # Derive whatever key is currently on file, use it to delete.
+            existing = seed.derive_api_key()
+            if existing and getattr(existing, "api_key", None):
+                authed = ClobClient(**{**seed_kwargs, "creds": existing})
+                try:
+                    authed.delete_api_key()
+                    print(
+                        f"[polymarket_wallet] rotated api-key for "
+                        f"sig_type={signature_type} funder={funder}",
+                        file=sys.stderr,
+                    )
+                except Exception as del_exc:
+                    print(
+                        f"[polymarket_wallet] api-key delete failed "
+                        f"(continuing): {del_exc}",
+                        file=sys.stderr,
+                    )
+            _API_KEY_ROTATED_CTX[rotate_key] = True
+        except Exception as exc:
+            # Couldn't even derive the existing key — nothing to
+            # rotate. Mark as "tried" so we don't loop.
+            _API_KEY_ROTATED_CTX[rotate_key] = True
+            print(
+                f"[polymarket_wallet] api-key rotation skipped: {exc}",
+                file=sys.stderr,
+            )
+
     creds = seed.create_or_derive_api_key()
     client_kwargs = dict(seed_kwargs)
     client_kwargs["creds"] = creds
@@ -434,6 +488,22 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                     f"allowance=${allowance:.4f}",
                     file=sys.stderr,
                 )
+                # Force an api-key rotation under THIS context. Once
+                # per process per (sig_type, funder). Fixes the
+                # "the order signer address has to be the address of
+                # the API KEY" rejection that happens when the
+                # api-key on file was created under an OLDER context
+                # (e.g. legacy POLY_PROXY pre-V2-migration).
+                try:
+                    _build_clob_client(
+                        private_key,
+                        signature_type=sig_type,
+                        funder=funder,
+                        rotate_api_key=True,
+                    )
+                except Exception as exc:
+                    print(f"[polymarket_wallet] post-probe rotate failed: {exc}",
+                          file=sys.stderr)
                 break
         except Exception as exc:
             print(f"[polymarket_wallet] probe {label} failed: {exc}",
