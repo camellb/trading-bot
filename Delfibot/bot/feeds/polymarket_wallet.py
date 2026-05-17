@@ -169,6 +169,9 @@ def clear_cache() -> None:
     _CACHE.clear()
     _CLOB_BALANCE_CACHE.clear()
     _POLY_SIGNER_CACHE.clear()
+    # Also flush the CLOB client cache — a fresh credential rotation
+    # invalidates the api-key bound inside the cached client.
+    _CLOB_CLIENT_CACHE.clear()
 
 
 # ── CLOB-side balance (authoritative for live trading) ──────────────────────
@@ -201,6 +204,30 @@ _CLOB_BALANCE_TTL_SECONDS = 60.0
 _POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
 _POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
 
+# Cache of fully-built CLOB clients keyed by (pk_hash, sig_type, funder,
+# manual). Polymarket's `create_or_derive_api_key` POST is the dominant
+# cost in `_build_clob_client` (one round-trip, sometimes 2 on
+# auto-derive retries), and on accounts where the auto-derive flow
+# returns HTTP 400 it stacks SSL reads that hold the GIL across many
+# concurrent /api/summary calls. Cache forever in-process; the client
+# is stateless other than its api-key bundle, which is itself stable
+# under a fixed (sig_type, funder). On rotation we clear the entry.
+_CLOB_CLIENT_CACHE: dict = {}
+
+# Serializes the full signer probe so concurrent /api/summary calls
+# do not all race past a cache miss and run the (expensive) probe in
+# parallel. The probe makes 4 separate /balance-allowance round-trips
+# plus one create_or_derive_api_key POST. Without this lock, the
+# first slow probe holds threadpool slots while the second through
+# N-th probes start fresh, multiplying the work and saturating the
+# Python GIL (every thread re-entering Python after its SSL read
+# contends for the GIL, the asyncio main loop starves, and
+# `accept()` on the listener socket falls behind — the user sees
+# "/api/state: timed out after 30s" until the loop watchdog
+# SIGKILLs the daemon).
+import threading as _threading
+_POLY_SIGNER_LOCK = _threading.Lock()
+
 
 # Process-level tracking of which (sig_type, funder) tuple we've
 # rotated the api-key under. Polymarket binds each api-key to the
@@ -223,14 +250,34 @@ def _build_clob_client(
     client. Helpers in this module use it; pm_executor builds its
     own cached version for order placement.
 
+    MANUAL API CREDS SHORT-CIRCUIT
+        When the user has pasted Polymarket Trading API Keys via
+        Settings → Polymarket API Key, we use them directly and skip
+        the SDK's `create_or_derive_api_key()` POST entirely. Without
+        this short-circuit, every probe would hit `/auth/api-key`,
+        and when the auto-derive path is broken (returns 400 "Could
+        not create api key" — typical post-V2-migration accounts
+        where the deposit-wallet signature doesn't match the auto-
+        derive's signer context), each retry blocks the GIL for the
+        full SSL round-trip. The GUI polls `/api/summary` every 5s
+        which triggers this probe; stacked probes saturate the
+        thread pool, the asyncio event loop can't service `accept()`,
+        and every HTTP endpoint times out. The user sees
+        "/api/state: timed out after 30s" until the loop watchdog
+        SIGKILLs the daemon. Honoring manual creds breaks the loop
+        at the source: no failing POST, no GIL contention, no wedge.
+
     `rotate_api_key=True` deletes the existing api-key (if any) and
     creates a fresh one under the current (sig_type, funder)
     context. Set this when the caller knows the api-key context
     changed (e.g. post-migration). The rotation runs at most once
     per process per (sig_type, funder) tuple — repeated calls with
-    the same tuple are no-ops.
+    the same tuple are no-ops. Skipped entirely when manual creds
+    are present (the user has already committed to a specific
+    api-key; rotation would invalidate it).
     """
     from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import ApiCreds  # type: ignore
     CLOB_HOST = "https://clob.polymarket.com"
     POLYGON_CHAIN_ID = 137
     seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
@@ -238,6 +285,42 @@ def _build_clob_client(
         seed_kwargs["signature_type"] = signature_type
         if funder:
             seed_kwargs["funder"] = funder
+
+    # MANUAL api-key short-circuit. Pull once per call; the underlying
+    # secrets store has its own in-process cache so this is cheap.
+    manual_creds = None
+    try:
+        from engine.user_config import get_polymarket_api_creds
+        manual_creds = get_polymarket_api_creds()
+    except Exception:
+        manual_creds = None
+
+    # Cache key: pk_hash + sig_type + funder + manual-vs-auto. We do NOT
+    # include rotate_api_key — the cache only stores clients built AFTER
+    # rotation (if any), so on a future call with rotate_api_key=True we
+    # bypass the cache and rebuild, then cache the new one. Rotation is
+    # one-shot per (sig_type, funder) tuple anyway via _API_KEY_ROTATED_CTX.
+    import hashlib
+    pk_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    cache_tag = "m" if manual_creds else "a"
+    cache_key = (pk_hash, signature_type, (funder or "").lower(), cache_tag)
+    if not rotate_api_key:
+        cached = _CLOB_CLIENT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    if manual_creds:
+        creds = ApiCreds(
+            api_key=manual_creds["api_key"],
+            api_secret=manual_creds["api_secret"],
+            api_passphrase=manual_creds["api_passphrase"],
+        )
+        client_kwargs = dict(seed_kwargs)
+        client_kwargs["creds"] = creds
+        client = ClobClient(**client_kwargs)
+        _CLOB_CLIENT_CACHE[cache_key] = client
+        return client
+
     seed = ClobClient(**seed_kwargs)
 
     # Optional one-time api-key rotation. Gated by an in-process
@@ -277,7 +360,9 @@ def _build_clob_client(
     creds = seed.create_or_derive_api_key()
     client_kwargs = dict(seed_kwargs)
     client_kwargs["creds"] = creds
-    return ClobClient(**client_kwargs)
+    client = ClobClient(**client_kwargs)
+    _CLOB_CLIENT_CACHE[cache_key] = client
+    return client
 
 
 def _derive_poly_proxy(eoa: str) -> str:
@@ -389,142 +474,160 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
         if now - ts < _POLY_SIGNER_TTL_SECONDS:
             return info
 
-    try:
-        from py_clob_client_v2.clob_types import (
-            AssetType, BalanceAllowanceParams,
-        )
-        # Derive the EOA from the key first — used as the funder for
-        # proxy queries.
-        seed_client = _build_clob_client(private_key)
-        eoa = seed_client.get_address()
-    except Exception as exc:
-        print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
-              file=sys.stderr)
-        return None
+    # Serialize the probe. The GUI polls /api/summary every 5 seconds
+    # on the threadpool; without this lock, 2-4 concurrent cache-miss
+    # callers all run the full 4-signature-type probe in parallel,
+    # multiplying SSL reads, holding the GIL across each handshake,
+    # and starving the asyncio main loop of accept(). The whole
+    # probe runs inside the critical section; double-checked locking
+    # handles waiters that arrive after another thread populated the
+    # cache. The try/finally guarantees the lock releases on every
+    # exit path.
+    with _POLY_SIGNER_LOCK:
+        # Double-check: another waiter may have populated the cache
+        # while we were blocked on the lock.
+        cached = _POLY_SIGNER_CACHE.get(cache_key)
+        if cached is not None:
+            info, ts = cached
+            if time.monotonic() - ts < _POLY_SIGNER_TTL_SECONDS:
+                return info
 
-    # The funder we pass to the SDK is what ends up as the order's
-    # `maker` field. We try every known Polymarket account shape:
-    #
-    #   sig=0 + EOA            classic MetaMask user
-    #   sig=1 + POLY_PROXY     legacy V1 Magic-account proxy
-    #   sig=2 + GNOSIS_SAFE    older Gnosis-Safe magic account
-    #   sig=1/2/3 + DEPOSIT_WALLET
-    #                          NEW V2 account (2026-04-28 cutover).
-    #                          Polymarket's UI prompts users to
-    #                          "upgrade to continue trading" on
-    #                          first V2 order; that migration
-    #                          deploys this contract. Which
-    #                          sig_type the CLOB expects for the
-    #                          DepositWallet isn't documented;
-    #                          probe sig=1, sig=2, and sig=3
-    #                          (POLY_1271, the EIP-1271 path used
-    #                          by smart-contract wallets).
-    poly_proxy     = _derive_poly_proxy(eoa)
-    poly_safe      = _derive_poly_safe(eoa)
-    deposit_wallet = _derive_deposit_wallet(eoa)
-
-    # Order matters: a freshly-migrated user has $0 at the old proxy
-    # but the CLOB will report the right balance when probed at the
-    # DepositWallet. We probe DepositWallet+sig3 (POLY_1271) FIRST
-    # because:
-    #   - The DepositWallet is a SMART CONTRACT wallet (Solady CWIA).
-    #   - Polymarket accepts sig_type=1 for /balance-allowance
-    #     queries (the CLOB serves the post-migration balance
-    #     against any of its registered signature types).
-    #   - But orders MUST use sig_type=3 (POLY_1271, EIP-1271
-    #     contract signatures) when the maker is a smart-contract
-    #     wallet. Submitting a DepositWallet order under sig_type=1
-    #     gives "maker address not allowed".
-    #   - Confirmed empirically (2026-05-17): a user's working
-    #     manual Polymarket trade drew pUSD from their DepositWallet,
-    #     received CTF tokens at their DepositWallet, and was
-    #     processed by the V2 CTF Exchange — implying maker=DW
-    #     and sig=POLY_1271.
-    # If sig_type=3 returns nothing we fall back to other shapes.
-    probe_candidates = [
-        (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271, V2 default)"),
-        (1, deposit_wallet, "DepositWallet+sig1 (legacy fallback)"),
-        (2, deposit_wallet, "DepositWallet+sig2"),
-        (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
-        (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
-        (0, eoa,            "EOA+sig0"),
-    ]
-
-    chosen: Optional[dict] = None
-    for sig_type, funder, label in probe_candidates:
         try:
-            client = _build_clob_client(
-                private_key, signature_type=sig_type, funder=funder,
+            from py_clob_client_v2.clob_types import (
+                AssetType, BalanceAllowanceParams,
             )
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.COLLATERAL, signature_type=sig_type,
-            )
-            result = client.get_balance_allowance(params) or {}
-            raw = result.get("balance")
-            raw_allow = result.get("allowance")
-            if raw is None:
-                continue
+            # Derive the EOA from the key first — used as the funder
+            # for proxy queries.
+            seed_client = _build_clob_client(private_key)
+            eoa = seed_client.get_address()
+        except Exception as exc:
+            print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
+                  file=sys.stderr)
+            return None
+
+        # The funder we pass to the SDK is what ends up as the order's
+        # `maker` field. We try every known Polymarket account shape:
+        #
+        #   sig=0 + EOA            classic MetaMask user
+        #   sig=1 + POLY_PROXY     legacy V1 Magic-account proxy
+        #   sig=2 + GNOSIS_SAFE    older Gnosis-Safe magic account
+        #   sig=1/2/3 + DEPOSIT_WALLET
+        #                          NEW V2 account (2026-04-28 cutover).
+        #                          Polymarket's UI prompts users to
+        #                          "upgrade to continue trading" on
+        #                          first V2 order; that migration
+        #                          deploys this contract. Which
+        #                          sig_type the CLOB expects for the
+        #                          DepositWallet isn't documented;
+        #                          probe sig=1, sig=2, and sig=3
+        #                          (POLY_1271, the EIP-1271 path used
+        #                          by smart-contract wallets).
+        poly_proxy     = _derive_poly_proxy(eoa)
+        poly_safe      = _derive_poly_safe(eoa)
+        deposit_wallet = _derive_deposit_wallet(eoa)
+
+        # Order matters: a freshly-migrated user has $0 at the old
+        # proxy but the CLOB will report the right balance when probed
+        # at the DepositWallet. We probe DepositWallet+sig3 (POLY_1271)
+        # FIRST because:
+        #   - The DepositWallet is a SMART CONTRACT wallet (Solady CWIA).
+        #   - Polymarket accepts sig_type=1 for /balance-allowance
+        #     queries (the CLOB serves the post-migration balance
+        #     against any of its registered signature types).
+        #   - But orders MUST use sig_type=3 (POLY_1271, EIP-1271
+        #     contract signatures) when the maker is a smart-contract
+        #     wallet. Submitting a DepositWallet order under sig_type=1
+        #     gives "maker address not allowed".
+        #   - Confirmed empirically (2026-05-17): a user's working
+        #     manual Polymarket trade drew pUSD from their DepositWallet,
+        #     received CTF tokens at their DepositWallet, and was
+        #     processed by the V2 CTF Exchange — implying maker=DW
+        #     and sig=POLY_1271.
+        # If sig_type=3 returns nothing we fall back to other shapes.
+        probe_candidates = [
+            (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271, V2 default)"),
+            (1, deposit_wallet, "DepositWallet+sig1 (legacy fallback)"),
+            (2, deposit_wallet, "DepositWallet+sig2"),
+            (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
+            (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
+            (0, eoa,            "EOA+sig0"),
+        ]
+
+        chosen: Optional[dict] = None
+        for sig_type, funder, label in probe_candidates:
             try:
-                value = int(raw) / (10 ** _USDC_DECIMALS)
-                allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
-            except (TypeError, ValueError):
-                continue
-            print(
-                f"[polymarket_wallet] probe {label:32} sig={sig_type} "
-                f"funder={funder} → balance=${value:.4f}",
-                file=sys.stderr,
-            )
-            if value > 0:
-                chosen = {
-                    "signature_type": sig_type,
-                    "funder":         funder,
-                    "eoa":            eoa,
-                    "balance":        float(value),
-                    "allowance":      float(allowance),
-                }
+                client = _build_clob_client(
+                    private_key, signature_type=sig_type, funder=funder,
+                )
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL, signature_type=sig_type,
+                )
+                result = client.get_balance_allowance(params) or {}
+                raw = result.get("balance")
+                raw_allow = result.get("allowance")
+                if raw is None:
+                    continue
+                try:
+                    value = int(raw) / (10 ** _USDC_DECIMALS)
+                    allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
+                except (TypeError, ValueError):
+                    continue
                 print(
-                    f"[polymarket_wallet] account shape: sig_type={sig_type} "
-                    f"funder={funder} ({label}) balance=${value:.4f} "
-                    f"allowance=${allowance:.4f}",
+                    f"[polymarket_wallet] probe {label:32} sig={sig_type} "
+                    f"funder={funder} → balance=${value:.4f}",
                     file=sys.stderr,
                 )
-                # Force an api-key rotation under THIS context. Once
-                # per process per (sig_type, funder). Fixes the
-                # "the order signer address has to be the address of
-                # the API KEY" rejection that happens when the
-                # api-key on file was created under an OLDER context
-                # (e.g. legacy POLY_PROXY pre-V2-migration).
-                try:
-                    _build_clob_client(
-                        private_key,
-                        signature_type=sig_type,
-                        funder=funder,
-                        rotate_api_key=True,
+                if value > 0:
+                    chosen = {
+                        "signature_type": sig_type,
+                        "funder":         funder,
+                        "eoa":            eoa,
+                        "balance":        float(value),
+                        "allowance":      float(allowance),
+                    }
+                    print(
+                        f"[polymarket_wallet] account shape: sig_type={sig_type} "
+                        f"funder={funder} ({label}) balance=${value:.4f} "
+                        f"allowance=${allowance:.4f}",
+                        file=sys.stderr,
                     )
-                except Exception as exc:
-                    print(f"[polymarket_wallet] post-probe rotate failed: {exc}",
-                          file=sys.stderr)
-                break
-        except Exception as exc:
-            print(f"[polymarket_wallet] probe {label} failed: {exc}",
-                  file=sys.stderr)
-            continue
+                    # Force an api-key rotation under THIS context. Once
+                    # per process per (sig_type, funder). Fixes the
+                    # "the order signer address has to be the address of
+                    # the API KEY" rejection that happens when the
+                    # api-key on file was created under an OLDER context
+                    # (e.g. legacy POLY_PROXY pre-V2-migration).
+                    try:
+                        _build_clob_client(
+                            private_key,
+                            signature_type=sig_type,
+                            funder=funder,
+                            rotate_api_key=True,
+                        )
+                    except Exception as exc:
+                        print(f"[polymarket_wallet] post-probe rotate failed: {exc}",
+                              file=sys.stderr)
+                    break
+            except Exception as exc:
+                print(f"[polymarket_wallet] probe {label} failed: {exc}",
+                      file=sys.stderr)
+                continue
 
-    if chosen is None:
-        # Everything probed zero. Default to the V2 DepositWallet
-        # shape — that's the path Polymarket's UI now pushes every
-        # new user through. A fresh deposit will land there and the
-        # next probe catches it.
-        chosen = {
-            "signature_type": 1,
-            "funder":         deposit_wallet,
-            "eoa":            eoa,
-            "balance":        0.0,
-            "allowance":      0.0,
-        }
+        if chosen is None:
+            # Everything probed zero. Default to the V2 DepositWallet
+            # shape — that's the path Polymarket's UI now pushes every
+            # new user through. A fresh deposit will land there and the
+            # next probe catches it.
+            chosen = {
+                "signature_type": 1,
+                "funder":         deposit_wallet,
+                "eoa":            eoa,
+                "balance":        0.0,
+                "allowance":      0.0,
+            }
 
-    _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
-    return chosen
+        _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
+        return chosen
 
 
 def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
