@@ -52,6 +52,14 @@ from research.fetcher import fetch_research, ResearchBundle
 
 SOURCE = "polymarket"
 
+# Per-process dedup for the one-shot "Polymarket platform minimum is
+# blocking most trades" Telegram alert. Adds the user_id once we've
+# fired the notification for that user; the rest of the session is
+# silent (skips still hit the Skipped tab, just no Telegram spam).
+# Reset on process restart — fine since the alert is informational,
+# not a critical event the user needs to see every time.
+_POLYMARKET_MIN_SKIP_NOTIFIED: set = set()
+
 
 
 @dataclass
@@ -249,6 +257,47 @@ class PMAnalyst:
         )
 
         if not decision.should_trade:
+            # One-shot user-facing alert: if the bot is in live mode and
+            # the FIRST skip we see from this user is the Polymarket
+            # 5-share platform minimum, fire ONE bot_status event with
+            # Telegram so the user knows why most markets are being
+            # passed on. Subsequent skips just land silently in the
+            # Skipped tab. Per-user dedup so multi-tenant accounts each
+            # get exactly one alert; reset on process restart.
+            if (
+                user_config.mode == "live"
+                and decision.skip_reason
+                and "Polymarket needs" in decision.skip_reason
+                and user_id not in _POLYMARKET_MIN_SKIP_NOTIFIED
+            ):
+                _POLYMARKET_MIN_SKIP_NOTIFIED.add(user_id)
+                try:
+                    telegram_html = (
+                        "<b>ℹ️ Most markets being skipped</b>\n"
+                        "Polymarket requires 5 shares per order. "
+                        "At typical 50¢ asks that's $2.50, at 90¢ that's "
+                        "$4.50 — both larger than the bot's $1 stake cap.\n\n"
+                        "Bot will keep trading any market where 5 shares "
+                        "cost ≤ $1 (ask price ≤ $0.20). Everything else "
+                        "lands in Positions → Skipped with a clear reason. "
+                        "No errors, no wasted attempts.\n\n"
+                        "If you want broader coverage, raise your stake "
+                        "policy in Settings → Risk so the bot can pay "
+                        "Polymarket's per-market minimum."
+                    )
+                    log_event(
+                        event_type="bot_status",
+                        severity=2,
+                        description=(
+                            "Polymarket 5-share floor blocking most trades "
+                            f"(skip reason: {decision.skip_reason})"
+                        ),
+                        source="pm_analyst.polymarket_min_skip",
+                        telegram_html=telegram_html,
+                    )
+                except Exception as _exc:
+                    # Don't let the notification path break the scan.
+                    pass
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="LOGGED_NO_TRADE",

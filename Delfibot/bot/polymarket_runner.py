@@ -226,7 +226,35 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                     # at settlement time. In practice the bot usually
                     # holds several at once, so the two numbers were
                     # silently identical in the Telegram message.
-                    stats = executor.get_portfolio_stats()
+                    # Mode-scoped stats for the settlement notification.
+                    # The primary `executor` is bound to the user's current
+                    # trading mode (typically 'live'), but THIS position
+                    # might have been recorded under a different mode
+                    # (e.g. simulation fallback when V2 signer mismatch
+                    # gated live orders). Showing live-mode bankroll on a
+                    # sim settlement gave the wrong "$1000" balance on
+                    # Telegram win/loss messages. Build a view-mode-
+                    # overridden executor when the position's mode differs
+                    # so the message reflects the ledger that actually
+                    # changed. Cached per (user, mode) so repeated
+                    # settlements in the same scan are cheap.
+                    position_mode = p.get("mode") or "simulation"
+                    if position_mode == executor.mode:
+                        stats_executor = executor
+                    else:
+                        cache_key = f"{user_id}:{position_mode}"
+                        cached = executors.get(cache_key)
+                        if cached is None:
+                            try:
+                                cached = PMExecutor(
+                                    user_id,
+                                    view_mode_override=position_mode,
+                                )
+                                executors[cache_key] = cached
+                            except Exception:
+                                cached = executor  # fall back to primary
+                        stats_executor = cached
+                    stats = stats_executor.get_portfolio_stats()
                     bankroll_after = float(stats.get("bankroll", 0.0))
                     equity_after   = float(stats.get("equity",   bankroll_after))
                     cost = float(p.get("cost_usd", 0.0) or 0.0)

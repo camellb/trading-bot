@@ -267,11 +267,11 @@ def size_position(
         if shares_at_stake < POLYMARKET_MIN_SHARES:
             return _skip(
                 cp, cf,
-                f"Polymarket requires {POLYMARKET_MIN_SHARES:.0f} shares "
-                f"minimum (~${POLYMARKET_MIN_SHARES * float(entry):.2f} at "
-                f"${entry:.2f} ask); your $1 floor only buys "
-                f"{shares_at_stake:.2f} shares — raise max_stake_pct or "
-                f"trade only markets with ask <= ${POLYMARKET_MIN_ORDER_USD / POLYMARKET_MIN_SHARES:.2f}",
+                f"Polymarket needs {POLYMARKET_MIN_SHARES:.0f} shares "
+                f"(~${POLYMARKET_MIN_SHARES * float(entry):.2f}) at this "
+                f"${entry:.2f} ask. Bot caps at ${POLYMARKET_MIN_ORDER_USD:.0f} — "
+                f"this market only trades when ask drops to "
+                f"<= ${POLYMARKET_MIN_ORDER_USD / POLYMARKET_MIN_SHARES:.2f}.",
                 side=side, entry=entry, p_win=p_win,
             )
 

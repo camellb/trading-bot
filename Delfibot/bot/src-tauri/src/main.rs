@@ -315,18 +315,32 @@ async fn read_existing_sidecar_port(app: &tauri::AppHandle) -> Option<u16> {
     if port == 0 {
         return None;
     }
-    // TCP probe with a short timeout. A successful connect means
-    // the daemon is listening; we don't speak the API protocol here.
+    // TCP probe with a short retry budget. The daemon writes its port
+    // file BEFORE the HTTP server is fully bound — and on launchd
+    // respawn (manual restart from the splash, kickstart -k, or a
+    // crash auto-recovery) the new daemon takes 1-5s to come back up.
+    // Without a retry the GUI saw "Delfi could not start" every time
+    // the user hit the "Restart Delfi" button. Poll up to 10 times at
+    // 500ms = ~5s worst-case when the daemon is genuinely down; the
+    // healthy path hits attempt 0 in <50ms.
     let addr = format!("127.0.0.1:{port}");
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(1500),
-        tokio::net::TcpStream::connect(&addr),
-    )
-    .await
-    {
-        Ok(Ok(_stream)) => Some(port),
-        _ => None,
+    for attempt in 0..10u8 {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(1500),
+            tokio::net::TcpStream::connect(&addr),
+        )
+        .await
+        {
+            Ok(Ok(_stream)) => return Some(port),
+            _ => {
+                if attempt == 9 {
+                    return None;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
     }
+    None
 }
 
 fn main() {
