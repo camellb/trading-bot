@@ -94,6 +94,40 @@ class UserConfig:
     streak_cooldown_losses: int   = 3
     dry_powder_reserve_pct: float = 0.20
 
+    # ── Exit policy (early close before natural settlement) ───────────────
+    # Master switch. When False, none of the take-profit / stop-loss /
+    # time-decay rules below are evaluated and positions only close on
+    # natural settlement. Default OFF so existing users see no behavior
+    # change until they opt in.
+    exit_policy_enabled: bool = False
+    # Take-profit: close the position when unrealized return >= threshold.
+    # Computed against the CURRENT BID (the price we could actually sell at),
+    # not the mid or last trade, so slippage doesn't trigger false exits.
+    take_profit_enabled:   bool  = True
+    take_profit_threshold_pct: float = 0.50   # +50% locks the win
+    # Stop-loss: close when unrealized return <= -threshold. Gated by the
+    # min-time-remaining rule below so a wick near resolution doesn't
+    # cut the position right before it would have recovered.
+    stop_loss_enabled:   bool  = True
+    stop_loss_threshold_pct: float = 0.30     # -30% caps the loss
+    # Don't trigger stop-loss if less than this fraction of the original
+    # time-to-resolution is still left. Protects against fast-moving
+    # markets in their last minutes; if you're 90% of the way to
+    # settlement at -30% you've already paid for the wait, hold to learn.
+    stop_loss_min_time_remaining_pct: float = 0.20
+    # Time-decay: close positions that have been open too long without
+    # moving — frees capital from stalled markets. Only fires when the
+    # unrealized return is inside the flat band (don't kick a winner out
+    # just because it's been open a while). Off by default since most
+    # users care more about TP/SL than capital velocity.
+    time_decay_enabled:    bool  = False
+    time_decay_max_hours:  int   = 72
+    time_decay_flat_band_pct: float = 0.10    # ±10% counts as "flat"
+    # Universal safety: never exit if less than N minutes remain to the
+    # market's natural resolution. Selling 30 seconds before settlement
+    # eats spread + Polymarket fees for negligible time-value gain.
+    exit_min_time_to_resolution_minutes: int = 5
+
     # Diagnostic-driven overrides.
     cost_assumption_override: Optional[float]   = None
     archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
@@ -212,6 +246,16 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     # validator runs.
     "min_days_to_resolution":        (1, 30),
     "max_days_to_resolution":        (1, 30),
+    # Exit policy thresholds. Bools (exit_policy_enabled,
+    # take_profit_enabled, stop_loss_enabled, time_decay_enabled) are
+    # not in this dict — they're cast by _CASTERS and validated as
+    # plain bools, not range-bounded.
+    "take_profit_threshold_pct":        (0.05, 5.00),  # 5% to 500%
+    "stop_loss_threshold_pct":          (0.05, 0.95),  # 5% to 95% loss
+    "stop_loss_min_time_remaining_pct": (0.00, 0.95),  # 0% to 95%
+    "time_decay_max_hours":             (1, 720),      # 1h to 30d
+    "time_decay_flat_band_pct":         (0.00, 1.00),  # 0% to 100%
+    "exit_min_time_to_resolution_minutes": (0, 1440),  # 0 to 24h
 }
 
 # Band-shaped fields. Stored as JSON-encoded list of [lo, hi] float
@@ -301,6 +345,38 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Per-archetype stake multiplier applied to the flat base stake. "
         "1.0 = no adjustment, 2.0 = double-size, 0.5 = half-size. "
         "Clamped to [0.1, 10.0] per entry.",
+    "exit_policy_enabled":
+        "Master switch for early-exit logic. When off, positions only "
+        "close at natural market settlement.",
+    "take_profit_enabled":
+        "Close positions when unrealized return crosses the take-profit "
+        "threshold (computed against the current bid).",
+    "take_profit_threshold_pct":
+        "Unrealized return level at which a position is closed in profit. "
+        "0.50 = +50%, 1.00 = +100%. Computed against the bid, not the mid.",
+    "stop_loss_enabled":
+        "Close positions when unrealized return falls below the negative "
+        "stop-loss threshold. Gated by min-time-remaining.",
+    "stop_loss_threshold_pct":
+        "Unrealized loss level at which a position is closed. 0.30 = -30%.",
+    "stop_loss_min_time_remaining_pct":
+        "Skip stop-loss if less than this fraction of the original time-to-"
+        "resolution remains. Prevents cutting losses on a wick near "
+        "settlement that would have recovered.",
+    "time_decay_enabled":
+        "Close stalled positions that have been open beyond max_hours and "
+        "are still inside the flat band. Frees capital from markets going "
+        "nowhere.",
+    "time_decay_max_hours":
+        "Hours a position can remain open before time-decay considers it. "
+        "Only fires alongside the flat-band check.",
+    "time_decay_flat_band_pct":
+        "Unrealized return range (±) considered 'flat enough' for time-"
+        "decay to close. 0.10 = ±10%. Keeps decay from closing winners.",
+    "exit_min_time_to_resolution_minutes":
+        "Universal safety floor. Never exit if less than N minutes remain "
+        "until natural settlement — avoids spread + fee drag for tiny "
+        "time-value gain.",
 }
 
 
@@ -316,6 +392,17 @@ _CASTERS: dict[str, type] = {
     "starting_cash":                 float,
     "min_days_to_resolution":        int,
     "max_days_to_resolution":        int,
+    # Exit policy
+    "exit_policy_enabled":               bool,
+    "take_profit_enabled":               bool,
+    "take_profit_threshold_pct":         float,
+    "stop_loss_enabled":                 bool,
+    "stop_loss_threshold_pct":           float,
+    "stop_loss_min_time_remaining_pct":  float,
+    "time_decay_enabled":                bool,
+    "time_decay_max_hours":              int,
+    "time_decay_flat_band_pct":          float,
+    "exit_min_time_to_resolution_minutes": int,
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
@@ -342,6 +429,17 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "min_days_to_resolution",
     "max_days_to_resolution",
     "archetype_skip_market_price_bands",
+    # Exit policy
+    "exit_policy_enabled",
+    "take_profit_enabled",
+    "take_profit_threshold_pct",
+    "stop_loss_enabled",
+    "stop_loss_threshold_pct",
+    "stop_loss_min_time_remaining_pct",
+    "time_decay_enabled",
+    "time_decay_max_hours",
+    "time_decay_flat_band_pct",
+    "exit_min_time_to_resolution_minutes",
 })
 
 
