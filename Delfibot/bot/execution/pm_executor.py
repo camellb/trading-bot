@@ -125,19 +125,47 @@ def _get_clob_client(wallet_address: str, private_key: str):
             f"[pm_executor] signer probe failed, defaulting to EOA: {exc}",
             file=sys.stderr,
         )
+
+    # MANUAL api-key path: if the user has pasted Polymarket api
+    # creds via Settings, use them directly and skip the SDK's
+    # create_or_derive_api_key flow entirely. This is the unblock
+    # for accounts where auto-derive returns a stale post-migration
+    # key bound to the wrong (signer, funder) context.
+    manual_creds = None
+    try:
+        from engine.user_config import get_polymarket_api_creds
+        manual_creds = get_polymarket_api_creds()
+    except Exception:
+        manual_creds = None
+
     key_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
-    cache_key = f"{wallet_address.lower()}:{key_hash}:sig{sig_type}"
+    cache_tag = "m" if manual_creds else "a"   # m=manual, a=auto-derive
+    cache_key = f"{wallet_address.lower()}:{key_hash}:sig{sig_type}:{cache_tag}"
     cached = _CLOB_CLIENT_CACHE.get(cache_key)
     if cached is not None:
         return cached
     from py_clob_client_v2.client import ClobClient   # type: ignore
+    from py_clob_client_v2.clob_types import ApiCreds  # type: ignore
     seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
     if sig_type != 0:
         seed_kwargs["signature_type"] = sig_type
         if funder:
             seed_kwargs["funder"] = funder
-    seed = ClobClient(**seed_kwargs)
-    creds = seed.create_or_derive_api_key()
+
+    if manual_creds:
+        creds = ApiCreds(
+            api_key=manual_creds["api_key"],
+            api_secret=manual_creds["api_secret"],
+            api_passphrase=manual_creds["api_passphrase"],
+        )
+        print(
+            f"[pm_executor] using MANUAL Polymarket api-key (from "
+            f"Settings) for sig_type={sig_type} funder={funder}",
+            file=sys.stderr,
+        )
+    else:
+        seed = ClobClient(**seed_kwargs)
+        creds = seed.create_or_derive_api_key()
     client_kwargs = dict(seed_kwargs)
     client_kwargs["creds"] = creds
     client = ClobClient(**client_kwargs)

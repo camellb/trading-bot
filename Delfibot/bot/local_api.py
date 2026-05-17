@@ -93,18 +93,22 @@ from engine.user_config import (
     _keyring_get,
     get_anthropic_api_key,
     get_cryptopanic_key,
+    get_gemini_api_key,
     get_license_key,
     get_license_meta,
     get_llm_backup_key,
     get_newsapi_key,
+    get_polymarket_api_creds,
     get_user_config,
     get_user_telegram_config,
     set_anthropic_api_key,
     set_cryptopanic_key,
+    set_gemini_api_key,
     set_license_key,
     set_license_meta,
     set_llm_backup_key,
     set_newsapi_key,
+    set_polymarket_api_creds,
     set_user_polymarket_creds,
     set_user_telegram_config,
     update_user_config,
@@ -767,12 +771,18 @@ class LocalAPI:
             return _ok({"wallet_address": cfg.wallet_address, **cache})
 
         def _read_all() -> dict:
+            pm_api = get_polymarket_api_creds() or {}
             return {
                 "has_polymarket_key":   _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
                 "has_anthropic_key":    get_anthropic_api_key()  is not None,
                 "has_llm_backup_key":   get_llm_backup_key()     is not None,
                 "has_newsapi_key":      get_newsapi_key()        is not None,
                 "has_cryptopanic_key":  get_cryptopanic_key()    is not None,
+                # New optional keys added 2026-05-17:
+                "has_gemini_key":               get_gemini_api_key() is not None,
+                "has_polymarket_api_key":       bool(pm_api.get("api_key")),
+                "has_polymarket_api_secret":    bool(pm_api.get("api_secret")),
+                "has_polymarket_api_passphrase": bool(pm_api.get("api_passphrase")),
             }
 
         try:
@@ -894,6 +904,44 @@ class LocalAPI:
             except Exception as exc:
                 return _err(f"failed to write cryptopanic key: {exc}", 500)
 
+        # Optional Gemini key (research/news pre-filter). The bot
+        # logs an explicit "GEMINI_API_KEY not set" warning every
+        # scan when missing.
+        gemini = _clean("gemini_key") or _clean("gemini_api_key")
+        if gemini is not None:
+            err = _validate_llm_key_shape(gemini, "Gemini API key")
+            if err:
+                return _err(err, 400)
+            try:
+                await self._offload(set_gemini_api_key, gemini)
+                wrote.append("gemini_key")
+            except Exception as exc:
+                return _err(f"failed to write gemini key: {exc}", 500)
+
+        # Optional MANUAL Polymarket CLOB api creds. All three are
+        # written independently; the caller can update one at a time.
+        # When ALL three are populated, pm_executor + polymarket_wallet
+        # skip create_or_derive_api_key entirely and use these
+        # directly — useful when the SDK's auto-derived key is stale
+        # after V2 migration.
+        pm_api_key        = _clean("polymarket_api_key")
+        pm_api_secret     = _clean("polymarket_api_secret")
+        pm_api_passphrase = _clean("polymarket_api_passphrase")
+        if pm_api_key is not None or pm_api_secret is not None or pm_api_passphrase is not None:
+            try:
+                await self._offload(
+                    lambda: set_polymarket_api_creds(
+                        api_key=pm_api_key,
+                        api_secret=pm_api_secret,
+                        api_passphrase=pm_api_passphrase,
+                    )
+                )
+                if pm_api_key is not None:        wrote.append("polymarket_api_key")
+                if pm_api_secret is not None:     wrote.append("polymarket_api_secret")
+                if pm_api_passphrase is not None: wrote.append("polymarket_api_passphrase")
+            except Exception as exc:
+                return _err(f"failed to write polymarket api creds: {exc}", 500)
+
         # Hot-reload the running process so the new keys take effect
         # WITHOUT a daemon restart. Two things need to happen:
         #
@@ -920,6 +968,29 @@ class LocalAPI:
             _os.environ["NEWS_API_KEY"] = newsapi
         if cryptopanic is not None:
             _os.environ["CRYPTOPANIC_API_KEY"] = cryptopanic
+        if gemini is not None:
+            # research/fetcher.py + feeds/news_feed.py read this
+            # directly off os.environ at call time, so this propagates
+            # immediately to the next scan / news pull.
+            _os.environ["GEMINI_API_KEY"] = gemini
+        if (pm_api_key is not None or pm_api_secret is not None
+                or pm_api_passphrase is not None):
+            # pm_executor's per-process ClobClient cache keys by manual
+            # vs auto-derived, but the manual creds it stored were from
+            # BEFORE this save. Flush the cache so the next order picks
+            # up the freshly-saved creds.
+            try:
+                from execution.pm_executor import _CLOB_CLIENT_CACHE
+                _CLOB_CLIENT_CACHE.clear()
+                # Also clear the api-key-rotation memo so a manual key
+                # change doesn't get blocked by "already rotated this
+                # context".
+                from feeds.polymarket_wallet import _API_KEY_ROTATED_CTX, clear_cache as _pw_clear
+                _API_KEY_ROTATED_CTX.clear()
+                _pw_clear()
+            except Exception as exc:
+                print(f"[creds] CLOB client cache flush failed: {exc}",
+                      flush=True)
         # All LLM calls (forecaster + research keyword extraction) go
         # through the engine.llm_client singleton. Resetting it drops
         # the cached Anthropic and Gemini SDK clients in one place;
