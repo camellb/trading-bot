@@ -741,7 +741,21 @@ def validate_user_config_value(key: str, value) -> None:
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
-    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id"):
+    # Pure bool / string fields with no numeric bounds. The caster already
+    # confirmed the type; nothing else to validate. Without this list, the
+    # final "if key not in USER_CONFIG_BOUNDS" branch rejects every
+    # bool-toggle update with "unknown user_config field" even though the
+    # field is fully registered in _CASTERS and _PERSISTABLE_COLUMNS.
+    if key in (
+        "mode", "wallet_address", "bot_enabled", "telegram_chat_id",
+        # Exit-policy toggles. Each pairs with a numeric threshold that
+        # IS bounded (take_profit_threshold_pct, etc.); only the bool
+        # switches need the no-bounds escape hatch.
+        "exit_policy_enabled",
+        "take_profit_enabled",
+        "stop_loss_enabled",
+        "time_decay_enabled",
+    ):
         return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
@@ -1109,7 +1123,18 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       bot_enabled, archetype_stake_multipliers, "
                 "       notification_prefs, telegram_chat_id, "
                 "       min_days_to_resolution, max_days_to_resolution, "
-                "       archetype_skip_market_price_bands "
+                "       archetype_skip_market_price_bands, "
+                # Exit policy (indices 19..28). Read them here so an
+                # UPDATE survives the round-trip — without these the
+                # write path persists correctly but the dataclass
+                # falls back to defaults on every read.
+                "       exit_policy_enabled, take_profit_enabled, "
+                "       take_profit_threshold_pct, stop_loss_enabled, "
+                "       stop_loss_threshold_pct, "
+                "       stop_loss_min_time_remaining_pct, "
+                "       time_decay_enabled, time_decay_max_hours, "
+                "       time_decay_flat_band_pct, "
+                "       exit_min_time_to_resolution_minutes "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -1134,6 +1159,18 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             min_days_to_resolution        = (int(row[16]) if row[16] is not None else None),
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
             archetype_skip_market_price_bands = _decode_archetype_skip_market_price_bands(row[18]),
+            # Exit policy. row[19..28] correspond to the dataclass
+            # defaults defined at the top of UserConfig.
+            exit_policy_enabled                 = bool(row[19]) if row[19] is not None else False,
+            take_profit_enabled                 = bool(row[20]) if row[20] is not None else True,
+            take_profit_threshold_pct           = float(row[21]) if row[21] is not None else 0.50,
+            stop_loss_enabled                   = bool(row[22]) if row[22] is not None else True,
+            stop_loss_threshold_pct             = float(row[23]) if row[23] is not None else 0.30,
+            stop_loss_min_time_remaining_pct    = float(row[24]) if row[24] is not None else 0.20,
+            time_decay_enabled                  = bool(row[25]) if row[25] is not None else False,
+            time_decay_max_hours                = int(row[26])   if row[26] is not None else 72,
+            time_decay_flat_band_pct            = float(row[27]) if row[27] is not None else 0.10,
+            exit_min_time_to_resolution_minutes = int(row[28])   if row[28] is not None else 5,
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
