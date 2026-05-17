@@ -211,9 +211,6 @@ function ExitPolicyPanel({
         threshold, stop-loss when it falls below (with a time gate that
         prevents cutting losses in the last few minutes), or time-decay
         when a position has been open for a long time without moving.
-        Delfi places a SELL order at the current bid and stamps the row
-        with the reason. The full policy turns on and off with one
-        switch.
       </p>
       <form onSubmit={save}>
         <div style={{ marginBottom: 18 }}>
