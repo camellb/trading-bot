@@ -260,6 +260,21 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "equity":         None,
         "roi":            None,   # dashboard formula: (equity - start) / start
     }
+    # `exit_policy` summarises how the take-profit / stop-loss /
+    # time-decay rules behaved this cycle. The shaper compares the
+    # realized P&L on closed-early rows to their counterfactual hold
+    # P&L (set by the resolver Phase C backfill) and aggregates per
+    # exit reason. The thesis can then comment on whether the policy
+    # made money or left it on the table.
+    exit_policy = {
+        "early_n":             0,
+        "early_pnl_usd":       0.0,
+        "counterfactual_n":    0,
+        "counterfactual_pnl":  0.0,
+        "saved_vs_hold_usd":   None,  # exit_pnl - hold_pnl on backfilled rows
+        "by_reason":           [],    # [{reason, n, pnl, hold_pnl, saved}]
+    }
+
     data: dict[str, Any] = {
         "mode":               mode,
         "cycle_size":         cycle_size,
@@ -269,6 +284,7 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "per_archetype":      [],
         "calibration":        [],
         "cost_validation":    None,
+        "exit_policy":        exit_policy,
         "top_wins":           [],
         "top_losses":         [],
         "top_wins_admin":     [],
@@ -400,6 +416,66 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     except Exception as exc:
         print(f"[review_report] list_pending failed: {exc}", file=sys.stderr)
 
+    # ── Exit-policy shaping ─────────────────────────────────────────
+    # Walk closed-early rows in the cycle. For each, the early exit
+    # realized `pnl`; for those where the resolver has back-filled
+    # `counterfactual_pnl_usd`, we know what holding to natural
+    # resolution would have made. counterfactual_pnl_usd is defined
+    # as `hold_pnl - exit_pnl`, so `saved = exit_pnl - hold_pnl =
+    # -counterfactual_pnl`. Positive `saved` means the exit was a
+    # good call.
+    early_rows = [r for r in rows if (r.get("status") or "") == "closed_early"]
+    if early_rows:
+        by_reason: dict[str, dict] = {}
+        cf_pnl_sum = 0.0
+        cf_n = 0
+        for r in early_rows:
+            reason = r.get("close_reason") or "unknown"
+            d = by_reason.setdefault(reason, {
+                "reason":   reason,
+                "n":        0,
+                "pnl":      0.0,
+                "hold_pnl": 0.0,
+                "saved":    0.0,
+                "cf_n":     0,
+            })
+            d["n"]   += 1
+            pnl_val = float(r.get("pnl") or 0.0)
+            d["pnl"] += pnl_val
+            cf = r.get("counterfactual_pnl")
+            if cf is not None:
+                # exit_pnl + cf == hold_pnl  =>  hold_pnl = pnl + cf
+                hold_pnl = pnl_val + float(cf)
+                d["hold_pnl"] += hold_pnl
+                d["saved"]    += pnl_val - hold_pnl
+                d["cf_n"]     += 1
+                cf_pnl_sum    += float(cf)
+                cf_n          += 1
+        early_pnl_total = sum(float(r.get("pnl") or 0.0) for r in early_rows)
+        exit_policy.update({
+            "early_n":            len(early_rows),
+            "early_pnl_usd":      round(early_pnl_total, 2),
+            "counterfactual_n":   cf_n,
+            "counterfactual_pnl": round(cf_pnl_sum, 2),
+            "saved_vs_hold_usd": (
+                None if cf_n == 0
+                else round(sum(d["saved"] for d in by_reason.values()), 2)
+            ),
+            "by_reason": [
+                {
+                    "reason":   d["reason"],
+                    "n":        d["n"],
+                    "pnl":      round(d["pnl"],      2),
+                    "hold_pnl": round(d["hold_pnl"], 2),
+                    "saved":    round(d["saved"],    2),
+                    "cf_n":     d["cf_n"],
+                }
+                for d in sorted(
+                    by_reason.values(), key=lambda x: x["n"], reverse=True,
+                )
+            ],
+        })
+
     data["settled_count"] = n
     data["verdict"] = _verdict(roi=roi, brier=brier_avg, n=n)
     return data
@@ -489,11 +565,17 @@ def _fetch_settled_rows(user_id: str, mode: str,
                 "       p.realized_pnl_usd, p.settlement_outcome, "
                 "       p.claude_probability, p.confidence, p.settled_at, "
                 "       p.reasoning AS pos_reasoning, "
-                "       e.reasoning AS eval_reasoning "
+                "       e.reasoning AS eval_reasoning, "
+                "       p.status, p.close_reason, p.counterfactual_pnl_usd "
                 "FROM pm_positions p "
                 "LEFT JOIN market_evaluations e ON e.pm_position_id = p.id "
                 "WHERE p.user_id = :uid AND p.mode = :m "
-                "  AND p.status IN ('settled', 'invalid') "
+                # `closed_early` rows carry realized P&L and a chosen
+                # side, so the review treats them as settled. The
+                # `exit_policy` block built in gather_cycle_data
+                # surfaces them separately so the user can see how
+                # the policy affected the cycle.
+                "  AND p.status IN ('settled', 'invalid', 'closed_early') "
                 "ORDER BY p.settled_at DESC LIMIT :lim"
             ), {"uid": user_id, "m": mode,
                 "lim": int(cycle_size)}).fetchall()
@@ -527,6 +609,13 @@ def _fetch_settled_rows(user_id: str, mode: str,
             "settled_at":  iso_utc(r[12]),
             "reasoning":   (r[14] or r[13] or "").strip(),
             "brier":       brier,
+            # Exit-policy fields. status is one of 'settled'/'invalid'/
+            # 'closed_early'. close_reason is NULL for natural
+            # settlements. counterfactual_pnl_usd is NULL until the
+            # natural-settlement backfill stamps it.
+            "status":               r[15] if r[15] is not None else "settled",
+            "close_reason":         r[16] if r[16] is not None else None,
+            "counterfactual_pnl":   float(r[17]) if r[17] is not None else None,
         })
     return out
 
@@ -768,11 +857,36 @@ def _thesis_user_block(data: dict) -> str:
             f"- Implied cost {_pct(cv.get('implied_cost'))} vs assumed "
             f"{_pct(cv.get('assumed_cost'))} over n={cv.get('n') or 0}."
         )
+    # Exit-policy hint to the thesis writer: if there were early
+    # exits and we have backfilled counterfactual P&L for some of
+    # them, surface the "saved vs hold" number so the prose can say
+    # whether the policy added or destroyed value this cycle.
+    exit_policy = data.get("exit_policy") or {}
+    early_n = int(exit_policy.get("early_n") or 0)
+    if early_n > 0:
+        early_pnl = float(exit_policy.get("early_pnl_usd") or 0.0)
+        cf_n      = int(exit_policy.get("counterfactual_n") or 0)
+        saved     = exit_policy.get("saved_vs_hold_usd")
+        by_reason = exit_policy.get("by_reason") or []
+        parts = [f"{r['n']} {r['reason']}" for r in by_reason]
+        breakdown = ", ".join(parts) if parts else f"{early_n} early exits"
+        line = (
+            f"- Exit policy: {early_n} positions closed early "
+            f"(${early_pnl:+.2f} realized; {breakdown})"
+        )
+        if cf_n > 0 and saved is not None:
+            line += (
+                f". Counterfactual on {cf_n} resolved markets: "
+                f"${saved:+.2f} saved vs holding to natural resolution"
+            )
+        lines.append(line + ".")
     lines.append(f"Verdict tier: {data.get('verdict')}.")
     lines.append(
         "Write a 2-3 sentence thesis for the user that names the biggest "
         "driver of profit or loss, the biggest calibration issue if any, "
-        "and what Delfi will focus on next. Plain prose only."
+        "and what Delfi will focus on next. If the exit-policy 'saved vs "
+        "hold' figure is meaningful, comment on whether the policy added "
+        "or destroyed value this cycle. Plain prose only."
     )
     return "\n".join(lines)
 
@@ -1006,6 +1120,40 @@ def render_data_tables(data: dict) -> str:
             f"assumed={_pct(cv.get('assumed_cost'))}   "
             f"implied={_pct(cv.get('implied_cost'))}"
         )
+
+    exit_policy = data.get("exit_policy") or {}
+    if int(exit_policy.get("early_n") or 0) > 0:
+        lines.append("")
+        lines.append("EXIT POLICY")
+        lines.append(
+            f"  Positions closed early: {int(exit_policy.get('early_n') or 0)}"
+        )
+        lines.append(
+            f"  Realized PnL on exits:  "
+            f"${float(exit_policy.get('early_pnl_usd') or 0.0):+.2f}"
+        )
+        saved = exit_policy.get("saved_vs_hold_usd")
+        cf_n  = int(exit_policy.get("counterfactual_n") or 0)
+        if saved is not None and cf_n > 0:
+            lines.append(
+                f"  Saved vs hold ({cf_n} resolved): ${float(saved):+.2f}"
+            )
+        by_reason = exit_policy.get("by_reason") or []
+        if by_reason:
+            lines.append(
+                f"  {'reason':<14}{'n':>5}{'exit_pnl':>12}"
+                f"{'hold_pnl':>12}{'saved':>10}"
+            )
+            for r in by_reason:
+                hold = f"${float(r.get('hold_pnl') or 0.0):+.2f}" if r.get("cf_n") else "n/a"
+                saved_cell = f"${float(r.get('saved') or 0.0):+.2f}" if r.get("cf_n") else "n/a"
+                lines.append(
+                    f"  {str(r.get('reason') or '-'):<14}"
+                    f"{int(r.get('n') or 0):>5}"
+                    f"${float(r.get('pnl') or 0.0):>10.2f}"
+                    f"{hold:>12}"
+                    f"{saved_cell:>10}"
+                )
 
     proposals = data.get("proposals") or []
     if proposals:

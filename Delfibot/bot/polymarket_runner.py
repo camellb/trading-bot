@@ -80,14 +80,27 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
         # so it doesn't pollute the `errors` bucket the way it used to.
         "positions_invalid": 0,
         "predictions_checked": 0, "predictions_resolved": 0,
+        # `counterfactual_backfilled` counts how many closed-early rows
+        # had `counterfactual_pnl_usd` stamped this sweep. Helps the
+        # exit-policy review report verify the loop is healthy.
+        "counterfactual_backfilled": 0,
         "errors": 0,
     }
 
     open_rows   = _fetch_open_positions(short_horizon_only=short_horizon_only)
     legacy_rows = [] if short_horizon_only else _fetch_unresolved_legacy_predictions()
+    # Closed-early rows whose underlying market hasn't yet been
+    # backfilled with `counterfactual_pnl_usd`. The exit-policy review
+    # report needs this number to ask "was the exit premature?";
+    # without the backfill it stays NULL forever.
+    early_rows = (
+        [] if short_horizon_only
+        else _fetch_closed_early_pending_counterfactual()
+    )
 
     market_ids = list({p["market_id"] for p in open_rows if p.get("market_id")}
-                      | {p["market_id"] for p in legacy_rows if p.get("market_id")})
+                      | {p["market_id"] for p in legacy_rows if p.get("market_id")}
+                      | {p["market_id"] for p in early_rows if p.get("market_id")})
     if not market_ids:
         return result
 
@@ -351,8 +364,244 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
         else:
             result["errors"] += 1
 
+    # ── Phase C - counterfactual P&L backfill for closed-early rows ─────
+    # For every closed-early row whose market just reached natural
+    # resolution, write `counterfactual_pnl_usd` = (hold P&L) - (exit P&L).
+    # Lets the review report ask: was the exit wise? Positive = the bot
+    # left money on the table; negative = the bot dodged a loss.
+    for p in early_rows:
+        raw = rows.get(p["market_id"])
+        if not raw or not raw.get("closed", False):
+            continue
+        prices = _parse_price_list(raw.get("outcomePrices"))
+        if len(prices) != 2:
+            continue
+        yes_won = prices[0] >= 0.99
+        no_won  = prices[1] >= 0.99
+        if not (yes_won or no_won):
+            yp, np_ = prices[0], prices[1]
+            both_mid = 0.40 <= yp <= 0.60 and 0.40 <= np_ <= 0.60
+            if not both_mid:
+                continue
+            outcome = "INVALID"
+            sp: float = 0.5
+        elif yes_won:
+            outcome, sp = "YES", 1.0
+        else:
+            outcome, sp = "NO", 1.0
+
+        user_id = p.get("user_id")
+        if not user_id:
+            continue
+        executor = _executor_for(user_id)
+        if executor is None:
+            continue
+        ok = executor.backfill_counterfactual_pnl(
+            position_id=int(p["id"]),
+            winning_outcome=outcome,
+            settlement_price=sp,
+        )
+        if ok:
+            result["counterfactual_backfilled"] += 1
+
     print(f"[pm_runner] resolve_positions: {result}", flush=True)
     return result
+
+
+# ── Evaluate open positions for early exit (TP / SL / time-decay) ──────────
+async def evaluate_open_positions() -> dict:
+    """
+    Walk every open pm_positions row, fetch the market's current
+    state from gamma, ask `execution.position_exit.evaluate_exit` if
+    the user's policy says to close, and call PMExecutor.close_position_early
+    if so. Cheap-enough to run on a 60-second cadence: a single
+    `PolymarketFeed.fetch_many(market_ids)` round-trip per cycle plus
+    one DB read per user_config snapshot.
+    """
+    from execution.position_exit import evaluate_exit
+    from engine.user_config import get_user_config
+
+    result = {
+        "positions_checked": 0,
+        "policy_skipped":    0,  # user has exit_policy_enabled=False
+        "evaluated":         0,
+        "closed_early":      0,
+        "errors":            0,
+    }
+
+    open_rows = _fetch_open_positions_with_prices()
+    if not open_rows:
+        return result
+
+    market_ids = list({r["market_id"] for r in open_rows if r.get("market_id")})
+    if not market_ids:
+        return result
+
+    try:
+        async with PolymarketFeed() as feed:
+            gamma_rows = await feed.fetch_many(market_ids)
+    except Exception as exc:
+        print(f"[evaluate_exit] gamma fetch failed: {exc}", file=sys.stderr)
+        result["errors"] += 1
+        return result
+
+    # Per-user config + executor cache. user_config is the source of
+    # truth for the exit-policy toggles and thresholds; never assume
+    # globals.
+    cfg_cache: dict[str, object] = {}
+    exe_cache: dict[str, PMExecutor] = {}
+
+    for p in open_rows:
+        result["positions_checked"] += 1
+        user_id   = p.get("user_id")
+        market_id = p.get("market_id")
+        if not user_id or not market_id:
+            continue
+        raw = gamma_rows.get(market_id)
+        if not raw:
+            continue
+        # Skip already-closed markets — natural-resolution path handles them.
+        if raw.get("closed", False):
+            continue
+        # Use the position's own SIDE bid for the exit decision. We
+        # approximate "current bid" with gamma's `outcomePrices[side]`,
+        # which is the midpoint of the orderbook — a reasonable proxy
+        # for a market that's liquid enough to have entered. If we
+        # later want true best-bid we can swap to a CLOB
+        # get_price(side=SELL) call here, but at 60s cadence the gamma
+        # midpoint is cheap and correctness-equivalent for TP/SL
+        # decisions.
+        prices = _parse_price_list(raw.get("outcomePrices"))
+        if len(prices) != 2:
+            continue
+        side = p.get("side") or ""
+        if side == "YES":
+            current_bid = prices[0]
+        elif side == "NO":
+            current_bid = prices[1]
+        else:
+            continue
+
+        # Per-user config + executor: snapshot once per user.
+        if user_id not in cfg_cache:
+            try:
+                cfg_cache[user_id] = get_user_config(user_id)
+            except Exception as exc:
+                print(f"[evaluate_exit] user_config fetch failed for "
+                      f"{user_id}: {exc}", file=sys.stderr)
+                result["errors"] += 1
+                continue
+        cfg = cfg_cache[user_id]
+        # User has the master switch off — count and skip.
+        if not getattr(cfg, "exit_policy_enabled", False):
+            result["policy_skipped"] += 1
+            continue
+
+        # Resolution-time estimate, used for both safety floor and the
+        # stop-loss min-time-remaining gate inside evaluate_exit.
+        expected_resolution_at = extract_resolution_estimate(raw)
+
+        result["evaluated"] += 1
+        try:
+            decision = evaluate_exit(
+                position={
+                    "entry_price": p.get("entry_price"),
+                    "created_at":  p.get("created_at"),
+                    "status":      "open",
+                },
+                current_bid=float(current_bid) if current_bid is not None else None,
+                user_config=cfg,
+                expected_resolution_at=expected_resolution_at,
+            )
+        except Exception as exc:
+            print(f"[evaluate_exit] decision engine failed for pos "
+                  f"#{p['id']}: {exc}", file=sys.stderr)
+            result["errors"] += 1
+            continue
+        if not decision.should_exit:
+            continue
+
+        # Find the side's clob_token_id for the SELL leg in live mode.
+        clob_token_id: str | None = None
+        token_ids = _parse_token_id_list(raw.get("clobTokenIds"))
+        if len(token_ids) == 2:
+            clob_token_id = token_ids[0] if side == "YES" else token_ids[1]
+
+        if user_id not in exe_cache:
+            try:
+                # IMPORTANT: per-row mode override so the close lands
+                # on the same ledger the position was opened against.
+                exe_cache[user_id] = PMExecutor(
+                    user_id, view_mode_override=p.get("mode"),
+                )
+            except Exception as exc:
+                print(f"[evaluate_exit] PMExecutor init failed for user "
+                      f"{user_id}: {exc}", file=sys.stderr)
+                result["errors"] += 1
+                continue
+        executor = exe_cache[user_id]
+
+        ok = executor.close_position_early(
+            position_id=int(p["id"]),
+            reason=decision.reason or "take_profit",
+            details=decision.details,
+            current_bid=float(current_bid),
+            clob_token_id=clob_token_id,
+        )
+        if ok:
+            result["closed_early"] += 1
+        else:
+            result["errors"] += 1
+
+    print(f"[pm_runner] evaluate_open_positions: {result}", flush=True)
+    return result
+
+
+def _parse_token_id_list(raw) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    try:
+        parsed = json.loads(raw)
+        return [str(x) for x in parsed] if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _fetch_open_positions_with_prices() -> list[dict]:
+    """Rows for the exit-policy job: includes entry_price + created_at
+    so the decision engine can compute return and time-open. Mirrors
+    `_fetch_open_positions` but with the extra columns and no
+    short-horizon filter — the exit policy must see every open position,
+    not just the ones about to resolve."""
+    try:
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT id, user_id, mode, market_id, side, shares, "
+                "       entry_price, cost_usd, created_at, question "
+                "  FROM pm_positions "
+                " WHERE status = 'open'"
+            )).fetchall()
+        return [
+            {
+                "id":          int(r[0]),
+                "user_id":     str(r[1]) if r[1] is not None else None,
+                "mode":        str(r[2]) if r[2] is not None else None,
+                "market_id":   str(r[3]) if r[3] is not None else None,
+                "side":        str(r[4]) if r[4] is not None else None,
+                "shares":      float(r[5]) if r[5] is not None else 0.0,
+                "entry_price": float(r[6]) if r[6] is not None else 0.0,
+                "cost_usd":    float(r[7]) if r[7] is not None else 0.0,
+                "created_at":  r[8],
+                "question":    str(r[9]) if r[9] is not None else "",
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        print(f"[evaluate_exit] _fetch_open_positions_with_prices failed: "
+              f"{exc}", file=sys.stderr)
+        return []
 
 
 async def resolve_skipped_evaluations(batch_size: int = 200) -> dict:
@@ -516,6 +765,36 @@ def _fetch_open_positions(short_horizon_only: bool = False) -> list[dict]:
         ]
     except Exception as exc:
         print(f"[pm_runner] _fetch_open_positions failed: {exc}", file=sys.stderr)
+        return []
+
+
+def _fetch_closed_early_pending_counterfactual() -> list[dict]:
+    """Rows for the Phase C backfill: every closed-early position
+    whose `counterfactual_pnl_usd` is still NULL. Bounded by 90 days
+    to keep the per-sweep cost stable — older rows are unlikely to
+    ever resolve via the gamma feed and aren't useful to the review
+    report.
+    """
+    try:
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT id, market_id, user_id "
+                "  FROM pm_positions "
+                " WHERE status = 'closed_early' "
+                "   AND counterfactual_pnl_usd IS NULL "
+                "   AND closed_at >= datetime('now', '-90 days')"
+            )).fetchall()
+        return [
+            {
+                "id":        int(r[0]),
+                "market_id": str(r[1]) if r[1] is not None else None,
+                "user_id":   str(r[2]) if r[2] is not None else None,
+            }
+            for r in rows
+        ]
+    except Exception as exc:
+        print(f"[pm_runner] _fetch_closed_early_pending_counterfactual "
+              f"failed: {exc}", file=sys.stderr)
         return []
 
 

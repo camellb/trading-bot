@@ -70,6 +70,7 @@ from feeds.news_feed import NewsFeed
 from feeds.macro_calendar import MacroCalendar
 from local_api import LocalAPI
 from polymarket_runner import (
+    evaluate_open_positions,
     resolve_positions,
     resolve_skipped_evaluations,
     scan_and_analyze,
@@ -748,6 +749,22 @@ async def main() -> None:
             proc_health.record_job_error("markout_check")
             print(f"[delfi] markout failed: {exc}", file=sys.stderr, flush=True)
 
+    def _run_evaluate_exits():
+        """Tick the exit-policy decision engine across every open
+        position. Cheap when the policy is disabled (per-user) or no
+        positions are open. Runs at 60s cadence so a take-profit or
+        stop-loss reacts within a minute of the bid moving."""
+        try:
+            _asyncio_module.run(_bounded(
+                evaluate_open_positions(), timeout_s=60,
+                label="evaluate_exits",
+            ))
+            proc_health.record_job_ok("pm_evaluate_exits")
+        except Exception as exc:
+            proc_health.record_job_error("pm_evaluate_exits")
+            print(f"[delfi] evaluate_exits failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_resolve_skipped():
         """Back-fill outcomes for skipped market_evaluations.
 
@@ -802,6 +819,19 @@ async def main() -> None:
         executor="threadpool",
     )
     scheduler.add_job(
+        _run_evaluate_exits, IntervalTrigger(seconds=60),
+        id="pm_evaluate_exits",
+        # First fire 90s after boot — give the position resolver and
+        # market scan a head start so we're never racing them on the
+        # first tick after a daemon restart.
+        next_run_time=now_utc + timedelta(seconds=90),
+        # coalesce=False mirrors `pm_resolve_fast` — missing a tick on
+        # a fast-moving market could push a take-profit far past the
+        # threshold. Correctness > cost on this cadence.
+        max_instances=1, coalesce=False,
+        executor="threadpool",
+    )
+    scheduler.add_job(
         _run_resolve_skipped, IntervalTrigger(minutes=15),
         id="pm_resolve_skipped",
         # First fire 2 minutes after boot — give the position resolver
@@ -815,7 +845,7 @@ async def main() -> None:
     print(
         f"[delfi] scheduler started -- scan {scan_interval_min}min, "
         f"resolve {resolve_interval_min}min (fast {fast_resolve_sec}s), "
-        f"markouts 1h",
+        f"exit-policy 60s, markouts 1h",
         flush=True,
     )
 

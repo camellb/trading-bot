@@ -26,7 +26,7 @@ Live mode (Polymarket V2 CLOB):
 
 Bankroll model (per-user):
     bankroll = user_config.starting_cash
-             + Σ realized_pnl_usd (WHERE user_id AND status IN settled/invalid)
+             + Σ realized_pnl_usd (WHERE user_id AND status IN settled/invalid/closed_early)
              - Σ cost_usd         (WHERE user_id AND status = 'open')
     Refreshed from DB before every sizing decision so concurrent fills
     don't over-stake.
@@ -397,7 +397,7 @@ class PMExecutor:
                     "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
                     "FROM pm_positions "
                     "WHERE user_id = :uid AND mode = :m "
-                    "  AND status IN ('settled', 'invalid')"
+                    "  AND status IN ('settled', 'invalid', 'closed_early')"
                 ), {"uid": self.user_id, "m": self.mode}).scalar() or 0.0
                 open_cost = conn.execute(text(
                     "SELECT COALESCE(SUM(cost_usd), 0) "
@@ -436,13 +436,20 @@ class PMExecutor:
                 # Switching modes shows a clean per-mode ledger; the
                 # other mode's data still exists in the DB, just not
                 # in the displayed view.
+                # `closed_early` rows count toward the ledger because
+                # the exit-policy SELL realized P&L, even though the
+                # underlying market hasn't reached natural resolution
+                # yet. They behave identically to a `settled` row for
+                # bankroll, equity, and win-rate purposes; the
+                # distinguishing field is `close_reason`, used by the
+                # review report to score exit quality separately.
                 row = conn.execute(text(
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid')) AS settled_n, "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')) AS settled_n, "
                     "  COALESCE(SUM(cost_usd) FILTER (WHERE status = 'open'), 0) AS open_cost, "
-                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid') AND realized_pnl_usd > 0) AS wins "
+                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')), 0) AS realized, "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early') AND realized_pnl_usd > 0) AS wins "
                     "FROM pm_positions WHERE user_id = :uid AND mode = :m"
                 ), {"uid": self.user_id, "m": self.mode}).fetchone()
                 open_n    = int(row[0] or 0)
@@ -1018,6 +1025,338 @@ class PMExecutor:
             print(f"[pm_executor] _persist_live_position failed: {exc}",
                   file=sys.stderr)
             return None
+
+    # ── Close a position EARLY (exit policy) ────────────────────────────────
+    def close_position_early(
+        self,
+        position_id:  int,
+        reason:       str,                  # 'take_profit' | 'stop_loss' | 'time_decay'
+        details:      str,
+        current_bid:  float,                # the bid we expect to sell at
+        clob_token_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Close an open position before its natural Polymarket settlement,
+        because the user's exit policy (take-profit, stop-loss, or
+        time-decay) tripped. Mirrors settle_position's contract but
+        records the row with `status='closed_early'`, a non-null
+        `closed_at`, and a `close_reason` so dashboards and review
+        reports can distinguish a discretionary exit from a natural
+        resolution.
+
+        Simulation mode:
+            No order placed. The exit is recorded with realized P&L
+            computed against `current_bid` (`pnl = shares*bid - cost`).
+            This is the "what would have happened if we'd exited" path
+            and it must match the live path's accounting exactly so a
+            user comparing the two modes is comparing apples to apples.
+
+        Live mode:
+            Places a SELL CLOB order at `current_bid` for the held
+            outcome's clob_token_id, polls for fill, then UPDATEs the
+            row. Subject to the same kill-switch as _open_live - with
+            DELFI_LIVE_KILLSWITCH_OFF unset we record a paper close
+            instead of hitting the CLOB.
+
+        Returns True iff the row was updated (live: order placed AND
+        DB committed; simulation: DB committed). The natural-resolution
+        backfill in polymarket_runner is responsible for stamping
+        `counterfactual_pnl_usd` once the market itself settles - that
+        is NOT this method's job and never blocks the exit.
+        """
+        if reason not in ("take_profit", "stop_loss", "time_decay"):
+            print(f"[pm_executor] close_position_early: bad reason {reason!r}",
+                  file=sys.stderr)
+            return False
+        if current_bid is None or current_bid <= 0.0:
+            print(f"[pm_executor] close_position_early: invalid bid "
+                  f"{current_bid!r} for pos {position_id}", file=sys.stderr)
+            return False
+
+        try:
+            with get_engine().begin() as conn:
+                row = conn.execute(text(
+                    "SELECT side, shares, cost_usd, prediction_id, "
+                    "       mode, condition_id, question "
+                    "FROM pm_positions "
+                    "WHERE id = :pid AND user_id = :uid AND status = 'open'"
+                ), {"pid": position_id, "uid": self.user_id}).fetchone()
+                if row is None:
+                    print(f"[pm_executor] close_position_early: position "
+                          f"{position_id} not open for user {self.user_id}",
+                          file=sys.stderr)
+                    return False
+                side         = str(row[0])
+                shares       = float(row[1])
+                cost_usd     = float(row[2])
+                pred_id      = int(row[3]) if row[3] is not None else None
+                row_mode     = str(row[4]) if row[4] is not None else ""
+                condition_id = str(row[5]) if row[5] is not None else ""
+                question     = str(row[6] or "")
+        except Exception as exc:
+            print(f"[pm_executor] close_position_early read failed: {exc}",
+                  file=sys.stderr)
+            return False
+
+        # Live-CLOB SELL leg. Only runs for live-mode rows with the
+        # kill-switch off AND a non-empty token_id; otherwise we record
+        # a paper close so the dashboard accounting still moves.
+        clob_order_id: Optional[str] = None
+        tx_hash: Optional[str] = None
+        if (
+            row_mode == "live"
+            and _live_killswitch_off()
+            and clob_token_id
+        ):
+            try:
+                clob_order_id, tx_hash = self._place_close_order(
+                    token_id=clob_token_id,
+                    shares=shares,
+                    sell_price=float(current_bid),
+                )
+            except Exception as exc:
+                # Order placement failure is NOT silent - we surface it
+                # but we DO NOT update the row. The next exit-policy
+                # tick can retry. Returning False means the caller skips
+                # the Telegram notification.
+                print(f"[pm_executor] close_position_early SELL failed for "
+                      f"pos {position_id}: {exc}", file=sys.stderr)
+                try:
+                    from db.logger import log_event
+                    log_event(
+                        event_type="order_error",
+                        severity=2,
+                        description=(
+                            f"Early-exit SELL rejected on "
+                            f"'{question[:120]}': {str(exc)[:300]}"
+                        ),
+                        source="pm_executor.close_position_early",
+                    )
+                except Exception:
+                    pass
+                return False
+
+        proceeds = shares * float(current_bid)
+        pnl = proceeds - cost_usd
+
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(text(
+                    "UPDATE pm_positions SET "
+                    "  status                = 'closed_early', "
+                    "  closed_at             = CURRENT_TIMESTAMP, "
+                    "  settled_at            = CURRENT_TIMESTAMP, "
+                    "  close_reason          = :reason, "
+                    "  settlement_price      = :sp, "
+                    "  realized_pnl_usd      = :pnl, "
+                    "  close_clob_order_id   = :oid, "
+                    "  close_tx_hash         = :tx "
+                    "WHERE id = :pid"
+                ), {
+                    "reason": reason,
+                    "sp":     float(current_bid),
+                    "pnl":    float(pnl),
+                    "oid":    clob_order_id,
+                    "tx":     tx_hash,
+                    "pid":    position_id,
+                })
+        except Exception as exc:
+            print(f"[pm_executor] close_position_early UPDATE failed for "
+                  f"pos {position_id}: {exc}", file=sys.stderr)
+            return False
+
+        # Calibration ledger: an early exit is informative for
+        # learning. We resolve the prediction tentatively with the
+        # exit P&L. The natural-resolution backfill will later compute
+        # `counterfactual_pnl_usd` so the review report can ask "was
+        # this exit premature?". We don't try to mark the prediction
+        # right/wrong here because the market hasn't actually resolved
+        # yet - that's what `counterfactual_pnl_usd` is for.
+        # NOTE: we deliberately DO NOT feed calibration.resolve_prediction
+        # because that would lock the binary outcome at the exit
+        # moment and the eventual-natural-resolution outcome (which
+        # we may take a counterfactual loss against) would be ignored
+        # by Brier scoring. The prediction stays unresolved in
+        # calibration until polymarket_runner's natural-settlement
+        # path fires `counterfactual_pnl_usd` and we close the loop.
+        _ = pred_id  # explicitly unused for now
+
+        print(
+            f"[pm_executor][{row_mode}] closed-early pm_position {position_id}: "
+            f"{reason} @ ${current_bid:.3f} ({details}), pnl ${pnl:+.2f}",
+            flush=True,
+        )
+
+        # Emit a position_settled-style event so the dashboard and
+        # Telegram both pick it up. Win/loss styling decided by pnl
+        # sign rather than market-vs-side, because the market hasn't
+        # actually resolved - this is the EXIT P&L only.
+        try:
+            from db.logger import log_event
+            from feeds import telegram_messages as _tm
+            try:
+                # Mode-scoped stats — same pattern as the natural-settle
+                # path in polymarket_runner.
+                if row_mode == self.mode:
+                    stats = self.get_portfolio_stats()
+                else:
+                    other = PMExecutor(
+                        self.user_id, view_mode_override=row_mode,
+                    )
+                    stats = other.get_portfolio_stats()
+                bankroll_after = float(stats.get("bankroll", 0.0))
+                equity_after   = float(stats.get("equity",   bankroll_after))
+            except Exception:
+                bankroll_after = self.get_bankroll()
+                equity_after   = bankroll_after
+            roi = (pnl / cost_usd) if cost_usd > 0 else 0.0
+            common = dict(
+                question=question,
+                side=side,
+                reason=reason,
+                pnl=pnl,
+                roi=roi,
+                bankroll=bankroll_after,
+                equity=equity_after,
+                mode=row_mode or "simulation",
+                details=details,
+            )
+            if pnl >= 0:
+                telegram_html = _tm.early_exit_win(**common)
+            else:
+                telegram_html = _tm.early_exit_loss(**common)
+            log_event(
+                event_type="position_closed_early",
+                severity=20,
+                description=(
+                    f"Closed early ({reason}) on '{question[:120]}': "
+                    f"{details}, P&L ${pnl:+.2f}, "
+                    f"mode {row_mode or 'simulation'}, position={position_id}"
+                ),
+                source="pm_executor.close_position_early",
+                telegram_html=telegram_html,
+            )
+        except Exception as exc:
+            print(f"[pm_executor] close_position_early event log failed: "
+                  f"{exc}", file=sys.stderr)
+
+        return True
+
+    def _place_close_order(
+        self,
+        *,
+        token_id:   str,
+        shares:     float,
+        sell_price: float,
+    ) -> tuple[str, Optional[str]]:
+        """
+        Submit a CLOB SELL order for `shares` of the held outcome at
+        `sell_price`. Returns (order_id, tx_hash). Raises on any
+        rejection so the caller's UPDATE is skipped.
+
+        Mirrors `_open_live`'s order construction but with side=SELL
+        and reuses the same client cache + tick-size rounding.
+        """
+        creds = get_active_polymarket_creds(self._user_config)
+        wallet      = (creds.get("wallet_address") or "").strip()
+        private_key = (creds.get("private_key")    or "").strip()
+        if not wallet or not private_key:
+            raise RuntimeError("missing wallet/private_key on user_config")
+
+        client = _get_clob_client(wallet, private_key)
+        from py_clob_client_v2.clob_types import (   # type: ignore
+            OrderArgs, OrderType, PartialCreateOrderOptions,
+        )
+        try:
+            from py_clob_client_v2.order_builder.constants import SELL  # type: ignore
+            sell_side = SELL
+        except Exception:
+            sell_side = "SELL"
+        price = round(float(sell_price), 2)
+        size  = round(float(shares), 4)
+        args = OrderArgs(token_id=token_id, price=price, side=sell_side, size=size)
+        resp = client.create_and_post_order(
+            order_args=args,
+            options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+            order_type=OrderType.GTC,
+        )
+        if not isinstance(resp, dict):
+            raise RuntimeError(f"unexpected SELL response shape: {resp!r}")
+        order_id = resp.get("orderID") or resp.get("orderId") or resp.get("id")
+        if not order_id:
+            raise RuntimeError(f"SELL response missing order id: {resp!r}")
+        final = _poll_order_filled(client, str(order_id))
+        tx_hash = (
+            final.get("transactionHash")
+            or (final.get("transactionsHashes") or [None])[0]
+            or resp.get("transactionHash")
+        )
+        return str(order_id), (str(tx_hash) if tx_hash else None)
+
+    # ── Backfill counterfactual P&L on an already-closed-early row ──────────
+    def backfill_counterfactual_pnl(
+        self,
+        position_id:      int,
+        winning_outcome:  str,                # 'YES' | 'NO' | 'INVALID'
+        settlement_price: Optional[float] = None,
+    ) -> bool:
+        """
+        Once a market we'd already exited early reaches its natural
+        Polymarket resolution, write `counterfactual_pnl_usd` onto the
+        row so the review report can score whether the exit was wise.
+
+        `counterfactual_pnl_usd` = (the P&L we'd have realized if we'd
+        held to resolution) - (the P&L we actually got from the early
+        exit). Positive means the exit was premature (we left money on
+        the table); negative means the exit was wise (we dodged a loss).
+        Used by `engine/review_report.py` to summarise exit quality.
+
+        Idempotent: a second call on the same row updates the same
+        column with the same number. Safe to call from the resolve
+        sweep on every tick.
+        """
+        outcome = (winning_outcome or "").upper()
+        if outcome not in ("YES", "NO", "INVALID"):
+            return False
+        try:
+            with get_engine().begin() as conn:
+                row = conn.execute(text(
+                    "SELECT side, shares, cost_usd, realized_pnl_usd "
+                    "  FROM pm_positions "
+                    " WHERE id = :pid AND user_id = :uid "
+                    "   AND status = 'closed_early'"
+                ), {"pid": position_id, "uid": self.user_id}).fetchone()
+                if row is None:
+                    return False
+                side       = str(row[0])
+                shares     = float(row[1])
+                cost_usd   = float(row[2])
+                exit_pnl   = float(row[3] or 0.0)
+                if settlement_price is None:
+                    if outcome == "INVALID":
+                        settlement_price = 0.5
+                    else:
+                        settlement_price = 1.0 if side == outcome else 0.0
+                # What we would have made by holding to resolution.
+                hold_pnl = shares * float(settlement_price) - cost_usd
+                counterfactual = hold_pnl - exit_pnl
+                conn.execute(text(
+                    "UPDATE pm_positions "
+                    "   SET counterfactual_pnl_usd = :cf, "
+                    "       settlement_outcome    = :out, "
+                    "       settlement_price      = COALESCE(settlement_price, :sp) "
+                    " WHERE id = :pid"
+                ), {
+                    "cf":  float(counterfactual),
+                    "out": outcome,
+                    "sp":  float(settlement_price),
+                    "pid": position_id,
+                })
+            return True
+        except Exception as exc:
+            print(f"[pm_executor] backfill_counterfactual_pnl failed for "
+                  f"pos {position_id}: {exc}", file=sys.stderr)
+            return False
 
     # ── Settle a position ────────────────────────────────────────────────────
     def settle_position(

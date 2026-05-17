@@ -115,6 +115,25 @@ pm_positions = Table(
     # is deferred to a later commit.
     Column("volume_24h_at_entry", Float, nullable=True),
     Column("liquidity_at_entry",  Float, nullable=True),
+    # ── Early-exit tracking ─────────────────────────────────────────────
+    # Filled when the exit-policy engine closes a position before its
+    # natural settlement. `closed_at` is the timestamp of the SELL fill.
+    # `close_reason` is a short code: 'take_profit' | 'stop_loss' |
+    # 'time_decay'. `close_clob_order_id` is the Polymarket order id of
+    # the SELL; `close_tx_hash` is the Polygon tx hash once the match
+    # is mined. NULL on simulation rows and on every live position that
+    # closed via natural settlement.
+    Column("closed_at",              DateTime, nullable=True),
+    Column("close_reason",           Text,     nullable=True),
+    Column("close_clob_order_id",    Text,     nullable=True),
+    Column("close_tx_hash",          Text,     nullable=True),
+    # Counterfactual payout: when an early-exited position's market
+    # eventually resolves naturally, the resolver fills this in with
+    # what the position WOULD have paid out had we held to settlement
+    # (shares × settlement_price - cost_usd). Diff against
+    # realized_pnl_usd tells the Intelligence page whether the exit
+    # was profitable or premature. NULL until the market resolves.
+    Column("counterfactual_pnl_usd", Float,    nullable=True),
 )
 
 
@@ -432,6 +451,31 @@ user_config = Table(
     Column("notification_prefs", JSON, nullable=False,
            server_default=sa_text("'{}'")),
 
+    # ── Exit policy (early close before natural settlement) ─────────────
+    # See engine/user_config.py UserConfig dataclass for field semantics.
+    # Master switch defaults OFF so existing users see no behavior change
+    # until they opt in via Settings → Risk → Exit policy.
+    Column("exit_policy_enabled", Boolean, nullable=False,
+           server_default=sa_text("0")),
+    Column("take_profit_enabled", Boolean, nullable=False,
+           server_default=sa_text("1")),
+    Column("take_profit_threshold_pct", Float, nullable=False,
+           server_default=sa_text("0.5")),
+    Column("stop_loss_enabled", Boolean, nullable=False,
+           server_default=sa_text("1")),
+    Column("stop_loss_threshold_pct", Float, nullable=False,
+           server_default=sa_text("0.3")),
+    Column("stop_loss_min_time_remaining_pct", Float, nullable=False,
+           server_default=sa_text("0.2")),
+    Column("time_decay_enabled", Boolean, nullable=False,
+           server_default=sa_text("0")),
+    Column("time_decay_max_hours", Integer, nullable=False,
+           server_default=sa_text("72")),
+    Column("time_decay_flat_band_pct", Float, nullable=False,
+           server_default=sa_text("0.1")),
+    Column("exit_min_time_to_resolution_minutes", Integer, nullable=False,
+           server_default=sa_text("5")),
+
     # Onboarding.
     Column("tour_completed_at", DateTime, nullable=True),
 
@@ -670,6 +714,61 @@ def create_all_tables() -> None:
                 "ALTER TABLE pm_positions ADD COLUMN "
                 "liquidity_at_entry REAL"
             ))
+
+        # ── Early-exit columns (added 2026-05-18, exit-policy feature) ──
+        # See engine/user_config.py + db.models.pm_positions definition
+        # for field semantics. All NULL for legacy rows. The exit-policy
+        # engine writes closed_at/close_reason/close_clob_order_id/
+        # close_tx_hash on SELL fill; the resolver writes
+        # counterfactual_pnl_usd when an early-exited market eventually
+        # settles naturally.
+        for col, ddl in (
+            ("closed_at",              "DATETIME"),
+            ("close_reason",           "TEXT"),
+            ("close_clob_order_id",    "TEXT"),
+            ("close_tx_hash",          "TEXT"),
+            ("counterfactual_pnl_usd", "REAL"),
+        ):
+            if col not in existing_pm_positions_cols:
+                conn.execute(sa_text(
+                    f"ALTER TABLE pm_positions ADD COLUMN {col} {ddl}"
+                ))
+
+        # ── Exit-policy columns on user_config (same release) ───────────
+        # Idempotent re-probe (the earlier user_config probe was at the
+        # top of this function; we re-read here because that scope is
+        # gone). Defaults match engine/user_config.py UserConfig.
+        existing_user_config_cols = {
+            r[1] for r in conn.execute(
+                sa_text("PRAGMA table_info(user_config)")
+            ).fetchall()
+        }
+        for col, ddl in (
+            ("exit_policy_enabled",
+             "BOOLEAN NOT NULL DEFAULT 0"),
+            ("take_profit_enabled",
+             "BOOLEAN NOT NULL DEFAULT 1"),
+            ("take_profit_threshold_pct",
+             "REAL NOT NULL DEFAULT 0.5"),
+            ("stop_loss_enabled",
+             "BOOLEAN NOT NULL DEFAULT 1"),
+            ("stop_loss_threshold_pct",
+             "REAL NOT NULL DEFAULT 0.3"),
+            ("stop_loss_min_time_remaining_pct",
+             "REAL NOT NULL DEFAULT 0.2"),
+            ("time_decay_enabled",
+             "BOOLEAN NOT NULL DEFAULT 0"),
+            ("time_decay_max_hours",
+             "INTEGER NOT NULL DEFAULT 72"),
+            ("time_decay_flat_band_pct",
+             "REAL NOT NULL DEFAULT 0.1"),
+            ("exit_min_time_to_resolution_minutes",
+             "INTEGER NOT NULL DEFAULT 5"),
+        ):
+            if col not in existing_user_config_cols:
+                conn.execute(sa_text(
+                    f"ALTER TABLE user_config ADD COLUMN {col} {ddl}"
+                ))
 
         # ── market_evaluations backfills ────────────────────────────────
         # Add the `mode` column so per-mode skipped counts and Dashboard

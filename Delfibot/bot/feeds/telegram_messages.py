@@ -110,6 +110,80 @@ def order_rejected(
     )
 
 
+# ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
+def early_exit_win(
+    *,
+    question: str,
+    side: str,
+    reason: str,        # 'take_profit' | 'stop_loss' | 'time_decay'
+    pnl: float,
+    roi: float,
+    bankroll: float,
+    equity: float,
+    details: str,
+    mode: str | None = None,
+) -> str:
+    """Position closed early by the exit policy with a positive P&L.
+    Most often a take-profit hit; stop-loss + time-decay can also land
+    here on rare positive-P&L exits (e.g. flat band crossing zero).
+    """
+    _ = roi  # preserved for API compat with settled_win
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    reason_label = {
+        "take_profit": "Take-profit hit",
+        "stop_loss":   "Stop-loss hit",
+        "time_decay":  "Time-decay exit",
+    }.get(reason, "Exit policy")
+    return (
+        f"✅ <b>Closed early</b> | +${pnl:.2f}\n"
+        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
+        f"\n"
+        f"Bet: {side}\n"
+        f"Reason: {reason_label}\n"
+        f"Detail: {_clip(details, 160)}\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
+    )
+
+
+# ── 2d. Early exit - LOSS (exit policy tripped, position closed negative) ───
+def early_exit_loss(
+    *,
+    question: str,
+    side: str,
+    reason: str,
+    pnl: float,
+    roi: float,
+    bankroll: float,
+    equity: float,
+    details: str,
+    mode: str | None = None,
+) -> str:
+    """Position closed early by the exit policy with a negative P&L.
+    Stop-loss is the usual cause; time-decay also can land here when a
+    stalled position is sold at a slight bid discount.
+    """
+    _ = roi
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    reason_label = {
+        "take_profit": "Take-profit hit",
+        "stop_loss":   "Stop-loss hit",
+        "time_decay":  "Time-decay exit",
+    }.get(reason, "Exit policy")
+    return (
+        f"❌ <b>Closed early</b> | -${abs(pnl):.2f}\n"
+        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
+        f"\n"
+        f"Bet: {side}\n"
+        f"Reason: {reason_label}\n"
+        f"Detail: {_clip(details, 160)}\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
+    )
+
+
 # ── 3. Position settled - LOSS ───────────────────────────────────────────────
 def settled_loss(
     *,

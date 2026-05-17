@@ -231,10 +231,14 @@ export default function Positions() {
   );
   const settled = useMemo(
     // `closed` is a stale status string no code path emits today;
-    // pm_executor.py only writes open / settled / invalid. The earlier
-    // filter hid every INVALID resolution from the Closed pane. Match
-    // what the Performance and Dashboard pages already do.
-    () => positions.filter((p) => p.status === "settled" || p.status === "invalid"),
+    // pm_executor.py only writes open / settled / invalid / closed_early.
+    // Show natural settlements AND early-policy exits side-by-side under
+    // the Closed pane; the status badge in the table disambiguates.
+    () => positions.filter(
+      (p) => p.status === "settled"
+          || p.status === "invalid"
+          || p.status === "closed_early"
+    ),
     [positions],
   );
   const skipped = useMemo(
@@ -488,15 +492,29 @@ export default function Positions() {
                   const outcome = s.settlement_outcome as string | null | undefined;
                   const settledAt = s.settled_at as string | null | undefined;
                   const status = (s.status as string | null | undefined) ?? "settled";
-                  // Three states. INVALID resolutions used to render
-                  // as "LOST" because outcome="INVALID" never matched
-                  // the side. They're refunds (pnl=0), not losses.
+                  // Four states now. INVALID resolutions (50/50 void)
+                  // render as VOID, not LOST. CLOSED_EARLY rows show
+                  // the exit reason as the outcome label and use the
+                  // P&L sign to colour-code the pill. Natural settlements
+                  // are decided by `settlement_outcome == side`.
                   const isInvalid = status === "invalid" || outcome === "INVALID";
-                  const won = !isInvalid && (outcome ? outcome === s.side : pnl > 0);
-                  const outcomeLabel = isInvalid ? "VOID" : (won ? "WON" : "LOST");
+                  const isClosedEarly = status === "closed_early";
+                  const won = !isInvalid && !isClosedEarly && (outcome ? outcome === s.side : pnl > 0);
+                  const closeReason = (s.close_reason as string | null | undefined) ?? null;
+                  const reasonLabel = closeReason === "take_profit" ? "TP"
+                                    : closeReason === "stop_loss"   ? "SL"
+                                    : closeReason === "time_decay"  ? "TIME"
+                                    : "EARLY";
+                  const outcomeLabel = isInvalid
+                    ? "VOID"
+                    : isClosedEarly
+                      ? `EXIT ${reasonLabel}`
+                      : (won ? "WON" : "LOST");
                   const outcomeClass = isInvalid
                     ? "pill pill-void"
-                    : (won ? "pill pill-won" : "pill pill-lost");
+                    : isClosedEarly
+                      ? (pnl >= 0 ? "pill pill-won" : "pill pill-lost")
+                      : (won ? "pill pill-won" : "pill pill-lost");
                   const pnlCellClass = pnl > 0
                     ? "cell-up"
                     : (pnl < 0 ? "cell-down" : "");

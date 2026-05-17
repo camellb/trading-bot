@@ -302,6 +302,15 @@ export interface PMPosition {
   expected_resolution_at?: string | null;
   ev_bps?: number | null;
   confidence?: number | null;
+  // Exit-policy fields. NULL on natural settlements.
+  // `close_reason` is one of 'take_profit' | 'stop_loss' | 'time_decay'.
+  // `counterfactual_pnl_usd` is hold-PnL minus exit-PnL — positive
+  // means the exit was premature; negative means it dodged a loss.
+  closed_at?: string | null;
+  close_reason?: string | null;
+  close_clob_order_id?: string | null;
+  close_tx_hash?: string | null;
+  counterfactual_pnl_usd?: number | null;
   [k: string]: unknown;
 }
 
