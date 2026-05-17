@@ -371,13 +371,26 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
 
     # Order matters: a freshly-migrated user has $0 at the old proxy
     # but the CLOB will report the right balance when probed at the
-    # DepositWallet. We probe DepositWallet candidates FIRST so a
-    # post-migration user gets the V2 shape, not a stale V1 hit
-    # from before the migration cleared.
+    # DepositWallet. We probe DepositWallet+sig3 (POLY_1271) FIRST
+    # because:
+    #   - The DepositWallet is a SMART CONTRACT wallet (Solady CWIA).
+    #   - Polymarket accepts sig_type=1 for /balance-allowance
+    #     queries (the CLOB serves the post-migration balance
+    #     against any of its registered signature types).
+    #   - But orders MUST use sig_type=3 (POLY_1271, EIP-1271
+    #     contract signatures) when the maker is a smart-contract
+    #     wallet. Submitting a DepositWallet order under sig_type=1
+    #     gives "maker address not allowed".
+    #   - Confirmed empirically (2026-05-17): a user's working
+    #     manual Polymarket trade drew pUSD from their DepositWallet,
+    #     received CTF tokens at their DepositWallet, and was
+    #     processed by the V2 CTF Exchange — implying maker=DW
+    #     and sig=POLY_1271.
+    # If sig_type=3 returns nothing we fall back to other shapes.
     probe_candidates = [
-        (1, deposit_wallet, "DepositWallet+sig1"),
+        (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271, V2 default)"),
+        (1, deposit_wallet, "DepositWallet+sig1 (legacy fallback)"),
         (2, deposit_wallet, "DepositWallet+sig2"),
-        (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271)"),
         (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
         (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
         (0, eoa,            "EOA+sig0"),

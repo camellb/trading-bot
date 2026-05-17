@@ -1152,13 +1152,37 @@ class LocalAPI:
 
         starting = float(stats.get("starting_cash") or 0.0)
         realized = float(stats.get("realized_pnl") or 0.0)
+
+        # In LIVE mode, the legacy `starting_cash` from user_config is
+        # whatever the user typed at SIM onboarding (typically $1000).
+        # That number has nothing to do with live trading - it makes
+        # the Dashboard's Risk gauges nonsense ("drawdown 99.1%" when
+        # the user just deposited $9, exposure cap "$900" when the
+        # user has $9 of collateral). Override it to a value that
+        # matches the live session:
+        #
+        #     live_starting = bankroll - realized_pnl + open_cost
+        #
+        # Rationale: bankroll = starting + realized_pnl - open_cost,
+        # so the formula above gives back the user's effective
+        # starting capital for this live session. With no trades yet,
+        # live_starting == bankroll and drawdown = 0%. As trades
+        # settle the drawdown gauge tracks the right thing.
+        if stats.get("mode") == "live":
+            open_cost = float(stats.get("open_cost") or 0.0)
+            live_starting = bankroll - realized + open_cost
+            # Floor at $1 so the downstream gauge math (which divides
+            # by `starting`) doesn't choke when bankroll is briefly
+            # zero (e.g. mid-deposit).
+            starting = max(1.0, live_starting)
+
         roi = (realized / starting) if starting > 0 else None
 
         return _ok({
             "mode":           stats.get("mode"),
             "bankroll":       bankroll,
             "equity":         equity,
-            "starting_cash":  stats.get("starting_cash"),
+            "starting_cash":  starting,
             "open_positions": stats.get("open_positions"),
             "open_cost":      stats.get("open_cost"),
             "settled_total":  stats.get("settled_total"),
