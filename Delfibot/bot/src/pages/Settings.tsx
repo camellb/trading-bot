@@ -999,6 +999,10 @@ function ConnectionsPanel({
   const [llmBackup, setLlmBackup] = useState("");
   const [newsapi, setNewsapi] = useState("");
   const [cryptopanic, setCryptopanic] = useState("");
+  const [gemini, setGemini] = useState("");
+  const [pmApiKey, setPmApiKey] = useState("");
+  const [pmApiSecret, setPmApiSecret] = useState("");
+  const [pmApiPass, setPmApiPass] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1013,29 +1017,41 @@ function ConnectionsPanel({
   const hasLlmBackup = creds?.has_llm_backup_key ?? false;
   const hasNewsapi = creds?.has_newsapi_key ?? false;
   const hasCryptopanic = creds?.has_cryptopanic_key ?? false;
+  const hasGemini = (creds as Record<string, unknown> | null | undefined)?.has_gemini_key === true;
+  const hasPmApiKey  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_key === true;
+  const hasPmApiSec  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_secret === true;
+  const hasPmApiPass = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_passphrase === true;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setMsg(null);
     try {
-      const payload: Parameters<typeof api.saveCredentials>[0] = {};
+      const payload: Record<string, string> = {};
       if (pmKey.trim())       payload.polymarket_private_key = pmKey.trim();
       if (wallet.trim())      payload.wallet_address = wallet.trim();
       if (llmKey.trim())      payload.llm_api_key = llmKey.trim();
       if (llmBackup.trim())   payload.llm_backup_key = llmBackup.trim();
       if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
       if (cryptopanic.trim()) payload.cryptopanic_key = cryptopanic.trim();
+      if (gemini.trim())      payload.gemini_key = gemini.trim();
+      if (pmApiKey.trim())    payload.polymarket_api_key = pmApiKey.trim();
+      if (pmApiSecret.trim()) payload.polymarket_api_secret = pmApiSecret.trim();
+      if (pmApiPass.trim())   payload.polymarket_api_passphrase = pmApiPass.trim();
       if (Object.keys(payload).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
         return;
       }
-      const res = await api.saveCredentials(payload);
+      const res = await api.saveCredentials(payload as Parameters<typeof api.saveCredentials>[0]);
       setPmKey("");
       setLlmKey("");
       setLlmBackup("");
       setNewsapi("");
       setCryptopanic("");
+      setGemini("");
+      setPmApiKey("");
+      setPmApiSecret("");
+      setPmApiPass("");
       setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
     } catch (err) {
@@ -1151,6 +1167,68 @@ function ConnectionsPanel({
             crypto-themed markets (BTC threshold, ETH ETF, exchange events).
             Free at cryptopanic.com.
           </p>
+        </div>
+
+        <div className="form-field">
+          <label>Gemini API key (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasGemini ? "(stored)" : "AIzaSy..."}
+            value={gemini}
+            onChange={(e) => setGemini(e.target.value)}
+          />
+          <p className="form-hint">
+            Used for fast keyword extraction and headline pre-filtering.
+            Without it, Delfi falls back to raw RSS titles (still works,
+            but research is noisier). Free at aistudio.google.com.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <label>Polymarket API key (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasPmApiKey ? "(stored)" : "leave blank to auto-derive"}
+            value={pmApiKey}
+            onChange={(e) => setPmApiKey(e.target.value)}
+          />
+          <p className="form-hint">
+            Normally Delfi derives this automatically from your
+            private key. Use this override only if Positions &rarr;
+            Errors shows &quot;the order signer address has to be the
+            address of the API KEY&quot;. That rejection means
+            Polymarket&apos;s CLOB has a different address authorised
+            as your trading signer (common when the account was first
+            opened via the web with a Magic.link session key). Fix: go
+            to polymarket.com &rarr; Settings &rarr; API Keys, generate
+            fresh credentials for the wallet you pasted into Delfi,
+            then paste the api-key, secret, and passphrase into all
+            three fields here.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <label>Polymarket API secret (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasPmApiSec ? "(stored)" : ""}
+            value={pmApiSecret}
+            onChange={(e) => setPmApiSecret(e.target.value)}
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Polymarket API passphrase (optional)</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasPmApiPass ? "(stored)" : ""}
+            value={pmApiPass}
+            onChange={(e) => setPmApiPass(e.target.value)}
+          />
         </div>
 
         <div className="form-actions">

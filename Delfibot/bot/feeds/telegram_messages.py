@@ -83,6 +83,33 @@ def settled_win(
     )
 
 
+# ── 2b. Order REJECTED (live-only) ───────────────────────────────────────────
+def order_rejected(
+    *,
+    question: str,
+    side: str,
+    stake_usd: float,
+    price: float,
+    error_text: str,
+    mode: str | None = None,
+) -> str:
+    """Polymarket rejected a live order at the CLOB. Surface to
+    Telegram so the user sees the rejection within seconds instead
+    of finding out from the dashboard much later.
+    """
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    return (
+        f"⚠️ <b>Order rejected</b>\n"
+        f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
+        f"\n"
+        f"Side: {side}\n"
+        f"Stake: ${stake_usd:.2f} @ ${price:.3f}\n"
+        f"\n"
+        f"Reason: {_clip(error_text, 300)}\n"
+        f"Mode: {mode_label}"
+    )
+
+
 # ── 3. Position settled - LOSS ───────────────────────────────────────────────
 def settled_loss(
     *,

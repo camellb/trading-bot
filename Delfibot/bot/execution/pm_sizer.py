@@ -51,8 +51,31 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 
 
-# Absolute floor for a tradeable stake in USD.
-_MIN_ABSOLUTE_STAKE_USD = 2.0
+# Absolute floor for a tradeable stake in USD. The sizer no longer
+# enforces this — the user's configured base_stake_pct + max_stake_pct
+# are the authoritative risk controls. The constant is kept (set to 0
+# so it's a no-op) only for back-compat with `engine/diagnostics.py`
+# and any other reader that imports it. Removing it entirely would
+# break that import; setting it to 0 makes every `max(0, x)` collapse
+# to `x` and every `cap < 0` guard fall through.
+#
+# 2026-05-17: dropped the previous $2 hard floor after small-bankroll
+# users (~$8 live capital with 2.4% max_stake_pct = $0.19 cap) saw
+# every trade SKIPPED with "max stake cap $0.19 below $2 floor". User
+# instruction was explicit: "Sizer should just follow the risk
+# controls settings".
+_MIN_ABSOLUTE_STAKE_USD = 0.0
+
+# Polymarket V2 CLOB platform minimums for marketable BUY orders. Both
+# floors are HARD PLATFORM CONSTRAINTS — caught live 2026-05-17:
+#   {'error': 'invalid amount for a marketable BUY order ($0.17), min size: $1'}
+#   {'error': 'order ... is invalid. Size (1.73) lower than the minimum: 5'}
+# The effective minimum stake is therefore max($1, 5 * price). At a
+# $0.50 ask that's $2.50; at $0.99 that's $4.95. Polymarket refuses
+# anything below this. Applies to live orders only; simulation has
+# no equivalent floor.
+POLYMARKET_MIN_ORDER_USD = 1.0
+POLYMARKET_MIN_SHARES    = 5.0
 
 # Cost assumption: spread + fees + slippage, as a fraction of the payoff.
 # Currently unused by the V1 sizer (no expected-return gate). Retained
@@ -222,6 +245,35 @@ def size_position(
         _MIN_ABSOLUTE_STAKE_USD,
         min(bankroll * stake_pct, cap),
     )
+
+    # Polymarket V2 platform floors: BOTH a $1 notional minimum AND a
+    # 5-share size minimum. Per user instruction 2026-05-17 ("why did
+    # it place a bet for $5 if minimum stake of 2.4% is below $1. In
+    # this case it should place a bet for just $1"): the only bump we
+    # do is up to exactly $1. We never override the user's cap to
+    # meet the 5-share rule — that would silently 5x the per-trade
+    # size at high asks. Instead, if a $1 order wouldn't buy 5
+    # shares at this price, we SKIP the trade with a clear reason.
+    # Result: bot trades only markets where $1 buys >= 5 shares
+    # (i.e. ask <= $0.20). Simulation mode unaffected.
+    if (
+        getattr(user_config, "mode", None) == "live"
+        and stake < POLYMARKET_MIN_ORDER_USD
+    ):
+        stake = POLYMARKET_MIN_ORDER_USD
+
+    if getattr(user_config, "mode", None) == "live":
+        shares_at_stake = (stake / float(entry)) if float(entry) > 0 else 0.0
+        if shares_at_stake < POLYMARKET_MIN_SHARES:
+            return _skip(
+                cp, cf,
+                f"Polymarket requires {POLYMARKET_MIN_SHARES:.0f} shares "
+                f"minimum (~${POLYMARKET_MIN_SHARES * float(entry):.2f} at "
+                f"${entry:.2f} ask); your $1 floor only buys "
+                f"{shares_at_stake:.2f} shares — raise max_stake_pct or "
+                f"trade only markets with ask <= ${POLYMARKET_MIN_ORDER_USD / POLYMARKET_MIN_SHARES:.2f}",
+                side=side, entry=entry, p_win=p_win,
+            )
 
     shares = stake / entry if entry > 0 else 0.0
 

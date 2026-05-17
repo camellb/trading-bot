@@ -307,6 +307,7 @@ function RiskPanel({
             fractionRange={BOUNDS.base_stake_pct}
             fractionValue={risk.base_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
+            note="Polymarket's per-order minimum is $1, with a 5-share size floor. Live trades below $1 are bumped to $1; trades that would buy less than 5 shares (ask > $0.20 with a $1 stake) are skipped instead of bumped higher."
           />
           <PercentField
             label="Max stake" step="0.1"
@@ -402,13 +403,14 @@ function NumField({
  * units (so [0.005, 0.05] is 0.5%-5%); we multiply by 100 for display.
  */
 function PercentField({
-  label, step, fractionRange, fractionValue, onChangeFraction,
+  label, step, fractionRange, fractionValue, onChangeFraction, note,
 }: {
   label: string;
   step: string;
   fractionRange: readonly [number, number];
   fractionValue: string;
   onChangeFraction: (fractionStr: string) => void;
+  note?: string;
 }) {
   const percentValue = fractionValue === ""
     ? ""
@@ -454,6 +456,11 @@ function PercentField({
         Range: {minPct % 1 === 0 ? minPct : minPct.toFixed(1)}% -
         {' '}{maxPct % 1 === 0 ? maxPct : maxPct.toFixed(1)}%
       </span>
+      {note && (
+        <span className="form-hint" style={{ display: "block" }}>
+          {note}
+        </span>
+      )}
     </div>
   );
 }

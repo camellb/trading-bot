@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
+import { api, EventLogRow, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
 import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
@@ -30,7 +30,7 @@ function openExternal(url: string): void {
  * clickable to expand reasoning + key-value detail.
  */
 
-type Filter = "all" | "open" | "closed" | "skipped";
+type Filter = "all" | "open" | "closed" | "skipped" | "errors";
 
 // Local aliases that delegate to the central tz-aware formatters
 // (src/lib/format.ts). Kept as small wrappers so the rest of the
@@ -129,6 +129,7 @@ export default function Positions() {
   const [filter, setFilter] = useState<Filter>("all");
   const [positions, setPositions] = useState<PMPosition[]>([]);
   const [evals, setEvals] = useState<MarketEvaluation[]>([]);
+  const [events, setEvents] = useState<EventLogRow[]>([]);
   // Server-side aggregate counts. Used for chip labels so the chip
   // numbers reconcile with the Dashboard tile (which also reads from
   // /api/summary). Without this, the chips show counts limited to
@@ -142,14 +143,19 @@ export default function Positions() {
 
   const refresh = useCallback(async () => {
     try {
-      const [p, e, s] = await Promise.all([
+      const [p, e, s, ev] = await Promise.all([
         api.positions(100).then((r) => r.positions),
         api.evaluations(50).then((r) => r.evaluations),
         api.summary(),
+        // Pull a generous slice so the Errors tab has history. We
+        // filter client-side to order_error rows below; everything
+        // else from event_log we ignore.
+        api.events(200).then((r) => r.events),
       ]);
       setPositions(p);
       setEvals(e);
       setSummary(s);
+      setEvents(ev);
       setLoaded(true);
       // Clear error only on confirmed success - prevents the 0.3s
       // flash where a stale error vanishes pre-await and then the
@@ -181,6 +187,12 @@ export default function Positions() {
   const skipped = useMemo(
     () => evals.filter((e) => decision(e.recommendation) === "SKIP"),
     [evals],
+  );
+  // Order errors from event_log. Most-recent-first ordering is
+  // preserved by the server (api.events() returns DESC by id).
+  const errors = useMemo(
+    () => events.filter((e) => e.event_type === "order_error"),
+    [events],
   );
 
   // Sort states. One per table so they're independent. Defaults
@@ -250,6 +262,9 @@ export default function Positions() {
           </button>
           <button className={`chip ${filter === "skipped" ? "on" : ""}`} onClick={() => setFilter("skipped")}>
             Skipped ({summary?.skipped_total ?? skipped.length})
+          </button>
+          <button className={`chip ${filter === "errors" ? "on" : ""}`} onClick={() => setFilter("errors")}>
+            Errors ({errors.length})
           </button>
         </div>
       </div>
@@ -485,6 +500,7 @@ export default function Positions() {
                   <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
                   <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
                   <SortableTh field="evaluated" sort={skippedSort}>Evaluated</SortableTh>
+                  <th>Result</th>
                   <th style={{ width: 28 }} />
                 </tr>
               </thead>
@@ -508,6 +524,23 @@ export default function Positions() {
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
                         <td className="mono">{fmt(e.evaluated_at)}</td>
+                        <td>
+                          {(() => {
+                            // RESULT pill: PENDING / YES / NO / VOID.
+                            //
+                            // Back-filled by resolve_skipped_evaluations
+                            // every 15 min once the market closes. NULL
+                            // = market still open. INVALID = the market
+                            // resolved as 50/50 / void on Polymarket.
+                            const o = (e.settlement_outcome || "").toUpperCase();
+                            let label = "PENDING";
+                            let cls = "skip-result pending";
+                            if (o === "YES") { label = "YES"; cls = "skip-result yes"; }
+                            else if (o === "NO") { label = "NO";  cls = "skip-result no";  }
+                            else if (o === "INVALID") { label = "VOID"; cls = "skip-result void"; }
+                            return <span className={cls}>{label}</span>;
+                          })()}
+                        </td>
                         <td className="mono" style={{ textAlign: "right" }}>
                           <span style={{
                             display: "inline-block",
@@ -519,7 +552,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={7} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {reasoning || "No reasoning recorded."}
@@ -528,6 +561,74 @@ export default function Positions() {
                         </tr>
                       )}
                     </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {(filter === "all" || filter === "errors") && (
+        <div className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">Order errors</h2>
+            <span className="panel-meta">{errors.length} rejected by Polymarket</span>
+          </div>
+          {errors.length === 0 ? (
+            <div className="empty-state">
+              {loaded
+                ? "No order errors. Every live order has been accepted by Polymarket."
+                : "Loading..."}
+            </div>
+          ) : (
+            <table className="table-simple">
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Side</th>
+                  <th>Stake</th>
+                  <th>Reason</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {errors.map((row) => {
+                  // Parse the description written by
+                  // pm_executor._open_live. Format:
+                  //   "Order rejected on '<question>': <SIDE>
+                  //    <size>@$<price>. <error message>"
+                  const desc = row.description || "";
+                  const m = desc.match(
+                    /^Order rejected on '(.+?)':\s*(\S+)\s+([\d.]+)@\$([\d.]+)\.\s*(.*)$/
+                  );
+                  const question = m?.[1] ?? "—";
+                  const side     = m?.[2] ?? "—";
+                  const size     = m?.[3] ?? null;
+                  const price    = m?.[4] ?? null;
+                  const reasonRaw = m?.[5] ?? desc;
+                  // Pull the human-readable error out of the SDK's
+                  // PolyApiException wrapper for prettier display.
+                  const polyErr = reasonRaw.match(
+                    /error_message=\{'error':\s*'(.+?)'\}/
+                  );
+                  const reason = polyErr?.[1] ?? reasonRaw;
+                  const sideClass =
+                    side === "YES" ? "side-yes"
+                    : side === "NO" ? "side-no"
+                    : "";
+                  return (
+                    <tr key={row.id}>
+                      <td>{question}</td>
+                      <td className={`mono ${sideClass}`}>{side}</td>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
+                        {size && price ? `${size} @ $${price}` : "—"}
+                      </td>
+                      <td style={{ color: "var(--vellum-60)" }}>{reason}</td>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
+                        {fmt(row.timestamp)}
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>

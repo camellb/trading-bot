@@ -35,7 +35,7 @@ PM_SCAN_LIMIT           = 100         # how many markets per scan (locked value)
 PM_MIN_VOLUME_24H_USD   = 1_000.0     # liquidity filter; lower = more markets per scan
 PM_MIN_DAYS_TO_END      = 0           # include markets resolving in hours
 PM_MAX_DAYS_TO_END      = 7           # 7-day simulation test - short-horizon only
-PM_SKIP_EXISTING_DAYS   = 1           # re-evaluate daily for fast-resolving markets
+PM_SKIP_EXISTING_DAYS   = 1           # cost-safe: re-evaluate each market at most once per day. Set to 0 only for short instrumentation windows.
 
 # Tag-balanced scan quotas. Without this a top-by-volume scan is ~80%
 # sports because sports markets dominate Polymarket's 24h volume.

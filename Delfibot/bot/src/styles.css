@@ -2508,3 +2508,36 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   border-color: var(--profit-line);
   color: var(--profit);
 }
+
+/* ── Positions > Skipped > Result pill ───────────────────────────────── */
+
+.skip-result {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.skip-result.pending {
+  color: var(--vellum-60);
+  background: transparent;
+}
+.skip-result.yes {
+  color: var(--profit);
+  background: var(--profit-dim);
+  border-color: var(--profit-line);
+}
+.skip-result.no {
+  color: var(--ember);
+  background: var(--ember-dim);
+  border-color: var(--ember-line);
+}
+.skip-result.void {
+  color: var(--vellum-60);
+  background: transparent;
+  border-style: dashed;
+}

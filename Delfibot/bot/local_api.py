@@ -93,18 +93,22 @@ from engine.user_config import (
     _keyring_get,
     get_anthropic_api_key,
     get_cryptopanic_key,
+    get_gemini_api_key,
     get_license_key,
     get_license_meta,
     get_llm_backup_key,
     get_newsapi_key,
+    get_polymarket_api_creds,
     get_user_config,
     get_user_telegram_config,
     set_anthropic_api_key,
     set_cryptopanic_key,
+    set_gemini_api_key,
     set_license_key,
     set_license_meta,
     set_llm_backup_key,
     set_newsapi_key,
+    set_polymarket_api_creds,
     set_user_polymarket_creds,
     set_user_telegram_config,
     update_user_config,
@@ -655,6 +659,14 @@ class LocalAPI:
         if not changes:
             cfg = await self._offload(get_user_config)
             return _ok(_config_to_dict(cfg))
+
+        # Snapshot the prior mode so we can detect a flip and notify
+        # Telegram after the write succeeds. Offloaded because
+        # get_user_config touches SQLite; doing it inline would stall
+        # the aiohttp event loop under scheduler write contention.
+        prior_cfg = await self._offload(get_user_config)
+        prior_mode = (prior_cfg.mode or "").strip().lower() if prior_cfg else ""
+
         try:
             cfg = await self._offload(lambda: update_user_config(**changes))
         except ValueError as exc:
@@ -664,7 +676,68 @@ class LocalAPI:
             # default handler return a text/plain 500: the React UI
             # expects JSON for every response.
             return _err(f"update failed: {exc}", 500)
+
+        new_mode = (cfg.mode or "").strip().lower() if cfg else ""
+        if new_mode and prior_mode and new_mode != prior_mode:
+            # Mode flip. Surface to whatever Telegram chat the user
+            # has wired (no-op if Telegram isn't configured). Best
+            # effort: a notifier outage must never block or fail the
+            # config update. The DB write is the source of truth; the
+            # GUI is about to refresh state anyway.
+            self._notify_mode_switch_async(prior_mode, new_mode)
+
         return _ok(_config_to_dict(cfg))
+
+    def _notify_mode_switch_async(self, prior_mode: str, new_mode: str) -> None:
+        """Fire a Telegram message about a SIMULATION ↔ LIVE flip.
+
+        Runs on the default thread-pool because telegram_notifier.notify
+        is sync (it does a blocking HTTPS POST to api.telegram.org).
+        Wrapped so a notifier exception never leaks back into the
+        request handler.
+        """
+        def _send() -> None:
+            try:
+                from feeds.telegram_notifier import notify as _tg_notify
+            except Exception:
+                return  # telegram_notifier missing - configured off
+            label_old = "Live" if prior_mode == "live" else "Simulation"
+            label_new = "Live"  if new_mode  == "live" else "Simulation"
+            if new_mode == "live":
+                body = (
+                    f"<b>Delfi switched to {label_new}</b>\n"
+                    f"From: {label_old}\n\n"
+                    f"Real-money orders will fire on the next scan if "
+                    f"a market clears the forecaster's filter. Make "
+                    f"sure your wallet is funded and risk settings "
+                    f"are set correctly."
+                )
+            else:
+                body = (
+                    f"<b>Delfi switched to {label_new}</b>\n"
+                    f"From: {label_old}\n\n"
+                    f"Live trading paused. Delfi will keep forecasting "
+                    f"but no real-money orders will be placed."
+                )
+            try:
+                _tg_notify(body)
+            except Exception as exc:
+                print(
+                    f"[local_api] telegram mode-switch notify failed: "
+                    f"{exc}",
+                    file=sys.stderr,
+                )
+
+        # Fire-and-forget on the default executor. Don't await; the
+        # config-update response should not block on a third-party
+        # HTTPS call.
+        try:
+            asyncio.get_event_loop().run_in_executor(None, _send)
+        except Exception as exc:
+            print(
+                f"[local_api] could not dispatch telegram notify: {exc}",
+                file=sys.stderr,
+            )
 
     async def _get_credentials(self, _req: web.Request) -> web.Response:
         """Return existence booleans for each keychain credential.
@@ -698,12 +771,18 @@ class LocalAPI:
             return _ok({"wallet_address": cfg.wallet_address, **cache})
 
         def _read_all() -> dict:
+            pm_api = get_polymarket_api_creds() or {}
             return {
                 "has_polymarket_key":   _keyring_get(KEYRING_POLYMARKET_KEY) is not None,
                 "has_anthropic_key":    get_anthropic_api_key()  is not None,
                 "has_llm_backup_key":   get_llm_backup_key()     is not None,
                 "has_newsapi_key":      get_newsapi_key()        is not None,
                 "has_cryptopanic_key":  get_cryptopanic_key()    is not None,
+                # New optional keys added 2026-05-17:
+                "has_gemini_key":               get_gemini_api_key() is not None,
+                "has_polymarket_api_key":       bool(pm_api.get("api_key")),
+                "has_polymarket_api_secret":    bool(pm_api.get("api_secret")),
+                "has_polymarket_api_passphrase": bool(pm_api.get("api_passphrase")),
             }
 
         try:
@@ -825,6 +904,44 @@ class LocalAPI:
             except Exception as exc:
                 return _err(f"failed to write cryptopanic key: {exc}", 500)
 
+        # Optional Gemini key (research/news pre-filter). The bot
+        # logs an explicit "GEMINI_API_KEY not set" warning every
+        # scan when missing.
+        gemini = _clean("gemini_key") or _clean("gemini_api_key")
+        if gemini is not None:
+            err = _validate_llm_key_shape(gemini, "Gemini API key")
+            if err:
+                return _err(err, 400)
+            try:
+                await self._offload(set_gemini_api_key, gemini)
+                wrote.append("gemini_key")
+            except Exception as exc:
+                return _err(f"failed to write gemini key: {exc}", 500)
+
+        # Optional MANUAL Polymarket CLOB api creds. All three are
+        # written independently; the caller can update one at a time.
+        # When ALL three are populated, pm_executor + polymarket_wallet
+        # skip create_or_derive_api_key entirely and use these
+        # directly — useful when the SDK's auto-derived key is stale
+        # after V2 migration.
+        pm_api_key        = _clean("polymarket_api_key")
+        pm_api_secret     = _clean("polymarket_api_secret")
+        pm_api_passphrase = _clean("polymarket_api_passphrase")
+        if pm_api_key is not None or pm_api_secret is not None or pm_api_passphrase is not None:
+            try:
+                await self._offload(
+                    lambda: set_polymarket_api_creds(
+                        api_key=pm_api_key,
+                        api_secret=pm_api_secret,
+                        api_passphrase=pm_api_passphrase,
+                    )
+                )
+                if pm_api_key is not None:        wrote.append("polymarket_api_key")
+                if pm_api_secret is not None:     wrote.append("polymarket_api_secret")
+                if pm_api_passphrase is not None: wrote.append("polymarket_api_passphrase")
+            except Exception as exc:
+                return _err(f"failed to write polymarket api creds: {exc}", 500)
+
         # Hot-reload the running process so the new keys take effect
         # WITHOUT a daemon restart. Two things need to happen:
         #
@@ -851,6 +968,36 @@ class LocalAPI:
             _os.environ["NEWS_API_KEY"] = newsapi
         if cryptopanic is not None:
             _os.environ["CRYPTOPANIC_API_KEY"] = cryptopanic
+        if gemini is not None:
+            # research/fetcher.py + feeds/news_feed.py read this
+            # directly off os.environ at call time, so this propagates
+            # immediately to the next scan / news pull.
+            _os.environ["GEMINI_API_KEY"] = gemini
+        if (pm_api_key is not None or pm_api_secret is not None
+                or pm_api_passphrase is not None):
+            # pm_executor's per-process ClobClient cache keys by manual
+            # vs auto-derived, but the manual creds it stored were from
+            # BEFORE this save. Flush the cache so the next order picks
+            # up the freshly-saved creds.
+            try:
+                from execution.pm_executor import (
+                    _CLOB_CLIENT_CACHE, reset_v2_signer_mismatch_state,
+                )
+                _CLOB_CLIENT_CACHE.clear()
+                # Reset the V2 signer-mismatch gate. If the user just
+                # pasted Trading API Keys to fix the very rejection that
+                # tripped the gate, the next order must be allowed to
+                # try them instead of falling straight to simulation.
+                reset_v2_signer_mismatch_state()
+                # Also clear the api-key-rotation memo so a manual key
+                # change doesn't get blocked by "already rotated this
+                # context".
+                from feeds.polymarket_wallet import _API_KEY_ROTATED_CTX, clear_cache as _pw_clear
+                _API_KEY_ROTATED_CTX.clear()
+                _pw_clear()
+            except Exception as exc:
+                print(f"[creds] CLOB client cache flush failed: {exc}",
+                      flush=True)
         # All LLM calls (forecaster + research keyword extraction) go
         # through the engine.llm_client singleton. Resetting it drops
         # the cached Anthropic and Gemini SDK clients in one place;
@@ -1047,15 +1194,73 @@ class LocalAPI:
         except Exception:
             brier = {"brier": None, "resolved": 0, "total": 0}
 
+        # Live-mode balance overlay. In simulation the synthetic
+        # starting_cash is correct ("how would Delfi do with $1000?")
+        # but in live we MUST show what's actually spendable on
+        # Polymarket. Funds deposited via the Polymarket UI sit in a
+        # proxy / Magic Account, NOT at the user's EOA — so a direct
+        # USDC eth_call against the EOA returns 0 even when the user
+        # is funded. The authoritative source is Polymarket's CLOB
+        # `/balance-allowance` endpoint, which knows the proxy and
+        # returns the collateral the bot can actually trade with.
+        # Helper has a 60 s in-memory cache so the Dashboard poll
+        # loop doesn't slam the CLOB. On any failure we leave the
+        # DB-derived value alone (don't flash $0 on a network
+        # hiccup).
+        bankroll = stats.get("bankroll")
+        equity   = stats.get("equity")
+        open_cost = float(stats.get("open_cost") or 0.0)
+        if stats.get("mode") == "live":
+            try:
+                from feeds.polymarket_wallet import get_live_clob_balance
+                pm_key = await self._offload(
+                    _keyring_get, KEYRING_POLYMARKET_KEY,
+                )
+                if pm_key:
+                    clob_balance = await asyncio.get_event_loop().run_in_executor(
+                        None, get_live_clob_balance, pm_key,
+                    )
+                    if clob_balance is not None:
+                        bankroll = float(clob_balance)
+                        equity = bankroll + open_cost
+            except Exception as exc:
+                # Don't break the dashboard if the CLOB API blips.
+                print(f"[summary] live CLOB balance overlay failed: {exc}",
+                      flush=True)
+
         starting = float(stats.get("starting_cash") or 0.0)
         realized = float(stats.get("realized_pnl") or 0.0)
+
+        # In LIVE mode, the legacy `starting_cash` from user_config is
+        # whatever the user typed at SIM onboarding (typically $1000).
+        # That number has nothing to do with live trading - it makes
+        # the Dashboard's Risk gauges nonsense ("drawdown 99.1%" when
+        # the user just deposited $9, exposure cap "$900" when the
+        # user has $9 of collateral). Override it to a value that
+        # matches the live session:
+        #
+        #     live_starting = bankroll - realized_pnl + open_cost
+        #
+        # Rationale: bankroll = starting + realized_pnl - open_cost,
+        # so the formula above gives back the user's effective
+        # starting capital for this live session. With no trades yet,
+        # live_starting == bankroll and drawdown = 0%. As trades
+        # settle the drawdown gauge tracks the right thing.
+        if stats.get("mode") == "live":
+            open_cost = float(stats.get("open_cost") or 0.0)
+            live_starting = bankroll - realized + open_cost
+            # Floor at $1 so the downstream gauge math (which divides
+            # by `starting`) doesn't choke when bankroll is briefly
+            # zero (e.g. mid-deposit).
+            starting = max(1.0, live_starting)
+
         roi = (realized / starting) if starting > 0 else None
 
         return _ok({
             "mode":           stats.get("mode"),
-            "bankroll":       stats.get("bankroll"),
-            "equity":         stats.get("equity"),
-            "starting_cash":  stats.get("starting_cash"),
+            "bankroll":       bankroll,
+            "equity":         equity,
+            "starting_cash":  starting,
             "open_positions": stats.get("open_positions"),
             "open_cost":      stats.get("open_cost"),
             "settled_total":  stats.get("settled_total"),

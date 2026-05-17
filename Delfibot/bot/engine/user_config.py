@@ -55,6 +55,28 @@ KEYRING_LICENSE_KEY = "license_key"                    # Lemon Squeezy license
 KEYRING_LICENSE_META = "license_meta"                  # JSON: status + last_validated_at + instance_id
 KEYRING_TELEGRAM_TOKEN = "telegram_bot_token"          # @BotFather token for outbound notifications
 
+# Optional secondary LLM (Google Gemini) used by research/fetcher.py
+# for fast keyword extraction and by feeds/news_feed.py for headline
+# pre-filtering. Bot logs an explicit "GEMINI_API_KEY not set"
+# warning every scan when missing.
+KEYRING_GEMINI_KEY = "gemini_api_key"
+
+# Optional MANUAL Polymarket CLOB api credentials. The SDK normally
+# auto-derives these from the user's private key via
+# create_or_derive_api_key(). But after V2 migration that auto-flow
+# can return a stale key bound to the wrong (signer, funder) context,
+# and orders get rejected with "the order signer address has to be
+# the address of the API KEY". The user can bypass that by
+# generating a fresh key via the Polymarket UI
+# (Settings > Relayer API keys) and pasting all three values here.
+# pm_executor / polymarket_wallet check for these first; if all
+# three are set, the SDK is constructed with them directly instead
+# of calling create_or_derive_api_key. Absent → auto-derive path
+# (the legacy behavior).
+KEYRING_POLYMARKET_API_KEY        = "polymarket_api_key"
+KEYRING_POLYMARKET_API_SECRET     = "polymarket_api_secret"
+KEYRING_POLYMARKET_API_PASSPHRASE = "polymarket_api_passphrase"
+
 
 @dataclass
 class UserConfig:
@@ -220,6 +242,12 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     "weekly_summary",
     "calibration",
     "risk_event",
+    # Fires whenever a LIVE order is rejected by the CLOB (e.g.
+    # "maker address not allowed", "insufficient collateral",
+    # tick-size mismatch). Without this the bot can silently fail
+    # dozens of orders in a row and the user only finds out by
+    # noticing the dashboard isn't growing. Defaults ON.
+    "order_error",
 )
 
 ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)
@@ -1402,6 +1430,55 @@ def get_cryptopanic_key() -> Optional[str]:
 
 def set_cryptopanic_key(value: Optional[str]) -> None:
     _keyring_set(KEYRING_CRYPTOPANIC_KEY, value)
+
+
+def get_gemini_api_key() -> Optional[str]:
+    """Optional Google Gemini key. Used by research/fetcher.py for
+    cheap keyword extraction and by feeds/news_feed.py for headline
+    pre-filtering. Bot warns on every scan when missing."""
+    v = _keyring_get(KEYRING_GEMINI_KEY)
+    if v:
+        return v
+    import os
+    return os.environ.get("GEMINI_API_KEY") or None
+
+
+def set_gemini_api_key(value: Optional[str]) -> None:
+    _keyring_set(KEYRING_GEMINI_KEY, value)
+
+
+def get_polymarket_api_creds() -> Optional[dict]:
+    """Manual Polymarket CLOB api credentials (api_key, api_secret,
+    api_passphrase). Returns the triplet ONLY if all three are
+    populated; partial creds are no-ops because all three are
+    required for a valid CLOB authed call.
+
+    pm_executor + polymarket_wallet use this to skip the SDK's
+    create_or_derive_api_key flow entirely — useful when the
+    auto-derive returns a stale post-migration key.
+    """
+    k = _keyring_get(KEYRING_POLYMARKET_API_KEY)
+    s = _keyring_get(KEYRING_POLYMARKET_API_SECRET)
+    p = _keyring_get(KEYRING_POLYMARKET_API_PASSPHRASE)
+    if k and s and p:
+        return {"api_key": k, "api_secret": s, "api_passphrase": p}
+    return None
+
+
+def set_polymarket_api_creds(
+    api_key: Optional[str] = None,
+    api_secret: Optional[str] = None,
+    api_passphrase: Optional[str] = None,
+) -> None:
+    """Each arg is written independently when not None. Pass None to
+    leave a field unchanged (so the user can update one at a time
+    from the UI without losing the others)."""
+    if api_key is not None:
+        _keyring_set(KEYRING_POLYMARKET_API_KEY, api_key)
+    if api_secret is not None:
+        _keyring_set(KEYRING_POLYMARKET_API_SECRET, api_secret)
+    if api_passphrase is not None:
+        _keyring_set(KEYRING_POLYMARKET_API_PASSPHRASE, api_passphrase)
 
 
 # ── License (offline Ed25519 hard gate) ────────────────────────────────────

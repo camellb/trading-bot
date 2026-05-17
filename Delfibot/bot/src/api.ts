@@ -535,6 +535,13 @@ export interface MarketEvaluation {
   reasoning_short: string | null;
   reasoning: string | null;
   market_archetype: string | null;
+  mode?: string;
+  // Settled outcome of the underlying market (back-filled by the
+  // skipped-eval resolver). Values: "YES" / "NO" / "INVALID", or
+  // null while the market is still trading. Used on the Skipped
+  // tab to render the counterfactual ("would Delfi have won
+  // if it hadn't skipped?").
+  settlement_outcome?: string | null;
   [k: string]: unknown;
 }
 

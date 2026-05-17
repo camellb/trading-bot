@@ -327,6 +327,118 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
     return result
 
 
+async def resolve_skipped_evaluations(batch_size: int = 200) -> dict:
+    """Back-fill `settlement_outcome` on closed-market evaluations.
+
+    The forecaster writes a row to `market_evaluations` for every
+    market it analyzes — including ones it decides to skip (most
+    of the scan). Skipped rows never open a pm_position, so the
+    main resolve loop ignores them.
+
+    But the user explicitly wants to see "would Delfi have won if
+    it hadn't skipped?" — both as a transparency feature and as a
+    feedback signal for future archetype tuning. So this job
+    fetches recent unresolved skipped evaluations, queries gamma
+    for the market's current state, and writes the outcome onto
+    the row when the market has closed.
+
+    Returns: {"evaluations_checked", "evaluations_resolved",
+              "evaluations_invalid", "errors"}.
+    """
+    result = {
+        "evaluations_checked":  0,
+        "evaluations_resolved": 0,
+        "evaluations_invalid":  0,
+        "errors":               0,
+    }
+
+    try:
+        with get_engine().begin() as conn:
+            # Skip evals = the recommendation is NOT one of the four
+            # trade verbs the bot uses when it actually wants to open
+            # a position. Anything else (SKIP, NO_TRADE, blank, ...)
+            # counts as a skip. settlement_outcome IS NULL means we
+            # haven't resolved it yet. Anchor on evaluated_at so we
+            # don't keep retrying very old rows where gamma might no
+            # longer surface the market.
+            rows = conn.execute(text(
+                "SELECT id, market_id "
+                "  FROM market_evaluations "
+                " WHERE settlement_outcome IS NULL "
+                "   AND COALESCE(UPPER(recommendation), '') "
+                "       NOT IN ('BUY_YES', 'YES', 'BUY_NO', 'NO') "
+                "   AND market_id IS NOT NULL "
+                "   AND evaluated_at >= datetime('now', '-30 days') "
+                " ORDER BY evaluated_at DESC "
+                " LIMIT :lim"
+            ), {"lim": int(batch_size)}).fetchall()
+    except Exception as exc:
+        print(f"[resolve_skipped] DB read failed: {exc}", file=sys.stderr)
+        result["errors"] += 1
+        return result
+
+    if not rows:
+        return result
+
+    market_ids = sorted({str(r[1]) for r in rows if r[1] is not None})
+    try:
+        async with PolymarketFeed() as feed:
+            gamma_rows = await feed.fetch_many(market_ids)
+    except Exception as exc:
+        print(f"[resolve_skipped] fetch_many failed: {exc}", file=sys.stderr)
+        result["errors"] += 1
+        return result
+
+    # Build (eval_id, outcome) pairs to batch-write back.
+    updates: list[tuple[int, str]] = []
+    for r in rows:
+        result["evaluations_checked"] += 1
+        eval_id   = int(r[0])
+        market_id = str(r[1])
+        raw = gamma_rows.get(market_id)
+        if not raw or not raw.get("closed", False):
+            continue
+        prices = _parse_price_list(raw.get("outcomePrices"))
+        if len(prices) != 2:
+            continue
+        yes_won = prices[0] >= 0.99
+        no_won  = prices[1] >= 0.99
+        if yes_won:
+            outcome = "YES"
+        elif no_won:
+            outcome = "NO"
+        else:
+            # Resolved but neither side hit 0.99 - treat as invalid
+            # (50/50 / void resolution).
+            outcome = "INVALID"
+        updates.append((eval_id, outcome))
+
+    if not updates:
+        return result
+
+    try:
+        with get_engine().begin() as conn:
+            for eval_id, outcome in updates:
+                conn.execute(text(
+                    "UPDATE market_evaluations "
+                    "   SET settlement_outcome = :o "
+                    " WHERE id = :id"
+                ), {"o": outcome, "id": eval_id})
+    except Exception as exc:
+        print(f"[resolve_skipped] DB write failed: {exc}", file=sys.stderr)
+        result["errors"] += 1
+        return result
+
+    for _, outcome in updates:
+        if outcome == "INVALID":
+            result["evaluations_invalid"] += 1
+        else:
+            result["evaluations_resolved"] += 1
+
+    print(f"[pm_runner] resolve_skipped_evaluations: {result}", flush=True)
+    return result
+
+
 # ── SQL helpers ──────────────────────────────────────────────────────────────
 def _read_realized_pnl(position_id: int) -> float | None:
     """Read the persisted `realized_pnl_usd` after settlement.

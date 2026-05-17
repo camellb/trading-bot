@@ -79,6 +79,27 @@ bundled_pkgs = [
 
     # DuckDuckGo search.
     "ddgs",
+
+    # ccxt ships per-exchange JSON market metadata as package data
+    # (e.g. ccxt/async_support/okx.py loads markets from
+    # ccxt/abi/*.json and similar). Without collect_all, the bundle
+    # has the Python modules but NOT those JSON files, and every
+    # live_crypto OKX fetch fails inside PyInstaller with
+    # `FileNotFoundError(2, 'No such file or directory')`. That
+    # fail-silent kills the Bitcoin / Ethereum / Solana price
+    # injection into the forecaster's prompt and re-triggers the
+    # "research lacks current Bitcoin price" skip storms the
+    # 2026-05-16 doctrine rule explicitly bans. ccxt MUST be in
+    # this list.
+    "ccxt",
+
+    # Native secp256k1 ECDSA. eth_keys uses CoinCurveECCBackend for
+    # fast signing if importable; without it, signing falls back to
+    # a slower pure-Python backend. The fallback logs noisy "ECC
+    # backend not available" warnings on every Polymarket order. We
+    # actually want coincurve in the bundle for performance + log
+    # cleanliness.
+    "coincurve",
 ]
 
 datas = []

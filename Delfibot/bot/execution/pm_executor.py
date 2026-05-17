@@ -70,6 +70,50 @@ FILL_POLL_TIMEOUT_SECONDS = 30.0
 # wallet's lowercase 0x address since each user_config has exactly one.
 _CLOB_CLIENT_CACHE: dict = {}
 
+# Tracks (cache_key) for which we've already synced CLOB balance/allowance
+# under POLY_1271. Per Polymarket V2 docs
+# (https://docs.polymarket.com/trading/deposit-wallets), the CLOB caches a
+# user's balance + allowance state per signature_type. Before placing the
+# first POLY_1271 order from this process, we MUST call
+# update_balance_allowance(signature_type=3) — otherwise the CLOB has no
+# record of the deposit wallet's funds and rejects orders. Idempotent +
+# one-time per cache key keeps it cheap on every subsequent order.
+_BALANCE_ALLOWANCE_SYNCED: set = set()
+
+# Per-process flag: True once we've detected the V2 "signer mismatch"
+# rejection from Polymarket. Pre-2026-05-17 we kept seeing this rejection
+# because our py-clob-client-v2 was pinned to 1.0.0 (released 2026-04-17)
+# which predates the SDK's deposit-wallet (POLY_1271 / ERC-7739 wrapped
+# signature) support. 1.0.1 (2026-05-09) lands "feat: add deposit wallet
+# order support" (#39) — orders now correctly set signer=DepositWallet
+# and build the ERC-7739 wrapper. The mismatch state should never trip
+# anymore, but the gate stays as a safety belt: if the rejection comes
+# back (e.g. SDK regression or another V3-style migration), we fall back
+# to simulation and tell the user instead of hammering the CLOB.
+_V2_SIGNER_MISMATCH_DETECTED: bool = False
+_V2_SIGNER_MISMATCH_NOTIFIED: bool = False
+
+
+def _is_v2_signer_mismatch(exc_str: str) -> bool:
+    """Detect Polymarket's V2 'signer != api-key address' rejection so we
+    can shortcut subsequent orders + surface a clear user action."""
+    s = (exc_str or "").lower()
+    return (
+        "the order signer address has to be the address of the api key" in s
+        or "signer address has to be the address" in s
+    )
+
+
+def reset_v2_signer_mismatch_state() -> None:
+    """Called from local_api when credentials change. Lets the next live
+    order retry from a clean slate instead of staying gated forever.
+    Also clears the balance-allowance sync memo so the freshly-saved key
+    rebuilds CLOB state from scratch."""
+    global _V2_SIGNER_MISMATCH_DETECTED, _V2_SIGNER_MISMATCH_NOTIFIED
+    _V2_SIGNER_MISMATCH_DETECTED = False
+    _V2_SIGNER_MISMATCH_NOTIFIED = False
+    _BALANCE_ALLOWANCE_SYNCED.clear()
+
 
 def _live_killswitch_off() -> bool:
     """
@@ -88,29 +132,119 @@ def _get_clob_client(wallet_address: str, private_key: str):
     unauthed client to derive API creds, then a fully-authed client.
     Cached in-process so we only do the round-trip once.
 
-    Cache key includes a SHA-256 of the private key so a credential
-    rotation (same wallet, new key — possible with different
-    derivation paths) does NOT return a stale client signing with the
-    old key. The full key is never logged or exposed; only its hash
-    sits in memory as a dict-key prefix.
+    Polymarket account shapes:
+        signature_type=0  EOA               (MetaMask users)
+        signature_type=1  POLY_PROXY        (the default Polymarket
+                                             Magic-account proxy, most
+                                             users)
+        signature_type=2  POLY_GNOSIS_SAFE  (newer Safe-magic accounts)
+    We don't know up-front which one applies. polymarket_wallet.py
+    probes /balance-allowance for each sig_type and caches the answer
+    for 5 minutes; we read it here so orders are signed against the
+    same on-chain account that actually holds the user's collateral.
+    Without this, a Magic-account user with funds in their proxy
+    would get every order rejected for "insufficient collateral"
+    because the EOA-default client would query a $0 EOA wallet.
+
+    Cache key includes a SHA-256 of the private key AND the resolved
+    signature_type so a key rotation or shape change does NOT return
+    a stale client. The full key is never logged or exposed; only its
+    hash sits in memory as a dict-key prefix.
 
     Imports are deferred so a sidecar that's never gone live doesn't
     have to load the SDK on startup.
     """
     import hashlib
+    # Detect signature_type + funder once; cached upstream for 5 min.
+    sig_type = 0
+    funder: Optional[str] = None
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        info = get_poly_signer_info(private_key)
+        if info:
+            sig_type = int(info.get("signature_type", 0) or 0)
+            funder = info.get("funder") or None
+    except Exception as exc:
+        print(
+            f"[pm_executor] signer probe failed, defaulting to EOA: {exc}",
+            file=sys.stderr,
+        )
+
+    # MANUAL api-key path: if the user has pasted Polymarket api
+    # creds via Settings, use them directly and skip the SDK's
+    # create_or_derive_api_key flow entirely. This is the unblock
+    # for accounts where auto-derive returns a stale post-migration
+    # key bound to the wrong (signer, funder) context.
+    manual_creds = None
+    try:
+        from engine.user_config import get_polymarket_api_creds
+        manual_creds = get_polymarket_api_creds()
+    except Exception:
+        manual_creds = None
+
     key_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
-    cache_key = f"{wallet_address.lower()}:{key_hash}"
+    cache_tag = "m" if manual_creds else "a"   # m=manual, a=auto-derive
+    cache_key = f"{wallet_address.lower()}:{key_hash}:sig{sig_type}:{cache_tag}"
     cached = _CLOB_CLIENT_CACHE.get(cache_key)
     if cached is not None:
         return cached
     from py_clob_client_v2.client import ClobClient   # type: ignore
-    seed = ClobClient(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
-    creds = seed.create_or_derive_api_key()
-    client = ClobClient(
-        host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID,
-        key=private_key, creds=creds,
-    )
+    from py_clob_client_v2.clob_types import ApiCreds  # type: ignore
+    seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
+    if sig_type != 0:
+        seed_kwargs["signature_type"] = sig_type
+        if funder:
+            seed_kwargs["funder"] = funder
+
+    if manual_creds:
+        creds = ApiCreds(
+            api_key=manual_creds["api_key"],
+            api_secret=manual_creds["api_secret"],
+            api_passphrase=manual_creds["api_passphrase"],
+        )
+        print(
+            f"[pm_executor] using MANUAL Polymarket api-key (from "
+            f"Settings) for sig_type={sig_type} funder={funder}",
+            file=sys.stderr,
+        )
+    else:
+        seed = ClobClient(**seed_kwargs)
+        creds = seed.create_or_derive_api_key()
+    client_kwargs = dict(seed_kwargs)
+    client_kwargs["creds"] = creds
+    client = ClobClient(**client_kwargs)
     _CLOB_CLIENT_CACHE[cache_key] = client
+
+    # Polymarket V2 docs (https://docs.polymarket.com/trading/deposit-wallets):
+    # "After funding the deposit wallet or approving contracts from it,
+    # update the CLOB balance cache using signature_type = 3."
+    # Without this call, the CLOB has no record of the deposit wallet's
+    # collateral and rejects POLY_1271 orders. One-time per cache_key
+    # per process — cheap on every subsequent order.
+    if sig_type == 3 and cache_key not in _BALANCE_ALLOWANCE_SYNCED:
+        try:
+            from py_clob_client_v2.clob_types import (  # type: ignore
+                BalanceAllowanceParams, AssetType,
+            )
+            from py_clob_client_v2.order_utils import SignatureTypeV2  # type: ignore
+            client.update_balance_allowance(
+                BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=SignatureTypeV2.POLY_1271,
+                )
+            )
+            _BALANCE_ALLOWANCE_SYNCED.add(cache_key)
+            print(
+                f"[pm_executor] synced CLOB balance-allowance under "
+                f"POLY_1271 for funder={funder}",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(
+                f"[pm_executor] update_balance_allowance failed (continuing): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
     return client
 
 
@@ -202,10 +336,44 @@ class PMExecutor:
         """
         This user's starting bankroll in USD. Returns 0.0 if the user hasn't
         finished onboarding - callers treat that as "no bankroll, don't trade".
+
+        Live override: when the user's CONFIGURED trading mode is 'live'
+        (not the view-mode override) AND a Polymarket private key is on
+        file, return the actual on-chain DepositWallet balance instead of
+        the static configured value. Without this the sizer was using
+        the simulation-default $1000 starting_cash on live mode and
+        building orders 100x larger than the wallet could fund —
+        Polymarket rejected with "not enough balance" because the
+        configured number didn't match real funds.
+
+        The wallet probe is cached for 5 min in polymarket_wallet, so this
+        is cheap even when called from every order. Falls back to the
+        configured starting_cash on any probe failure so the bot doesn't
+        block trading just because the RPC blipped.
         """
         if self._user_config.starting_cash is None:
             return 0.0
-        return float(self._user_config.starting_cash)
+        configured = float(self._user_config.starting_cash)
+        try:
+            if (
+                self._user_config.mode == "live"
+                and self._view_mode_override is None
+            ):
+                from engine.user_config import get_user_polymarket_creds
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    from feeds.polymarket_wallet import get_poly_signer_info
+                    info = get_poly_signer_info(pk)
+                    if info and isinstance(info.get("balance"), (int, float)):
+                        return float(info["balance"])
+        except Exception as exc:
+            print(
+                f"[pm_executor] live starting_cash probe failed, falling back "
+                f"to configured ${configured:.2f}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        return configured
 
     def get_bankroll(self) -> float:
         """
@@ -467,6 +635,27 @@ class PMExecutor:
                   file=sys.stderr)
             return None
 
+        # ── V2 signer-mismatch short-circuit ────────────────────────────
+        # If we've already detected the Polymarket V2 "signer != api-key"
+        # rejection in this process, every subsequent order will fail the
+        # same way. Skip the API call + the Telegram noise; fall back to a
+        # simulation fill with a clear marker so the user sees what would
+        # have happened. The flag clears on credential change or restart.
+        global _V2_SIGNER_MISMATCH_DETECTED, _V2_SIGNER_MISMATCH_NOTIFIED
+        if _V2_SIGNER_MISMATCH_DETECTED:
+            print(
+                f"[pm_executor] _open_live: V2 signer mismatch was detected "
+                f"earlier this session; routing to simulation fill instead of "
+                f"posting. User must paste Trading API Keys from polymarket.com "
+                f"to clear this state.",
+                file=sys.stderr,
+            )
+            return self._open_simulation(
+                market, decision, claude_p, prediction_id,
+                f"[v2 signer mismatch] {(reasoning or '')}".strip(),
+                category, market_archetype,
+            )
+
         # ── Kill-switch fallback ────────────────────────────────────────
         if not _live_killswitch_off():
             print(
@@ -563,17 +752,162 @@ class PMExecutor:
             size=size_shares,
         )
 
+        # ── DEEP-DIVE INSTRUMENTATION (2026-05-17) ────────────────────
+        # User asked for hard data + proof. Split the SDK's
+        # create_and_post_order into its two parts so we can log the
+        # FULL order struct AND the api-keys Polymarket has on file
+        # for this account, BEFORE the post that gets rejected.
+        # When orders start succeeding we can dial this back to
+        # debug=False or remove entirely.
         try:
-            resp = client.create_and_post_order(
+            builder = getattr(client, "builder", None)
+            print(
+                f"[pm_executor][live] PRE-BUILD maker_seed={getattr(builder,'funder',None)!r} "
+                f"sig_type_seed={getattr(builder,'signature_type',None)!r} "
+                f"signer_seed={getattr(getattr(builder,'signer',None),'address',lambda:None)()!r} "
+                f"market={market.id} side={decision.side} "
+                f"price={entry_price} size={size_shares}",
+                flush=True,
+            )
+        except Exception:
+            pass
+
+        # Inspect Polymarket's registered api-keys for this account.
+        # Each entry tells us the address Polymarket has bound the
+        # key to. If order.signer doesn't match any of these, we
+        # get "signer address has to be the address of the API KEY".
+        try:
+            keys_info = client.get_api_keys()
+            print(f"[pm_executor][live] api-keys on file: {keys_info!r}",
+                  flush=True)
+        except Exception as ek:
+            print(f"[pm_executor][live] get_api_keys() failed: {ek}",
+                  flush=True)
+
+        # Build the order WITHOUT posting it yet.
+        try:
+            order = client.create_order(
                 order_args=order_args,
                 options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
-                order_type=OrderType.GTC,
             )
+            print(
+                f"[pm_executor][live] BUILT ORDER "
+                f"maker={getattr(order, 'maker', None)!r} "
+                f"signer={getattr(order, 'signer', None)!r} "
+                f"signatureType={getattr(order, 'signatureType', None)!r} "
+                f"tokenId={getattr(order, 'tokenId', None)!r} "
+                f"signature_len={len(getattr(order, 'signature', '') or '')}",
+                flush=True,
+            )
+        except Exception as ec:
+            print(f"[pm_executor][live] create_order failed: {ec}", flush=True)
+            order = None
+
+        try:
+            if order is not None:
+                resp = client.post_order(order, OrderType.GTC)
+            else:
+                resp = client.create_and_post_order(
+                    order_args=order_args,
+                    options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+                    order_type=OrderType.GTC,
+                )
         except Exception as exc:
             print(
                 f"[pm_executor] _open_live: create_and_post_order failed: {exc}",
                 file=sys.stderr,
             )
+            # Detect Polymarket's V2 "signer != api-key address" rejection.
+            # If we see it once we'll see it on EVERY order this session,
+            # so flip the process-level gate and emit a SINGLE actionable
+            # event for the user. Subsequent orders short-circuit to
+            # simulation fills at the top of _open_live, so we don't spam
+            # the Errors tab or Telegram.
+            err_msg = str(exc)[:600]
+            is_signer_mismatch = _is_v2_signer_mismatch(err_msg)
+            try:
+                from db.logger import log_event
+                from feeds import telegram_messages as _tm
+                question_short = (market.question or "")[:80]
+                if is_signer_mismatch:
+                    _V2_SIGNER_MISMATCH_DETECTED = True
+                    description = (
+                        "Polymarket rejected the order because its CLOB has a "
+                        "different address authorised as the trading signer "
+                        "for this wallet. This usually happens when the "
+                        "account was created via the Polymarket web UI first "
+                        "(Magic.link session key) and the MetaMask key "
+                        "pasted into Delfi was never registered as a "
+                        "trading signer. "
+                        "FIX: go to polymarket.com -> Settings -> API Keys, "
+                        "generate Trading API Keys, and paste the api-key, "
+                        "secret, and passphrase into Delfi -> Settings -> "
+                        "Polymarket API Key. Until then live orders fall "
+                        "back to simulation fills so trading data keeps "
+                        "flowing."
+                    )
+                    telegram_html = None
+                    try:
+                        telegram_html = _tm.order_rejected(
+                            question="Polymarket signer mismatch",
+                            side=decision.side,
+                            stake_usd=decision.stake_usd,
+                            price=entry_price,
+                            error_text=description,
+                            mode=self.trading_mode,
+                        )
+                    except Exception:
+                        telegram_html = None
+                    # Only one row + one Telegram per process — subsequent
+                    # short-circuited orders never hit this branch.
+                    if not _V2_SIGNER_MISMATCH_NOTIFIED:
+                        log_event(
+                            event_type="order_error",
+                            severity=3,  # higher severity, action required
+                            description=description,
+                            source="pm_executor._open_live",
+                            telegram_html=telegram_html,
+                        )
+                        _V2_SIGNER_MISMATCH_NOTIFIED = True
+                else:
+                    description = (
+                        f"Order rejected on '{question_short}': "
+                        f"{decision.side} {size_shares:.2f}@${entry_price:.3f}. "
+                        f"{err_msg}"
+                    )
+                    # Rich Telegram-HTML matches the rest of the message
+                    # spec (new_position / settled_win / settled_loss).
+                    try:
+                        telegram_html = _tm.order_rejected(
+                            question=market.question or "(unknown market)",
+                            side=decision.side,
+                            stake_usd=decision.stake_usd,
+                            price=entry_price,
+                            error_text=err_msg,
+                            mode=self.trading_mode,
+                        )
+                    except Exception:
+                        telegram_html = None
+                    log_event(
+                        event_type="order_error",
+                        severity=2,  # warning, not fatal
+                        description=description,
+                        source="pm_executor._open_live",
+                        telegram_html=telegram_html,
+                    )
+            except Exception as log_exc:
+                print(
+                    f"[pm_executor] could not log order_error event: {log_exc}",
+                    file=sys.stderr,
+                )
+            # If this was the signer mismatch, fall back to simulation so
+            # the trade still lands in the dashboard with a clear marker.
+            if is_signer_mismatch:
+                return self._open_simulation(
+                    market, decision, claude_p, prediction_id,
+                    f"[v2 signer mismatch] {(reasoning or '')}".strip(),
+                    category, market_archetype,
+                )
             return None
         if not isinstance(resp, dict):
             print(f"[pm_executor] _open_live: unexpected order response shape: {resp!r}",

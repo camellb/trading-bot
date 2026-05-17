@@ -65,15 +65,22 @@ cd "${BOT_DIR}"
 
 # Clean previous artefacts so a stale binary cannot survive a failed
 # rebuild and ship anyway.
-rm -rf "${BOT_DIR}/build" "${BOT_DIR}/dist"
+#
+# CAREFUL: we used to `rm -rf dist/` here, but that's also where
+# Vite writes the React frontend (see tauri.conf.json
+# frontendDist: "../dist"). Wiping it caused the Tauri bundle to
+# ship an empty frontend — the GUI loaded but every UI change
+# since the last Vite build was silently missing. PyInstaller now
+# writes to `.pyinstaller-dist/`; Vite's `dist/` is left alone.
+rm -rf "${BOT_DIR}/build" "${BOT_DIR}/.pyinstaller-dist"
 
 "${PYTHON}" -m PyInstaller \
   scripts/delfi_sidecar.spec \
   --noconfirm \
-  --distpath "${BOT_DIR}/dist" \
+  --distpath "${BOT_DIR}/.pyinstaller-dist" \
   --workpath "${BOT_DIR}/build"
 
-SRC="${BOT_DIR}/dist/delfi-sidecar"
+SRC="${BOT_DIR}/.pyinstaller-dist/delfi-sidecar"
 if [[ ! -f "${SRC}" ]]; then
   echo "[build_sidecar] expected ${SRC} after pyinstaller run, not found" >&2
   ls -la "${BOT_DIR}/dist" >&2 || true

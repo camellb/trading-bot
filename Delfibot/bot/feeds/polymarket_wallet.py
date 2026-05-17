@@ -162,5 +162,376 @@ async def get_live_usdc_balance(wallet_address: str) -> Optional[float]:
 
 
 def clear_cache() -> None:
-    """Dump the wallet cache. Useful for tests and manual refresh."""
+    """Dump every per-key cache in this module. Useful for tests and
+    for forcing a re-probe after the user funds their Polymarket
+    account (the 5-min sig-type cache would otherwise hold stale
+    'balance=0' info)."""
     _CACHE.clear()
+    _CLOB_BALANCE_CACHE.clear()
+    _POLY_SIGNER_CACHE.clear()
+
+
+# ── CLOB-side balance (authoritative for live trading) ──────────────────────
+#
+# Polymarket users have one of three account shapes, all signed by
+# the same EOA private key but holding funds at different on-chain
+# addresses:
+#
+#   signature_type=0  EOA               (MetaMask-connect users)
+#   signature_type=1  POLY_PROXY        (the classic Polymarket Magic
+#                                        proxy contract — default for
+#                                        anyone who signed up via the
+#                                        Polymarket UI)
+#   signature_type=2  POLY_GNOSIS_SAFE  (newer Gnosis-Safe magic
+#                                        accounts)
+#
+# We don't know up-front which one applies. So we PROBE: call
+# /balance-allowance once with each signature_type, pick the one
+# that reports a non-zero balance. The result is cached for 5
+# minutes; that's long enough to skip re-probing on every
+# Dashboard poll but short enough that a fresh deposit shows up
+# quickly. The bot's order-placement path reads the same cache so
+# orders are signed with the correct signature_type — otherwise
+# the CLOB would reject every order with "insufficient collateral"
+# even though the user has funds at their proxy.
+
+_CLOB_BALANCE_CACHE: Dict[str, Tuple[float, float]] = {}
+_CLOB_BALANCE_TTL_SECONDS = 60.0
+
+_POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
+_POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
+
+
+# Process-level tracking of which (sig_type, funder) tuple we've
+# rotated the api-key under. Polymarket binds each api-key to the
+# (signer, funder) context it was created in; if we switch funder
+# (e.g. user goes through the V2 migration POLY_PROXY → DepositWallet)
+# and keep the OLD api-key, orders get rejected with "the order
+# signer address has to be the address of the API KEY". Force-rotate
+# once per context change so subsequent orders pass.
+_API_KEY_ROTATED_CTX: dict = {}
+
+
+def _build_clob_client(
+    private_key: str,
+    signature_type: int = -1,
+    funder: Optional[str] = None,
+    rotate_api_key: bool = False,
+):
+    """Two-step construction per the py-clob-client-v2 SDK: derive an
+    api-key with the signing key first, then build the fully-authed
+    client. Helpers in this module use it; pm_executor builds its
+    own cached version for order placement.
+
+    `rotate_api_key=True` deletes the existing api-key (if any) and
+    creates a fresh one under the current (sig_type, funder)
+    context. Set this when the caller knows the api-key context
+    changed (e.g. post-migration). The rotation runs at most once
+    per process per (sig_type, funder) tuple — repeated calls with
+    the same tuple are no-ops.
+    """
+    from py_clob_client_v2.client import ClobClient
+    CLOB_HOST = "https://clob.polymarket.com"
+    POLYGON_CHAIN_ID = 137
+    seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
+    if signature_type != -1:
+        seed_kwargs["signature_type"] = signature_type
+        if funder:
+            seed_kwargs["funder"] = funder
+    seed = ClobClient(**seed_kwargs)
+
+    # Optional one-time api-key rotation. Gated by an in-process
+    # cache so we don't churn the api-key on every probe.
+    import hashlib
+    pk_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    rotate_key = (pk_hash, signature_type, (funder or "").lower())
+    if rotate_api_key and rotate_key not in _API_KEY_ROTATED_CTX:
+        try:
+            # Derive whatever key is currently on file, use it to delete.
+            existing = seed.derive_api_key()
+            if existing and getattr(existing, "api_key", None):
+                authed = ClobClient(**{**seed_kwargs, "creds": existing})
+                try:
+                    authed.delete_api_key()
+                    print(
+                        f"[polymarket_wallet] rotated api-key for "
+                        f"sig_type={signature_type} funder={funder}",
+                        file=sys.stderr,
+                    )
+                except Exception as del_exc:
+                    print(
+                        f"[polymarket_wallet] api-key delete failed "
+                        f"(continuing): {del_exc}",
+                        file=sys.stderr,
+                    )
+            _API_KEY_ROTATED_CTX[rotate_key] = True
+        except Exception as exc:
+            # Couldn't even derive the existing key — nothing to
+            # rotate. Mark as "tried" so we don't loop.
+            _API_KEY_ROTATED_CTX[rotate_key] = True
+            print(
+                f"[polymarket_wallet] api-key rotation skipped: {exc}",
+                file=sys.stderr,
+            )
+
+    creds = seed.create_or_derive_api_key()
+    client_kwargs = dict(seed_kwargs)
+    client_kwargs["creds"] = creds
+    return ClobClient(**client_kwargs)
+
+
+def _derive_poly_proxy(eoa: str) -> str:
+    """Derive the user's POLY_PROXY (sig_type=1) address from their EOA.
+
+    Polymarket's ProxyWalletFactory deploys a CREATE2 clone for each
+    EOA on first deposit. The proxy is the address that actually
+    holds the user's pUSD; it's what gets set as the `maker` field
+    of every order. Without using this (and signing with the EOA),
+    the CLOB rejects orders with "maker address not allowed".
+
+    Constants extracted from the Polymarket V2 web bundle (chunk
+    012oy0ftdrorf.js, deriveProxyWallet function).
+    """
+    from eth_utils import keccak, to_checksum_address
+    PROXY_FACTORY = "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052"
+    PROXY_INIT_CODE_HASH = "0xd21df8dc65880a8606f09fe0ce3df9b8869287ab0b058be05aa9e8af6330a00b"
+    # salt = keccak256(packed(eoa)) — 20 raw bytes, NOT abi-encoded.
+    eoa_packed = bytes.fromhex(eoa.lower().replace("0x", ""))
+    salt = keccak(eoa_packed)
+    factory_bytes = bytes.fromhex(PROXY_FACTORY.lower().replace("0x", ""))
+    init_code_hash = bytes.fromhex(PROXY_INIT_CODE_HASH.replace("0x", ""))
+    addr = keccak(b"\xff" + factory_bytes + salt + init_code_hash)[12:]
+    return to_checksum_address(addr)
+
+
+def _derive_deposit_wallet(eoa: str) -> str:
+    """Derive the V2 Polymarket DepositWallet address for this EOA.
+
+    Polymarket's 2026-04-28 V2 upgrade introduced a new account type
+    ("DepositWallet") that users get migrated to on first V2 trade.
+    Their UI shows the prompt "you need to upgrade to continue
+    trading"; after the user accepts, post-migration orders MUST use
+    this address as their maker.
+
+    Derivation ported from polymarket.com's frontend bundle
+    (chunk 012oy0ftdrorf.js, deriveDepositWallet function). It's a
+    Solady CWIA (Clone With Immutable Args) CREATE2 with the EOA
+    encoded into the deployment salt + initcode.
+    """
+    from eth_utils import keccak, to_checksum_address
+    from eth_abi import encode
+    FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+    IMPL    = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+    # salt = keccak256(abi.encode(factory, padded_eoa))
+    eoa_padded = bytes.fromhex(eoa.lower().replace("0x", "").rjust(64, "0"))
+    d = encode(["address", "bytes32"], [FACTORY, eoa_padded])
+    salt = keccak(d)
+    # initcode = Solady CWIA prefix + impl + tail + d (immutable args)
+    c = len(d)  # = 64
+    header10 = (0x61003d3d8160233d3973 + (c << 56)).to_bytes(10, "big")
+    impl_bytes = bytes.fromhex(IMPL.lower().replace("0x", ""))
+    mid1 = bytes.fromhex("6009")
+    mid2 = bytes.fromhex("5155f3363d3d373d3d363d7f360894a13ba1a3210667c828492db98dca3e2076")
+    mid3 = bytes.fromhex("cc3735a920a3ca505d382bbc545af43d6000803e6038573d6000fd5b3d6000f3")
+    initcode = header10 + impl_bytes + mid1 + mid2 + mid3 + d
+    bytecode_hash = keccak(initcode)
+    factory_bytes = bytes.fromhex(FACTORY.lower().replace("0x", ""))
+    addr = keccak(b"\xff" + factory_bytes + salt + bytecode_hash)[12:]
+    return to_checksum_address(addr)
+
+
+def _derive_poly_safe(eoa: str) -> str:
+    """Derive the user's POLY_GNOSIS_SAFE (sig_type=2) address from their EOA.
+
+    Newer Polymarket Magic accounts use a Gnosis Safe instead of the
+    ProxyWallet. Same CREATE2 idea, different factory + init code
+    hash + salt encoding (abi-encoded 32-byte address vs packed 20).
+    """
+    from eth_utils import keccak, to_checksum_address
+    SAFE_FACTORY = "0xaacFeEa03eb1561C4e67d661e40682Bd20E3541b"
+    SAFE_INIT_CODE_HASH = "0x2bce2127ff07fb632d16c8347c4ebf501f4841168bed00d9e6ef715ddb6fcecf"
+    # salt = keccak256(abi.encode(eoa)) — 32-byte left-padded.
+    eoa_padded = bytes.fromhex(eoa.lower().replace("0x", "").rjust(64, "0"))
+    salt = keccak(eoa_padded)
+    factory_bytes = bytes.fromhex(SAFE_FACTORY.lower().replace("0x", ""))
+    init_code_hash = bytes.fromhex(SAFE_INIT_CODE_HASH.replace("0x", ""))
+    addr = keccak(b"\xff" + factory_bytes + salt + init_code_hash)[12:]
+    return to_checksum_address(addr)
+
+
+def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
+    """Detect the user's Polymarket account shape.
+
+    Returns a dict ``{signature_type, funder, balance}`` describing
+    the on-chain account this signing key controls. balance is in
+    USD (6-decimal converted). funder is the EOA address derived
+    from the private key — Polymarket uses it both as the EOA for
+    sig_type=0 and as the "underlying owner" of sig_type=1 / 2
+    proxy contracts.
+
+    Probing strategy: call /balance-allowance for sig_types 0, 1, 2
+    in order. Return the first that reports balance > 0. If all
+    three return 0, return {sig_type=0, balance=0} as the "safe
+    EOA default" — the user is unfunded; any of the three answers
+    is equivalent.
+
+    Cached per-key for 5 minutes. Failure (no key, SDK error,
+    network) returns None so callers can fall back gracefully.
+    """
+    if not private_key or not isinstance(private_key, str):
+        return None
+    import hashlib
+    cache_key = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    now = time.monotonic()
+    cached = _POLY_SIGNER_CACHE.get(cache_key)
+    if cached is not None:
+        info, ts = cached
+        if now - ts < _POLY_SIGNER_TTL_SECONDS:
+            return info
+
+    try:
+        from py_clob_client_v2.clob_types import (
+            AssetType, BalanceAllowanceParams,
+        )
+        # Derive the EOA from the key first — used as the funder for
+        # proxy queries.
+        seed_client = _build_clob_client(private_key)
+        eoa = seed_client.get_address()
+    except Exception as exc:
+        print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
+              file=sys.stderr)
+        return None
+
+    # The funder we pass to the SDK is what ends up as the order's
+    # `maker` field. We try every known Polymarket account shape:
+    #
+    #   sig=0 + EOA            classic MetaMask user
+    #   sig=1 + POLY_PROXY     legacy V1 Magic-account proxy
+    #   sig=2 + GNOSIS_SAFE    older Gnosis-Safe magic account
+    #   sig=1/2/3 + DEPOSIT_WALLET
+    #                          NEW V2 account (2026-04-28 cutover).
+    #                          Polymarket's UI prompts users to
+    #                          "upgrade to continue trading" on
+    #                          first V2 order; that migration
+    #                          deploys this contract. Which
+    #                          sig_type the CLOB expects for the
+    #                          DepositWallet isn't documented;
+    #                          probe sig=1, sig=2, and sig=3
+    #                          (POLY_1271, the EIP-1271 path used
+    #                          by smart-contract wallets).
+    poly_proxy     = _derive_poly_proxy(eoa)
+    poly_safe      = _derive_poly_safe(eoa)
+    deposit_wallet = _derive_deposit_wallet(eoa)
+
+    # Order matters: a freshly-migrated user has $0 at the old proxy
+    # but the CLOB will report the right balance when probed at the
+    # DepositWallet. We probe DepositWallet+sig3 (POLY_1271) FIRST
+    # because:
+    #   - The DepositWallet is a SMART CONTRACT wallet (Solady CWIA).
+    #   - Polymarket accepts sig_type=1 for /balance-allowance
+    #     queries (the CLOB serves the post-migration balance
+    #     against any of its registered signature types).
+    #   - But orders MUST use sig_type=3 (POLY_1271, EIP-1271
+    #     contract signatures) when the maker is a smart-contract
+    #     wallet. Submitting a DepositWallet order under sig_type=1
+    #     gives "maker address not allowed".
+    #   - Confirmed empirically (2026-05-17): a user's working
+    #     manual Polymarket trade drew pUSD from their DepositWallet,
+    #     received CTF tokens at their DepositWallet, and was
+    #     processed by the V2 CTF Exchange — implying maker=DW
+    #     and sig=POLY_1271.
+    # If sig_type=3 returns nothing we fall back to other shapes.
+    probe_candidates = [
+        (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271, V2 default)"),
+        (1, deposit_wallet, "DepositWallet+sig1 (legacy fallback)"),
+        (2, deposit_wallet, "DepositWallet+sig2"),
+        (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
+        (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
+        (0, eoa,            "EOA+sig0"),
+    ]
+
+    chosen: Optional[dict] = None
+    for sig_type, funder, label in probe_candidates:
+        try:
+            client = _build_clob_client(
+                private_key, signature_type=sig_type, funder=funder,
+            )
+            params = BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL, signature_type=sig_type,
+            )
+            result = client.get_balance_allowance(params) or {}
+            raw = result.get("balance")
+            raw_allow = result.get("allowance")
+            if raw is None:
+                continue
+            try:
+                value = int(raw) / (10 ** _USDC_DECIMALS)
+                allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
+            except (TypeError, ValueError):
+                continue
+            print(
+                f"[polymarket_wallet] probe {label:32} sig={sig_type} "
+                f"funder={funder} → balance=${value:.4f}",
+                file=sys.stderr,
+            )
+            if value > 0:
+                chosen = {
+                    "signature_type": sig_type,
+                    "funder":         funder,
+                    "eoa":            eoa,
+                    "balance":        float(value),
+                    "allowance":      float(allowance),
+                }
+                print(
+                    f"[polymarket_wallet] account shape: sig_type={sig_type} "
+                    f"funder={funder} ({label}) balance=${value:.4f} "
+                    f"allowance=${allowance:.4f}",
+                    file=sys.stderr,
+                )
+                # Force an api-key rotation under THIS context. Once
+                # per process per (sig_type, funder). Fixes the
+                # "the order signer address has to be the address of
+                # the API KEY" rejection that happens when the
+                # api-key on file was created under an OLDER context
+                # (e.g. legacy POLY_PROXY pre-V2-migration).
+                try:
+                    _build_clob_client(
+                        private_key,
+                        signature_type=sig_type,
+                        funder=funder,
+                        rotate_api_key=True,
+                    )
+                except Exception as exc:
+                    print(f"[polymarket_wallet] post-probe rotate failed: {exc}",
+                          file=sys.stderr)
+                break
+        except Exception as exc:
+            print(f"[polymarket_wallet] probe {label} failed: {exc}",
+                  file=sys.stderr)
+            continue
+
+    if chosen is None:
+        # Everything probed zero. Default to the V2 DepositWallet
+        # shape — that's the path Polymarket's UI now pushes every
+        # new user through. A fresh deposit will land there and the
+        # next probe catches it.
+        chosen = {
+            "signature_type": 1,
+            "funder":         deposit_wallet,
+            "eoa":            eoa,
+            "balance":        0.0,
+            "allowance":      0.0,
+        }
+
+    _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
+    return chosen
+
+
+def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
+    """Backwards-compat shim returning just the balance number.
+
+    New code should call get_poly_signer_info directly; that's the
+    function that also exposes signature_type for order placement.
+    """
+    info = get_poly_signer_info(private_key)
+    return float(info["balance"]) if info else None
