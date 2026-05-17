@@ -622,15 +622,19 @@ class PMExecutor:
             size=size_shares,
         )
 
-        # Diagnostic: confirm the SDK is signing with the right maker.
-        # For sig_type=1 (POLY_PROXY) and sig_type=2 (POLY_GNOSIS_SAFE)
-        # this must be the derived proxy/safe address, NOT the EOA, or
-        # Polymarket rejects with "maker address not allowed".
+        # ── DEEP-DIVE INSTRUMENTATION (2026-05-17) ────────────────────
+        # User asked for hard data + proof. Split the SDK's
+        # create_and_post_order into its two parts so we can log the
+        # FULL order struct AND the api-keys Polymarket has on file
+        # for this account, BEFORE the post that gets rejected.
+        # When orders start succeeding we can dial this back to
+        # debug=False or remove entirely.
         try:
             builder = getattr(client, "builder", None)
             print(
-                f"[pm_executor][live] placing order maker={getattr(builder,'funder',None)!r} "
-                f"sig_type={getattr(builder,'signature_type',None)!r} "
+                f"[pm_executor][live] PRE-BUILD maker_seed={getattr(builder,'funder',None)!r} "
+                f"sig_type_seed={getattr(builder,'signature_type',None)!r} "
+                f"signer_seed={getattr(getattr(builder,'signer',None),'address',lambda:None)()!r} "
                 f"market={market.id} side={decision.side} "
                 f"price={entry_price} size={size_shares}",
                 flush=True,
@@ -638,12 +642,46 @@ class PMExecutor:
         except Exception:
             pass
 
+        # Inspect Polymarket's registered api-keys for this account.
+        # Each entry tells us the address Polymarket has bound the
+        # key to. If order.signer doesn't match any of these, we
+        # get "signer address has to be the address of the API KEY".
         try:
-            resp = client.create_and_post_order(
+            keys_info = client.get_api_keys()
+            print(f"[pm_executor][live] api-keys on file: {keys_info!r}",
+                  flush=True)
+        except Exception as ek:
+            print(f"[pm_executor][live] get_api_keys() failed: {ek}",
+                  flush=True)
+
+        # Build the order WITHOUT posting it yet.
+        try:
+            order = client.create_order(
                 order_args=order_args,
                 options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
-                order_type=OrderType.GTC,
             )
+            print(
+                f"[pm_executor][live] BUILT ORDER "
+                f"maker={getattr(order, 'maker', None)!r} "
+                f"signer={getattr(order, 'signer', None)!r} "
+                f"signatureType={getattr(order, 'signatureType', None)!r} "
+                f"tokenId={getattr(order, 'tokenId', None)!r} "
+                f"signature_len={len(getattr(order, 'signature', '') or '')}",
+                flush=True,
+            )
+        except Exception as ec:
+            print(f"[pm_executor][live] create_order failed: {ec}", flush=True)
+            order = None
+
+        try:
+            if order is not None:
+                resp = client.post_order(order, OrderType.GTC)
+            else:
+                resp = client.create_and_post_order(
+                    order_args=order_args,
+                    options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+                    order_type=OrderType.GTC,
+                )
         except Exception as exc:
             print(
                 f"[pm_executor] _open_live: create_and_post_order failed: {exc}",
