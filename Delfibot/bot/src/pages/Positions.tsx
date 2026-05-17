@@ -111,6 +111,59 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
   }
 }
 
+// Polymarket V2 returns raw internal error strings (order hashes,
+// 6-decimal USDC uints). Translate the patterns we know about into
+// something a non-developer can act on. Unknown errors fall through
+// to the original text so we don't accidentally hide useful info.
+function humanizePolymarketError(raw: string): string {
+  // 5-share minimum:
+  //   "order 0x... is invalid. Size (1.73) lower than the minimum: 5"
+  const sizeMin = raw.match(
+    /Size \(([\d.]+)\) lower than the minimum:\s*([\d.]+)/i
+  );
+  if (sizeMin) {
+    return (
+      `Order too small: ${sizeMin[1]} shares (Polymarket needs ` +
+      `${sizeMin[2]}). Wait for a cheaper market or raise the stake.`
+    );
+  }
+  // $1 notional minimum:
+  //   "invalid amount for a marketable BUY order ($0.17), min size: $1"
+  const usdMin = raw.match(
+    /marketable BUY order \(\$([\d.]+)\),\s*min size:\s*\$([\d.]+)/i
+  );
+  if (usdMin) {
+    return (
+      `Order $${usdMin[1]} is below Polymarket's $${usdMin[2]} ` +
+      `minimum. Raise the stake to clear the floor.`
+    );
+  }
+  // Insufficient balance — raw uints in 6-decimal USDC:
+  //   "balance: 8101422, order amount: 21684640"
+  const bal = raw.match(
+    /balance:\s*(\d+),\s*order amount:\s*(\d+)/i
+  );
+  if (bal) {
+    const have = (Number(bal[1]) / 1e6).toFixed(2);
+    const need = (Number(bal[2]) / 1e6).toFixed(2);
+    return (
+      `Not enough on Polymarket: order needed $${need}, wallet has ` +
+      `$${have}. Deposit more or lower the stake.`
+    );
+  }
+  // Signer mismatch (should never appear post-SDK-1.0.1 but kept as
+  // a safety belt — if Polymarket ever regresses the api-key
+  // binding, the message stays human):
+  if (/signer address has to be the address of the API KEY/i.test(raw)) {
+    return (
+      "Polymarket rejected the order signer. Try re-saving your " +
+      "Polymarket private key in Settings."
+    );
+  }
+  // Anything else: hand back the raw error. We don't pretend.
+  return raw;
+}
+
 function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
   switch (f) {
     case "market":   return e.question;
@@ -612,7 +665,7 @@ export default function Positions() {
                   const polyErr = reasonRaw.match(
                     /error_message=\{'error':\s*'(.+?)'\}/
                   );
-                  const reason = polyErr?.[1] ?? reasonRaw;
+                  const reason = humanizePolymarketError(polyErr?.[1] ?? reasonRaw);
                   const sideClass =
                     side === "YES" ? "side-yes"
                     : side === "NO" ? "side-no"
@@ -624,7 +677,18 @@ export default function Positions() {
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
                         {size && price ? `${size} @ $${price}` : "—"}
                       </td>
-                      <td style={{ color: "var(--vellum-60)" }}>{reason}</td>
+                      <td
+                        style={{
+                          color: "var(--vellum-60)",
+                          maxWidth: 320,
+                          whiteSpace: "normal",
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {reason}
+                      </td>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
                         {fmt(row.timestamp)}
                       </td>
