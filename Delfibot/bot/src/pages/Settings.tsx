@@ -1174,7 +1174,7 @@ function ConnectionsPanel({
         </div>
 
         <div className="form-field">
-          <label>Gemini API key (optional)</label>
+          <label>Search LLM API key (optional)</label>
           <input
             type="password"
             autoComplete="off"
@@ -1183,9 +1183,18 @@ function ConnectionsPanel({
             onChange={(e) => setGemini(e.target.value)}
           />
           <p className="form-hint">
-            Used for fast keyword extraction and headline pre-filtering.
-            Without it, Delfi falls back to raw RSS titles (still works,
-            but research is noisier). Free at aistudio.google.com.
+            A small, fast model Delfi uses for keyword extraction and
+            headline pre-filtering before sending material to the
+            primary forecaster. Recommended: Gemini (free tier at{" "}
+            <a
+              href="https://aistudio.google.com/app/apikey"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              aistudio.google.com
+            </a>
+            ). Without it, Delfi falls back to raw RSS titles. Still
+            works, just noisier inputs.
           </p>
         </div>
 

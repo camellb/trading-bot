@@ -1,25 +1,36 @@
-import { useState, type ReactNode } from "react";
-import type { Credentials } from "../api";
+import { useEffect, useState, type ReactNode } from "react";
+import { api, type Credentials, type TelegramConfig } from "../api";
 import type { Page, SettingsTab } from "../App";
 
 /**
- * Help and setup guides — top-level page.
+ * Help and setup guides. Top-level page.
  *
- * Three sections:
+ * Two sections:
  *
- *   1. Setup checklist. Reads /api/credentials + /api/config (already
- *      polled by App.tsx and passed in as props) to show which
- *      integrations are connected and which still need attention.
+ *   1. Setup checklist. Grouped by purpose (Forecaster / Trading /
+ *      Research / Alerts) so a fresh install sees what's missing
+ *      without scrolling through a flat list. Reads /api/credentials
+ *      and /api/config (already polled by App.tsx) plus a one-shot
+ *      /api/config/telegram fetch for the Telegram row.
  *
- *   2. Guides. Numbered walkthroughs for each setup step. Inline
- *      expand/collapse (no separate detail pages) so users scroll
- *      one document instead of clicking through.
+ *   2. Guides. Inline expand/collapse walkthroughs for each step the
+ *      user actually has to perform. Things Delfi auto-derives
+ *      (wallet address, the polymarket api-key/secret/passphrase
+ *      trio that the CLOB issues on first login) are NOT documented
+ *      as setup steps; only as troubleshooting entries when they
+ *      need a manual override.
  *
- *   3. Troubleshooting. Common error -> fix entries. Grows over time.
+ *   3. Troubleshooting. Common error → fix entries.
  *
- * Content is plain JSX rather than MDX. With ~7 guides the tooling
- * cost of MDX isn't worth it; switch when the page grows past
- * roughly 15 entries.
+ * What this file deliberately does NOT cover:
+ *   - License activation. The whole app is gated behind LicenseGate;
+ *     anyone who can see this page already activated their license.
+ *   - Polymarket account creation. The user already has one; if
+ *     they didn't, they wouldn't have a private key to paste.
+ *
+ * Naming: the app is LLM-agnostic. The forecaster is "LLM", not
+ * "Anthropic" or "Claude". The keyword extractor is "Search LLM"
+ * (Gemini is the recommendation, not the only option).
  */
 
 interface Props {
@@ -29,6 +40,23 @@ interface Props {
 }
 
 export default function Help({ creds, config, goto }: Props) {
+  // Telegram lives on a separate endpoint (chat-id is discovered server-side
+  // from getUpdates, not stored alongside other creds). One-shot fetch on
+  // mount + re-fetch every 15s so the checklist row updates after the user
+  // saves a token.
+  const [telegram, setTelegram] = useState<TelegramConfig | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      api.telegram()
+        .then((t) => { if (!cancelled) setTelegram(t); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   return (
     <div className="page-wrap">
       <div className="page-head">
@@ -36,17 +64,20 @@ export default function Help({ creds, config, goto }: Props) {
           <div>
             <h1 className="page-h1">Help</h1>
             <p className="page-sub">
-              Set up Delfi, connect your integrations, and find fixes
-              for common errors.
+              Connect your integrations and find fixes for common errors.
             </p>
           </div>
         </div>
       </div>
 
-      <SetupChecklist creds={creds} config={config} goto={goto} />
+      <SetupChecklist
+        creds={creds}
+        config={config}
+        telegram={telegram}
+        goto={goto}
+      />
       <Guides />
       <Troubleshooting />
-      <AboutBlock />
     </div>
   );
 }
@@ -56,113 +87,199 @@ export default function Help({ creds, config, goto }: Props) {
 function SetupChecklist({
   creds,
   config,
+  telegram,
   goto,
 }: {
   creds: Credentials | null;
   config: Record<string, unknown> | null;
+  telegram: TelegramConfig | null;
   goto: (p: Page, tab?: SettingsTab) => void;
 }) {
-  // Status sources. `creds` is the /api/credentials snapshot;
-  // `config` is /api/config. Both poll on App.tsx's 5s tick so this
-  // panel updates without a manual refresh.
   const c = (creds ?? {}) as Record<string, unknown>;
   const cfg = (config ?? {}) as Record<string, unknown>;
 
-  const hasLicense    = c.has_license_key === true;
-  const hasAnthropic  = c.has_anthropic_key === true || c.has_llm_key === true;
+  // Source of truth: the booleans returned by /api/credentials. See
+  // Delfibot/bot/local_api.py: `_read_all()` builds this set.
+  const hasLlm        = c.has_llm_key === true || c.has_anthropic_key === true;
+  const hasLlmBackup  = c.has_llm_backup_key === true;
+  const hasSearchLlm  = c.has_gemini_key === true; // server still keys this as "gemini"
   const hasPmKey      = c.has_polymarket_key === true;
   const hasRelayerKey = c.has_polymarket_relayer_api_key === true;
-  const hasGemini     = c.has_gemini_key === true;
-  const hasTelegram   = c.has_telegram_token === true
-                        || (typeof cfg.telegram_chat_id === "string"
-                            && (cfg.telegram_chat_id as string).length > 0);
+  const hasNewsapi    = c.has_newsapi_key === true;
+  const hasCrypto     = c.has_cryptopanic_key === true;
+  const hasTelegram   = !!(telegram && telegram.bot_token_configured
+                            && telegram.chat_id);
   const mode          = (cfg.mode as string) || "simulation";
 
-  const rows = [
+  // Grouped by purpose so a fresh user reads it top-down: get the
+  // forecaster running, then connect trading, then optionally improve
+  // research and alerts.
+  const groups: Array<{
+    title: string;
+    blurb: string;
+    rows: ChecklistItem[];
+  }> = [
     {
-      title: "License key",
-      ok: hasLicense,
-      required: true,
-      done: "Active — Delfi is unlocked.",
-      todo: "Paste the license key you received in your purchase email.",
-      action: { label: "Open Settings → Account", to: () => goto("settings", "account") },
+      title: "Forecaster",
+      blurb: "The model Delfi uses to evaluate each market.",
+      rows: [
+        {
+          title: "LLM API key",
+          ok: hasLlm,
+          required: true,
+          done: "Connected. Delfi can evaluate markets.",
+          todo: "Bring your own key from any major LLM provider. Required for Delfi to do anything.",
+          actionTab: "connections",
+        },
+        {
+          title: "Backup LLM API key",
+          ok: hasLlmBackup,
+          required: false,
+          done: "Connected. Delfi falls back to this if the primary errors or rate-limits.",
+          todo: "Optional. A second LLM Delfi falls back to on errors or rate limits.",
+          actionTab: "connections",
+        },
+        {
+          title: "Search LLM",
+          ok: hasSearchLlm,
+          required: false,
+          done: "Connected. Keyword extraction is fast.",
+          todo: "Optional. Cheap fast model used for keyword extraction and headline filtering. Gemini recommended (generous free tier).",
+          actionTab: "connections",
+        },
+      ],
     },
     {
-      title: "Anthropic API key",
-      ok: hasAnthropic,
-      required: true,
-      done: "Connected — Delfi can call the forecaster.",
-      todo: "Without this, Delfi can't evaluate markets. Free tier works.",
-      action: { label: "Open Settings → Account", to: () => goto("settings", "account") },
+      title: "Trading",
+      blurb: "Polymarket access. Required for live mode.",
+      rows: [
+        {
+          title: "Polymarket private key",
+          ok: hasPmKey,
+          required: mode === "live",
+          done: "Connected. Delfi can sign orders. The wallet address auto-derives.",
+          todo: mode === "live"
+            ? "Required for live mode. The private key of the wallet that controls your Polymarket account."
+            : "Optional in simulation. Required if you switch to live.",
+          actionTab: "connections",
+        },
+        {
+          title: "Polymarket Relayer API key",
+          ok: hasRelayerKey,
+          required: false,
+          done: "Connected. Winning positions auto-redeem with no MATIC needed.",
+          todo: "Optional but recommended. Without this Delfi can't claim winnings automatically; you'd click Redeem on Polymarket yourself after every win.",
+          actionTab: "connections",
+        },
+      ],
     },
     {
-      title: "Polymarket private key",
-      ok: hasPmKey,
-      required: mode === "live",
-      done: "Connected — Delfi can place live orders.",
-      todo: mode === "live"
-        ? "Required to place real trades in live mode."
-        : "Optional in simulation. Required if you switch to live.",
-      action: { label: "Open Settings → Account", to: () => goto("settings", "account") },
+      title: "Research",
+      blurb: "Extra context for the forecaster. All optional.",
+      rows: [
+        {
+          title: "NewsAPI key",
+          ok: hasNewsapi,
+          required: false,
+          done: "Connected. Breaking news headlines feed into market evaluations.",
+          todo: "Optional. Pulls news headlines into research for geopolitical, economic, and current-event markets. Free tier at newsapi.org.",
+          actionTab: "connections",
+        },
+        {
+          title: "CryptoPanic key",
+          ok: hasCrypto,
+          required: false,
+          done: "Connected. Crypto news feeds into research.",
+          todo: "Optional. Crypto-specific news (tokens, regulators, exchanges) for Polymarket crypto markets. Free at cryptopanic.com.",
+          actionTab: "connections",
+        },
+      ],
     },
     {
-      title: "Polymarket Relayer API key",
-      ok: hasRelayerKey,
-      required: false,
-      done: "Connected — winning positions auto-redeem gaslessly.",
-      todo: "Without this, Delfi knows you won but can't collect the payout automatically. You'd have to click Redeem on polymarket.com after every win.",
-      action: { label: "Open Settings → Account", to: () => goto("settings", "account") },
-    },
-    {
-      title: "Gemini API key (optional)",
-      ok: hasGemini,
-      required: false,
-      done: "Connected — faster keyword extraction.",
-      todo: "Optional. Used for fast keyword extraction and news pre-filtering. Without it, Delfi falls back to raw RSS titles (still works, just noisier).",
-      action: { label: "Open Settings → Account", to: () => goto("settings", "account") },
-    },
-    {
-      title: "Telegram notifications (optional)",
-      ok: hasTelegram,
-      required: false,
-      done: "Connected — you'll get position and summary alerts.",
-      todo: "Optional. Get Telegram messages on every new position, every win/loss, and a daily summary.",
-      action: { label: "Open Settings → Notifications", to: () => goto("settings", "notifications") },
+      title: "Alerts",
+      blurb: "Optional notifications.",
+      rows: [
+        {
+          title: "Telegram",
+          ok: hasTelegram,
+          required: false,
+          done: "Connected. You'll get position and summary alerts.",
+          todo: "Optional. Get Telegram messages on every new position, every win or loss, and a daily summary.",
+          actionTab: "notifications",
+        },
+      ],
     },
   ];
+
+  const totalRows = groups.reduce((n, g) => n + g.rows.length, 0);
+  const okCount   = groups.reduce(
+    (n, g) => n + g.rows.filter((r) => r.ok).length,
+    0,
+  );
 
   return (
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Setup checklist</h2>
-        <span className="panel-meta">
-          {rows.filter((r) => r.ok).length} of {rows.length} connected
-        </span>
+        <span className="panel-meta">{okCount} of {totalRows} connected</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Each row reads from your live config. Status updates within a
-        few seconds of saving a credential.
+        Status updates within a few seconds of saving a credential.
       </p>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {rows.map((r) => (
-          <ChecklistRow key={r.title} row={r} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
+        {groups.map((g) => (
+          <div key={g.title}>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: 0.6,
+                opacity: 0.7,
+                marginBottom: 8,
+              }}
+            >
+              {g.title}
+            </div>
+            <p
+              className="form-hint"
+              style={{ marginTop: 0, marginBottom: 10 }}
+            >
+              {g.blurb}
+            </p>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: 10 }}
+            >
+              {g.rows.map((r) => (
+                <ChecklistRow
+                  key={r.title}
+                  row={r}
+                  onSetup={() => goto("settings", r.actionTab)}
+                />
+              ))}
+            </div>
+          </div>
         ))}
       </div>
     </div>
   );
 }
 
+interface ChecklistItem {
+  title: string;
+  ok: boolean;
+  required: boolean;
+  done: string;
+  todo: string;
+  actionTab: SettingsTab;
+}
+
 function ChecklistRow({
   row,
+  onSetup,
 }: {
-  row: {
-    title: string;
-    ok: boolean;
-    required: boolean;
-    done: string;
-    todo: string;
-    action: { label: string; to: () => void };
-  };
+  row: ChecklistItem;
+  onSetup: () => void;
 }) {
   return (
     <div
@@ -173,8 +290,12 @@ function ChecklistRow({
         alignItems: "center",
         padding: "12px 14px",
         borderRadius: 10,
-        background: row.ok ? "rgba(50, 180, 100, 0.06)" : "rgba(220, 160, 60, 0.06)",
-        border: `1px solid ${row.ok ? "rgba(50, 180, 100, 0.25)" : "rgba(220, 160, 60, 0.22)"}`,
+        background: row.ok
+          ? "rgba(50, 180, 100, 0.06)"
+          : "rgba(220, 160, 60, 0.06)",
+        border: `1px solid ${row.ok
+          ? "rgba(50, 180, 100, 0.25)"
+          : "rgba(220, 160, 60, 0.22)"}`,
       }}
     >
       <StatusPill ok={row.ok} required={row.required} />
@@ -185,8 +306,8 @@ function ChecklistRow({
         </div>
       </div>
       {!row.ok && (
-        <button className="btn small" onClick={row.action.to}>
-          {row.action.label}
+        <button className="btn small" onClick={onSetup}>
+          Set up
         </button>
       )}
     </div>
@@ -207,7 +328,7 @@ function StatusPill({ ok, required }: { ok: boolean; required: boolean }) {
           letterSpacing: 0.5,
         }}
       >
-        ✓ DONE
+        DONE
       </span>
     );
   }
@@ -239,185 +360,166 @@ function Guides() {
         <h2 className="panel-title">Guides</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Step-by-step walkthroughs for every integration. Open any one
-        to expand.
+        Step-by-step walkthroughs for each connector.
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <GuideActivateLicense />
-        <GuideAnthropic />
-        <GuidePolymarketAccount />
+        <GuideLlm />
+        <GuideBackupLlm />
+        <GuideSearchLlm />
         <GuidePolymarketKey />
         <GuideRelayerKey />
+        <GuideNews />
         <GuideTelegram />
-        <GuideGemini />
       </div>
     </div>
   );
 }
 
-function GuideActivateLicense() {
+function GuideLlm() {
   return (
-    <Guide title="Activate your license" defaultOpen={false}>
+    <Guide title="Connect your LLM (required)">
       <p>
-        Your license is what unlocks Delfi after purchase. You'll
-        only do this once per machine.
+        Delfi's forecaster runs on whichever LLM you connect. The key
+        is stored in your operating system keychain and never leaves
+        your machine. Recommended provider: Anthropic Claude. Any
+        major provider works as long as it exposes a Messages API.
       </p>
-      <Step n={1} title="Find your license key">
-        Check the email you received from the purchase. It contains a
-        text block starting with <code>delfi-license-...</code>. The
-        whole block is your key — copy it exactly.
+      <Step n={1} title="Get an API key from your provider">
+        For Anthropic, go to{" "}
+        <a
+          href="https://console.anthropic.com/settings/keys"
+          target="_blank"
+          rel="noreferrer"
+        >
+          console.anthropic.com → API Keys
+        </a>{" "}
+        and click <strong>Create Key</strong>. You'll only see the
+        full key once.
       </Step>
       <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings → Account</strong> in this app. Paste
-        the license key into the <em>License key</em> field. Click
-        Save.
+        Open <strong>Settings → Connections</strong> and paste the
+        key into the <em>LLM API key</em> field. Save.
       </Step>
-      <Step n={3} title="Confirm activation">
-        The Help page's "License key" checklist row should flip to
-        ✓ DONE. If it stays as ⚠️, the key was malformed — check you
-        copied the whole block including the trailing characters.
+      <Step n={3} title="(Optional) Add a credit card to the provider">
+        Anthropic's free allowance is small. At default scan cadence
+        Delfi typically spends single-digit cents per market
+        evaluated; add a card at the provider if you plan to run for
+        more than a day or two.
       </Step>
-      <CommonIssues>
-        <Issue title="License rejected as invalid">
-          The license is signed offline with an Ed25519 key. A wrong
-          or partial paste will fail signature verification with
-          "license signature is invalid". Recopy from the original
-          email and try again. If it still fails, contact support
-          with your order ID.
-        </Issue>
-      </CommonIssues>
     </Guide>
   );
 }
 
-function GuideAnthropic() {
+function GuideBackupLlm() {
   return (
-    <Guide title="Get an Anthropic API key">
+    <Guide title="Add a backup LLM (optional)">
       <p>
-        Delfi's forecaster runs on Claude (Anthropic's model). You
-        bring your own API key — Delfi never sees it after you
-        paste it in.
+        If your primary LLM rate-limits or errors out, Delfi will fall
+        back to this one for the same evaluation. Useful at higher
+        trading volume and as a hedge against single-provider outages.
+        Pick a different provider from your primary (Anthropic and
+        OpenAI both work).
       </p>
-      <Step n={1} title="Open Anthropic Console">
+      <Step n={1} title="Get a key from a second provider">
+        Pick anything that's not your primary. The key is stored the
+        same way (keychain only).
+      </Step>
+      <Step n={2} title="Paste it into Delfi">
+        Open <strong>Settings → Connections</strong> and paste into{" "}
+        <em>Backup LLM API key</em>. Save.
+      </Step>
+    </Guide>
+  );
+}
+
+function GuideSearchLlm() {
+  return (
+    <Guide title="Add a Search LLM (optional)">
+      <p>
+        The Search LLM is a smaller, cheaper model Delfi uses for
+        keyword extraction and headline pre-filtering before sending
+        material to the main forecaster. Recommended provider:{" "}
+        <strong>Google Gemini</strong>. Generous free tier, fast.
+        Without a Search LLM, Delfi falls back to raw RSS titles
+        (still works, just noisier inputs).
+      </p>
+      <Step n={1} title="Get a Gemini key">
         Go to{" "}
-        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
-          console.anthropic.com → API Keys
-        </a>
-        . If you don't have an account, create one (email is fine).
+        <a
+          href="https://aistudio.google.com/app/apikey"
+          target="_blank"
+          rel="noreferrer"
+        >
+          aistudio.google.com → API Keys
+        </a>{" "}
+        and create one. Free tier covers Delfi's needs.
       </Step>
-      <Step n={2} title="Create a new key">
-        Click <strong>Create Key</strong>. Name it something like
-        "Delfi". Copy the key — it starts with <code>sk-ant-...</code>.
-        You'll only see the full key once, so paste it into Delfi
-        immediately.
+      <Step n={2} title="Paste it into Delfi">
+        Open <strong>Settings → Connections</strong> and paste into
+        the Search LLM field. Save.
       </Step>
-      <Step n={3} title="Paste into Delfi">
-        Open <strong>Settings → Account</strong>, paste into{" "}
-        <em>LLM API key</em>, Save. The Help checklist row flips
-        to ✓ DONE.
-      </Step>
-      <Step n={4} title="(Optional) Fund the account">
-        Anthropic gives a small free allowance to new accounts. For
-        meaningful trading volume you'll want to add a credit card.
-        Delfi typically uses $5-$20/month of API credit at default
-        scan cadence — single-digit cents per market evaluated.
-      </Step>
-      <CommonIssues>
-        <Issue title="'Could not resolve authentication method'">
-          The key didn't save. Re-open Settings, check the LLM API
-          key field shows <em>(stored)</em>, and try again.
-        </Issue>
-        <Issue title="Hitting rate limits">
-          Default scan is 5 minutes; that's well under Anthropic's
-          standard tier rate limits. If you see 429s, drop the scan
-          frequency (not yet user-exposed — open a support ticket).
-        </Issue>
-      </CommonIssues>
-    </Guide>
-  );
-}
-
-function GuidePolymarketAccount() {
-  return (
-    <Guide title="Create a Polymarket account and fund it">
-      <p>
-        Required only if you want to trade with real money. Skip
-        if you're staying in simulation mode.
-      </p>
-      <Step n={1} title="Go to polymarket.com">
-        Click <strong>Log In</strong> in the top right. New users
-        sign up with email — Polymarket creates a managed wallet
-        for you behind the scenes.
-      </Step>
-      <Step n={2} title="Fund the wallet">
-        Click <strong>Deposit</strong> on the Polymarket dashboard.
-        Send USDC on Polygon (or use Polymarket's on-ramp from a
-        debit card). Your funds end up at your "funder" address — a
-        smart contract wallet, not your raw EOA.
-      </Step>
-      <Step n={3} title="Find your funder address">
-        Go to <strong>polymarket.com → Settings → Profile</strong>.
-        The <em>Address</em> shown there is your funder — that's the
-        address that holds your trading balance.
-      </Step>
-      <p>
-        Once your account is funded, continue to{" "}
-        <em>Export your Polymarket private key</em> below.
-      </p>
     </Guide>
   );
 }
 
 function GuidePolymarketKey() {
   return (
-    <Guide title="Export your Polymarket private key">
+    <Guide title="Connect your Polymarket trading key (required for live)">
       <p>
-        Delfi needs your private key to sign orders on your behalf.
-        The key never leaves your computer — it's stored in{" "}
-        <code>secrets.json</code> under Delfi's app-data directory,
-        not in any cloud.
+        Delfi signs Polymarket orders with the private key of the
+        wallet that controls your Polymarket account. The key stays
+        in your operating system keychain on this device. Skip this
+        step if you only want to run in simulation.
       </p>
-      <Step n={1} title="Open Polymarket settings">
-        Go to{" "}
-        <a href="https://polymarket.com/settings" target="_blank" rel="noreferrer">
+      <p>
+        Everything else about your Polymarket account auto-derives
+        from this key: wallet address, the funder address that holds
+        your trading balance, your signature type, and your CLOB
+        API credentials. You won't need to copy any of those by hand.
+      </p>
+      <Step n={1} title="Export the private key from Polymarket">
+        Polymarket gives you a wallet when you sign up. To export the
+        private key, go to{" "}
+        <a
+          href="https://polymarket.com/settings"
+          target="_blank"
+          rel="noreferrer"
+        >
           polymarket.com → Settings
-        </a>
-        .
-      </Step>
-      <Step n={2} title="Export the key">
-        Look for an option labelled <em>Export Private Key</em> or{" "}
-        <em>Reveal Private Key</em>. The exact wording depends on
-        which wallet provider Polymarket assigned you (Magic.link,
-        Privy, or self-custodied). You'll usually need to confirm
-        your email or do a second-factor check before the key is
+        </a>{" "}
+        and look for an <em>Export private key</em> or{" "}
+        <em>Reveal private key</em> option. The exact wording depends
+        on which wallet provider Polymarket assigned to your account
+        (Magic.link or Privy on most accounts). You'll usually need
+        to confirm your email or pass a 2FA check before the key is
         shown.
       </Step>
-      <Step n={3} title="Copy the key (carefully)">
-        A 64-character hex string prefixed with <code>0x</code>. This
-        is the only credential that controls real money on your
-        account — anyone with this key can move your funds. Don't
-        paste it into chat apps, screenshots, or anywhere except
-        Delfi's Settings page.
+      <Step n={2} title="Treat it like cash">
+        The key is a 64-character hex string starting with{" "}
+        <code>0x</code>. Anyone with this key can move every dollar
+        in your Polymarket account. Don't paste it into chat apps,
+        screenshots, password managers you share, or anywhere except
+        Delfi's Settings page on this device.
       </Step>
-      <Step n={4} title="Paste into Delfi">
-        Open <strong>Settings → Account</strong>, paste into{" "}
-        <em>Polymarket private key</em>. The wallet address auto-
-        derives. Save.
+      <Step n={3} title="Paste it into Delfi">
+        Open <strong>Settings → Connections</strong> and paste it
+        into the <em>Polymarket private key</em> field. Save. The
+        wallet address auto-fills and you're done.
       </Step>
       <CommonIssues>
-        <Issue title="'maker address not allowed' on first live order">
-          Polymarket's V2 CLOB has a different address registered as
-          your trading signer than the key you exported. Fix: go
-          to Polymarket → Settings → API Keys, generate fresh
-          credentials for THIS wallet, and paste them into Delfi's
-          three "Polymarket API key / secret / passphrase" fields
-          (Settings → Account, below the private key).
-        </Issue>
-        <Issue title="My wallet doesn't show an Export option">
-          Older Magic.link sessions may not expose the private key
-          directly. Contact Polymarket support and ask for the
-          wallet's seed phrase — you can derive the private key
-          from that.
+        <Issue title="My Polymarket account doesn't expose an export option">
+          Older Magic.link sessions sometimes hide the export.
+          Contact Polymarket support and ask them to walk you through
+          retrieving the wallet's seed phrase, then derive the
+          private key from that. See{" "}
+          <a
+            href="https://learn.polymarket.com"
+            target="_blank"
+            rel="noreferrer"
+          >
+            learn.polymarket.com
+          </a>{" "}
+          for their current help articles.
         </Issue>
       </CommonIssues>
     </Guide>
@@ -428,15 +530,15 @@ function GuideRelayerKey() {
   return (
     <Guide title="Enable auto-redeem (Polymarket Relayer API key)">
       <p>
-        Without this, Delfi sees you won and tells you about it but
-        can't actually claim the payout — your winnings stay as
-        unclaimed CTF tokens until you visit polymarket.com and
-        click Redeem.
+        Without this, Delfi sees that you won and tells you about it
+        but can't actually claim the payout. Your winnings sit as
+        unclaimed CTF tokens in your Polymarket balance until you
+        visit polymarket.com and click Redeem.
       </p>
       <p>
         The Relayer API key lets Delfi submit a gasless transaction
         through Polymarket's relayer. Polymarket pays the gas. You
-        don't need to hold MATIC.
+        don't need MATIC on your wallet.
       </p>
       <Step n={1} title="Open Polymarket → Relayer API keys">
         Go to{" "}
@@ -447,98 +549,110 @@ function GuideRelayerKey() {
         >
           polymarket.com → Settings → Relayer API keys
         </a>
-        . You must be logged in with the same account whose private
-        key you pasted into Delfi.
+        . Log in with the same account whose private key you pasted
+        into Delfi.
       </Step>
       <Step n={2} title="Create a new key">
         Click <strong>Create New</strong>. A UUID like{" "}
         <code>019d9954-da86-75ba-9555-148591395124</code> appears.
-        Click the copy icon next to it.
+        Copy it.
       </Step>
       <Step n={3} title="Paste it into Delfi">
-        Open <strong>Settings → Account</strong>, paste the UUID
-        into <em>Polymarket Relayer API key</em>, Save. From the
-        next winner onwards, Delfi auto-redeems within 10 minutes
-        of settlement.
+        Open <strong>Settings → Connections</strong> and paste it
+        into <em>Polymarket Relayer API key</em>. Save. From the next
+        winner on, Delfi auto-redeems within 10 minutes of resolution.
       </Step>
       <CommonIssues>
         <Issue title="Relayer rejected with 401">
-          The key was created with a different wallet than the one
-          you have connected to Delfi. Generate a fresh key while
-          logged in with the same wallet, paste it in, Save.
-        </Issue>
-        <Issue title="Position settled but never auto-redeemed">
-          Check the Troubleshooting → "Winning position not
-          auto-redeemed" entry below. Usually one of three things:
-          no Relayer key set, key for a different wallet, or
-          negative-risk market (not yet supported).
+          The Relayer key was created on a different Polymarket
+          account than the one whose private key you pasted into
+          Delfi. Delete the key on polymarket.com, log in with the
+          right account, create a fresh one, paste it in.
         </Issue>
       </CommonIssues>
+    </Guide>
+  );
+}
+
+function GuideNews() {
+  return (
+    <Guide title="Add news sources (optional)">
+      <p>
+        News feeds add late-breaking context to Delfi's research.
+        Both are optional: without them Delfi falls back to RSS,
+        which still works.
+      </p>
+      <Step n={1} title="NewsAPI for general news">
+        Sign up at{" "}
+        <a
+          href="https://newsapi.org/register"
+          target="_blank"
+          rel="noreferrer"
+        >
+          newsapi.org
+        </a>
+        . Free tier is enough for personal use. Paste the key into{" "}
+        <strong>Settings → Connections → NewsAPI key</strong>. Save.
+      </Step>
+      <Step n={2} title="CryptoPanic for crypto news">
+        Sign up at{" "}
+        <a
+          href="https://cryptopanic.com/developers/api/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          cryptopanic.com → API
+        </a>
+        . Paste the key into <strong>Settings → Connections →
+        CryptoPanic key</strong>. Save. This is the source Delfi
+        leans on for Polymarket crypto markets (BTC thresholds, ETH
+        ETF, exchange events).
+      </Step>
     </Guide>
   );
 }
 
 function GuideTelegram() {
   return (
-    <Guide title="Connect Telegram for notifications">
+    <Guide title="Connect Telegram for notifications (optional)">
       <p>
-        Optional. With Telegram set up you get a message on every
-        new position, every win/loss, and a daily summary.
+        Optional. With Telegram set up you get a message on every new
+        position, every win or loss, and a daily summary.
       </p>
       <Step n={1} title="Create a Telegram bot">
         Open Telegram, search for{" "}
-        <a href="https://t.me/BotFather" target="_blank" rel="noreferrer">
+        <a
+          href="https://t.me/BotFather"
+          target="_blank"
+          rel="noreferrer"
+        >
           @BotFather
         </a>
-        , and send <code>/newbot</code>. Follow the prompts; pick a
-        name and a username ending in <code>bot</code>. BotFather
-        replies with an HTTP API token — copy the whole thing.
+        , and send <code>/newbot</code>. Follow the prompts. BotFather
+        replies with an HTTP API token. Copy the whole token.
       </Step>
       <Step n={2} title="Send the bot a message">
-        In Telegram, click your new bot's name (or search for it)
-        and send any message (just <code>/start</code> is fine). This
-        creates a chat the bot can post to.
+        In Telegram, open the new bot's chat (search for its
+        username) and send any message (<code>/start</code> works).
+        This creates a chat the bot can post into. Delfi reads the
+        chat ID from the bot's updates feed automatically; you don't
+        need to copy anything else.
       </Step>
       <Step n={3} title="Paste the token into Delfi">
-        Open <strong>Settings → Notifications</strong>, paste the
-        BotFather token into <em>Telegram bot token</em>, Save.
-        Delfi automatically discovers your chat ID by reading the
-        bot's updates feed — no manual chat-ID step.
+        Open <strong>Settings → Notifications</strong> and paste the
+        BotFather token into <em>Telegram bot token</em>. Save.
       </Step>
       <Step n={4} title="Send a test message">
         Use the <strong>Send test</strong> button in the
-        Notifications panel. If you receive it, you're done.
+        Notifications panel. If you get the message in Telegram,
+        you're done.
       </Step>
       <CommonIssues>
         <Issue title="Test message never arrives">
           You haven't sent the bot a message yet (step 2). The bot
-          can only message chats it's been talked to first.
+          can only post to chats that started the conversation first.
         </Issue>
       </CommonIssues>
-    </Guide>
-  );
-}
-
-function GuideGemini() {
-  return (
-    <Guide title="Add a Gemini API key (optional)">
-      <p>
-        Optional. Delfi uses Gemini for fast keyword extraction and
-        news pre-filtering before sending material to the main
-        forecaster. Without it, Delfi falls back to raw RSS titles —
-        still works, just noisier inputs.
-      </p>
-      <Step n={1} title="Get a key">
-        Go to{" "}
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">
-          aistudio.google.com → API Keys
-        </a>
-        . Free tier is generous and covers Delfi's needs.
-      </Step>
-      <Step n={2} title="Paste into Delfi">
-        Open <strong>Settings → Account</strong>, paste into{" "}
-        <em>Gemini API key</em>, Save.
-      </Step>
     </Guide>
   );
 }
@@ -552,76 +666,60 @@ function Troubleshooting() {
         <h2 className="panel-title">Troubleshooting</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Common errors and their fixes. Open any one to expand.
+        Common errors and their fixes.
       </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <Guide title="Bot keeps skipping every market">
           <p>
-            Most common cause: stake math doesn't meet Polymarket's
-            $1-and-5-share platform minimum. Open{" "}
-            <strong>Risk controls → Sizing and limits</strong> and
-            check:
+            The most common cause is sizing math falling under the
+            Polymarket platform minimum (every order must clear $1 and
+            5 shares). Open <strong>Risk controls → Sizing and
+            limits</strong> and check:
           </p>
           <ul>
             <li>
               <strong>Max stake percentage</strong> toggle: at small
-              live bankrolls (under ~$50), leave this OFF. The sizer
-              will bump each order to whatever Polymarket actually
-              accepts (max($1, 5 × ask)).
+              live bankrolls (under roughly $50) leave this off. The
+              sizer will bump each order to whatever Polymarket
+              actually accepts.
             </li>
             <li>
-              <strong>Base stake</strong>: even with the cap off, base
-              stake × bankroll has to clear the platform minimum at
-              the favourite price. At $10 bankroll and 2% base, base
-              stake is $0.20 — too low for any market priced above
-              $0.20. Bot will bump it.
+              <strong>Base stake</strong>: base stake × bankroll has
+              to clear the minimum at the favourite's price. At $10
+              bankroll and 2% base, base stake is $0.20, under the
+              platform minimum, so most markets get skipped.
             </li>
             <li>
-              <strong>Archetype skip list</strong> (Risk → Archetypes):
-              you may have toggled off too many categories.
+              <strong>Archetype skip list</strong>: open Risk → the
+              per-archetype grid and confirm you haven't toggled off
+              the categories you actually want Delfi trading.
             </li>
           </ul>
         </Guide>
 
-        <Guide title="'API state timed out after 30s' banner">
+        <Guide title="'maker address not allowed' or 'the order signer address has to be the address of the API KEY'">
           <p>
-            The sidecar daemon's accept loop got starved by heavy
-            background work (the analyst's LLM scan can take 30-90s
-            during a busy scan). Two layers handle this:
-          </p>
-          <ul>
-            <li>
-              Dashboard endpoints have a dedicated threadpool isolated
-              from analyst work. You shouldn't see this banner in
-              normal operation.
-            </li>
-            <li>
-              If you do see it, click <strong>Restart Delfi</strong>{" "}
-              on the banner. The button is bounded at ~15s shell time
-              + 8s GUI reload, so it can't hang forever.
-            </li>
-          </ul>
-          <p>
-            If the banner keeps coming back after a Restart, check{" "}
-            <strong>Settings → Diagnostics</strong> for stuck
-            scheduler jobs.
-          </p>
-        </Guide>
-
-        <Guide title="Restart Delfi button doesn't seem to do anything">
-          <p>
-            Worst case the Restart button times out internally and
-            the GUI reloads after 8 seconds. If the daemon happened
-            to be in a deep launchd-wedged state, the new spawn
-            takes another 10-15s to bind its port — total ~25s. Wait
-            and the dashboard reconnects.
+            Polymarket's CLOB has a different address registered as
+            your trading signer than the one Delfi auto-derives from
+            your private key. This happens occasionally on accounts
+            that were created via the web with an older session key.
           </p>
           <p>
-            If after a full minute you're still stuck on
-            "Restarting...", quit Delfi from the menu bar and
-            relaunch from /Applications. The daemon runs under
-            launchd and is unaffected — only the GUI shell needs to
-            come back.
+            Fix: go to{" "}
+            <a
+              href="https://polymarket.com/settings?tab=api-keys"
+              target="_blank"
+              rel="noreferrer"
+            >
+              polymarket.com → Settings → API Keys
+            </a>
+            , generate fresh credentials while logged in with the
+            same wallet whose private key is in Delfi, then paste the
+            three values (api-key, secret, passphrase) into the
+            matching override fields in{" "}
+            <strong>Settings → Connections</strong>. Normally Delfi
+            auto-derives these, so they only need to be set as a
+            manual override.
           </p>
         </Guide>
 
@@ -629,55 +727,75 @@ function Troubleshooting() {
           <p>Most likely causes, in order:</p>
           <ul>
             <li>
-              <strong>No Relayer API key set.</strong> Check the
-              Setup checklist at the top of this page. Without the
-              key, Delfi has no way to submit a gasless redeem.
+              <strong>No Relayer API key set.</strong> The setup
+              checklist at the top of this page flags it. Without
+              the key Delfi has no way to submit a gasless redeem.
             </li>
             <li>
-              <strong>Relayer key was created with a different
-              wallet.</strong> Delete the key on polymarket.com,
-              recreate it while logged in with the SAME wallet
-              connected to Delfi, paste the new key into Delfi.
+              <strong>Relayer key was created with the wrong
+              account.</strong> If the key was created while logged
+              in with a different Polymarket account, the relayer
+              rejects it as 401. Recreate it while logged in with
+              the same account whose private key is in Delfi.
             </li>
             <li>
-              <strong>Market is a "negative-risk" multi-outcome
-              bundle.</strong> These use a different on-chain
-              contract that Delfi doesn't redeem yet. You'll need
-              to click Redeem on polymarket.com for this one.
-              Future versions will handle it automatically.
+              <strong>Negative-risk multi-outcome market.</strong>
+              These use a different on-chain contract that Delfi
+              doesn't redeem yet. Click Redeem on polymarket.com
+              for this one.
             </li>
             <li>
-              <strong>Polymarket's UMA oracle hasn't reported
-              yet.</strong> Sports markets usually settle 1-3 hours
-              after the game ends. Check Polymarket's market page —
-              if it says "Resolution pending", just wait.
+              <strong>Market hasn't resolved on-chain yet.</strong>
+              Polymarket's UMA oracle usually reports 1-3 hours
+              after the underlying event ends. If the market page
+              still says <em>Resolution pending</em>, wait.
             </li>
           </ul>
         </Guide>
 
-        <Guide title="Bot opened a position on a market that doesn't fit">
+        <Guide title="'API state timed out after 30s' banner">
           <p>
-            Check{" "}
-            <strong>Risk controls → Archetypes</strong>. Each market
-            type is tagged into an archetype (e.g. "crypto", "tennis",
-            "sports_other"). Toggle off any archetype you don't want
-            Delfi trading at all.
+            The sidecar daemon's accept loop got starved by heavy
+            background work. Dashboard endpoints have a dedicated
+            threadpool isolated from the analyst, so this shouldn't
+            happen in steady state. If it does:
+          </p>
+          <ul>
+            <li>
+              Click <strong>Restart Delfi</strong> on the banner.
+              The restart has hard timeouts on every shelled command;
+              it can't hang forever.
+            </li>
+            <li>
+              If the banner keeps coming back after a restart, check{" "}
+              <strong>Settings → Diagnostics</strong> for stuck
+              scheduler jobs.
+            </li>
+          </ul>
+        </Guide>
+
+        <Guide title="Restart Delfi button seems stuck">
+          <p>
+            Worst case the restart shell-command set takes ~15 seconds
+            and the GUI reload waits another 8 seconds, total around
+            23 seconds before the dashboard reconnects. Wait for the
+            full window.
           </p>
           <p>
-            For market-price-band filtering (e.g. "only trade YES
-            markets between 60% and 90%"), use the per-archetype
-            band controls in the same panel.
+            If after a full minute you're still on "Restarting...",
+            quit Delfi from the macOS menu bar and relaunch from
+            /Applications. The daemon runs under launchd and is
+            unaffected; only the GUI shell needs to come back.
           </p>
         </Guide>
 
         <Guide title="Numbers in Telegram don't match the dashboard">
           <p>
-            They should match now (as of v1.6). The notification
-            reads actual fill values from the database, not the
-            limit-order intent. The dashboard reads the same source.
-            Bankroll is the live on-chain wallet balance (pUSD +
-            USDC.e). Total equity is bankroll plus the cost of every
-            open position.
+            They should match: notifications read the actual fill
+            value from the database (not the limit-order intent) and
+            the dashboard reads the same source. Bankroll is the live
+            on-chain wallet total (pUSD plus USDC.e). Total equity is
+            bankroll plus the cost of every open position.
           </p>
           <p>
             If you do see a mismatch, please open a support ticket
@@ -685,27 +803,6 @@ function Troubleshooting() {
           </p>
         </Guide>
       </div>
-    </div>
-  );
-}
-
-// ── About ────────────────────────────────────────────────────────────────
-
-function AboutBlock() {
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">About</h2>
-      </div>
-      <p className="form-hint" style={{ marginTop: 8 }}>
-        Delfi runs entirely on your machine. Your private keys, API
-        keys, and trading history never leave the app-data directory
-        on this device.
-      </p>
-      <p className="form-hint">
-        Found a bug or need a guide that isn't here? Reply to your
-        purchase email and we'll add it.
-      </p>
     </div>
   );
 }
