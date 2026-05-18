@@ -100,6 +100,16 @@ bundled_pkgs = [
     # actually want coincurve in the bundle for performance + log
     # cleanliness.
     "coincurve",
+
+    # Polymarket relayer SDKs - used by execution.pm_redeemer for
+    # gasless on-chain redemption of winning CTF positions. When the
+    # user has pasted Builder API Keys in Settings, the redeemer
+    # submits the redeem through Polymarket's relayer instead of
+    # broadcasting directly to a Polygon RPC. Polymarket pays the
+    # gas, so the user's wallet never needs MATIC. Both SDKs are
+    # pure-Python (no native deps).
+    "py_builder_relayer_client",
+    "py_builder_signing_sdk",
 ]
 
 datas = []

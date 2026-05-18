@@ -269,6 +269,27 @@ def redeem_winning_position(
             redeemed=False, tx_hash=None,
             error=f"key parse failed: {exc}",
         )
+
+    # ── Path 1: Gasless via Polymarket Relayer ──────────────────────
+    # If the user has pasted Builder/Relayer API Keys into Settings,
+    # submit the redeem via Polymarket's relayer service. Polymarket
+    # pays the gas. No MATIC needed in the user's wallet.
+    #
+    # Requires manual Builder API Keys (created via polymarket.com -
+    # Settings - API Keys; the CLOB auto-derived trading keys we use
+    # for orders are a DIFFERENT key class and the relayer rejects
+    # them with 401). Falls back to Path 2 (direct RPC) when Builder
+    # creds are absent or the relayer rejects the request.
+    gasless_result = _try_gasless_redeem(
+        cond_bytes=cond_bytes,
+        index_sets=index_sets,
+        wallet=wallet,
+        private_key=pk,
+        acct_address=acct.address,
+    )
+    if gasless_result is not None:
+        return gasless_result  # gasless succeeded or terminally failed
+
     if acct.address.lower() != wallet.lower():
         return RedeemResult(
             redeemed=False, tx_hash=None,
@@ -337,18 +358,23 @@ def redeem_winning_position(
         # Every RPC URL failed. Detect the common case where the
         # user's Polygon wallet has no MATIC for gas — that's a
         # specific user-actionable failure, not a transient RPC
-        # problem. The operator can also always redeem manually
-        # via the Polymarket web UI (Polymarket sponsors gas via
-        # their meta-transaction relayer).
+        # problem. Two paths to fix this: fund 0.1 MATIC for direct
+        # RPC, OR paste Builder API Keys in Settings for gasless via
+        # Polymarket's relayer.
         joined = " | ".join(errors)
         if "insufficient funds for gas" in joined.lower():
             return RedeemResult(
                 redeemed=False, tx_hash=None,
                 error=(
-                    "wallet has no MATIC for gas. Send ~0.1 MATIC "
-                    "(~$0.05) to the wallet for auto-redeem to work, "
-                    "OR click Redeem on the Polymarket web UI "
-                    "(Polymarket sponsors the gas there)."
+                    "wallet has no MATIC for gas. Two options: "
+                    "(1) send ~0.1 MATIC (~$0.05) to the wallet for "
+                    "direct-RPC auto-redeem, OR "
+                    "(2) create a Builder API Key on polymarket.com -> "
+                    "Settings -> API Keys and paste it into Delfi "
+                    "Settings -> Polymarket API Key for gasless redeem "
+                    "via Polymarket's relayer. "
+                    "Until either is set up, click Redeem on the "
+                    "Polymarket web UI to claim winners manually."
                 ),
             )
         return RedeemResult(
@@ -384,3 +410,165 @@ def redeem_winning_position(
         flush=True,
     )
     return RedeemResult(redeemed=True, tx_hash=sent_hash, error=None)
+
+
+# ── Gasless redeem via Polymarket Relayer ───────────────────────────────────
+
+# Polymarket's official relayer endpoint. Override via env if needed
+# (e.g. pointing at the staging relayer for tests).
+POLYMARKET_RELAYER_URL = os.environ.get(
+    "POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com/"
+)
+
+# Polygon mainnet CTF Exchange / Deposit Wallet factory + impl
+_DW_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+_DW_IMPL    = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+
+
+def _try_gasless_redeem(
+    *,
+    cond_bytes: bytes,
+    index_sets: Sequence[int],
+    wallet: str,
+    private_key: str,
+    acct_address: str,
+) -> Optional[RedeemResult]:
+    """Submit the redeem via Polymarket's relayer (no MATIC required).
+
+    Returns:
+      RedeemResult(redeemed=True, ...)  — succeeded
+      RedeemResult(redeemed=False, ...) — terminal failure (do NOT fall back)
+      None                              — Builder API creds missing or
+                                          import failure; caller should
+                                          fall through to direct RPC.
+
+    The relayer requires Builder/Relayer API Keys that the user creates
+    on polymarket.com → Settings → API Keys. The bot's auto-derived
+    CLOB trading keys are NOT accepted by the relayer (different key
+    class). When Builder creds are absent the function returns None
+    so the caller falls back to the direct-RPC path.
+    """
+    # Look up manual Builder API creds. Same Settings field as the
+    # CLOB manual creds; user can paste a single Builder API Key
+    # tuple that works for both order placement AND relayer redeems.
+    try:
+        from engine.user_config import get_polymarket_api_creds
+        builder_creds = get_polymarket_api_creds()
+    except Exception:
+        builder_creds = None
+    if not builder_creds:
+        return None  # caller falls through to direct RPC
+
+    # Import the Polymarket SDKs lazily — they may not be present in
+    # an environment that only does sim mode.
+    try:
+        from py_builder_relayer_client.client import RelayClient
+        from py_builder_relayer_client.models import (
+            DepositWalletCall, DepositWalletTransactionArgs,
+        )
+        from py_builder_signing_sdk.config import (
+            BuilderConfig, BuilderApiKeyCreds,
+        )
+        from eth_utils import keccak, to_checksum_address
+        from eth_abi import encode as eth_abi_encode
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] gasless: SDK import failed: {exc}; "
+            f"falling back to direct RPC",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    # Build the redeemPositions calldata that will be batched into a
+    # DepositWalletCall.
+    selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+    encoded_args = eth_abi_encode(
+        ["address", "bytes32", "bytes32", "uint256[]"],
+        [to_checksum_address(PUSD_ADDRESS), b"\x00" * 32,
+         cond_bytes, list(index_sets)],
+    )
+    redeem_data = "0x" + (selector + encoded_args).hex()
+    call = DepositWalletCall(
+        target=to_checksum_address(CTF_ADDRESS),
+        value="0",
+        data=redeem_data,
+    )
+
+    try:
+        builder_config = BuilderConfig(
+            local_builder_creds=BuilderApiKeyCreds(
+                key=builder_creds["api_key"],
+                secret=builder_creds["api_secret"],
+                passphrase=builder_creds["api_passphrase"],
+            )
+        )
+        client = RelayClient(
+            POLYMARKET_RELAYER_URL,
+            POLYGON_CHAIN_ID,
+            private_key,
+            builder_config,
+        )
+        deposit_wallet_addr = client.get_expected_deposit_wallet()
+        nonce_payload = client.get_nonce(acct_address, "WALLET") or {}
+        nonce = str(nonce_payload.get("nonce", "0"))
+        deadline = str(int(time.time()) + 240)
+
+        resp = client.execute_deposit_wallet_batch(
+            calls=[call],
+            wallet_address=deposit_wallet_addr,
+            nonce=nonce,
+            deadline=deadline,
+        )
+        tx_id = getattr(resp, "transaction_id", None)
+        tx_hash = getattr(resp, "transaction_hash", None)
+        print(
+            f"[pm_redeemer] gasless: submitted to relayer "
+            f"tx_id={tx_id} tx_hash={tx_hash}",
+            file=sys.stderr, flush=True,
+        )
+        final = None
+        try:
+            final = resp.wait()
+        except Exception as exc:
+            print(
+                f"[pm_redeemer] gasless: wait for relayer "
+                f"settlement failed: {exc}",
+                file=sys.stderr, flush=True,
+            )
+        # Whether wait succeeded or not, if we have a tx_hash the
+        # transaction was at least broadcast. Polygonscan can verify.
+        if tx_hash:
+            return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
+        return RedeemResult(
+            redeemed=False, tx_hash=None,
+            error=f"relayer accepted submission but no tx hash: {final}",
+        )
+    except Exception as exc:
+        # 401 → user has the key but it's not a Builder/Relayer key.
+        # 400 → wrong payload (probably wallet not deployed, bad nonce).
+        # Anything else → relayer-side issue.
+        msg = str(exc)
+        if "invalid authorization" in msg or "401" in msg:
+            # Surface as terminal so the caller doesn't fall back to
+            # direct RPC and produce a confusing "no MATIC" error.
+            # The user needs to know their pasted key isn't a relayer
+            # key. They can either re-generate it as a Builder key on
+            # polymarket.com OR clear the field to use direct RPC.
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=(
+                    "relayer rejected the API key (401). The key in "
+                    "Delfi -> Settings -> Polymarket API Key must be a "
+                    "Builder API Key created on polymarket.com -> "
+                    "Settings -> API Keys (the CLOB trading-key class "
+                    "is not accepted by the relayer). Clear that field "
+                    "to fall back to direct-RPC redeem with MATIC."
+                ),
+            )
+        # Other errors: fall back to direct RPC.
+        print(
+            f"[pm_redeemer] gasless: failed ({type(exc).__name__}: "
+            f"{msg[:200]}); falling back to direct RPC",
+            file=sys.stderr, flush=True,
+        )
+        return None
