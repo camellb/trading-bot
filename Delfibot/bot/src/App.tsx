@@ -299,7 +299,18 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
     setRestartError(null);
     try {
       await tauriRestartSidecar();
-      setTimeout(() => window.location.reload(), 1500);
+      // 8s before reload: kickstart's SIGKILL + respawn is instant
+      // but the PyInstaller bootloader needs 8-12s to finish
+      // unpacking, importing the heavy stack (anthropic, web3, ccxt,
+      // py-clob-client-v2...), and binding the aiohttp socket. The
+      // Rust-side port probe (read_existing_sidecar_port) then has
+      // its own 15s retry budget on top, so the full chain gives
+      // ~23s of headroom - enough that "Restart Delfi" reliably
+      // ends in a connected GUI instead of bouncing right back to
+      // "Delfi could not start". Earlier value was 1500ms which
+      // reloaded mid-bootloader and tripped the boot probe before
+      // the daemon was ready.
+      setTimeout(() => window.location.reload(), 8000);
     } catch (e) {
       setRestartError(e instanceof Error ? e.message : String(e));
       setRestarting(false);
@@ -343,7 +354,18 @@ function BootScreen({ error }: { error: string | null }) {
       // Force the app back into "Launching..." state. Reload picks
       // up the fresh sidecar.port that the respawned daemon writes
       // and the GUI re-runs its boot probe with no stale cache.
-      setTimeout(() => window.location.reload(), 1500);
+      // 8s before reload: kickstart's SIGKILL + respawn is instant
+      // but the PyInstaller bootloader needs 8-12s to finish
+      // unpacking, importing the heavy stack (anthropic, web3, ccxt,
+      // py-clob-client-v2...), and binding the aiohttp socket. The
+      // Rust-side port probe (read_existing_sidecar_port) then has
+      // its own 15s retry budget on top, so the full chain gives
+      // ~23s of headroom - enough that "Restart Delfi" reliably
+      // ends in a connected GUI instead of bouncing right back to
+      // "Delfi could not start". Earlier value was 1500ms which
+      // reloaded mid-bootloader and tripped the boot probe before
+      // the daemon was ready.
+      setTimeout(() => window.location.reload(), 8000);
     } catch (e) {
       setRestartError(e instanceof Error ? e.message : String(e));
       setRestarting(false);

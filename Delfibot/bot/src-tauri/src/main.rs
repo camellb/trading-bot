@@ -310,35 +310,40 @@ fn spawn_sidecar(
 async fn read_existing_sidecar_port(app: &tauri::AppHandle) -> Option<u16> {
     let dir = app.path().resolve("", BaseDirectory::AppData).ok()?;
     let port_file = dir.join("sidecar.port");
-    let contents = std::fs::read_to_string(&port_file).ok()?;
-    let port: u16 = contents.trim().parse().ok()?;
-    if port == 0 {
-        return None;
-    }
-    // TCP probe with a short retry budget. The daemon writes its port
-    // file BEFORE the HTTP server is fully bound — and on launchd
-    // respawn (manual restart from the splash, kickstart -k, or a
-    // crash auto-recovery) the new daemon takes 1-5s to come back up.
-    // Without a retry the GUI saw "Delfi could not start" every time
-    // the user hit the "Restart Delfi" button. Poll up to 10 times at
-    // 500ms = ~5s worst-case when the daemon is genuinely down; the
-    // healthy path hits attempt 0 in <50ms.
-    let addr = format!("127.0.0.1:{port}");
-    for attempt in 0..10u8 {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(1500),
-            tokio::net::TcpStream::connect(&addr),
-        )
-        .await
-        {
-            Ok(Ok(_stream)) => return Some(port),
-            _ => {
-                if attempt == 9 {
-                    return None;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Up to 30 attempts x 500ms = 15s budget. On a fresh launchd
+    // respawn (Restart Delfi button, kickstart -k, KeepAlive after
+    // crash), the PyInstaller bootloader takes 8-12s to finish
+    // unpacking + importing + binding the aiohttp socket. The prior
+    // 5s budget gave up before that, so the user saw "Delfi could not
+    // start" every time they hit Restart even though the daemon was
+    // booting normally.
+    //
+    // Each attempt does the FULL pipeline (read file -> parse -> TCP
+    // probe). The earlier version bailed on the first read/parse
+    // failure - when the daemon hadn't yet written the port file,
+    // the function returned None immediately and the GUI gave up.
+    // Now we retry the whole thing so transient "file missing" or
+    // "file empty" states are tolerated.
+    for attempt in 0..30u8 {
+        let port_opt = std::fs::read_to_string(&port_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .filter(|&p| p != 0);
+        if let Some(port) = port_opt {
+            let addr = format!("127.0.0.1:{port}");
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                tokio::net::TcpStream::connect(&addr),
+            )
+            .await
+            {
+                return Some(port);
             }
         }
+        if attempt == 29 {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     None
 }
