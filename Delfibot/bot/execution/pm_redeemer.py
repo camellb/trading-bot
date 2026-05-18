@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -270,16 +271,34 @@ def redeem_winning_position(
             error=f"key parse failed: {exc}",
         )
 
-    # ── Path 1: Gasless via Polymarket Relayer ──────────────────────
-    # If the user has pasted Builder/Relayer API Keys into Settings,
-    # submit the redeem via Polymarket's relayer service. Polymarket
-    # pays the gas. No MATIC needed in the user's wallet.
+    # ── Path 1a: Gasless via Polymarket Relayer (RELAYER_API_KEY) ────
+    # The simple 2-header auth scheme. The user creates a key on
+    # polymarket.com -> Settings -> Relayer API keys (one UUID, no
+    # HMAC, no passphrase) and pastes it into Delfi. The relayer
+    # accepts the submission with `RELAYER_API_KEY` +
+    # `RELAYER_API_KEY_ADDRESS` (the signer EOA). Polymarket pays
+    # the gas; no MATIC needed in the user's wallet.
     #
-    # Requires manual Builder API Keys (created via polymarket.com -
-    # Settings - API Keys; the CLOB auto-derived trading keys we use
-    # for orders are a DIFFERENT key class and the relayer rejects
-    # them with 401). Falls back to Path 2 (direct RPC) when Builder
-    # creds are absent or the relayer rejects the request.
+    # Verified end-to-end 2026-05-18 against position 317's real
+    # redeem. This is the path we PREFER and actively guide the user
+    # toward, because it's a one-time paste of a single string and
+    # works forever after.
+    relayer_result = _try_gasless_redeem_via_relayer_api_key(
+        cond_bytes=cond_bytes,
+        index_sets=index_sets,
+        wallet=wallet,
+        private_key=pk,
+        acct_address=acct.address,
+    )
+    if relayer_result is not None:
+        return relayer_result  # relayer succeeded or terminally failed
+
+    # ── Path 1b: Gasless via Builder API Key HMAC (POLY_BUILDER_*) ───
+    # The harder auth path: 4 headers, HMAC-SHA256, separate key
+    # class created on polymarket.com -> Settings -> Builders. Most
+    # users won't have this; it's third-party-builder-grade auth.
+    # Kept as a fallback so users who happen to have Builder creds
+    # configured still benefit from gasless redeem.
     gasless_result = _try_gasless_redeem(
         cond_bytes=cond_bytes,
         index_sets=index_sets,
@@ -568,6 +587,170 @@ def sweep_unredeemed_winners(*, max_per_run: int = 25) -> dict:
 POLYMARKET_RELAYER_URL = os.environ.get(
     "POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com/"
 )
+
+
+def _try_gasless_redeem_via_relayer_api_key(
+    *,
+    cond_bytes: bytes,
+    index_sets: Sequence[int],
+    wallet: str,
+    private_key: str,
+    acct_address: str,
+) -> Optional[RedeemResult]:
+    """Submit the redeem via the relayer using the simple 2-header auth.
+
+    The user creates a Relayer API Key at
+    polymarket.com -> Settings -> Relayer API keys and pastes the
+    single UUID into Delfi -> Settings -> Polymarket. Auth is exactly:
+
+        RELAYER_API_KEY:          <uuid>
+        RELAYER_API_KEY_ADDRESS:  <signer EOA address>
+
+    No HMAC, no timestamp, no passphrase. Polymarket pays the gas.
+
+    Returns:
+      RedeemResult(redeemed=True, tx_hash=...)  — relayer executed.
+      RedeemResult(redeemed=False, ...)         — terminal failure
+                                                  (401, 4xx, etc.).
+      None                                       — no Relayer API Key
+                                                  configured or SDK
+                                                  import failure; the
+                                                  caller falls through
+                                                  to the next path.
+    """
+    try:
+        from engine.user_config import get_polymarket_relayer_api_key
+        api_key = get_polymarket_relayer_api_key()
+    except Exception:
+        api_key = None
+    if not api_key:
+        return None  # caller falls through
+
+    try:
+        from py_builder_relayer_client.models import (
+            DepositWalletCall, DepositWalletTransactionArgs,
+        )
+        from py_builder_relayer_client.builder.deposit_wallet import (
+            build_deposit_wallet_batch_request,
+        )
+        from py_builder_relayer_client.config import get_contract_config
+        from py_builder_relayer_client.signer import Signer
+        from eth_utils import keccak, to_checksum_address
+        from eth_abi import encode as eth_abi_encode
+        import requests as _requests
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] relayer-api-key path: SDK import failed: {exc}; "
+            f"falling back to next path",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    # Build the same DepositWallet batch request the Builder path uses.
+    # We only need the signed body; the auth headers are different.
+    selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+    encoded_args = eth_abi_encode(
+        ["address", "bytes32", "bytes32", "uint256[]"],
+        [to_checksum_address(PUSD_ADDRESS), b"\x00" * 32,
+         cond_bytes, list(index_sets)],
+    )
+    redeem_data = "0x" + (selector + encoded_args).hex()
+    call = DepositWalletCall(
+        target=to_checksum_address(CTF_ADDRESS),
+        value="0",
+        data=redeem_data,
+    )
+
+    try:
+        signer = Signer(private_key, POLYGON_CHAIN_ID)
+        # The relayer's nonce endpoint is open / unauthenticated.
+        # Same canonical URL as POLYMARKET_RELAYER_URL but with the
+        # /nonce path; we hit it directly to avoid spinning up a full
+        # RelayClient.
+        base = POLYMARKET_RELAYER_URL.rstrip("/")
+        nonce_url = (
+            f"{base}/nonce?address={signer.address()}&type=WALLET"
+        )
+        nonce_resp = _requests.get(nonce_url, timeout=15)
+        nonce_resp.raise_for_status()
+        nonce = str(nonce_resp.json().get("nonce", "0"))
+
+        # `wallet_address` here is the funder/proxy address (the
+        # signature_type=3 DepositWallet). The Builder path also
+        # uses this; for the user we care about, it's the address
+        # that holds the CTF tokens we want to redeem.
+        dw_args = DepositWalletTransactionArgs(
+            from_address=signer.address(),
+            chain_id=POLYGON_CHAIN_ID,
+            wallet_address=wallet,
+            nonce=nonce,
+            deadline=str(int(time.time()) + 240),
+            calls=[call],
+        )
+        cfg = get_contract_config(POLYGON_CHAIN_ID)
+        req = build_deposit_wallet_batch_request(
+            signer=signer, args=dw_args, config=cfg,
+        )
+        body = req.to_dict()
+
+        # The actual submit. 2-header auth.
+        submit_url = f"{base}/submit"
+        headers = {
+            "RELAYER_API_KEY": api_key,
+            "RELAYER_API_KEY_ADDRESS": signer.address(),
+        }
+        resp = _requests.post(
+            submit_url, json=body, headers=headers, timeout=60,
+        )
+
+        if resp.status_code != 200:
+            msg = resp.text[:300]
+            # 401 means the pasted key is invalid OR was created for a
+            # different signer address. Surface that clearly to the
+            # operator so the fix is obvious. NOT a transient error,
+            # so don't fall through to a direct-RPC retry that will
+            # also fail (no MATIC) and confuse the message.
+            if resp.status_code == 401:
+                return RedeemResult(
+                    redeemed=False, tx_hash=None,
+                    error=(
+                        f"relayer rejected RELAYER_API_KEY (401). "
+                        f"Check that the key was created on "
+                        f"polymarket.com -> Settings -> Relayer API "
+                        f"keys with the SAME wallet you have "
+                        f"connected to Delfi. Response: {msg}"
+                    ),
+                )
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=f"relayer submit failed: {resp.status_code} {msg}",
+            )
+
+        data = resp.json()
+        tx_hash = data.get("transactionHash")
+        state   = data.get("state")
+        if tx_hash:
+            print(
+                f"[pm_redeemer] relayer redeemed via RELAYER_API_KEY: "
+                f"tx={tx_hash} state={state}",
+                file=sys.stderr, flush=True,
+            )
+            return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
+        return RedeemResult(
+            redeemed=False, tx_hash=None,
+            error=f"relayer accepted submit but no tx hash: {data}",
+        )
+    except Exception as exc:
+        # Network blip, payload bug, or unexpected SDK error. Fall
+        # through to the next path so a transient relayer outage
+        # doesn't permanently block redeem.
+        print(
+            f"[pm_redeemer] relayer-api-key path failed "
+            f"({type(exc).__name__}: {str(exc)[:200]}); "
+            f"falling back to next path",
+            file=sys.stderr, flush=True,
+        )
+        return None
 
 # Polygon mainnet CTF Exchange / Deposit Wallet factory + impl
 _DW_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"

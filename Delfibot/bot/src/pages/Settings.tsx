@@ -1003,6 +1003,7 @@ function ConnectionsPanel({
   const [pmApiKey, setPmApiKey] = useState("");
   const [pmApiSecret, setPmApiSecret] = useState("");
   const [pmApiPass, setPmApiPass] = useState("");
+  const [pmRelayerKey, setPmRelayerKey] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1021,6 +1022,7 @@ function ConnectionsPanel({
   const hasPmApiKey  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_key === true;
   const hasPmApiSec  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_secret === true;
   const hasPmApiPass = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_passphrase === true;
+  const hasPmRelayerKey = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_relayer_api_key === true;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1038,6 +1040,7 @@ function ConnectionsPanel({
       if (pmApiKey.trim())    payload.polymarket_api_key = pmApiKey.trim();
       if (pmApiSecret.trim()) payload.polymarket_api_secret = pmApiSecret.trim();
       if (pmApiPass.trim())   payload.polymarket_api_passphrase = pmApiPass.trim();
+      if (pmRelayerKey.trim()) payload.polymarket_relayer_api_key = pmRelayerKey.trim();
       if (Object.keys(payload).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
         return;
@@ -1052,6 +1055,7 @@ function ConnectionsPanel({
       setPmApiKey("");
       setPmApiSecret("");
       setPmApiPass("");
+      setPmRelayerKey("");
       setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
     } catch (err) {
@@ -1182,6 +1186,32 @@ function ConnectionsPanel({
             Used for fast keyword extraction and headline pre-filtering.
             Without it, Delfi falls back to raw RSS titles (still works,
             but research is noisier). Free at aistudio.google.com.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <label>Polymarket Relayer API key</label>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasPmRelayerKey ? "(stored)" : "019d9954-..."}
+            value={pmRelayerKey}
+            onChange={(e) => setPmRelayerKey(e.target.value)}
+          />
+          <p className="form-hint">
+            One-time paste: enables auto-redeem of winning positions
+            with no MATIC needed. Go to{" "}
+            <a
+              href="https://polymarket.com/settings?tab=relayer-api-keys"
+              target="_blank"
+              rel="noreferrer noopener"
+            >
+              polymarket.com &rarr; Settings &rarr; Relayer API keys
+            </a>
+            , click Create New, copy the UUID, paste it here. Without
+            this, Delfi knows you won but can&apos;t collect the
+            payout: the tokens stay in your CTF balance until you
+            click Redeem on the Polymarket site.
           </p>
         </div>
 

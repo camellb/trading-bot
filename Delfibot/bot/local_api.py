@@ -99,6 +99,8 @@ from engine.user_config import (
     get_llm_backup_key,
     get_newsapi_key,
     get_polymarket_api_creds,
+    get_polymarket_relayer_api_key,
+    set_polymarket_relayer_api_key,
     get_user_config,
     get_user_telegram_config,
     set_anthropic_api_key,
@@ -783,6 +785,13 @@ class LocalAPI:
                 "has_polymarket_api_key":       bool(pm_api.get("api_key")),
                 "has_polymarket_api_secret":    bool(pm_api.get("api_secret")),
                 "has_polymarket_api_passphrase": bool(pm_api.get("api_passphrase")),
+                # Relayer API Key (single UUID, separate from Builder
+                # API tuple). Enables gasless redemption via the 2-
+                # header auth scheme. One-time paste, no wallet
+                # MATIC needed.
+                "has_polymarket_relayer_api_key": (
+                    get_polymarket_relayer_api_key() is not None
+                ),
             }
 
         try:
@@ -927,6 +936,12 @@ class LocalAPI:
         pm_api_key        = _clean("polymarket_api_key")
         pm_api_secret     = _clean("polymarket_api_secret")
         pm_api_passphrase = _clean("polymarket_api_passphrase")
+        # Relayer API Key (separate key class — single UUID created
+        # on polymarket.com -> Settings -> Relayer API keys). Used
+        # for gasless redeem; writing this enables auto-redeem of
+        # every future winning position without the user funding
+        # MATIC or pasting Builder API tuples.
+        pm_relayer_api_key = _clean("polymarket_relayer_api_key")
         if pm_api_key is not None or pm_api_secret is not None or pm_api_passphrase is not None:
             try:
                 await self._offload(
@@ -941,6 +956,18 @@ class LocalAPI:
                 if pm_api_passphrase is not None: wrote.append("polymarket_api_passphrase")
             except Exception as exc:
                 return _err(f"failed to write polymarket api creds: {exc}", 500)
+
+        # Relayer API Key — independent of the Builder tuple above.
+        if pm_relayer_api_key is not None:
+            try:
+                await self._offload(
+                    lambda: set_polymarket_relayer_api_key(pm_relayer_api_key)
+                )
+                wrote.append("polymarket_relayer_api_key")
+            except Exception as exc:
+                return _err(
+                    f"failed to write polymarket relayer api key: {exc}", 500,
+                )
 
         # Hot-reload the running process so the new keys take effect
         # WITHOUT a daemon restart. Two things need to happen:

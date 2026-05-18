@@ -664,6 +664,15 @@ export const api = {
     llm_backup_key?: string;
     newsapi_key?: string;
     cryptopanic_key?: string;
+    gemini_key?: string;
+    polymarket_api_key?: string;
+    polymarket_api_secret?: string;
+    polymarket_api_passphrase?: string;
+    /** Single-UUID Polymarket Relayer API key. Enables gasless
+     *  redemption of winning positions via the relayer's 2-header
+     *  auth scheme. Created at polymarket.com -> Settings ->
+     *  Relayer API keys. */
+    polymarket_relayer_api_key?: string;
   }) =>
     request<Credentials & { wrote: string[] }>("/api/credentials", {
       method: "PUT",

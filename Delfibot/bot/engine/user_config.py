@@ -77,6 +77,17 @@ KEYRING_POLYMARKET_API_KEY        = "polymarket_api_key"
 KEYRING_POLYMARKET_API_SECRET     = "polymarket_api_secret"
 KEYRING_POLYMARKET_API_PASSPHRASE = "polymarket_api_passphrase"
 
+# ── Polymarket Relayer API Key ──────────────────────────────────────────────
+# A SEPARATE key class from the Builder API tuple above. The user creates
+# it on polymarket.com -> Settings -> Relayer API keys and pastes the
+# single UUID into Delfi. Auth is just 2 headers (RELAYER_API_KEY +
+# RELAYER_API_KEY_ADDRESS); no HMAC, no timestamp, no passphrase.
+#
+# That's enough for the Polymarket relayer at relayer-v2.polymarket.com
+# to accept gasless DepositWallet batch redemptions. Verified 2026-05-18
+# against position 317's real redeem (tx 0x10bb58d78f2c...).
+KEYRING_POLYMARKET_RELAYER_API_KEY = "polymarket_relayer_api_key"
+
 
 @dataclass
 class UserConfig:
@@ -1624,6 +1635,25 @@ def set_polymarket_api_creds(
         _keyring_set(KEYRING_POLYMARKET_API_SECRET, api_secret)
     if api_passphrase is not None:
         _keyring_set(KEYRING_POLYMARKET_API_PASSPHRASE, api_passphrase)
+
+
+def get_polymarket_relayer_api_key() -> Optional[str]:
+    """The single-UUID Relayer API Key from polymarket.com Settings.
+    Powers gasless redemption via the relayer's simple 2-header auth
+    (RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS). The address half is
+    derived from the user's private key at call time.
+    """
+    v = _keyring_get(KEYRING_POLYMARKET_RELAYER_API_KEY)
+    if v and v.strip():
+        return v.strip()
+    return None
+
+
+def set_polymarket_relayer_api_key(value: Optional[str]) -> None:
+    """Write or clear the Relayer API Key. Empty string clears it
+    so the user can disable gasless redeem if they want to fall back
+    to direct-RPC."""
+    _keyring_set(KEYRING_POLYMARKET_RELAYER_API_KEY, value)
 
 
 # ── License (offline Ed25519 hard gate) ────────────────────────────────────
