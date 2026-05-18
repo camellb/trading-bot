@@ -566,19 +566,26 @@ async def main() -> None:
     _start_parent_death_watchdog_REMOVED()
 
     from concurrent.futures import ThreadPoolExecutor
+
+    # The GIL switch interval defaults to 5ms. With many threads doing
+    # sync work (SQLite, SSL handshakes, requests.get, etc.), the
+    # asyncio main loop can wait 50ms+ for the GIL on each turn - long
+    # enough that the kernel's listen-socket backlog fills up before
+    # accept() runs. Dropping to 1ms hands the GIL back to the main
+    # loop more aggressively. Trade-off: ~3-5% more context-switch
+    # overhead. Worth it to keep /api/* responsive under load.
+    sys.setswitchinterval(0.001)
+
     loop = asyncio.get_running_loop()
-    # 100 workers, not 20: the GUI loads 20+ panels simultaneously on
-    # mount and each panel hits at least one /api endpoint that goes
-    # through `_offload(...)`. With only 20 workers and a single slow
-    # call, the pool saturates, queued handlers block, the client
-    # gives up at its 30s ceiling, and we drown in CLOSE_WAIT
-    # leaks. 100 workers is generous - sync work is short in steady
-    # state (file reads, SQLite reads), and the threads are cheap
-    # (~16KB stack each). Verified 2026-05-06: a 27-request burst
-    # against the 20-worker pool wedged the daemon; the same burst
-    # at 100 workers absorbs cleanly.
+    # 32 workers, down from 100. Each worker that's actively running
+    # holds the GIL during its Python-level code. With 100 of them
+    # competing, the asyncio main loop starves of GIL ticks and
+    # accept() falls behind - the recurring wedge cause this user
+    # has hit for weeks. 32 is enough headroom for the GUI's
+    # ~20-panel mount burst plus a couple of slow handlers without
+    # creating excessive contention.
     loop.set_default_executor(ThreadPoolExecutor(
-        max_workers=100, thread_name_prefix="delfi"))
+        max_workers=32, thread_name_prefix="delfi"))
 
     # Arm the loop-wedge watchdog as soon as the loop is alive. If the
     # asyncio loop ever stops pumping for >120s (the 5-hour wedge of
@@ -594,8 +601,16 @@ async def main() -> None:
     # needs the bound port; we publish it via a mutable holder that
     # the LocalAPI section below populates after binding.
     _api_port_holder = {"port": 0}
+    # Tightened wedge-detection thresholds: self-probe every 20s
+    # (was 30s) and SIGKILL after 2 consecutive failures (was 3).
+    # Net effect: a wedged daemon is detected and respawned in
+    # ~40s instead of ~90s, so the dashboard sees the "stuck"
+    # banner for much less time. Per-probe budget kept at 5s.
     watchdog = LoopHeartbeat(
-        loop, api_port_getter=lambda: _api_port_holder["port"],
+        loop,
+        api_port_getter=lambda: _api_port_holder["port"],
+        self_probe_interval_s=20.0,
+        self_probe_max_failures=2,
     )
     watchdog.start()
 
