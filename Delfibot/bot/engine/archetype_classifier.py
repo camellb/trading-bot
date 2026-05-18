@@ -457,9 +457,13 @@ ARCHETYPES: tuple[str, ...] = (
 )
 
 
-# Legacy-to-canonical mapping. Source of truth for migration 022 and for
-# any runtime collapse (e.g., /api/archetypes discovery). Keep in sync
-# with ops/supabase/migrations/022_archetype_consolidation.sql.
+# Legacy-to-canonical mapping. Used at runtime to collapse any
+# pre-V1 archetype labels lingering on historical pm_positions rows
+# (e.g. "tennis_qualifier" -> "tennis") so per-archetype analytics
+# never double-bucket the same sport. The historical SaaS-era
+# Postgres migration (`022_archetype_consolidation.sql`) rewrote
+# the labels in place; that file is gone post local-first pivot,
+# but git history has it if needed.
 LEGACY_ARCHETYPE_MAP: dict[str, str] = {
     "tennis_qualifier":  "tennis",
     "tennis_main_draw":  "tennis",

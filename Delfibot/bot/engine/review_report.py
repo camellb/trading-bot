@@ -244,9 +244,10 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "win_rate":   0.0,
         "brier":      None,
     }
-    # Lifetime block aligns with what the dashboard's Performance page
-    # shows (`/dashboard/performance`). The user complained that the
-    # review's ROI did not match the dashboard's ROI: the cycle-window
+    # Lifetime block aligns with what the in-app Performance page
+    # shows (`Delfibot/bot/src/pages/Performance.tsx`). The user
+    # complained that the review's ROI did not match the dashboard's
+    # ROI: the cycle-window
     # number is ROI on capital staked over the last 50 trades, while the
     # dashboard reports lifetime ROI as `(equity - starting)/starting`.
     # We surface both here, clearly labelled, so the two numbers can be

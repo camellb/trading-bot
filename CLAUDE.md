@@ -26,33 +26,40 @@ Win rate, ROI, and Brier score are computed **only on predictions the bot actual
 
 ## Tech stack & where things live
 
-Monorepo, two deployables:
+Single deployable: a Tauri 2 desktop app that bundles a Python sidecar. Everything runs on the user's machine. No website, no server-side bot, no Supabase. The repo root holds `Delfibot/` (active) + `docs/` + `SITEMAP.md` + `LAUNCH_CHECKLIST.md` + `.github/workflows/build.yml`. Pre-pivot SaaS scaffolding (apps/, ops/, packages/) was deleted 2026-05-19.
 
-- **`apps/bot`**. Python 3.11, the trading engine. Long-running process on **Railway**. Key deps: `anthropic`, `google-genai`, `aiohttp` (HTTP API), `sqlalchemy` + `psycopg2-binary` (Postgres), `APScheduler`, `ccxt`. Layout:
-  - `engine/`. forecasting, ensemble, calibration, self-improvement
-  - `execution/`. sizing + risk manager
-  - `feeds/`. data sources (Polymarket, news, macro calendar, Telegram notifier)
-  - `research/`. web fetchers for market research
-  - `db/`. SQLAlchemy models
-  - Entrypoints: `main.py` (scheduler), `polymarket_runner.py` (scan worker), `bot_api.py` (aiohttp HTTP server)
-- **`apps/web`**. Next.js 16 + React 19 + TypeScript + Tailwind v4. Deployed on **Vercel**. Supabase SSR for auth. The dashboard talks to the bot over HTTP via `lib/bot-proxy.ts` with an `X-Bot-Secret` header. The bot is never exposed to the browser directly.
+- **`Delfibot/bot/`** — the active product.
+  - `engine/` — forecasting (`polymarket_evaluator.py`), V1 sizer-side gates (`pm_sizer.py` reads `MarketEvaluation.force_skip` + direction-agreement), calibration, learning cadence, license verification, live data adapters (live_crypto, live_equity).
+  - `execution/` — `pm_executor.py` (open/close orders via py-clob-client-v2; uses `_extract_filled_size` to record actual fills, not intent), `pm_sizer.py` (flat archetype-multiplied stake; `max_stake_pct_enabled` opt-in cap), `pm_redeemer.py` (gasless CTF redeem via RELAYER_API_KEY + USDC.e→pUSD activator).
+  - `feeds/` — Polymarket gamma/CLOB, polymarket_wallet probe (pUSD + USDC.e summed), Telegram notifier (optional).
+  - `research/` — DuckDuckGo search + trafilatura article extraction.
+  - `db/` — SQLAlchemy models against local SQLite (`<app-data>/delfi.db`). Schema migrates on boot.
+  - `local_api.py` — aiohttp HTTP server with a dedicated `_api_executor` (8 workers) isolated from the default loop executor so analyst LLM work can't starve dashboard endpoints.
+  - `main.py` — daemon entrypoint. APScheduler jobs: `pm_scan` (5 min), `pm_resolve` (15 min), `pm_resolve_fast` (60 s), `pm_evaluate_exits` (60 s), `pm_resolve_skipped` (15 min), `pm_balance_refresh` (60 s), `pm_redeem_sweep` (10 min), `pm_activate_legacy` (10 min), `markout_check` (1 h).
+  - `src/` — React 19 + Vite frontend (`Dashboard.tsx`, `Positions.tsx`, `Performance.tsx`, `Intelligence.tsx`, `Risk.tsx`, `Settings.tsx`).
+  - `src-tauri/` — Rust shell. `main.rs` reads the daemon's port file with a 15 s retry budget; `restart_sidecar` Tauri command bounds every shelled call with a hard timeout. Compiled into Delfi.app.
 
-**Database.** Supabase Postgres. Schema owned by `apps/bot/db/models.py`. Migrations in `ops/supabase/migrations/`. The `trading_bot.db` file at repo root is legacy/unused; ignore it. Every user-facing row is keyed by `user_id`; the bot is multi-tenant.
+**Database.** Local SQLite at `<app-data>/delfi.db`. Schema owned by `Delfibot/bot/db/models.py`; migrations run on boot via PRAGMA-probed ALTER TABLE branches. Single-user by construction (`user_id` always `"local"`).
 
-**Auth.** Supabase Auth. Google OAuth + email/password. Callback at `/auth/callback`. Session refresh in `apps/web/proxy.ts`.
+**Auth.** None. License gating is Ed25519-signed offline blobs verified in `engine/license.py`. Keygen tool lives in `Delfibot/scripts/generate-license-keypair.mjs`.
 
-**Next.js 16 is not the Next.js in your training data.** See `apps/web/AGENTS.md`. Notable: `proxy.ts` not `middleware.ts`, `await cookies()` / `await headers()`, `useSearchParams()` must be inside `<Suspense>`.
+**Secrets.** `<app-data>/data/secrets.json` (file-backed, migrated from legacy keychain on first read). Fields: `polymarket_private_key`, `polymarket_relayer_api_key`, `anthropic_api_key`, `gemini_api_key`, `newsapi_key`, `telegram_bot_token`, `license_key`.
 
 ## How code reaches production
 
-`git push origin main` triggers Vercel (web) and Railway (bot) auto-deploys. **There is no local verification step. The user tests on Vercel, not localhost.** Commit and push every change immediately; don't hold local-only work. If a web change doesn't appear in prod, the cause is usually that the code never left the laptop.
+There is no remote infrastructure. To ship a new version:
 
-## Multi-tenancy invariants
+1. `cd Delfibot/bot && ./scripts/build_sidecar.sh` — PyInstaller bundles the sidecar.
+2. `npm run tauri build -- --bundles app` — Tauri builds the macOS `.app`.
+3. `bash Delfibot/install.sh` — rsyncs into `/Applications/Delfi.app`, reloads the LaunchAgent. The daemon restarts under launchd's KeepAlive; the GUI relaunches.
 
-- Every user-facing row has a `user_id` column: positions, trades, configs, evaluations.
-- Per-user credentials (Polymarket keys, Telegram bot token + chat ID) live in `user_config`, not process env.
-- No process-global API keys for anything user-scoped. Env vars are for shared infrastructure only (DB URL, anthropic key, bot secret).
-- User-editable config (risk params, volume floors, skip lists) applies immediately from the dashboard. Only AI self-improvement suggestions require explicit approval.
+CI cross-compiles for macOS + Windows on every push to `main` via `.github/workflows/build.yml`. Tagged pushes (`v*`) auto-publish to GitHub Releases. No code signing yet.
+
+## Single-user invariants
+
+- One user per install. No tenant routing.
+- Credentials live in `<app-data>/data/secrets.json`, never in process env.
+- User-editable config lives in the `user_config` SQLite table; in-app Risk page mutations apply immediately. AI self-improvement suggestions still require explicit approval via the Intelligence page.
 
 ## Banned terminology and punctuation
 
@@ -82,7 +89,7 @@ Sizing is flat and scaled only by per-archetype multipliers (default 1.0 for unk
 
 Circuit breakers protect the bankroll from catastrophic loss. They run identically in simulation and live; simulation actually simulates live. Parameters (daily/weekly loss limits, drawdown halt, streak cooldown, dry powder reserve, max stake) are per-user editable in the dashboard within system bounds. Bounds exist so users cannot configure obviously catastrophic settings. Within the bounds the user is in control.
 
-Current defaults and bounds are defined in `apps/bot/execution/risk_manager.py`. That file is authoritative.
+Current defaults and bounds are defined in `Delfibot/bot/engine/risk_manager.py`. That file is authoritative.
 
 ## Learning and iteration
 
@@ -104,10 +111,10 @@ If the answers are yes, yes, and clear, ship the small version. Measure. Expand 
 
 Market archetypes are **flat**. One label per sport, no nesting. Use `tennis`, not `tennis_qualifier` / `tennis_main_draw` / `tennis_lower_tier`. Use `basketball`, not `basketball_game` / `basketball_prop`. Same rule for baseball, football, hockey, esports, soccer, cricket. Non-sport archetypes follow the same flat shape: `price_threshold`, `activity_count`, `geopolitical_event`, `binary_event`, `sports_other`.
 
-Source of truth: the `ARCHETYPES` tuple in `apps/bot/engine/archetype_classifier.py`. When adding a classifier branch:
+Source of truth: the `ARCHETYPES` tuple in `Delfibot/bot/engine/archetype_classifier.py`. When adding a classifier branch:
 
 1. If the new pattern fits an existing canonical label, return that label. Do not invent a sub-tier.
-2. If the new pattern genuinely does not fit, add a single new canonical label to `ARCHETYPES` **and** to `BUILTIN_ARCHETYPES` in `apps/web/app/dashboard/settings/risk/page.tsx`. Keep the two lists in sync.
+2. If the new pattern genuinely does not fit, add a single new canonical label to `ARCHETYPES` **and** to the archetype catalogue in `Delfibot/bot/local_api.py` (the `_get_archetypes` route's label/description dict) **and** to the group-ordering array in `Delfibot/bot/src/pages/Risk.tsx`. Keep the three places in sync.
 3. Any label ever emitted by an older classifier goes into `LEGACY_ARCHETYPE_MAP` (runtime collapse) and into a migration under `ops/supabase/migrations/` (historical row rewrite). Migration 022 is the canonical example.
 
 Never reintroduce sub-tier labels to work around a specific pattern. If a branch of the taxonomy grows, split it at the canonical level or keep it flat. This rule was settled because sub-tier labels caused per-category analytics to double-bucket the same sport and the dashboard to show chips that did not match what the classifier emitted.
