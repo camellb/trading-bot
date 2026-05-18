@@ -342,6 +342,42 @@ class PMAnalyst:
             )
         _link_evaluation_to_position(eval_row_id, pos_id)
 
+        # Replace in-memory decision with the ACTUAL fill from the
+        # persisted row. The executor's `_open_live` swaps to actual
+        # values internally but its mutation doesn't propagate up the
+        # call stack (dataclass.replace returns a new instance bound
+        # only to its local scope). Without this re-read, every
+        # downstream consumer of `decision` — the notification, the
+        # event_log description, the AnalysisOutcome detail string,
+        # the dashboard's activity feed — would render INTENT values
+        # (e.g. "stake $3.23") even when only $3.04 actually filled
+        # on-chain. User-reported 2026-05-18.
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import get_engine as _eng
+            with _eng().begin() as _conn:
+                _row = _conn.execute(_text(
+                    "SELECT shares, cost_usd, entry_price "
+                    "FROM pm_positions WHERE id = :pid"
+                ), {"pid": pos_id}).fetchone()
+            if _row:
+                from dataclasses import replace as _replace
+                try:
+                    decision = _replace(
+                        decision,
+                        shares=float(_row[0]),
+                        stake_usd=float(_row[1]),
+                        entry_price=float(_row[2]),
+                    )
+                except TypeError:
+                    pass
+        except Exception as _exc:
+            print(
+                f"[pm_analyst] actual-fill re-read failed for pos "
+                f"{pos_id}: {_exc}",
+                file=sys.stderr,
+            )
+
         try:
             await self._notify_open(market, evaluation, decision,
                                      pos_id, executor, user_id)
