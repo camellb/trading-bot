@@ -59,8 +59,34 @@ PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 # Polygon mainnet.
 POLYGON_CHAIN_ID = 137
 
-# Public Polygon RPC. Same env override as polymarket_wallet.py.
-POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+# Public Polygon RPC fallback list. As of 2026-05-18 the canonical
+# `polygon-rpc.com` started returning HTTP 401 on `eth_sendRawTransaction`
+# from clients without a Polygon Edge API key - broadcast traffic is
+# gated even though reads still work. That broke auto-redeem on every
+# settled live winner and left the user with stuck CTF tokens.
+#
+# Solution: try a list of public RPC endpoints in order until one
+# accepts the broadcast. Each is free + keyless + accepts unsigned
+# raw transactions. Override via $POLYGON_RPC_URLS (comma-separated)
+# or just the first entry via $POLYGON_RPC_URL.
+_DEFAULT_RPC_URLS = [
+    # Tried in order; on broadcast failure we fall through to the
+    # next URL. Reads still work on polygon-rpc.com (only broadcasts
+    # got the 401), so it stays in the list as a last fallback.
+    "https://polygon.llamarpc.com",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon.drpc.org",
+    "https://1rpc.io/matic",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon-rpc.com",
+]
+_env_urls = os.environ.get("POLYGON_RPC_URLS") or os.environ.get("POLYGON_RPC_URL")
+if _env_urls:
+    POLYGON_RPC_URLS = [u.strip() for u in _env_urls.split(",") if u.strip()]
+else:
+    POLYGON_RPC_URLS = list(_DEFAULT_RPC_URLS)
+# Legacy single-URL constant kept for any importer that uses it.
+POLYGON_RPC_URL = POLYGON_RPC_URLS[0]
 
 # Minimal ABI: only redeemPositions. Avoids shipping the full CTF ABI
 # (which has dozens of methods we never call).
@@ -237,49 +263,102 @@ def redeem_winning_position(
         pk = "0x" + pk
 
     try:
-        w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL, request_kwargs={"timeout": 15}))
         acct = Account.from_key(pk)
-        if acct.address.lower() != wallet.lower():
-            return RedeemResult(
-                redeemed=False,
-                tx_hash=None,
-                error=("private key does not match wallet "
-                       f"({acct.address} vs {wallet})"),
-            )
-
-        ctf = w3.eth.contract(
-            address=Web3.to_checksum_address(CTF_ADDRESS),
-            abi=CTF_REDEEM_ABI,
-        )
-        nonce = w3.eth.get_transaction_count(acct.address)
-        tx = ctf.functions.redeemPositions(
-            Web3.to_checksum_address(PUSD_ADDRESS),
-            b"\x00" * 32,                                      # parentCollectionId
-            cond_bytes,
-            list(index_sets),
-        ).build_transaction({
-            "from":    acct.address,
-            "chainId": POLYGON_CHAIN_ID,
-            "nonce":   nonce,
-            # Let web3 pick gas; the public RPC reliably suggests
-            # something sane for Polygon. We don't override gas price
-            # because Polygon's EIP-1559 fees are dynamic.
-        })
-        signed = acct.sign_transaction(tx)
-        raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
-        sent_hash = w3.eth.send_raw_transaction(raw).hex()
     except Exception as exc:
-        # Build / sign / send failure. Don't include the private key
-        # in the error text; eth_account does not echo it but be
-        # defensive in case web3 ever does.
         return RedeemResult(
-            redeemed=False,
-            tx_hash=None,
-            error=f"redeem broadcast failed: {exc}",
+            redeemed=False, tx_hash=None,
+            error=f"key parse failed: {exc}",
+        )
+    if acct.address.lower() != wallet.lower():
+        return RedeemResult(
+            redeemed=False, tx_hash=None,
+            error=("private key does not match wallet "
+                   f"({acct.address} vs {wallet})"),
         )
 
-    # Wait for the receipt. If it reverts or times out we still have
-    # the hash so the operator can investigate on Polygonscan.
+    # Try each RPC URL in turn. The "build + send" step is the one
+    # that 401s on gated RPCs; reads (get_transaction_count, gas
+    # suggest) usually still work but we use the same RPC for
+    # both phases of each attempt to keep nonces consistent.
+    # Polygon is a proof-of-authority chain; web3.py needs
+    # ExtraDataToPOAMiddleware injected or every get_block /
+    # get_transaction_count throws ExtraDataLengthError on the 32+
+    # byte extraData field that POA chains use. Without this the
+    # auto-redeem fails before it even tries to broadcast.
+    try:
+        from web3.middleware import ExtraDataToPOAMiddleware as _POAMiddleware
+    except Exception:
+        _POAMiddleware = None
+
+    sent_hash: Optional[str] = None
+    w3 = None
+    errors: list[str] = []
+    for rpc_url in POLYGON_RPC_URLS:
+        try:
+            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 15}))
+            if _POAMiddleware is not None:
+                try:
+                    w3.middleware_onion.inject(_POAMiddleware, layer=0)
+                except Exception:
+                    pass  # already injected or unsupported on this w3 version
+            ctf = w3.eth.contract(
+                address=Web3.to_checksum_address(CTF_ADDRESS),
+                abi=CTF_REDEEM_ABI,
+            )
+            nonce = w3.eth.get_transaction_count(acct.address)
+            tx = ctf.functions.redeemPositions(
+                Web3.to_checksum_address(PUSD_ADDRESS),
+                b"\x00" * 32,                                  # parentCollectionId
+                cond_bytes,
+                list(index_sets),
+            ).build_transaction({
+                "from":    acct.address,
+                "chainId": POLYGON_CHAIN_ID,
+                "nonce":   nonce,
+            })
+            signed = acct.sign_transaction(tx)
+            raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
+            sent_hash = w3.eth.send_raw_transaction(raw).hex()
+            print(
+                f"[pm_redeemer] broadcast accepted by {rpc_url} "
+                f"tx={sent_hash}",
+                file=sys.stderr, flush=True,
+            )
+            break  # success
+        except Exception as exc:
+            errors.append(f"{rpc_url}: {type(exc).__name__}: {str(exc)[:160]}")
+            print(
+                f"[pm_redeemer] broadcast failed on {rpc_url}: "
+                f"{type(exc).__name__}: {str(exc)[:160]}",
+                file=sys.stderr, flush=True,
+            )
+            continue
+    if sent_hash is None or w3 is None:
+        # Every RPC URL failed. Detect the common case where the
+        # user's Polygon wallet has no MATIC for gas — that's a
+        # specific user-actionable failure, not a transient RPC
+        # problem. The operator can also always redeem manually
+        # via the Polymarket web UI (Polymarket sponsors gas via
+        # their meta-transaction relayer).
+        joined = " | ".join(errors)
+        if "insufficient funds for gas" in joined.lower():
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=(
+                    "wallet has no MATIC for gas. Send ~0.1 MATIC "
+                    "(~$0.05) to the wallet for auto-redeem to work, "
+                    "OR click Redeem on the Polymarket web UI "
+                    "(Polymarket sponsors the gas there)."
+                ),
+            )
+        return RedeemResult(
+            redeemed=False, tx_hash=None,
+            error=f"redeem broadcast failed on all RPCs: {' | '.join(errors[:3])}",
+        )
+
+    # Wait for the receipt. Uses the same RPC that accepted the
+    # broadcast. If it reverts or times out we still have the hash
+    # so the operator can investigate on Polygonscan.
     try:
         receipt = w3.eth.wait_for_transaction_receipt(
             sent_hash, timeout=TX_RECEIPT_TIMEOUT_SECONDS,
