@@ -352,6 +352,28 @@ class LocalAPI:
         # watchdog's import in this module's import graph.
         self._watchdog = watchdog
 
+        # Dedicated threadpool for INTERACTIVE GUI endpoints
+        # (/api/state, /api/summary, /api/credentials, /api/config,
+        # /api/positions...). Isolated from the default loop
+        # executor so that the analyst's heavy LLM + research work
+        # cannot starve the dashboard. Sized at 8 workers — enough
+        # for half a dozen simultaneous dashboard fetches with
+        # headroom; small enough that runaway sync work in a single
+        # handler can't lock up the rest of the threadpool.
+        #
+        # Before this: every offload went through the default
+        # ThreadPoolExecutor (32 workers, shared with APScheduler).
+        # When the analyst was mid-scan it could hold most of those
+        # workers for 30-60s doing per-market LLM calls. Dashboard
+        # fetches queued behind that work and timed out at 30s on
+        # the React side, surfacing as the "/api/state timed out
+        # after 30s. The sidecar may be stuck" banner.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        self._api_executor = _TPE(
+            max_workers=8,
+            thread_name_prefix="delfi-api",
+        )
+
     def set_scheduler(self, scheduler) -> None:
         self._scheduler = scheduler
 
@@ -499,7 +521,7 @@ class LocalAPI:
 
     # ── Executor offload helper ─────────────────────────────────────────────
     async def _offload(self, fn, *args, **kwargs):
-        """Run a sync callable on the default executor.
+        """Run a sync callable on the API-dedicated executor.
 
         Every handler that touches SQLite, the keychain, or the
         filesystem MUST go through here. Sync calls on the asyncio
@@ -507,11 +529,18 @@ class LocalAPI:
         contention with the scheduler, a half-open keychain prompt)
         wedges every other endpoint until it returns. The 5-hour
         outage of 2026-05-06 was the trigger to make this universal.
+
+        Uses `_api_executor` (8 workers) instead of the default
+        ThreadPoolExecutor, so heavy work scheduled by APScheduler
+        / pm_analyst can never starve the dashboard. The default
+        executor still serves background jobs.
         """
         loop = asyncio.get_event_loop()
         if args or kwargs:
-            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-        return await loop.run_in_executor(None, fn)
+            return await loop.run_in_executor(
+                self._api_executor, lambda: fn(*args, **kwargs)
+            )
+        return await loop.run_in_executor(self._api_executor, fn)
 
     # ── Middleware ──────────────────────────────────────────────────────────
     @web.middleware
@@ -796,7 +825,9 @@ class LocalAPI:
 
         try:
             booleans = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _read_all),
+                asyncio.get_event_loop().run_in_executor(
+                    self._api_executor, _read_all
+                ),
                 timeout=20,
             )
         except asyncio.TimeoutError:
@@ -1089,7 +1120,9 @@ class LocalAPI:
                 return [dict(r._mapping) for r in conn.execute(stmt)]
 
         try:
-            rows = await asyncio.get_event_loop().run_in_executor(None, _read)
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
         except Exception as exc:
             return _err(f"failed to read positions: {exc}", 500)
         return _ok({"positions": rows})
@@ -1112,7 +1145,9 @@ class LocalAPI:
                 return [dict(r._mapping) for r in conn.execute(stmt)]
 
         try:
-            rows = await asyncio.get_event_loop().run_in_executor(None, _read)
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
         except Exception as exc:
             return _err(f"failed to read events: {exc}", 500)
         return _ok({"events": rows})
@@ -1193,13 +1228,36 @@ class LocalAPI:
         Headline performance numbers: bankroll, equity, win rate, ROI, Brier.
         Single-user; no X-User-Id needed. Mode is always taken from
         user_config (no view-mode override in v1).
+
+        Cached 5s. The dashboard polls this every ~5s; underlying
+        portfolio stats don't change that fast (a trade settle is
+        the only meaningful change source, and those fire every
+        10-30min). Caching at this layer prevents 6 concurrent
+        React components from each spawning a fresh DB+offload pass.
+        Cache miss path is unchanged; cache hit returns in <1ms.
+
+        Why this matters: the polymarket-runner + analyst jobs hog
+        the default ThreadPoolExecutor for 5-30s at a time during
+        a scan. If /api/summary's offload also competes for those
+        threads, it queues. The user sees the GUI's 30s timeout
+        even though no single handler took 30s. Caching upstream of
+        the offload eliminates that contention almost entirely.
         """
+        import time as _t
+        cache = getattr(self, "_summary_cache", None)
+        if cache is not None:
+            ts, payload = cache
+            if _t.monotonic() - ts < 5.0:
+                return _ok(payload)
+
         def _stats() -> dict:
             executor = PMExecutor(DEFAULT_USER_ID)
             return executor.get_portfolio_stats()
 
         try:
-            stats = await asyncio.get_event_loop().run_in_executor(None, _stats)
+            stats = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _stats,
+            )
         except Exception as exc:
             return _err(f"failed to compute portfolio stats: {exc}", 500)
 
@@ -1212,7 +1270,7 @@ class LocalAPI:
         _stats_mode = stats.get("mode") or "simulation"
         try:
             brier = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: calibration.get_report(
                     source="polymarket", user_id=DEFAULT_USER_ID,
                     mode=_stats_mode,
@@ -1294,7 +1352,7 @@ class LocalAPI:
 
         roi = (realized / starting) if starting > 0 else None
 
-        return _ok({
+        payload = {
             "mode":           stats.get("mode"),
             "bankroll":       bankroll,
             "equity":         equity,
@@ -1310,7 +1368,9 @@ class LocalAPI:
             "brier":          brier.get("brier"),
             "resolved_predictions": brier.get("resolved"),
             "total_predictions":    brier.get("total"),
-        })
+        }
+        self._summary_cache = (_t.monotonic(), payload)
+        return _ok(payload)
 
     async def _get_calibration(self, req: web.Request) -> web.Response:
         """Full calibration report (Brier + reliability buckets).
@@ -1368,7 +1428,9 @@ class LocalAPI:
                 ), {"uid": DEFAULT_USER_ID, "m": current_mode}).fetchall()
 
         try:
-            rows = await asyncio.get_event_loop().run_in_executor(None, _query)
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _query,
+            )
         except Exception as exc:
             return _err(f"brier-trend query failed: {exc}", 500)
 
@@ -1453,12 +1515,16 @@ class LocalAPI:
 
         loop = asyncio.get_event_loop()
         try:
-            result = await loop.run_in_executor(None, lambda: fn(sid, **kwargs))
+            result = await loop.run_in_executor(
+                self._api_executor, lambda: fn(sid, **kwargs),
+            )
         except TypeError:
             # Older signatures may not accept wait_trades; retry without.
             kwargs.pop("wait_trades", None)
             try:
-                result = await loop.run_in_executor(None, lambda: fn(sid, **kwargs))
+                result = await loop.run_in_executor(
+                    self._api_executor, lambda: fn(sid, **kwargs),
+                )
             except Exception as exc:
                 return _err(f"suggestion action failed: {exc}", 500)
         except Exception as exc:

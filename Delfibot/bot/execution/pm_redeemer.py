@@ -935,17 +935,57 @@ def _try_gasless_redeem_via_relayer_api_key(
         data = resp.json()
         tx_hash = data.get("transactionHash")
         state   = data.get("state")
-        if tx_hash:
+        if not tx_hash:
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=f"relayer accepted submit but no tx hash: {data}",
+            )
+
+        # VERIFY actual on-chain payout before declaring success.
+        #
+        # 2026-05-18: position 317's first redeem returned
+        # STATE_EXECUTED with a valid tx hash, but the on-chain
+        # PayoutRedemption event fired with `payout = 0` because
+        # the redeem was sent with the wrong collateral. The relayer
+        # has no business logic gating - it broadcasts whatever you
+        # signed and reports tx success at the EVM level only.
+        #
+        # Without this check, we'd persist redeem_tx_hash for an
+        # all-zero redeem and the sweeper would never retry — the
+        # user's tokens would sit unredeemed forever even though
+        # Delfi thought it was done.
+        #
+        # Belt-and-suspenders against the same bug class going
+        # forward: pull the receipt, decode PayoutRedemption,
+        # demand payout > 0.
+        verified = _verify_payout_from_receipt(tx_hash, cond_bytes)
+        if verified is True:
             print(
                 f"[pm_redeemer] relayer redeemed via RELAYER_API_KEY: "
-                f"tx={tx_hash} state={state}",
+                f"tx={tx_hash} state={state} (verified payout > 0)",
                 file=sys.stderr, flush=True,
             )
             return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
-        return RedeemResult(
-            redeemed=False, tx_hash=None,
-            error=f"relayer accepted submit but no tx hash: {data}",
+        if verified is False:
+            return RedeemResult(
+                redeemed=False, tx_hash=tx_hash,
+                error=(
+                    f"relayer tx {tx_hash} mined with payout=0 — "
+                    f"likely wrong collateral or tokens at different "
+                    f"funder. Will retry on next sweeper tick."
+                ),
+            )
+        # verified is None: receipt fetch failed. Don't penalise the
+        # relayer for a transient RPC blip; trust the relayer's
+        # STATE_EXECUTED. The sweeper will rescan if the position
+        # is somehow still flagged stuck.
+        print(
+            f"[pm_redeemer] relayer redeemed via RELAYER_API_KEY: "
+            f"tx={tx_hash} state={state} (receipt fetch failed, "
+            f"trusting relayer)",
+            file=sys.stderr, flush=True,
         )
+        return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
     except Exception as exc:
         # Network blip, payload bug, or unexpected SDK error. Fall
         # through to the next path so a transient relayer outage
@@ -957,6 +997,93 @@ def _try_gasless_redeem_via_relayer_api_key(
             file=sys.stderr, flush=True,
         )
         return None
+
+# PayoutRedemption event signature on CTF:
+# keccak("PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)")
+_PAYOUT_REDEMPTION_TOPIC = (
+    "0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d"
+)
+
+
+def _verify_payout_from_receipt(
+    tx_hash: str, cond_bytes: bytes, *, retries: int = 6,
+) -> Optional[bool]:
+    """Pull the tx receipt and confirm CTF emitted PayoutRedemption
+    with payout > 0 for the expected conditionId.
+
+    Returns:
+      True  — receipt has PayoutRedemption(conditionId=ours, payout>0).
+      False — receipt missing PayoutRedemption OR payout=0 OR wrong
+              conditionId. Either way, the redeem was effectively a
+              no-op; the sweeper should NOT mark the position as
+              redeemed.
+      None  — receipt not yet available (tx still propagating) or
+              all RPCs failed. Defer judgement; the caller trusts
+              the relayer's STATE_EXECUTED.
+
+    Retries with backoff because the relayer often returns
+    STATE_EXECUTED a beat before the receipt is queryable from
+    public RPCs.
+    """
+    if not tx_hash:
+        return None
+    try:
+        import requests as _requests
+        from eth_abi import decode as _decode
+    except Exception:
+        return None
+
+    for attempt in range(retries):
+        for rpc in POLYGON_RPC_URLS:
+            try:
+                r = _requests.post(
+                    rpc,
+                    json={
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "eth_getTransactionReceipt",
+                        "params": [tx_hash],
+                    },
+                    timeout=10,
+                )
+                rec = r.json().get("result")
+            except Exception:
+                continue
+            if not rec:
+                continue
+
+            if rec.get("status") != "0x1":
+                # On-chain revert; definitely no payout.
+                return False
+
+            for log in rec.get("logs") or []:
+                topics = log.get("topics") or []
+                if not topics or topics[0] != _PAYOUT_REDEMPTION_TOPIC:
+                    continue
+                data_hex = (log.get("data") or "0x")[2:]
+                if not data_hex:
+                    continue
+                try:
+                    log_cond, _idx_sets, payout = _decode(
+                        ["bytes32", "uint256[]", "uint256"],
+                        bytes.fromhex(data_hex),
+                    )
+                except Exception:
+                    continue
+                if log_cond != cond_bytes:
+                    continue
+                return int(payout) > 0
+
+            # Receipt was found but no PayoutRedemption for our
+            # conditionId. Either the redeem call ran on the wrong
+            # condition, or the user's funder didn't hold the
+            # tokens. Either way, payout is effectively zero.
+            return False
+
+        # Receipt not yet available on any RPC. Backoff.
+        time.sleep(2.0 * (attempt + 1))
+
+    return None  # Never got a receipt; defer to caller.
+
 
 # Polygon mainnet CTF Exchange / Deposit Wallet factory + impl
 _DW_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
