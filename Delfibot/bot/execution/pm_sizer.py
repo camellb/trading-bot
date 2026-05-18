@@ -218,8 +218,19 @@ def size_position(
     # ── Stake sizing (flat) ─────────────────────────────────────────────────
     base_pct = float(user_config.base_stake_pct)
     max_pct  = float(user_config.max_stake_pct)
+    # User instruction 2026-05-18: max_stake_pct is OPT-IN for users at
+    # $1000+ bankrolls who want a hard cap; it's OFF by default so
+    # small-bankroll users (whose configured cap would sit below
+    # Polymarket's $1-and-5-share platform floor) can still trade.
+    # When disabled, the sizer uses `base_pct * arch_mult` as the
+    # target and bumps up to the platform minimum (max($1, 5 * ask))
+    # when the target falls short — even if that exceeds the
+    # configured cap.
+    cap_enabled = bool(getattr(user_config, "max_stake_pct_enabled", False))
 
-    stake_pct = min(base_pct * arch_mult, max_pct)
+    stake_pct = base_pct * arch_mult
+    if cap_enabled:
+        stake_pct = min(stake_pct, max_pct)
 
     if bankroll <= 0:
         return _skip(
@@ -227,53 +238,67 @@ def size_position(
             side=side, entry=entry, p_win=p_win,
         )
 
-    # The $2 minimum floor must NOT override the user's configured
-    # max_stake_pct cap. On small bankrolls (e.g. $50 with max=2% =
-    # $1 cap) the prior `max(2.0, min(...))` silently promoted to $2
-    # = 4% bankroll, breaching the user's risk control. Skip the
-    # trade with an explicit reason instead.
-    cap = bankroll * max_pct
-    if cap < _MIN_ABSOLUTE_STAKE_USD:
-        return _skip(
-            cp, cf,
-            f"max stake cap ${cap:.2f} below ${_MIN_ABSOLUTE_STAKE_USD:.2f} "
-            f"floor (bankroll ${bankroll:.2f} * max_stake_pct "
-            f"{max_pct*100:.1f}%)",
-            side=side, entry=entry, p_win=p_win,
-        )
-    stake = max(
-        _MIN_ABSOLUTE_STAKE_USD,
-        min(bankroll * stake_pct, cap),
-    )
-
-    # Polymarket V2 platform floors: BOTH a $1 notional minimum AND a
-    # 5-share size minimum. Per user instruction 2026-05-17 ("why did
-    # it place a bet for $5 if minimum stake of 2.4% is below $1. In
-    # this case it should place a bet for just $1"): the only bump we
-    # do is up to exactly $1. We never override the user's cap to
-    # meet the 5-share rule — that would silently 5x the per-trade
-    # size at high asks. Instead, if a $1 order wouldn't buy 5
-    # shares at this price, we SKIP the trade with a clear reason.
-    # Result: bot trades only markets where $1 buys >= 5 shares
-    # (i.e. ask <= $0.20). Simulation mode unaffected.
-    if (
-        getattr(user_config, "mode", None) == "live"
-        and stake < POLYMARKET_MIN_ORDER_USD
-    ):
-        stake = POLYMARKET_MIN_ORDER_USD
-
-    if getattr(user_config, "mode", None) == "live":
-        shares_at_stake = (stake / float(entry)) if float(entry) > 0 else 0.0
-        if shares_at_stake < POLYMARKET_MIN_SHARES:
+    target_stake = bankroll * stake_pct
+    if cap_enabled:
+        cap = bankroll * max_pct
+        if cap < _MIN_ABSOLUTE_STAKE_USD:
             return _skip(
                 cp, cf,
-                f"Polymarket needs {POLYMARKET_MIN_SHARES:.0f} shares "
-                f"(~${POLYMARKET_MIN_SHARES * float(entry):.2f}) at this "
-                f"${entry:.2f} ask. Bot caps at ${POLYMARKET_MIN_ORDER_USD:.0f} — "
-                f"this market only trades when ask drops to "
-                f"<= ${POLYMARKET_MIN_ORDER_USD / POLYMARKET_MIN_SHARES:.2f}.",
+                f"max stake cap ${cap:.2f} below "
+                f"${_MIN_ABSOLUTE_STAKE_USD:.2f} floor (bankroll "
+                f"${bankroll:.2f} * max_stake_pct {max_pct*100:.1f}%)",
                 side=side, entry=entry, p_win=p_win,
             )
+        target_stake = min(target_stake, cap)
+    stake = max(_MIN_ABSOLUTE_STAKE_USD, target_stake)
+
+    # Polymarket V2 platform floors: BOTH $1 notional AND 5 shares.
+    # Branch on the cap toggle:
+    #
+    #  cap ENABLED: respect max_stake_pct. Bump to $1 only (per the
+    #     2026-05-17 user rule); if 5 shares > stake at this ask,
+    #     SKIP with a message that points at the cap setting.
+    #
+    #  cap DISABLED (default): bump the order to whatever Polymarket
+    #     actually accepts (max($1, 5 * ask)) so the bot keeps
+    #     trading at small bankrolls. Only skip when the bumped
+    #     stake would exceed the user's WALLET, not the cap.
+    is_live = getattr(user_config, "mode", None) == "live"
+    if is_live:
+        ask = float(entry) if float(entry) > 0 else 0.0
+        platform_min = max(
+            POLYMARKET_MIN_ORDER_USD,
+            POLYMARKET_MIN_SHARES * ask,
+        )
+
+        if cap_enabled:
+            if stake < POLYMARKET_MIN_ORDER_USD:
+                stake = POLYMARKET_MIN_ORDER_USD
+            shares_at_stake = (stake / ask) if ask > 0 else 0.0
+            if shares_at_stake < POLYMARKET_MIN_SHARES:
+                return _skip(
+                    cp, cf,
+                    f"max_stake_pct cap blocks this trade. Polymarket "
+                    f"needs {POLYMARKET_MIN_SHARES:.0f} shares "
+                    f"(~${POLYMARKET_MIN_SHARES * ask:.2f}) at this "
+                    f"${ask:.2f} ask, but the cap allows only "
+                    f"${stake:.2f}. Disable the cap in Risk settings "
+                    f"or raise it above "
+                    f"{(POLYMARKET_MIN_SHARES * ask / bankroll) * 100:.1f}% "
+                    f"to trade this market.",
+                    side=side, entry=entry, p_win=p_win,
+                )
+        else:
+            if stake < platform_min:
+                stake = platform_min
+            if stake > bankroll:
+                return _skip(
+                    cp, cf,
+                    f"platform minimum ${platform_min:.2f} exceeds "
+                    f"bankroll ${bankroll:.2f}. Deposit more or wait "
+                    f"for a lower-priced market.",
+                    side=side, entry=entry, p_win=p_win,
+                )
 
     shares = stake / entry if entry > 0 else 0.0
 

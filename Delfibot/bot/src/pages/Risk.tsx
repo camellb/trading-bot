@@ -20,8 +20,12 @@ import {
  */
 
 const BOUNDS = {
-  base_stake_pct:        [0.005, 0.05] as const,
-  max_stake_pct:         [0.01,  0.10] as const,
+  // Upper bounds widened 2026-05-18 so users at small live bankrolls
+  // can configure a stake-pct large enough to clear Polymarket's
+  // platform floors. Bot also gained a max_stake_pct_enabled toggle
+  // (default OFF) so the cap is opt-in rather than always-on.
+  base_stake_pct:        [0.005, 1.00] as const,
+  max_stake_pct:         [0.01,  1.00] as const,
   daily_loss_limit_pct:  [0.01,  1.00] as const,
   weekly_loss_limit_pct: [0.01,  1.00] as const,
   drawdown_halt_pct:     [0.01,  1.00] as const,
@@ -39,6 +43,7 @@ const BOUNDS = {
 type ConfigShape = {
   base_stake_pct?: number;
   max_stake_pct?: number;
+  max_stake_pct_enabled?: boolean;
   daily_loss_limit_pct?: number;
   weekly_loss_limit_pct?: number;
   drawdown_halt_pct?: number;
@@ -525,6 +530,7 @@ function RiskPanel({
   const [risk, setRisk] = useState({
     base_stake_pct: "",
     max_stake_pct: "",
+    max_stake_pct_enabled: false,
     daily_loss_limit_pct: "",
     weekly_loss_limit_pct: "",
     drawdown_halt_pct: "",
@@ -548,6 +554,7 @@ function RiskPanel({
     setRisk({
       base_stake_pct:         config.base_stake_pct         != null ? String(config.base_stake_pct)         : "",
       max_stake_pct:          config.max_stake_pct          != null ? String(config.max_stake_pct)          : "",
+      max_stake_pct_enabled:  !!config.max_stake_pct_enabled,
       daily_loss_limit_pct:   config.daily_loss_limit_pct   != null ? String(config.daily_loss_limit_pct)   : "",
       weekly_loss_limit_pct:  config.weekly_loss_limit_pct  != null ? String(config.weekly_loss_limit_pct)  : "",
       drawdown_halt_pct:      config.drawdown_halt_pct      != null ? String(config.drawdown_halt_pct)      : "",
@@ -583,6 +590,9 @@ function RiskPanel({
         if (n < lo || n > hi) throw new Error(`Streak cooldown must be between ${lo} and ${hi}.`);
         changes.streak_cooldown_losses = n;
       }
+      // Always send the cap-toggle so the user can flip it without
+      // touching any numeric field.
+      changes.max_stake_pct_enabled = risk.max_stake_pct_enabled;
       if (Object.keys(changes).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
         return;
@@ -622,7 +632,20 @@ function RiskPanel({
             fractionRange={BOUNDS.max_stake_pct}
             fractionValue={risk.max_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
+            note={
+              risk.max_stake_pct_enabled
+                ? "Hard per-trade cap is ON. Markets where Polymarket's $1-and-5-share floor exceeds this cap will be skipped."
+                : "Hard cap is OFF (default). Sizer bumps each live order to whatever Polymarket actually accepts, even if that exceeds this number. Turn ON when bankroll is large enough that you want a safety cap on the per-trade size."
+            }
           />
+          <div style={{ gridColumn: "1 / -1" }}>
+            <ToggleRow
+              label="Enforce max stake as a hard cap"
+              description="Off: bot bumps each live order to Polymarket's $1-and-5-share platform minimum, even when the bumped stake exceeds this percentage of bankroll. Use this at small live bankrolls so the bot can trade at all. On: bot strictly respects the cap and skips any market whose 5-share minimum exceeds bankroll × max-stake-pct."
+              checked={risk.max_stake_pct_enabled}
+              onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
+            />
+          </div>
           <PercentField
             label="Daily loss limit" step="1"
             fractionRange={BOUNDS.daily_loss_limit_pct}

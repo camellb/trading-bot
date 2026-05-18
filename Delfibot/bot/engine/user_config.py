@@ -97,6 +97,14 @@ class UserConfig:
     # confidence_override_threshold were removed when V1 shipped.
     base_stake_pct:         float = 0.02
     max_stake_pct:          float = 0.05
+    # When False (default), the sizer treats max_stake_pct as advisory
+    # only and BUMPS the per-trade stake up to Polymarket's platform
+    # minimum (max($1, 5 * ask)) when bankroll * base_stake_pct comes
+    # in below it. This is what lets small live accounts (<$50) keep
+    # trading despite Polymarket's $2.50-$4.75 per-order floor. When
+    # True, the cap is enforced and the sizer SKIPS markets it can't
+    # fund within bankroll * max_stake_pct. User instruction 2026-05-18.
+    max_stake_pct_enabled:  bool  = False
 
     # Circuit breakers.
     daily_loss_limit_pct:   float = 0.10
@@ -435,6 +443,8 @@ _CASTERS: dict[str, type] = {
     "time_decay_max_hours":              int,
     "time_decay_flat_band_pct":          float,
     "exit_min_time_to_resolution_minutes": int,
+    # Stake-cap toggle (sizer)
+    "max_stake_pct_enabled":             bool,
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
@@ -472,6 +482,8 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "time_decay_max_hours",
     "time_decay_flat_band_pct",
     "exit_min_time_to_resolution_minutes",
+    # Stake-cap toggle (sizer)
+    "max_stake_pct_enabled",
 })
 
 
@@ -787,6 +799,8 @@ def validate_user_config_value(key: str, value) -> None:
         "take_profit_enabled",
         "stop_loss_enabled",
         "time_decay_enabled",
+        # Stake-cap toggle. Pairs with the bounded max_stake_pct.
+        "max_stake_pct_enabled",
     ):
         return
     if key not in USER_CONFIG_BOUNDS:
@@ -1166,7 +1180,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       stop_loss_min_time_remaining_pct, "
                 "       time_decay_enabled, time_decay_max_hours, "
                 "       time_decay_flat_band_pct, "
-                "       exit_min_time_to_resolution_minutes "
+                "       exit_min_time_to_resolution_minutes, "
+                "       max_stake_pct_enabled "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -1203,6 +1218,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             time_decay_max_hours                = int(row[26])   if row[26] is not None else 72,
             time_decay_flat_band_pct            = float(row[27]) if row[27] is not None else 0.10,
             exit_min_time_to_resolution_minutes = int(row[28])   if row[28] is not None else 5,
+            max_stake_pct_enabled               = bool(row[29]) if row[29] is not None else False,
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)

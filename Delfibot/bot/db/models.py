@@ -379,6 +379,17 @@ user_config = Table(
            server_default=sa_text("0.02")),
     Column("max_stake_pct",          Float, nullable=False,
            server_default=sa_text("0.05")),
+    # Whether to ENFORCE max_stake_pct as a hard per-trade cap. OFF by
+    # default. At $1000+ bankrolls the cap protects against accidental
+    # over-staking (a buggy archetype multiplier could 10x the bet); at
+    # small bankrolls it makes trading impossible — Polymarket's $1-
+    # and-5-share platform floors mean the minimum legal trade is
+    # $2.50-$4.75, while a 5% cap on $8 bankroll is $0.40. With the
+    # cap off, the sizer bumps each live order to whatever Polymarket
+    # actually requires; users with bigger capital can switch it on
+    # for the cap. User instruction 2026-05-18.
+    Column("max_stake_pct_enabled",  Boolean, nullable=False,
+           server_default=sa_text("0")),
 
     # Circuit breakers.
     Column("daily_loss_limit_pct",   Float, nullable=False,
@@ -693,6 +704,15 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE user_config ADD COLUMN "
                 "archetype_skip_market_price_bands TEXT"
+            ))
+        if "max_stake_pct_enabled" not in existing_user_config_cols:
+            # Default 0 (False): sizer bumps to platform minimum on small
+            # bankrolls instead of skipping. Existing users with a
+            # carefully-tuned max_stake_pct can flip this back on from
+            # the Risk page.
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "max_stake_pct_enabled INTEGER NOT NULL DEFAULT 0"
             ))
 
         # ── pm_positions backfills ──────────────────────────────────────
