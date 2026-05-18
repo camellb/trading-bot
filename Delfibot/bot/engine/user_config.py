@@ -121,12 +121,22 @@ class UserConfig:
     # just because it's been open a while). Off by default since most
     # users care more about TP/SL than capital velocity.
     time_decay_enabled:    bool  = False
-    time_decay_max_hours:  int   = 72
-    time_decay_flat_band_pct: float = 0.10    # ±10% counts as "flat"
+    # 120h (5 days) tuned to the bot's PM_MAX_DAYS_TO_END=7 horizon.
+    # An earlier default of 72h was firing on multi-day markets that
+    # were not actually stalled — three days into a seven-day market
+    # is normal, not stale.
+    time_decay_max_hours:  int   = 120
+    # ±5% is the genuine "flat" band. ±10% (the prior default) caught
+    # small winners and small losers that still had direction;
+    # time-decay should only fire when the market truly hasn't moved.
+    time_decay_flat_band_pct: float = 0.05
     # Universal safety: never exit if less than N minutes remain to the
-    # market's natural resolution. Selling 30 seconds before settlement
-    # eats spread + Polymarket fees for negligible time-value gain.
-    exit_min_time_to_resolution_minutes: int = 5
+    # market's natural resolution. Polymarket spread + per-trade fees
+    # on a market this close to settlement reliably exceed the
+    # time-value gain of selling early. 15 min gives the position room
+    # to ride out final-minute noise (5 min was too tight; in practice
+    # spreads widen and liquidity thins inside that window).
+    exit_min_time_to_resolution_minutes: int = 15
 
     # Diagnostic-driven overrides.
     cost_assumption_override: Optional[float]   = None

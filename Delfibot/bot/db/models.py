@@ -469,12 +469,16 @@ user_config = Table(
            server_default=sa_text("0.2")),
     Column("time_decay_enabled", Boolean, nullable=False,
            server_default=sa_text("0")),
+    # Defaults retuned 2026-05-18: 120h matches the bot's 7-day market
+    # horizon (was 72h), ±5% is the genuine flat band (was ±10%),
+    # 15min safety floor avoids the spread+fees pothole near
+    # settlement (was 5min). See UserConfig dataclass for rationale.
     Column("time_decay_max_hours", Integer, nullable=False,
-           server_default=sa_text("72")),
+           server_default=sa_text("120")),
     Column("time_decay_flat_band_pct", Float, nullable=False,
-           server_default=sa_text("0.1")),
+           server_default=sa_text("0.05")),
     Column("exit_min_time_to_resolution_minutes", Integer, nullable=False,
-           server_default=sa_text("5")),
+           server_default=sa_text("15")),
 
     # Onboarding.
     Column("tour_completed_at", DateTime, nullable=True),
@@ -758,12 +762,14 @@ def create_all_tables() -> None:
              "REAL NOT NULL DEFAULT 0.2"),
             ("time_decay_enabled",
              "BOOLEAN NOT NULL DEFAULT 0"),
+            # See user_config Table() defs above for the 2026-05-18
+            # default retune. Keep these in sync.
             ("time_decay_max_hours",
-             "INTEGER NOT NULL DEFAULT 72"),
+             "INTEGER NOT NULL DEFAULT 120"),
             ("time_decay_flat_band_pct",
-             "REAL NOT NULL DEFAULT 0.1"),
+             "REAL NOT NULL DEFAULT 0.05"),
             ("exit_min_time_to_resolution_minutes",
-             "INTEGER NOT NULL DEFAULT 5"),
+             "INTEGER NOT NULL DEFAULT 15"),
         ):
             if col not in existing_user_config_cols:
                 conn.execute(sa_text(
