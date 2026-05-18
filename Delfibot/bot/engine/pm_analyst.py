@@ -112,6 +112,11 @@ class PMAnalyst:
                 fetch_research(
                     market.question, market.category_hint,
                     days_to_resolution=market.days_to_end,
+                    # Resolution date pins DDG queries to the SPECIFIC
+                    # event month+year. Without it, evergreen searches
+                    # like "head to head" surface 18-month-old results
+                    # that confuse the forecaster.
+                    resolution_date=market.resolution_at_estimate,
                 ),
                 timeout=30,
             )

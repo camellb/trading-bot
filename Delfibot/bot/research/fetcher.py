@@ -436,11 +436,18 @@ _KW_EXTRACTION_PROMPT = (
     '{"search_terms": ["precise Wikipedia search terms, e.g. Anaheim Ducks (NHL) not just Ducks"],'
     ' "category": "sports|politics|crypto|economics|entertainment|science|other",'
     ' "sport": "nhl|nba|nfl|mlb|soccer|mma|tennis|other|null",'
-    ' "teams": ["full team names if a sports matchup, else empty"]}\n'
+    ' "teams": ["full team names if a sports matchup, else empty"],'
+    ' "event_name": "specific event/tournament/series name if present, e.g.'
+    " \"Italian Open ATP Rome\", \"NBA Finals\", \"NATO Summit\";"
+    ' empty string if none",'
+    ' "event_qualifier": "round/stage/phase if present, e.g. \"semifinal\",'
+    ' \"Game 7\", \"opening ceremony\", \"first vote\"; empty string if none"}\n'
     "Rules:\n"
     "- search_terms should be specific enough to find the RIGHT Wikipedia article\n"
     "- For sports: include league name, e.g. 'Anaheim Ducks NHL hockey' not 'Ducks'\n"
     "- For people: include their role, e.g. 'Joe Biden politician' not 'Biden'\n"
+    "- For tournaments: include the tournament's official name AND its host city,\n"
+    "  e.g. event_name='ATP Internazionali BNL d'Italia Rome' not 'Italian Open'\n"
     "- Max 3 search terms\n"
     "- Return ONLY the JSON object, no markdown"
 )
@@ -809,9 +816,34 @@ def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
         return []
 
 
-def _format_ddg_results(results: list[dict], max_snippet: int = 300) -> list[str]:
+def _format_ddg_results(
+    results: list[dict],
+    max_snippet: int = 300,
+    category: Optional[str] = None,
+) -> list[str]:
+    """Format DDG snippets for the prompt.
+
+    Behaviour upgraded so the LLM sees source-quality signals
+    explicitly rather than treating every snippet as equally
+    trustworthy:
+
+      - Snippets from domains in _SKIP_DOMAINS (social, content
+        farms) are DROPPED outright. Better no snippet than a
+        templated "best NFL picks 2025" SEO page.
+      - Snippets from the category's priority list are tagged
+        [tier-A: domain]. The forecaster's system prompt instructs
+        the model to weight Tier-A more heavily.
+      - Everything else is tagged [tier-B: domain] so the model
+        knows it's reading a less-authoritative source.
+      - Tier-A is sorted to the top of the returned list.
+    """
+    cat = (category or "other").lower()
+    cat_domains = _CATEGORY_PRIORITY_DOMAINS.get(cat, set())
+    all_priority = cat_domains | _ALL_PRIORITY_DOMAINS
+
     seen_titles: set[str] = set()
-    out: list[str] = []
+    tier_a: list[str] = []
+    tier_b: list[str] = []
     for r in results:
         title = (r.get("title") or "").strip()
         body = (r.get("body") or "").strip()
@@ -819,41 +851,75 @@ def _format_ddg_results(results: list[dict], max_snippet: int = 300) -> list[str
         if not title or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
-        source = href.split("/")[2] if href.count("/") >= 2 else ""
+        try:
+            domain = href.split("/")[2].lower() if href.count("/") >= 2 else ""
+        except (IndexError, AttributeError):
+            domain = ""
+
+        # Drop social + content-farm domains entirely.
+        if domain and any(skip in domain for skip in _SKIP_DOMAINS):
+            continue
+
         title = _scrub_prediction_market_echoes(title)
         body = _scrub_prediction_market_echoes(body)
-        if body:
-            tag = f" [{source}]" if source else ""
-            out.append(f"{title}: {body[:max_snippet]}{tag}")
-        else:
-            out.append(title)
-    return out
+
+        is_priority = bool(domain) and any(prio in domain for prio in all_priority)
+        tier_label = "tier-A" if is_priority else "tier-B"
+        tag = f" [{tier_label}: {domain}]" if domain else ""
+
+        snippet = f"{title}: {body[:max_snippet]}{tag}" if body else f"{title}{tag}"
+        (tier_a if is_priority else tier_b).append(snippet)
+
+    return tier_a + tier_b
 
 
 # ── Category-specific search strategies ────────────────────────────────────
+_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
 def _build_search_queries(
     question: str,
     keywords: list[str],
     category: Optional[str],
     sport: Optional[str],
     teams: list[str],
+    event_name: Optional[str] = None,
+    event_qualifier: Optional[str] = None,
+    resolution_date: Optional[datetime] = None,
 ) -> list[str]:
     """
-    Build targeted search queries based on market category.
-    Different categories need fundamentally different information.
+    Build targeted search queries based on market category and event context.
 
-    The year suffix is computed FRESH on every call from
-    `datetime.now(timezone.utc).year`. An earlier version hard-coded
-    "2025" in every query template, which silently pinned DDG results
-    to historical 2025 content forever — every market opened in 2026+
-    was researched against last-year's news, and the LLM correctly
-    flagged the date mismatch and skipped (e.g. "the research shows
-    this match already took place on May 15, 2025"). The dynamic
-    year keeps the queries current as the calendar advances; the
-    bot's 7-day-max market horizon means the resolution year almost
-    always matches today's year.
+    Pinning to the event date is the single highest-leverage thing this
+    function does. An earlier version hardcoded "2025" then briefly
+    used just the current year — both lost to evergreen queries like
+    "head to head record" that surface 18-month-old SEO content. By
+    splicing the market's MONTH+YEAR (and, when present, the event
+    name + round) into every category template, DDG ranks the
+    correct edition first.
+
+    `event_name` should be the official tournament/event name (e.g.
+    "Italian Open ATP Rome"); `event_qualifier` is the round/stage
+    (e.g. "semifinal", "Game 7"); `resolution_date` is when the
+    market actually settles.
     """
-    year = datetime.now(timezone.utc).year
+    now = datetime.now(timezone.utc)
+    res_dt = resolution_date or now
+    year = res_dt.year
+    month = _MONTH_NAMES[res_dt.month - 1]
+    # Compact date-pin string used in every category template. Reads
+    # naturally in queries: "Sinner vs Ruud Italian Open semifinal May 2026".
+    parts = []
+    if event_name:
+        parts.append(event_name.strip())
+    if event_qualifier:
+        parts.append(event_qualifier.strip())
+    parts.append(f"{month} {year}")
+    event_tag = " ".join(p for p in parts if p)
+
     queries = [question]
     cat = (category or "other").lower()
 
@@ -861,52 +927,74 @@ def _build_search_queries(
         sport_name = sport or ""
         if teams:
             team_str = " vs ".join(teams[:2])
-            queries.append(f"{team_str} odds prediction {sport_name} {year}")
-            queries.append(f"{team_str} recent form stats {sport_name}")
-            queries.append(f"{team_str} head to head record")
+            # Three queries pinned to the SPECIFIC edition+round of the
+            # event, not generic "head to head record" which evergreen-
+            # surfaces every prior meeting.
+            queries.append(f"{team_str} {event_tag} preview")
+            queries.append(f"{team_str} {event_tag} odds prediction {sport_name}")
+            queries.append(f"{team_str} head to head {sport_name} {year}")
         elif keywords:
-            queries.append(f"{' '.join(keywords[:2])} odds prediction today")
-            queries.append(f"{' '.join(keywords[:2])} stats form {year}")
+            queries.append(f"{' '.join(keywords[:2])} {event_tag} preview")
+            queries.append(f"{' '.join(keywords[:2])} {event_tag} odds")
 
     elif cat == "politics":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest polls {year}")
-            queries.append(f"{' '.join(keywords[:3])} political analysis forecast")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} latest polls")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} forecast analysis")
 
     elif cat in ("geopolitics", "economics"):
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest developments {year}")
-            queries.append(f"{' '.join(keywords[:3])} expert analysis outlook")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} latest developments")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} expert analysis")
 
     elif cat == "crypto":
         if keywords:
-            queries.append(f"{' '.join(keywords[:2])} price prediction analysis {year}")
-            queries.append(f"{' '.join(keywords[:2])} on-chain metrics sentiment")
+            queries.append(f"{' '.join(keywords[:2])} price action {event_tag}")
+            queries.append(f"{' '.join(keywords[:2])} on-chain metrics {month} {year}")
 
     elif cat == "entertainment":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} ratings predictions odds")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} predictions")
 
     elif cat == "science":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest research results {year}")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} results")
 
     else:
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest news {year}")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} news")
 
-    # Deduplicate while preserving order.
+    # Deduplicate while preserving order. Also collapse internal
+    # double-spaces produced when event_name / event_qualifier were
+    # empty.
     seen: set[str] = set()
     unique: list[str] = []
     for q in queries:
+        q = re.sub(r"\s+", " ", q).strip()
         if q.lower() not in seen:
             seen.add(q.lower())
             unique.append(q)
     return unique
 
 
-_SKIP_DOMAINS = {"youtube.com", "twitter.com", "x.com", "reddit.com",
-                 "facebook.com", "instagram.com", "tiktok.com"}
+_SKIP_DOMAINS = {
+    # Social media — too noisy, often opinion not fact
+    "youtube.com", "twitter.com", "x.com", "reddit.com",
+    "facebook.com", "instagram.com", "tiktok.com", "threads.net",
+    # Content farms / SEO traps — known to surface stale or templated
+    # "predictions" pages that recycle last year's results. Demoted
+    # to skip rather than priority-other so they never poison the
+    # snippet list.
+    "pickswise.com", "sportsline.com", "winnersandwhiners.com",
+    "sportsbookwire.com", "actionnetwork.com",
+    "vegasinsider.com", "covers.com",
+    "askbettors.com", "bettingexpert.com", "oddstrader.com",
+    # AI-generated / aggregator slop domains
+    "betmgm.com", "draftkings.com", "fanduel.com",  # books push their own lines
+    "yardbarker.com", "fadeawayworld.net", "essentiallysports.com",
+    "sportskeeda.com", "givemesport.com", "sports.ndtv.com",
+    "tribuna.com", "thesportsrush.com",
+}
 
 # Domains that DDG may surface but we refuse to trafilatura-scrape full pages
 # from. Distinct from _SKIP_DOMAINS: DDG snippets from these domains still
@@ -943,24 +1031,65 @@ _SCRAPE_BLOCKLIST = {
 
 _CATEGORY_PRIORITY_DOMAINS: dict[str, set[str]] = {
     "sports": {
-        "sofascore.com", "flashscore.com", "espn.com", "sportsreference.com",
-        "stevegtennis.com", "tennistonic.com", "oddsportal.com",
-        "tennisstats.com", "covers.com", "the-odds-api.com",
-        "transfermarkt.com", "whoscored.com", "basketball-reference.com",
-        "baseball-reference.com", "hockey-reference.com", "fbref.com",
+        # League-official / data-authoritative
+        "atptour.com", "wtatennis.com", "tennis.com",
+        "espn.com", "nba.com", "nfl.com", "mlb.com", "nhl.com",
+        "ufc.com", "fifa.com", "uefa.com", "premierleague.com",
+        # Reference / stats sites
+        "sofascore.com", "flashscore.com", "sportsreference.com",
+        "basketball-reference.com", "baseball-reference.com",
+        "hockey-reference.com", "fbref.com", "tennis-data.co.uk",
+        "tennisexplorer.com", "stevegtennis.com", "tennisstats.com",
+        "transfermarkt.com", "whoscored.com",
+        # Major news desks (sport sections)
+        "reuters.com", "apnews.com", "bbc.com",
+        "theguardian.com", "nytimes.com",
+        # Odds (independent expert signal, NOT prediction markets)
+        "oddsportal.com", "the-odds-api.com",
     },
     "politics": {
+        # Forecasters / aggregators
         "realclearpolitics.com", "fivethirtyeight.com", "natesilver.net",
-        "polymarket.com", "metaculus.com", "predictit.org",
-        "bbc.com", "reuters.com", "apnews.com", "politico.com",
+        "goodjudgment.com",
+        # Major news desks
+        "reuters.com", "apnews.com", "bbc.com", "politico.com",
+        "nytimes.com", "washingtonpost.com", "ft.com", "wsj.com",
+        "economist.com", "theguardian.com",
+        # Official
+        "fec.gov", "congress.gov", "whitehouse.gov", "supremecourt.gov",
     },
     "geopolitics": {
         "reuters.com", "apnews.com", "bbc.com", "aljazeera.com",
-        "foreignaffairs.com", "cfr.org", "crisisgroup.org",
+        "ft.com", "wsj.com", "nytimes.com", "economist.com",
+        "foreignaffairs.com", "cfr.org", "crisisgroup.org", "rand.org",
+        "csis.org", "brookings.edu", "atlanticcouncil.org",
+    },
+    "economics": {
+        "reuters.com", "ft.com", "wsj.com", "bloomberg.com",
+        "economist.com", "imf.org", "worldbank.org",
+        "federalreserve.gov", "ecb.europa.eu", "bls.gov",
+        "tradingeconomics.com",
     },
     "crypto": {
-        "coindesk.com", "theblock.co", "messari.io",
+        "coindesk.com", "theblock.co", "messari.io", "decrypt.co",
         "glassnode.com", "defillama.com", "cryptoquant.com",
+        "santiment.net", "kaiko.com", "bloomberg.com", "reuters.com",
+    },
+    "entertainment": {
+        "variety.com", "hollywoodreporter.com", "deadline.com",
+        "reuters.com", "apnews.com", "bbc.com", "nytimes.com",
+        "rottentomatoes.com", "imdb.com", "boxofficemojo.com",
+    },
+    "science": {
+        "nature.com", "science.org", "thelancet.com", "nejm.org",
+        "arxiv.org", "biorxiv.org", "reuters.com", "apnews.com",
+        "bbc.com", "scientificamerican.com", "nasa.gov", "noaa.gov",
+    },
+    "other": {
+        # Generic high-trust newsrooms for uncategorised markets
+        "reuters.com", "apnews.com", "bbc.com", "nytimes.com",
+        "theguardian.com", "ft.com", "wsj.com", "bloomberg.com",
+        "washingtonpost.com", "economist.com",
     },
 }
 _ALL_PRIORITY_DOMAINS = frozenset().union(*_CATEGORY_PRIORITY_DOMAINS.values())
@@ -1006,12 +1135,18 @@ async def _fetch_web_search_raw(
     category: Optional[str] = None,
     sport: Optional[str] = None,
     teams: list[str] | None = None,
+    event_name: Optional[str] = None,
+    event_qualifier: Optional[str] = None,
+    resolution_date: Optional[datetime] = None,
 ) -> list[dict]:
     if not _DDGS_AVAILABLE:
         return []
 
     queries = _build_search_queries(
         question, keywords or [], category, sport, teams or [],
+        event_name=event_name,
+        event_qualifier=event_qualifier,
+        resolution_date=resolution_date,
     )
 
     loop = asyncio.get_running_loop()
@@ -1031,20 +1166,51 @@ async def _fetch_web_search_raw(
 
 
 
-def _extract_text_from_html(html: str, max_chars: int = 8000) -> str:
-    """Extract main content from HTML using trafilatura, with regex fallback."""
+def _extract_text_and_date(
+    html: str, max_chars: int = 8000,
+) -> tuple[str, Optional[str]]:
+    """Extract main content + publish date from HTML.
+
+    Returns (text, iso_date_str). The publish date is parsed from
+    metadata tags trafilatura already inspects:
+      <meta property="article:published_time" ...>
+      <meta name="pubdate" ...>
+      JSON-LD <script type="application/ld+json">
+      <time datetime="..."> elements
+    Falls back to None when nothing publishable is found.
+
+    Surfacing the publish date inline (e.g. "[reuters.com | 2026-05-17]")
+    lets the forecaster reason about freshness without us having to
+    train a "is this stale?" check separately. The user pays for tokens
+    so an extra 12 chars per page is fine.
+    """
     if _TRAFILATURA_AVAILABLE:
-        extracted = trafilatura.extract(html, include_comments=False,
-                                        include_tables=True, favor_recall=True)
-        if extracted and len(extracted) > 80:
-            return extracted[:max_chars]
-    # Regex fallback
+        try:
+            doc = trafilatura.bare_extraction(
+                html, with_metadata=True,
+                include_comments=False, include_tables=True,
+                favor_recall=True,
+            )
+        except Exception:
+            doc = None
+        if doc is not None:
+            text = (getattr(doc, "text", None) or "").strip()
+            date = (getattr(doc, "date", None) or "").strip() or None
+            if text and len(text) > 80:
+                return text[:max_chars], date
+    # Regex fallback (no date when we can't parse properly).
     t = re.sub(r'<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ',
                html, flags=re.DOTALL | re.IGNORECASE)
     t = re.sub(r'<[^>]+>', ' ', t)
     t = re.sub(r'&[#\w]+;', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
-    return t[:max_chars]
+    return t[:max_chars], None
+
+
+# Backwards-compat shim — older callers expect just the text.
+def _extract_text_from_html(html: str, max_chars: int = 8000) -> str:
+    text, _ = _extract_text_and_date(html, max_chars)
+    return text
 
 
 # Polymarket pages leak the crowd's price into the research bundle - both as
@@ -1156,7 +1322,7 @@ async def _fetch_page_text(
         print(f"[research] page fetch failed {url[:80]}: {exc}", file=sys.stderr)
         return None
 
-    text = _extract_text_from_html(html, max_chars)
+    text, pub_date = _extract_text_and_date(html, max_chars)
     if len(text) < 100:
         return None
 
@@ -1168,7 +1334,12 @@ async def _fetch_page_text(
     # Every page goes through the echo scrub - even third-party news and
     # aggregator sites may embed "Polymarket has this at 65%" widgets.
     text = _scrub_prediction_market_echoes(text)
-    return f"[{domain}]\n{text}"
+    # Surface the publish date inline so the forecaster can reason
+    # about evidence freshness without separate signals. A page from
+    # 2024 about a 2026 market should be discounted; the LLM can only
+    # see that if we tell it.
+    header = f"[{domain} | {pub_date}]" if pub_date else f"[{domain} | undated]"
+    return f"{header}\n{text}"
 
 
 async def _fetch_top_pages(
@@ -1201,20 +1372,31 @@ async def fetch_research(
     category:            Optional[str] = None,
     max_wiki_kws:        int           = 4,
     days_to_resolution:  Optional[float] = None,
+    resolution_date:     Optional[datetime] = None,
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
     path - network errors are swallowed and the bundle degrades gracefully.
+
+    `resolution_date` is the market's actual settlement timestamp. When
+    provided, DDG queries get pinned to its month+year so search results
+    surface the SPECIFIC edition of an event (e.g. "Italian Open 2026
+    semifinal" not last year's QF). Falls back to today() when not given
+    — same behaviour as before this argument existed.
     """
     bundle = ResearchBundle(question=question)
 
     # 0. Gemini-powered keyword extraction (domain-aware, replaces regex).
+    detected_event_name: Optional[str] = None
+    detected_event_qualifier: Optional[str] = None
     gemini_meta = await _extract_keywords_gemini(question)
     if gemini_meta:
         bundle.keywords = (gemini_meta.get("search_terms") or [])[:4]
         detected_category = gemini_meta.get("category")
         detected_sport = gemini_meta.get("sport")
         detected_teams = gemini_meta.get("teams") or []
+        detected_event_name = (gemini_meta.get("event_name") or "").strip() or None
+        detected_event_qualifier = (gemini_meta.get("event_qualifier") or "").strip() or None
         bundle.sources.append("gemini_keywords")
     else:
         sports_meta = _detect_sports_matchup(question)
@@ -1232,6 +1414,8 @@ async def fetch_research(
                 detected_category = claude_meta.get("category")
                 detected_sport = claude_meta.get("sport")
                 detected_teams = claude_meta.get("teams") or []
+                detected_event_name = (claude_meta.get("event_name") or "").strip() or None
+                detected_event_qualifier = (claude_meta.get("event_qualifier") or "").strip() or None
                 bundle.sources.append("claude_keywords")
             else:
                 bundle.keywords = extract_keywords(question)
@@ -1252,6 +1436,9 @@ async def fetch_research(
             question, keywords=bundle.keywords or None,
             category=detected_category, sport=detected_sport,
             teams=detected_teams,
+            event_name=detected_event_name,
+            event_qualifier=detected_event_qualifier,
+            resolution_date=resolution_date,
         )
     )
 
@@ -1293,7 +1480,9 @@ async def fetch_research(
             web_raw = []
 
         if web_raw:
-            bundle.web_search = _format_ddg_results(web_raw, max_snippet=300)[:15]
+            bundle.web_search = _format_ddg_results(
+                web_raw, max_snippet=300, category=detected_category,
+            )[:15]
             bundle.sources.append(f"ddg_web:{len(bundle.web_search)}")
 
         page_task = asyncio.create_task(

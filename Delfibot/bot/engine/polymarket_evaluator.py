@@ -45,6 +45,29 @@ def _system_prompt() -> str:
         f"they WILL be wrong. Use ONLY the research context provided below. "
         f"If the research does not contain a key fact you need, say so in your "
         f"reasoning and set confidence LOW. "
+        f"SAME-EVENT CHECK (do this FIRST, before forecasting): The user "
+        f"prompt includes an EVENT CONTEXT block stating the market's exact "
+        f"date and event. Many research snippets describe DIFFERENT editions "
+        f"of the same recurring event (e.g. last year's tournament, prior "
+        f"election cycles, earlier games in a series). Before you forecast, "
+        f"verify that the research is about the SAME event the market asks "
+        f"about. If most evidence describes a different edition / date / "
+        f"matchup, set `same_event_verified` to 'no' and return a low "
+        f"confidence skip - do NOT fabricate a forecast from off-event data. "
+        f"SOURCE QUALITY: research snippets are tagged [tier-A: domain] or "
+        f"[tier-B: domain]. Tier-A sources are league-official, "
+        f"authoritative newsrooms (Reuters/AP/BBC), reference stats sites, "
+        f"or first-party sources. Weight Tier-A heavily. Tier-B is "
+        f"everything else; use it for corroboration but not as primary "
+        f"evidence. Full-page extracts include a publish date "
+        f"(e.g. '[reuters.com | 2026-05-17]'); evidence dated before the "
+        f"market's event window is HISTORICAL CONTEXT ONLY and must not "
+        f"drive a forecast about a future-edition event. "
+        f"CITE SOURCES IN REASONING: when a specific fact drives your "
+        f"estimate, name the source domain inline (e.g. 'per atptour.com, "
+        f"Sinner is the top seed and faces Ruud in the semifinal'). This "
+        f"is read by paying users; vague references like 'the research "
+        f"shows' are not acceptable. "
         f"HOW TO FORECAST: Read the resolution criteria carefully. Read the "
         f"research. Think about what has to be true for YES to resolve, and "
         f"what has to be true for NO. Weigh the evidence. Produce an honest "
@@ -121,12 +144,19 @@ def _system_prompt() -> str:
         f"reject inconsistent outputs entirely and skip the trade rather "
         f"than risk acting on incoherent reasoning. "
         f"Output STRICT JSON only - no markdown fence, no prose before/after. "
-        f"Schema: {{\"probability_yes\":0..1, \"confidence\":0..1, "
+        f"Schema (output fields IN THIS ORDER; same_event_verified comes "
+        f"FIRST so you commit to the evidence check before producing a "
+        f"probability): "
+        f"{{\"same_event_verified\":\"yes|partial|no\", "
+        f"\"same_event_note\":\"<=120 char one-sentence justification of "
+        f"the verification value, naming the specific evidence-vs-market "
+        f"mismatch if any\", "
+        f"\"probability_yes\":0..1, \"confidence\":0..1, "
         f"\"reasoning_direction\":\"YES|NO\", "
         f"\"category\":\"macro|geopolitics|politics|crypto|tech|sports|entertainment|science|other\", "
-        f"\"key_factors\":[\"short factor\",...], "
+        f"\"key_factors\":[\"short factor with inline source domain\",...], "
         f"\"reasoning_short\":\"<=140 char one-sentence summary\", "
-        f"\"reasoning\":\"<=200 words prose\"}}"
+        f"\"reasoning\":\"<=200 words prose, citing source domains inline\"}}"
     )
 
 
@@ -243,6 +273,43 @@ class PolymarketEvaluator:
         if len(reasoning_short_raw) > 140:
             reasoning_short_raw = reasoning_short_raw[:137].rstrip() + "..."
 
+        # ── Same-event verification gate ────────────────────────────────
+        # The forecaster outputs `same_event_verified` BEFORE the
+        # probability so the model commits to the evidence check
+        # before producing a number. When the model reports the
+        # research is about a DIFFERENT event/edition, force a low-
+        # confidence skip — the JSON's `same_event_note` is surfaced
+        # in the user-facing reasoning so the skip is intelligible.
+        sev_raw = str(obj.get("same_event_verified") or "").strip().lower()
+        if sev_raw == "no":
+            note = str(obj.get("same_event_note") or "").strip()
+            print(
+                f"[polymarket_eval] same_event_verified=no on "
+                f"{market.id} — skipping. note={note[:160]!r}",
+                file=sys.stderr,
+            )
+            return MarketEvaluation(
+                market_id       = market.id,
+                # Force the probability to the market price so the
+                # downstream sizer's direction-agreement gate naturally
+                # produces a SKIP (no disagreement = no trade). The
+                # reasoning panel renders the same_event_note so the
+                # user understands why.
+                probability_yes = float(market.yes_price),
+                confidence      = 0.10,
+                category        = str(obj.get("category") or "other")[:40],
+                key_factors     = ["evidence_off_event"],
+                reasoning       = (
+                    f"Skipped: the research available does not describe "
+                    f"this specific event/edition. {note}"
+                )[:4000],
+                raw             = raw,
+                reasoning_short = (
+                    "Skipped: research is about a different edition/date "
+                    "than this market."
+                )[:140],
+            )
+
         # ── Reasoning-vs-probability consistency gate ───────────────────
         # The forecaster has a documented failure mode where the prose
         # argues one side and the probability lands on the other. Real
@@ -294,6 +361,40 @@ class PolymarketEvaluator:
     @staticmethod
     def _build_prompt(market: PolyMarket,
                       research_block: Optional[str] = None) -> str:
+        # Build an unmissable event-context block at the TOP of the
+        # user prompt. The system prompt's date hint is a few hundred
+        # tokens up from where the question lands; putting the exact
+        # event window right next to the question + repeating the
+        # "evidence from outside this window is HISTORICAL ONLY" rule
+        # keeps the forecaster anchored even when DDG results are
+        # noisy. This is the single highest-leverage prompt change
+        # for preventing wrong-year confusion.
+        now = datetime.now(timezone.utc)
+        try:
+            resolve_at = market.resolution_at_estimate
+        except Exception:
+            resolve_at = market.end_date_iso
+        try:
+            hours_until = (resolve_at - now).total_seconds() / 3600.0
+        except Exception:
+            hours_until = None
+        event_window = (
+            f"Today: {now.strftime('%Y-%m-%d %A')} (UTC). "
+            f"Market resolves: {resolve_at.isoformat()} "
+            f"({'in ' + format(hours_until, '.1f') + 'h' if hours_until is not None and hours_until >= 0 else 'past due'}). "
+            f"Event year: {resolve_at.year}."
+        )
+        event_context = (
+            "EVENT CONTEXT (do not ignore):\n"
+            f"  {event_window}\n"
+            "  Any evidence in the research below that describes events "
+            "OUTSIDE this window (e.g. prior editions of the same "
+            "tournament, prior election cycles, last year's stats) is "
+            "HISTORICAL CONTEXT ONLY. It must NOT drive your forecast "
+            "of how THIS market resolves. If the bulk of the research "
+            "describes a different edition, set same_event_verified='no'.\n"
+        )
+
         desc = market.description.strip()
         if len(desc) > 2500:
             desc = desc[:2500] + "…"
@@ -325,6 +426,7 @@ class PolymarketEvaluator:
         )
 
         return (
+            f"{event_context}\n"
             f"Question: {market.question}\n\n"
             f"Resolution description:\n{desc or '(not provided)'}\n\n"
             f"Market will resolve on or before: {market.end_date_iso.isoformat()}\n"
