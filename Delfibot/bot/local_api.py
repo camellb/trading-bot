@@ -1304,24 +1304,29 @@ class LocalAPI:
         open_cost = float(stats.get("open_cost") or 0.0)
         if stats.get("mode") == "live":
             try:
-                from feeds.polymarket_wallet import get_cached_live_clob_balance
+                from feeds.polymarket_wallet import (
+                    get_cached_total_funder_balance,
+                )
                 pm_key = await self._offload(
                     _keyring_get, KEYRING_POLYMARKET_KEY,
                 )
                 if pm_key:
-                    # Non-blocking, no lock, no network. Reads the
-                    # last-known balance from _POLY_SIGNER_CACHE.
-                    # Returns None on cold start before the first
-                    # background refresh completes; we fall back to
-                    # the DB-derived bankroll in that case.
-                    clob_balance = get_cached_live_clob_balance(pm_key)
-                    if clob_balance is not None:
-                        bankroll = float(clob_balance)
+                    # Total funder balance = pUSD (V2 tradeable now) +
+                    # USDC.e (legacy, auto-activated by
+                    # pm_activate_legacy within ~10 min). The earlier
+                    # version reported only pUSD, which hid winnings
+                    # that had landed as USDC.e and made the Balance
+                    # number on dashboards / Telegram look wrong
+                    # whenever a V1-collateral market settled.
+                    # Non-blocking, no lock, no network.
+                    total_balance = get_cached_total_funder_balance(pm_key)
+                    if total_balance is not None:
+                        bankroll = float(total_balance)
                         equity = bankroll + open_cost
             except Exception as exc:
                 # Should not be reachable now that the call is non-
                 # blocking and side-effect-free, but keep the guard.
-                print(f"[summary] live CLOB balance overlay failed: {exc}",
+                print(f"[summary] live balance overlay failed: {exc}",
                       flush=True)
 
         starting = float(stats.get("starting_cash") or 0.0)

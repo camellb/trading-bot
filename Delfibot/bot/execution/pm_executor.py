@@ -377,19 +377,55 @@ class PMExecutor:
 
     def get_bankroll(self) -> float:
         """
-        Current available bankroll in USD for this user in their current mode:
+        Current bankroll in USD for this user in their current mode.
 
-            bankroll = starting_cash
-                     + Σ realized_pnl_usd   (user, settled/invalid)
-                     - Σ cost_usd           (user, open)
+        LIVE mode: the actual on-chain wallet total at the funder
+        (pUSD + USDC.e). Both are spendable — pUSD trades immediately
+        on V2 markets; USDC.e is auto-wrapped to pUSD within ~10
+        minutes by pm_activate_legacy. NO additional DB adjustment:
+        the wallet balance already reflects every settled bet and
+        every open position (open positions are CTF tokens paid for
+        with pUSD that has already left the wallet). Adding
+        realized_pnl on top would double-count.
 
-        Not gated on `self.ready` - reads must always surface the user's own
-        history. A user whose trading-mode config is incomplete (e.g. picked
-        'live' but hasn't wired Polymarket creds yet) should still see their
-        historical bankroll in either view. The `ready` flag only gates
-        writes (opening new positions); write-path callers in pm_analyst
-        already short-circuit upstream before calling this.
+        SIM mode: the bookkeeping formula
+            bankroll = starting_cash + Σ realized_pnl − Σ open_cost
+        because there's no real wallet to read from.
+
+        Background: the older "live + realized − open" formula caused
+        the WIN Telegram message to report ``Balance: $3.87`` after a
+        $4.60 bet returned $5.00. The live wallet was $3.47 (pre-
+        activation pUSD), the DB added $0.40 realized P&L on top, and
+        the math didn't add up (2026-05-18).
+
+        Not gated on `self.ready` — reads must always surface the
+        user's own history.
         """
+        # LIVE mode: read the wallet directly. No DB adjustment.
+        if (
+            self._user_config.mode == "live"
+            and self._view_mode_override is None
+        ):
+            try:
+                from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import (
+                    get_cached_total_funder_balance,
+                )
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    total = get_cached_total_funder_balance(pk)
+                    if total is not None:
+                        return float(total)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] live get_bankroll probe failed, "
+                    f"falling back to DB formula: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
+        # SIM mode (or live probe missed): DB-derived formula.
         starting = self.get_starting_cash()
         try:
             with get_engine().begin() as conn:

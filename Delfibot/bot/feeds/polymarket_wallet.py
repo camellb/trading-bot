@@ -602,12 +602,46 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                     file=sys.stderr,
                 )
                 if value > 0:
+                    # Also probe legacy USDC.e at the funder. These are
+                    # the "pending deposit" funds returned by V1 markets
+                    # at settlement — not yet tradeable (V2 trades pUSD
+                    # only) but the auto-activator (pm_activate_legacy
+                    # in main.py) wraps them on a 10-min cadence, so for
+                    # bankroll-display purposes they should count as part
+                    # of the user's spendable balance. Without this, the
+                    # Telegram WIN message reports a "Balance" that omits
+                    # winnings still in USDC.e form — user sees
+                    # "Won +$5" and "Balance $3.47" and the math doesn't
+                    # add up.
+                    usdce_at_funder = 0.0
+                    try:
+                        import requests as _r
+                        _resp = _r.post(
+                            POLYGON_RPC_URL,
+                            json={
+                                "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                                "params": [
+                                    {"to": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                                     "data": "0x" + _encode_balance_of_call(funder)},
+                                    "latest",
+                                ],
+                            },
+                            timeout=5,
+                        )
+                        _raw = (_resp.json() or {}).get("result", "0x0")
+                        usdce_at_funder = int(_raw, 16) / (10 ** _USDC_DECIMALS)
+                    except Exception as exc:
+                        print(
+                            f"[polymarket_wallet] usdce probe failed: {exc}",
+                            file=sys.stderr,
+                        )
                     chosen = {
                         "signature_type": sig_type,
                         "funder":         funder,
                         "eoa":            eoa,
                         "balance":        float(value),
                         "allowance":      float(allowance),
+                        "usdce_legacy":   float(usdce_at_funder),
                     }
                     print(
                         f"[polymarket_wallet] account shape: sig_type={sig_type} "
@@ -709,9 +743,35 @@ def get_cached_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
     network call. None if no probe has populated the cache yet for
     this key. Use this from request handlers; /api/summary's live
     overlay reads it.
+
+    "Balance" here is the V2 tradeable pUSD only. For total wealth
+    including soon-to-be-activated USDC.e, use
+    get_cached_total_funder_balance() instead.
     """
     info = get_cached_poly_signer_info(private_key)
     return float(info["balance"]) if info else None
+
+
+def get_cached_total_funder_balance(
+    private_key: Optional[str],
+) -> Optional[float]:
+    """Non-blocking total collateral balance at the funder.
+
+    pUSD (tradeable) + USDC.e legacy (auto-activated within ~10 min by
+    pm_activate_legacy). This is what should be reported as "bankroll"
+    or "Balance" to the user, because every dollar in either bucket is
+    spendable on the next trade once the activator's tick lands.
+
+    Returns None if no probe has populated the cache. Falls back to
+    just `balance` (pUSD) when the USDC.e field is missing — covers
+    caches written by older builds.
+    """
+    info = get_cached_poly_signer_info(private_key)
+    if not info:
+        return None
+    pusd  = float(info.get("balance") or 0.0)
+    usdce = float(info.get("usdce_legacy") or 0.0)
+    return pusd + usdce
 
 
 def refresh_live_balance_cache(private_key: Optional[str]) -> bool:
