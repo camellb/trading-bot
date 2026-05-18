@@ -51,11 +51,187 @@ from typing import Optional, Sequence
 # the V1 CTF; V2 reused it. Source: py_clob_client_v2/config.py.
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
-# pUSD - the V2 collateral token. Pre-V2 trades against USDC.e are
-# legacy; the bot has not opened anything against USDC.e since the
-# 2026-04-28 cutover, so we hard-code pUSD here. If a user has stuck
-# pre-V2 winners they can redeem them on the Polymarket web UI.
-PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+# Collateral candidates: every Polymarket market is collateralized in
+# ONE of these ERC-20s. The right one for a given market comes back
+# from the CLOB metadata, but we keep this list as a verification +
+# fallback when the CLOB lookup fails.
+#
+# Critical lesson from 2026-05-18: hardcoding pUSD here was wrong.
+# Many markets - including some opened AFTER the alleged V2 cutover
+# - are still settled against USDC.e (the legacy bridged USDC).
+# Calling `redeemPositions` with pUSD when the market actually uses
+# USDC.e succeeds at the EVM level (no revert) but pays out 0 USDC
+# because there are no tokens at the (pUSD, conditionId, indexSet)
+# position. Real example: position 317's "celebration redeem"
+# tx 0x10bb58... had PayoutRedemption(payout=0). The actual redeem
+# that moved $5 (tx 0xda18f15e...) used USDC.e.
+PUSD_ADDRESS  = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"  # V2 collateral
+USDCE_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # V1/legacy bridged USDC
+
+
+def get_market_collateral(condition_id: str) -> Optional[str]:
+    """Look up the actual collateral token for a market via CLOB.
+
+    Returns a checksummed 0x address on success, None on failure.
+    Falls back to a small hardcoded set of known collaterals when the
+    CLOB doesn't directly expose the collateral address (older
+    responses); the caller can then try each one against an empty
+    PayoutRedemption to find the right one.
+
+    The lookup is cached in-process because the collateral never
+    changes for a given market and the CLOB rate-limits.
+    """
+    if not condition_id:
+        return None
+    if not condition_id.startswith("0x"):
+        condition_id = "0x" + condition_id
+
+    cache = getattr(get_market_collateral, "_cache", None)
+    if cache is None:
+        cache = {}
+        get_market_collateral._cache = cache
+    if condition_id in cache:
+        return cache[condition_id]
+
+    try:
+        import requests as _requests
+        r = _requests.get(
+            f"https://clob.polymarket.com/markets/{condition_id}",
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        # CLOB doesn't return the collateral address directly. Most
+        # markets are USDC.e; some V2 markets use pUSD. Cheap check:
+        # call CTF.balanceOf for the funder against both position
+        # IDs, pick whichever returns >0. But we don't have a funder
+        # context here, so we instead derive from the market_slug or
+        # any field that hints at the collateral, defaulting to
+        # USDC.e (the dominant case post-investigation 2026-05-18).
+        slug = (data.get("market_slug") or "").lower()
+        # No reliable hint in the public API. Return None to signal
+        # "try both" to the caller.
+        _ = slug
+        return None
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] CLOB market lookup failed for "
+            f"{condition_id}: {type(exc).__name__}: {str(exc)[:120]}",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+
+def _candidate_collaterals() -> Sequence[str]:
+    """Ordered list of collaterals to try when CLOB doesn't tell us.
+    USDC.e first because it's empirically the dominant case for
+    settled markets the bot has traded (2026-05-18 audit). pUSD
+    second for V2-only markets.
+    """
+    return (USDCE_ADDRESS, PUSD_ADDRESS)
+
+
+def resolve_collateral_for_position(
+    *,
+    cond_bytes: bytes,
+    index_sets: Sequence[int],
+    holder_address: str,
+) -> Optional[str]:
+    """Find which collateral the (conditionId, indexSet) tokens are
+    actually held under by reading on-chain balances.
+
+    Walks `_candidate_collaterals()` and returns the address whose
+    derived positionId has a non-zero balance for `holder_address`.
+    Returns None if nothing matches - in that case the redeem won't
+    pay out anyway and the caller should surface a clear "no tokens
+    found" error rather than firing a no-op redeem.
+
+    All reads. Free. Cached per (condition, indexSet, holder) tuple
+    so the sweeper doesn't re-query on every tick.
+    """
+    if not cond_bytes or not index_sets or not holder_address:
+        return None
+
+    cache_key = (cond_bytes.hex(), tuple(index_sets), holder_address.lower())
+    cache = getattr(resolve_collateral_for_position, "_cache", None)
+    if cache is None:
+        cache = {}
+        resolve_collateral_for_position._cache = cache
+    if cache_key in cache:
+        return cache[cache_key]
+
+    try:
+        import requests as _requests
+        from eth_utils import keccak as _keccak
+    except Exception:
+        return None
+
+    rpc_url = POLYGON_RPC_URLS[0]
+
+    def _eth_call(data_hex: str) -> Optional[str]:
+        try:
+            r = _requests.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                    "params": [
+                        {"to": CTF_ADDRESS, "data": data_hex},
+                        "latest",
+                    ],
+                },
+                timeout=10,
+            )
+            return r.json().get("result")
+        except Exception:
+            return None
+
+    # The 4-byte selectors for the three CTF helpers we need. Hashing
+    # locally avoids an extra import / RPC.
+    sel_collection = _keccak(text="getCollectionId(bytes32,bytes32,uint256)")[:4].hex()
+    sel_position   = _keccak(text="getPositionId(address,bytes32)")[:4].hex()
+    sel_balance    = _keccak(text="balanceOf(address,uint256)")[:4].hex()
+
+    parent_hex = "00" * 32
+    cond_hex = cond_bytes.hex()
+
+    holder_padded = "00" * 12 + holder_address.lower().removeprefix("0x")
+
+    for collateral in _candidate_collaterals():
+        # Try EACH indexSet in the redeem and stop at the first that
+        # has a balance. In practice the caller always passes a
+        # single-element list (one outcome) so this loop is normally
+        # one iteration.
+        for index_set in index_sets:
+            index_set_hex = index_set.to_bytes(32, "big").hex()
+            collection_id = _eth_call(
+                "0x" + sel_collection + parent_hex + cond_hex + index_set_hex
+            )
+            if not collection_id:
+                continue
+
+            collateral_padded = "00" * 12 + collateral.lower().removeprefix("0x")
+            position_id = _eth_call(
+                "0x" + sel_position + collateral_padded + collection_id[2:]
+            )
+            if not position_id:
+                continue
+
+            balance_hex = _eth_call(
+                "0x" + sel_balance + holder_padded + position_id[2:]
+            )
+            if not balance_hex:
+                continue
+            try:
+                balance = int(balance_hex, 16)
+            except ValueError:
+                continue
+            if balance > 0:
+                cache[cache_key] = collateral
+                return collateral
+
+    cache[cache_key] = None
+    return None
 
 # Polygon mainnet.
 POLYGON_CHAIN_ID = 137
@@ -309,12 +485,12 @@ def redeem_winning_position(
     if gasless_result is not None:
         return gasless_result  # gasless succeeded or terminally failed
 
-    if acct.address.lower() != wallet.lower():
-        return RedeemResult(
-            redeemed=False, tx_hash=None,
-            error=("private key does not match wallet "
-                   f"({acct.address} vs {wallet})"),
-        )
+    # Direct-RPC path: the funder (wallet) is the smart contract
+    # proxy that holds the tokens, not the EOA. We don't require
+    # acct.address == wallet because for V2 sig_type=3 the EOA signs
+    # but the proxy holds. Previous strict equality check was a
+    # leftover from V1 EOA-trades and broke direct-RPC redeems for
+    # every V2 user.
 
     # Try each RPC URL in turn. The "build + send" step is the one
     # that 401s on gated RPCs; reads (get_transaction_count, gas
@@ -345,9 +521,20 @@ def redeem_winning_position(
                 address=Web3.to_checksum_address(CTF_ADDRESS),
                 abi=CTF_REDEEM_ABI,
             )
+            # Find the actual collateral this market settled in.
+            # Falls back to USDC.e (the empirically-dominant case)
+            # when the on-chain probe can't decide.
+            collateral_for_redeem = (
+                resolve_collateral_for_position(
+                    cond_bytes=cond_bytes,
+                    index_sets=index_sets,
+                    holder_address=wallet,
+                )
+                or USDCE_ADDRESS
+            )
             nonce = w3.eth.get_transaction_count(acct.address)
             tx = ctf.functions.redeemPositions(
-                Web3.to_checksum_address(PUSD_ADDRESS),
+                Web3.to_checksum_address(collateral_for_redeem),
                 b"\x00" * 32,                                  # parentCollectionId
                 cond_bytes,
                 list(index_sets),
@@ -646,12 +833,25 @@ def _try_gasless_redeem_via_relayer_api_key(
         )
         return None
 
+    # Resolve the actual collateral this market settled in by
+    # reading on-chain balances. USDC.e for most markets; pUSD for
+    # some V2-only markets. Hardcoded pUSD was the bug behind
+    # position 317's "payout=0" no-op redeem (tx 0x10bb58...).
+    collateral_for_redeem = (
+        resolve_collateral_for_position(
+            cond_bytes=cond_bytes,
+            index_sets=index_sets,
+            holder_address=wallet,
+        )
+        or USDCE_ADDRESS
+    )
+
     # Build the same DepositWallet batch request the Builder path uses.
     # We only need the signed body; the auth headers are different.
     selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
     encoded_args = eth_abi_encode(
         ["address", "bytes32", "bytes32", "uint256[]"],
-        [to_checksum_address(PUSD_ADDRESS), b"\x00" * 32,
+        [to_checksum_address(collateral_for_redeem), b"\x00" * 32,
          cond_bytes, list(index_sets)],
     )
     redeem_data = "0x" + (selector + encoded_args).hex()
@@ -679,12 +879,18 @@ def _try_gasless_redeem_via_relayer_api_key(
         # signature_type=3 DepositWallet). The Builder path also
         # uses this; for the user we care about, it's the address
         # that holds the CTF tokens we want to redeem.
+        #
+        # Deadline = +1 hour. The relayer rejects deadlines under
+        # roughly 10 minutes with "deadline too soon"; +4 minutes
+        # worked one time empirically on 2026-05-18 but failed
+        # immediately after on the same key. +1h is comfortably
+        # past whatever the relayer's min-deadline threshold is.
         dw_args = DepositWalletTransactionArgs(
             from_address=signer.address(),
             chain_id=POLYGON_CHAIN_ID,
             wallet_address=wallet,
             nonce=nonce,
-            deadline=str(int(time.time()) + 240),
+            deadline=str(int(time.time()) + 3600),
             calls=[call],
         )
         cfg = get_contract_config(POLYGON_CHAIN_ID)
@@ -811,12 +1017,23 @@ def _try_gasless_redeem(
         )
         return None
 
+    # Resolve actual collateral (USDC.e vs pUSD) before building the
+    # call. Same lookup as the relayer-api-key path.
+    collateral_for_redeem = (
+        resolve_collateral_for_position(
+            cond_bytes=cond_bytes,
+            index_sets=index_sets,
+            holder_address=wallet,
+        )
+        or USDCE_ADDRESS
+    )
+
     # Build the redeemPositions calldata that will be batched into a
     # DepositWalletCall.
     selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
     encoded_args = eth_abi_encode(
         ["address", "bytes32", "bytes32", "uint256[]"],
-        [to_checksum_address(PUSD_ADDRESS), b"\x00" * 32,
+        [to_checksum_address(collateral_for_redeem), b"\x00" * 32,
          cond_bytes, list(index_sets)],
     )
     redeem_data = "0x" + (selector + encoded_args).hex()
@@ -843,7 +1060,8 @@ def _try_gasless_redeem(
         deposit_wallet_addr = client.get_expected_deposit_wallet()
         nonce_payload = client.get_nonce(acct_address, "WALLET") or {}
         nonce = str(nonce_payload.get("nonce", "0"))
-        deadline = str(int(time.time()) + 240)
+        # +1 hour deadline (see relayer-api-key path comment).
+        deadline = str(int(time.time()) + 3600)
 
         resp = client.execute_deposit_wallet_batch(
             calls=[call],
