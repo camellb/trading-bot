@@ -848,6 +848,34 @@ async def main() -> None:
             print(f"[delfi] balance refresh failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_activate_legacy_balance():
+        """Auto-swap any legacy USDC.e at the funder into pUSD so
+        the funds become tradeable Cash without a Polymarket-UI
+        click. Idempotent: when funder USDC.e is 0 the function
+        returns immediately after one cheap balanceOf eth_call.
+
+        Why this matters: a market that settled in V1 USDC.e pays
+        out USDC.e to the funder. Polymarket's V2 trading uses
+        pUSD only, so the user's UI shows "Confirm pending deposit"
+        until they manually click through. The user has explicitly
+        called this out as user-hostile - the bot should redeem
+        winnings AND make those winnings spendable for trading,
+        not just deposit them in a frozen tier.
+
+        Same RELAYER_API_KEY auth as the redeem sweeper, same
+        relayer-v2.polymarket.com/submit endpoint. The 2-call batch
+        (USDC.e.approve(wrapper) + wrapper.wrap) replicates exactly
+        what polymarket.com's "Confirm pending deposit" sends.
+        """
+        try:
+            from execution.pm_redeemer import activate_legacy_collateral_balance
+            activate_legacy_collateral_balance()
+            proc_health.record_job_ok("pm_activate_legacy")
+        except Exception as exc:
+            proc_health.record_job_error("pm_activate_legacy")
+            print(f"[delfi] legacy-balance activator failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_redeem_sweeper():
         """Retry on-chain redemption for live winners that never
         completed their first redeem attempt.
@@ -945,6 +973,17 @@ async def main() -> None:
         # First fire 2 minutes after boot — give the position resolver
         # priority on a fresh start, then catch up on skipped evals.
         next_run_time=now_utc + timedelta(minutes=2),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    scheduler.add_job(
+        _run_activate_legacy_balance, IntervalTrigger(minutes=10),
+        id="pm_activate_legacy",
+        # Fire 4 min after boot — one minute after the redeem sweeper,
+        # so freshly-redeemed USDC.e gets activated on the next 10-min
+        # tick (or this one, if the redeem already landed). Cheap when
+        # there's nothing to activate (single balanceOf eth_call).
+        next_run_time=now_utc + timedelta(minutes=4),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )

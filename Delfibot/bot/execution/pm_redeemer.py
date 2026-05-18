@@ -1004,6 +1004,218 @@ _PAYOUT_REDEMPTION_TOPIC = (
     "0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d"
 )
 
+# Polymarket's user-facing collateral wrapper contract on Polygon.
+# Holds the Wrapper role on pUSD; users call its wrap() to swap legacy
+# USDC.e (paid out by CTF.redeemPositions when the market settled in
+# the V1 collateral) into V2-spendable pUSD.
+#
+# Captured 2026-05-18 by inspecting polymarket.com's "Confirm pending
+# deposit" -> "Continue" network call (POST relayer-v2.polymarket.com/
+# submit with a 2-call DepositWallet batch: USDC.e.approve(wrapper, x)
+# then wrapper.wrap(USDC.e, funder, x)).
+POLYMARKET_LEGACY_WRAPPER_ADDRESS = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+
+
+def activate_legacy_collateral_balance(*, max_per_run: int = 1) -> dict:
+    """Convert any USDC.e at the user's funder into pUSD via the
+    Polymarket wrapper, so funds actually become tradeable Cash.
+
+    Why this exists: when a CTF market settled in USDC.e (the legacy
+    V1 collateral), `CTF.redeemPositions` pays out USDC.e to the
+    funder. Polymarket's V2 trading engine only spends pUSD, so any
+    USDC.e in the funder appears in Polymarket's UI as "Confirm
+    pending deposit" — gating the user out of their own funds until
+    they click through a manual flow.
+
+    The Polymarket frontend's "Confirm pending deposit" simply submits
+    a 2-call DepositWallet batch to relayer-v2.polymarket.com/submit:
+      1. USDC.e.approve(legacy-wrapper, amount)
+      2. legacy-wrapper.wrap(USDC.e, funder, amount)
+    Same RELAYER_API_KEY auth we already use for redeem. No wallet
+    signature popup needed.
+
+    This function runs the exact same submission idempotently from
+    the bot. Cheap when the funder has 0 USDC.e (single balanceOf
+    eth_call, returns immediately). When > 0, fires the approve+wrap
+    batch and the funds become tradeable within a block.
+
+    Designed to be called by a periodic scheduler job alongside
+    the redeem sweeper. Returns a small summary dict for logging.
+    """
+    summary = {"activated_usd": 0.0, "tx_hash": None, "error": None}
+
+    try:
+        from engine.user_config import (
+            get_user_config, get_active_polymarket_creds,
+            get_polymarket_relayer_api_key,
+        )
+    except Exception as exc:
+        summary["error"] = f"config import failed: {exc}"
+        return summary
+
+    try:
+        cfg = get_user_config()
+    except Exception as exc:
+        summary["error"] = f"config read failed: {exc}"
+        return summary
+
+    if (getattr(cfg, "mode", "") or "").lower() != "live":
+        return summary  # nothing to activate in simulation
+
+    api_key = None
+    try:
+        api_key = get_polymarket_relayer_api_key()
+    except Exception:
+        api_key = None
+    if not api_key:
+        # No RELAYER_API_KEY → can't gasless-submit. Skip silently.
+        # The user-facing UI nudge to paste a key handles this case.
+        return summary
+
+    try:
+        creds = get_active_polymarket_creds(cfg)
+    except Exception:
+        creds = None
+    wallet = (creds or {}).get("wallet_address") or ""
+    pk     = (creds or {}).get("private_key") or ""
+    if not wallet or not pk:
+        return summary  # no creds, nothing we can do
+
+    # Check funder USDC.e balance via eth_call. Free; no submission
+    # unless balance > 0.
+    try:
+        import requests as _requests
+        from eth_utils import keccak as _keccak
+    except Exception as exc:
+        summary["error"] = f"deps missing: {exc}"
+        return summary
+
+    rpc_url = POLYGON_RPC_URLS[0]
+    bal_sel = _keccak(text="balanceOf(address)")[:4].hex()
+    addr_padded = "00" * 12 + wallet.lower().removeprefix("0x")
+    try:
+        r = _requests.post(
+            rpc_url,
+            json={
+                "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                "params": [
+                    {"to": USDCE_ADDRESS,
+                     "data": "0x" + bal_sel + addr_padded},
+                    "latest",
+                ],
+            },
+            timeout=10,
+        )
+        balance_raw = int(r.json()["result"], 16)
+    except Exception as exc:
+        summary["error"] = f"balance probe failed: {exc}"
+        return summary
+
+    if balance_raw <= 0:
+        return summary  # nothing to do
+
+    # Build approve + wrap calls.
+    try:
+        from py_builder_relayer_client.models import (
+            DepositWalletCall, DepositWalletTransactionArgs,
+        )
+        from py_builder_relayer_client.builder.deposit_wallet import (
+            build_deposit_wallet_batch_request,
+        )
+        from py_builder_relayer_client.config import get_contract_config
+        from py_builder_relayer_client.signer import Signer
+        from eth_utils import to_checksum_address
+        from eth_abi import encode as _encode
+    except Exception as exc:
+        summary["error"] = f"SDK import failed: {exc}"
+        return summary
+
+    approve_sel = _keccak(text="approve(address,uint256)")[:4]
+    approve_args = _encode(
+        ["address", "uint256"],
+        [to_checksum_address(POLYMARKET_LEGACY_WRAPPER_ADDRESS), balance_raw],
+    )
+    approve_data = "0x" + (approve_sel + approve_args).hex()
+    approve_call = DepositWalletCall(
+        target=to_checksum_address(USDCE_ADDRESS),
+        value="0", data=approve_data,
+    )
+
+    wrap_sel = _keccak(text="wrap(address,address,uint256)")[:4]
+    wrap_args = _encode(
+        ["address", "address", "uint256"],
+        [to_checksum_address(USDCE_ADDRESS),
+         to_checksum_address(wallet),
+         balance_raw],
+    )
+    wrap_data = "0x" + (wrap_sel + wrap_args).hex()
+    wrap_call = DepositWalletCall(
+        target=to_checksum_address(POLYMARKET_LEGACY_WRAPPER_ADDRESS),
+        value="0", data=wrap_data,
+    )
+
+    base = POLYMARKET_RELAYER_URL.rstrip("/")
+
+    try:
+        signer = Signer(pk, POLYGON_CHAIN_ID)
+        nonce_resp = _requests.get(
+            f"{base}/nonce?address={signer.address()}&type=WALLET",
+            timeout=15,
+        )
+        nonce_resp.raise_for_status()
+        nonce = str(nonce_resp.json().get("nonce", "0"))
+
+        dw_args = DepositWalletTransactionArgs(
+            from_address=signer.address(),
+            chain_id=POLYGON_CHAIN_ID,
+            wallet_address=wallet,
+            nonce=nonce,
+            deadline=str(int(time.time()) + 3600),
+            calls=[approve_call, wrap_call],
+        )
+        ccfg = get_contract_config(POLYGON_CHAIN_ID)
+        req = build_deposit_wallet_batch_request(
+            signer=signer, args=dw_args, config=ccfg,
+        )
+        body = req.to_dict()
+        r = _requests.post(
+            f"{base}/submit",
+            json=body,
+            headers={
+                "RELAYER_API_KEY": api_key,
+                "RELAYER_API_KEY_ADDRESS": signer.address(),
+            },
+            timeout=60,
+        )
+        if r.status_code != 200:
+            msg = r.text[:300]
+            summary["error"] = (
+                f"relayer rejected wrap submission: "
+                f"{r.status_code} {msg}"
+            )
+            return summary
+
+        data = r.json()
+        tx_hash = data.get("transactionHash")
+        if tx_hash:
+            summary["tx_hash"] = tx_hash
+            summary["activated_usd"] = balance_raw / 1e6
+            print(
+                f"[pm_redeemer] activated ${balance_raw/1e6:.2f} USDC.e "
+                f"-> pUSD via wrapper. tx={tx_hash}",
+                file=sys.stderr, flush=True,
+            )
+            return summary
+
+        summary["error"] = f"submit returned no tx hash: {data}"
+        return summary
+    except Exception as exc:
+        summary["error"] = (
+            f"wrap submission failed: {type(exc).__name__}: "
+            f"{str(exc)[:200]}"
+        )
+        return summary
+
 
 def _verify_payout_from_receipt(
     tx_hash: str, cond_bytes: bytes, *, retries: int = 6,
