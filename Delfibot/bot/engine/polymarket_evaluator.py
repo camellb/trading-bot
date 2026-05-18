@@ -170,6 +170,14 @@ class MarketEvaluation:
     reasoning:        str
     raw:              str   # the raw model output for auditing
     reasoning_short:  str = ""
+    # Hard skip flag. When True, pm_analyst returns SKIP without ever
+    # calling the sizer. Set by the same_event_verified=no branch as a
+    # belt-and-suspenders backstop for the direction-agreement gate
+    # (which doesn't fire when market_p_yes is exactly 0.50, an edge
+    # case the previous wiring overlooked). Carrying the flag in the
+    # dataclass means no downstream code can accidentally "un-skip"
+    # the trade via clever sizing math.
+    force_skip:       bool = False
 
 
 def _parse_json(raw: str) -> Optional[dict]:
@@ -312,6 +320,11 @@ class PolymarketEvaluator:
                 market_id       = market.id,
                 probability_yes = forced_p_yes,
                 confidence      = 0.10,
+                # Hard backstop: even if the direction-agreement gate
+                # fails to skip (e.g. market_p_yes is exactly 0.50 so
+                # the gate's `< 0` test produces 0), pm_analyst sees
+                # force_skip=True and refuses to call the sizer.
+                force_skip      = True,
                 category        = str(obj.get("category") or "other")[:40],
                 key_factors     = ["evidence_off_event"],
                 reasoning       = (

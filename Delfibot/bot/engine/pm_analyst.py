@@ -230,6 +230,25 @@ class PMAnalyst:
             category=evaluation.category,
             event_slug=getattr(market, "event_slug", None),
         )
+
+        # Hard skip backstop: when the evaluator set
+        # MarketEvaluation.force_skip = True (today only used by the
+        # same_event_verified=no branch), refuse to call the sizer.
+        # This defends against the boundary case where the sizer's
+        # direction-agreement gate's strict `< 0` test produces 0
+        # (market_p_yes exactly 0.50) and would otherwise let the
+        # trade through. force_skip is the unconditional source of
+        # truth — no clever sizing math can override it.
+        if getattr(evaluation, "force_skip", False):
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_EVALUATOR",
+                detail=evaluation.reasoning_short
+                       or "Evaluator returned a hard skip "
+                          "(research does not match this market).",
+                evaluation=evaluation, prediction_id=prediction_id,
+            )
+
         decision = size_position(
             claude_p    = evaluation.probability_yes,
             confidence  = evaluation.confidence,
