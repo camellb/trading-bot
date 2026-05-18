@@ -279,16 +279,8 @@ class PMAnalyst:
                 try:
                     telegram_html = (
                         "<b>ℹ️ Most markets being skipped</b>\n"
-                        "Polymarket requires 5 shares per order. "
-                        "At typical 50¢ asks that's $2.50, at 90¢ that's "
-                        "$4.50 — both larger than the bot's $1 stake cap.\n\n"
-                        "Bot will keep trading any market where 5 shares "
-                        "cost ≤ $1 (ask price ≤ $0.20). Everything else "
-                        "lands in Positions → Skipped with a clear reason. "
-                        "No errors, no wasted attempts.\n\n"
-                        "If you want broader coverage, raise your stake "
-                        "policy in Settings → Risk so the bot can pay "
-                        "Polymarket's per-market minimum."
+                        "Your stake is below Polymarket's per-order minimum.\n"
+                        "Settings → Risk → raise Base stake (or fund the wallet)."
                     )
                     log_event(
                         event_type="bot_status",
