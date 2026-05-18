@@ -248,6 +248,89 @@ def _get_clob_client(wallet_address: str, private_key: str):
     return client
 
 
+def _extract_filled_size(final: dict, resp: dict) -> float:
+    """Pull the ACTUAL filled size in shares from a CLOB order response.
+
+    Polymarket V2 reports fills under several keys depending on the
+    code path that returned them. We check, in order:
+      * `size_matched`        — V2 standard (most common)
+      * `size_filled`         — older alias still emitted by some SDK builds
+      * `filled_size`         — alt-cased variant
+      * `made_amount`         — taker amount in collateral wei; converted
+                                later to shares via the entry price
+    The order is `(filled response) || (post-order response)` so a
+    partial-fill discovered post-poll wins over the initial accept.
+    """
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        for k in ("size_matched", "size_filled", "filled_size",
+                  "matched_size", "match_size"):
+            v = src.get(k)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return fv
+    # Fall back: scan a `fills` or `events` list if present.
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        fills = src.get("fills") or src.get("events") or []
+        if not isinstance(fills, list):
+            continue
+        total = 0.0
+        for f in fills:
+            if not isinstance(f, dict):
+                continue
+            for k in ("size", "matched_size", "fill_size"):
+                v = f.get(k)
+                if v is None:
+                    continue
+                try:
+                    total += float(v)
+                except (TypeError, ValueError):
+                    pass
+                break
+        if total > 0:
+            return total
+    return 0.0
+
+
+def _extract_filled_cost(
+    final: dict, resp: dict, filled_shares: float,
+    *, fallback_price: float,
+) -> float:
+    """Pull the ACTUAL collateral spent for the filled shares.
+
+    Same multi-source probing pattern as `_extract_filled_size`.
+    Falls back to `filled_shares * fallback_price` when the CLOB
+    response doesn't include a cost field (most order responses do
+    expose this; the fallback is just belt-and-suspenders so the
+    function never returns 0 on a positive fill).
+    """
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        for k in ("matched_amount", "made_amount", "filled_amount",
+                  "cost", "cost_usd", "taking_amount"):
+            v = src.get(k)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return fv
+    if filled_shares > 0:
+        return filled_shares * float(fallback_price)
+    return 0.0
+
+
 def _poll_order_filled(client, order_id: str) -> dict:
     """
     Poll the CLOB until the order is filled, cancelled, rejected, or we
@@ -965,7 +1048,7 @@ class PMExecutor:
             )
             return None
 
-        # ── Wait for fill, then persist ─────────────────────────────────
+        # ── Wait for fill, then persist actual fill (NOT intent) ────────
         final = _poll_order_filled(client, str(order_id))
         final_status = (final.get("status") or "").upper()
         # `transactionHash` lands here once the on-chain match is mined.
@@ -977,18 +1060,109 @@ class PMExecutor:
             or resp.get("transactionHash")
         )
 
-        if final_status not in ("FILLED", "MATCHED"):
-            # Order placed but not (fully) filled within our timeout, OR
-            # rejected outright. Persist anyway with a status note so
-            # the operator can see it in the dashboard. The settler
-            # will pick up partial fills on its next sweep.
+        # Extract ACTUAL filled size from the CLOB response. The original
+        # `decision` carries the LIMIT-order intent (5 shares × ask),
+        # but the order may have partially filled or not filled at all
+        # (e.g. micro-window market closed before the order matched, or
+        # the limit price was below the live ask). Persisting the
+        # intent values produced "ghost positions" on the dashboard
+        # that don't exist on-chain (user-reported 2026-05-18:
+        # Delfi showed 3 open positions while Polymarket showed only 1).
+        filled_shares = _extract_filled_size(final, resp)
+        filled_cost   = _extract_filled_cost(final, resp, filled_shares,
+                                              fallback_price=entry_price)
+
+        if filled_shares <= 0:
+            # Zero fill. Cancel the order if it's still on the book and
+            # do NOT persist a position row. The dashboard would
+            # otherwise show a fake "open position" with no on-chain
+            # counterpart.
+            try:
+                if final_status not in (
+                    "CANCELED", "CANCELLED", "REJECTED",
+                ):
+                    client.cancel_order(str(order_id))
+            except Exception as exc:
+                print(
+                    f"[pm_executor] _open_live: cancel of order "
+                    f"{order_id} failed: {exc}",
+                    file=sys.stderr,
+                )
+            try:
+                from db.logger import log_event
+                from feeds import telegram_messages as _tm
+                description = (
+                    f"Order placed but never filled on "
+                    f"'{(market.question or '')[:80]}': "
+                    f"{decision.side} {decision.shares:.2f}@"
+                    f"${entry_price:.3f}. Status: {final_status!r}. "
+                    f"Skipping the trade — no on-chain position created."
+                )
+                try:
+                    telegram_html = _tm.order_rejected(
+                        question=market.question or "(unknown market)",
+                        side=decision.side,
+                        stake_usd=decision.stake_usd,
+                        price=entry_price,
+                        error_text=(
+                            f"Order placed on Polymarket but no fill "
+                            f"within {FILL_POLL_TIMEOUT_SECONDS:.0f}s. "
+                            f"Likely no liquidity at the chosen price, "
+                            f"or the market closed before matching. "
+                            f"No position opened."
+                        ),
+                        mode=self.trading_mode,
+                    )
+                except Exception:
+                    telegram_html = None
+                log_event(
+                    event_type="order_rejected",
+                    severity=2,
+                    description=description,
+                    source="pm_executor._open_live",
+                    telegram_html=telegram_html,
+                )
+            except Exception as log_exc:
+                print(
+                    f"[pm_executor] could not log no-fill event: {log_exc}",
+                    file=sys.stderr,
+                )
+            return None
+
+        # Partial fill: scale the position row to reflect what actually
+        # landed on-chain. `decision` is the SizingDecision dataclass
+        # which is frozen — we can't mutate it — so swap to a copy with
+        # the actual numbers. Keep the original entry_price (it's the
+        # limit price, which equals the fill price for marketable BUYs
+        # on Polymarket V2 unless price-improved).
+        if filled_shares < decision.shares - 1e-9:
             print(
-                f"[pm_executor][live] order {order_id} ended in status "
-                f"{final_status!r} on '{market.question[:60]}'. Persisting "
-                f"the live attempt with the order id; manual reconciliation "
-                f"may be required.",
+                f"[pm_executor][live] partial fill on order {order_id}: "
+                f"intent {decision.shares:.2f} sh @ "
+                f"${entry_price:.3f} = ${decision.stake_usd:.2f}, "
+                f"actual {filled_shares:.2f} sh @ "
+                f"${filled_cost/filled_shares:.3f} = ${filled_cost:.2f}",
                 flush=True,
             )
+            try:
+                from dataclasses import replace as _replace
+                decision = _replace(
+                    decision,
+                    shares=filled_shares,
+                    stake_usd=filled_cost,
+                    entry_price=filled_cost / filled_shares,
+                )
+            except TypeError:
+                # `decision` isn't a dataclass or doesn't support replace;
+                # fall back to mutating attributes in-place.
+                try:
+                    decision.shares     = filled_shares  # type: ignore[misc]
+                    decision.stake_usd  = filled_cost  # type: ignore[misc]
+                    decision.entry_price = (
+                        filled_cost / filled_shares
+                    )  # type: ignore[misc]
+                except Exception:
+                    pass
 
         return self._persist_live_position(
             market=market, decision=decision, claude_p=claude_p,

@@ -21,6 +21,8 @@ errors, tracebacks) does not live here - it is logged to stderr.
 
 from __future__ import annotations
 
+from typing import Optional
+
 
 # Hard limits matching the original truncation behaviour.
 MAX_QUESTION_NEW_POSITION = 140
@@ -42,8 +44,27 @@ def new_position(
     confidence: float,
     bankroll_after: float,
     mode: str,
+    equity_after: Optional[float] = None,
 ) -> str:
+    """The new-position notification splits cash and equity so the
+    math is unambiguous:
+
+        Stake          ← what just left cash to buy CTF tokens
+        Leftover cash  ← spendable pUSD AFTER the bet
+        Total equity   ← leftover cash + this position's cost
+                         (= total wallet worth, unchanged by the bet)
+
+    `bankroll_after` is the leftover cash (post-bet wallet balance).
+    `equity_after` is the total equity (cash + all open-position
+    costs); when not supplied, falls back to
+    `bankroll_after + stake_usd` which equals total equity in the
+    common case that this is the only just-opened position.
+    """
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    eq = (
+        float(equity_after) if equity_after is not None
+        else float(bankroll_after) + float(stake_usd)
+    )
     return (
         f"🎯 <b>New position</b>\n"
         f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
@@ -52,7 +73,8 @@ def new_position(
         f"Confidence: {confidence:.2f}\n"
         f"\n"
         f"Stake: ${stake_usd:.2f}\n"
-        f"Balance: ${bankroll_after:.2f}\n"
+        f"Leftover cash: ${bankroll_after:.2f}\n"
+        f"Total equity: ${eq:.2f}\n"
         f"Mode: {mode_label}"
     )
 

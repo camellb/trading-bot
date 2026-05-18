@@ -617,11 +617,43 @@ class PMAnalyst:
         # Local-first build: notifications go to the SQLite event_log table,
         # which the dashboard reads via GET /api/events. No Telegram, no
         # outbound network for user notifications.
+        # Force a wallet-probe refresh so the bankroll we report
+        # reflects the post-trade state (the order just spent N
+        # dollars of pUSD). Without this, the cached probe is up to
+        # 60s stale and the notification shows pre-trade bankroll —
+        # the user-reported "$8.47 + $3.23 = $11.70 equity" bug.
+        try:
+            from engine.user_config import get_user_polymarket_creds
+            from feeds.polymarket_wallet import refresh_live_balance_cache
+            _creds = get_user_polymarket_creds(user_id)
+            _pk = (_creds or {}).get("private_key") if _creds else None
+            if _pk:
+                refresh_live_balance_cache(_pk)
+        except Exception as _exc:
+            print(f"[pm_analyst] post-open wallet refresh failed: {_exc}",
+                  file=sys.stderr)
+
         bankroll_after = 0.0
+        equity_after: float = 0.0
         try:
             bankroll_after = float(executor.get_bankroll())
+            # Total equity = leftover cash + cost of every open
+            # position. The DB has the just-opened row by this point
+            # so summing cost_usd over status='open' gives the right
+            # number even when the user has other open positions.
+            from sqlalchemy import text as _text
+            from db.engine import get_engine as _eng
+            with _eng().begin() as _conn:
+                _open_cost = _conn.execute(_text(
+                    "SELECT COALESCE(SUM(cost_usd), 0) "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = :m "
+                    "  AND status = 'open'"
+                ), {"uid": user_id,
+                    "m": executor.trading_mode}).scalar() or 0.0
+            equity_after = bankroll_after + float(_open_cost)
         except Exception:
-            pass
+            equity_after = bankroll_after + float(decision.stake_usd)
         market_pct = decision.p_win * 100.0
         # `probability_yes` is the forecaster's P(YES), always.
         # `forecast_pct_yes` keeps it as P(YES) for the description
@@ -665,6 +697,7 @@ class PMAnalyst:
                 forecast_pct=forecast_pct_side,
                 confidence=float(evaluation.confidence or 0.0),
                 bankroll_after=bankroll_after,
+                equity_after=equity_after,
                 mode=mode,
             )
         except Exception as exc:
