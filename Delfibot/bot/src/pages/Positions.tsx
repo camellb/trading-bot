@@ -41,10 +41,16 @@ function daysFromNow(iso: string | null | undefined): string {
   if (!iso) return "-";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "-";
-  if (t - Date.now() <= 0) return "resolving";
-  // The lib version returns "Xd Yh" / "Xh Ym"; this page likes a
-  // single-token form for the table. Fall through to that when we
-  // have a positive future delta.
+  // After the Polymarket trading window closes (the `endDate` we
+  // count down to), the market enters UMA's optimistic-oracle
+  // settlement: a proposer submits the resolution, a dispute
+  // window runs (typically 2-12 hours), then funds are released.
+  // The bot's resolver checks every 60s and settles the row
+  // automatically once Polymarket flips `closed: true`. Until
+  // then the position stays open and earns no extra P&L — it's
+  // just waiting on the oracle. "settling" reads clearer than
+  // "resolving"; the latter sounded instantaneous to users.
+  if (t - Date.now() <= 0) return "settling";
   return daysFromNowFmt(iso);
 }
 function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {

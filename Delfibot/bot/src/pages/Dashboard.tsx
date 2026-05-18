@@ -81,7 +81,11 @@ function daysFromNow(iso: string | null | undefined): string {
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "-";
   const ms = t - Date.now();
-  if (ms <= 0) return "resolving";
+  // After endDate: Polymarket is in UMA settlement window (proposer
+  // submits resolution → 2-12h dispute window → market closes →
+  // funds released → bot's resolver settles the row). The position
+  // is just waiting on the oracle here, not actively trading.
+  if (ms <= 0) return "settling";
   const days = Math.round(ms / 86_400_000);
   if (days === 0) {
     const hours = Math.max(1, Math.round(ms / 3_600_000));
