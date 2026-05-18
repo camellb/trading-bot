@@ -151,6 +151,8 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
     # Finance / markets.
     "crypto":             {"label": "Crypto",
                            "description": "BTC, ETH, SOL, altcoins. Price moves, exchange events, token unlocks."},
+    "crypto_short":       {"label": "Crypto micro-window",
+                           "description": "5-30 minute \"Up or Down\" direction markets settled on a single price tick. Default-skipped: research is per-event, the market is per-window, so the forecaster has no information advantage."},
     "stocks":             {"label": "Stocks",
                            "description": "Equity prices, IPOs, earnings, S&P / NASDAQ / index moves."},
     "macro":              {"label": "Macro",

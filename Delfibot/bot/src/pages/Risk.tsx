@@ -825,7 +825,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
         "cricket", "esports", "soccer", "sports_other",
       ]},
       { title: "Finance and markets", ids: [
-        "crypto", "stocks", "macro", "fx_commodities",
+        "crypto", "crypto_short", "stocks", "macro", "fx_commodities",
       ]},
       { title: "Politics and society", ids: [
         "election", "policy_event", "geopolitical_event",

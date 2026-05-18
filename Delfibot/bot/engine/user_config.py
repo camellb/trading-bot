@@ -349,6 +349,13 @@ ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)
 # either field we never overwrite their choice.
 V1_DEFAULT_ARCHETYPE_SKIP_LIST: Tuple[str, ...] = (
     "sports_other", "hockey", "cricket",
+    # Crypto micro-window markets ("Bitcoin Up or Down 8:35-8:40 AM
+    # ET"). 5-30 min direction calls settled on a single tick;
+    # un-researchable and intrinsically efficient. Default-skipped
+    # because every LLM evaluation produces either a coin-flip
+    # forecast (no edge) or a same-event-verified-no rejection
+    # (wasted tokens). User instruction 2026-05-18.
+    "crypto_short",
 )
 V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS: Dict[str, float] = {
     "basketball": 1.5,
