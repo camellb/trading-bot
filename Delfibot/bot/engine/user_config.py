@@ -250,8 +250,19 @@ class UserConfig:
 
 # ── Bounds / descriptions ───────────────────────────────────────────────────
 USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
-    "base_stake_pct":                (0.005, 0.05),
-    "max_stake_pct":                 (0.01, 0.10),
+    # base_stake_pct + max_stake_pct upper bounds widened 2026-05-18.
+    # Original bounds (0.05 / 0.10) were calibrated for $1000+ bankrolls
+    # where 5% of $1000 = $50 per trade comfortably clears Polymarket's
+    # $1-and-5-share minimums at any favourite price. At small live
+    # bankrolls (<$200) those bounds produced a per-trade cap below
+    # the exchange minimum, so the sizer skipped every market —
+    # user complaint 2026-05-18: "we have $8.47, why is the bot keep
+    # skipping all markets now?". Widening to 100% lets the user
+    # explicitly opt into "stake most of bankroll on one trade" when
+    # their capital is small. Risk is the user's call; this just
+    # removes the artificial floor on what they can configure.
+    "base_stake_pct":                (0.005, 1.00),
+    "max_stake_pct":                 (0.01,  1.00),
     "daily_loss_limit_pct":          (0.01, 1.00),
     "weekly_loss_limit_pct":         (0.01, 1.00),
     "drawdown_halt_pct":             (0.01, 1.00),
