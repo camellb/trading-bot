@@ -412,6 +412,155 @@ def redeem_winning_position(
     return RedeemResult(redeemed=True, tx_hash=sent_hash, error=None)
 
 
+# ── Periodic sweeper for stuck winners ──────────────────────────────────────
+#
+# settle_position only invokes redeem_winning_position ONCE per position
+# (when the row transitions to status='settled'). If that one attempt
+# fails - transient RPC 401, no MATIC for gas, daemon restart mid-call,
+# Builder creds not yet pasted - the row sits forever with
+# redeem_tx_hash=NULL and the on-chain CTF tokens never reach the user's
+# pUSD balance. Real example: position 317 settled 2026-05-18 06:39 UTC
+# against an older binary that only had polygon-rpc.com in its fallback
+# list; broadcast 401'd and the daemon never came back to it.
+#
+# This sweeper closes that gap. It runs on its own schedule, scans the
+# DB for stuck winners, and replays redeem_winning_position for each.
+# The redeemer itself is idempotent in the failure case (kill switch,
+# missing creds, no MATIC) - it just returns RedeemResult(redeemed=False)
+# without consuming gas - so repeated calls until the user funds MATIC
+# or pastes Builder API keys are safe.
+
+def sweep_unredeemed_winners(*, max_per_run: int = 25) -> dict:
+    """Scan pm_positions for live winners with no redeem tx and retry.
+
+    Returns a small summary dict for logging:
+        {'scanned': N, 'redeemed': M, 'failed': K, 'reasons': {...}}
+
+    Safe to call from any thread. Self-gated on DELFI_LIVE_KILLSWITCH_OFF
+    via redeem_winning_position - no need to gate here too. Always
+    bounded: at most `max_per_run` positions touched per call so a
+    backlog of 100 stuck winners can't monopolise the threadpool tick.
+    """
+    summary = {"scanned": 0, "redeemed": 0, "failed": 0, "reasons": {}}
+
+    # Deferred imports so test-runs of redeem_winning_position don't
+    # pull in db + user_config.
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        from engine.user_config import (
+            get_user_config, get_active_polymarket_creds,
+        )
+    except Exception as exc:
+        print(f"[pm_redeemer] sweeper bootstrap failed: {exc}",
+              file=sys.stderr, flush=True)
+        return summary
+
+    try:
+        cfg = get_user_config()
+    except Exception as exc:
+        print(f"[pm_redeemer] sweeper config read failed: {exc}",
+              file=sys.stderr, flush=True)
+        return summary
+
+    if (getattr(cfg, "mode", "") or "").lower() != "live":
+        return summary  # nothing to sweep in simulation
+
+    try:
+        creds = get_active_polymarket_creds(cfg)
+    except Exception:
+        creds = None
+    wallet = (creds or {}).get("wallet_address") or ""
+    pk     = (creds or {}).get("private_key") or ""
+    if not wallet or not pk:
+        return summary  # no creds, nothing we can do
+
+    # Find stuck winners. The redeem hook only ran when side was
+    # already known to be the winning side (see settle_position), so
+    # we filter the same way here.
+    try:
+        with get_engine().begin() as conn:
+            rows = list(conn.execute(text(
+                "SELECT id, condition_id, side, settlement_outcome "
+                "FROM pm_positions "
+                "WHERE mode = 'live' "
+                "  AND status = 'settled' "
+                "  AND redeem_tx_hash IS NULL "
+                "  AND condition_id IS NOT NULL "
+                "  AND condition_id != '' "
+                "  AND side = settlement_outcome "
+                "ORDER BY id ASC "
+                "LIMIT :lim"
+            ), {"lim": int(max_per_run)}).mappings()) or []
+    except Exception as exc:
+        print(f"[pm_redeemer] sweeper select failed: {exc}",
+              file=sys.stderr, flush=True)
+        return summary
+
+    if not rows:
+        return summary
+
+    for row in rows:
+        summary["scanned"] += 1
+        pid          = row["id"]
+        condition_id = row["condition_id"]
+        side         = row["side"]
+        outcome      = row["settlement_outcome"]
+
+        try:
+            result = redeem_winning_position(
+                condition_id=condition_id,
+                side=side,
+                outcome=outcome,
+                wallet=wallet,
+                private_key=pk,
+            )
+        except Exception as exc:
+            summary["failed"] += 1
+            reason = f"exception: {type(exc).__name__}"
+            summary["reasons"][reason] = summary["reasons"].get(reason, 0) + 1
+            print(
+                f"[pm_redeemer] sweeper threw on pos {pid}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            continue
+
+        if result.tx_hash:
+            try:
+                with get_engine().begin() as conn:
+                    conn.execute(text(
+                        "UPDATE pm_positions "
+                        "SET redeem_tx_hash = :tx "
+                        "WHERE id = :pid"
+                    ), {"tx": result.tx_hash, "pid": pid})
+            except Exception as exc:
+                print(
+                    f"[pm_redeemer] sweeper persist failed for pos "
+                    f"{pid}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+
+        if result.redeemed:
+            summary["redeemed"] += 1
+            print(
+                f"[pm_redeemer] sweeper redeemed pos {pid} "
+                f"tx={result.tx_hash}",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            summary["failed"] += 1
+            reason = (result.error or "unknown")[:80]
+            summary["reasons"][reason] = summary["reasons"].get(reason, 0) + 1
+
+    print(
+        f"[pm_redeemer] sweeper run: scanned={summary['scanned']} "
+        f"redeemed={summary['redeemed']} failed={summary['failed']} "
+        f"reasons={summary['reasons']}",
+        file=sys.stderr, flush=True,
+    )
+    return summary
+
+
 # ── Gasless redeem via Polymarket Relayer ───────────────────────────────────
 
 # Polymarket's official relayer endpoint. Override via env if needed

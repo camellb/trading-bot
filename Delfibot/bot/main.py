@@ -848,6 +848,31 @@ async def main() -> None:
             print(f"[delfi] balance refresh failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_redeem_sweeper():
+        """Retry on-chain redemption for live winners that never
+        completed their first redeem attempt.
+
+        settle_position only fires redeem_winning_position once per
+        position. If that one attempt fails (transient RPC 401, no
+        MATIC at the moment, Builder creds not yet pasted, daemon
+        crash mid-call) the row sits forever with redeem_tx_hash=NULL
+        and the on-chain CTF tokens never reach the user's pUSD
+        balance. The sweeper rescans on every tick so once the
+        blocker is removed (MATIC funded, Builder API keys pasted)
+        the backlog clears automatically.
+
+        Cheap when there's nothing stuck: a single indexed-by-status
+        SELECT that returns 0 rows.
+        """
+        try:
+            from execution.pm_redeemer import sweep_unredeemed_winners
+            sweep_unredeemed_winners(max_per_run=25)
+            proc_health.record_job_ok("pm_redeem_sweep")
+        except Exception as exc:
+            proc_health.record_job_error("pm_redeem_sweep")
+            print(f"[delfi] redeem sweeper failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_resolve_skipped():
         """Back-fill outcomes for skipped market_evaluations.
 
@@ -920,6 +945,21 @@ async def main() -> None:
         # First fire 2 minutes after boot — give the position resolver
         # priority on a fresh start, then catch up on skipped evals.
         next_run_time=now_utc + timedelta(minutes=2),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    scheduler.add_job(
+        _run_redeem_sweeper, IntervalTrigger(minutes=10),
+        id="pm_redeem_sweep",
+        # First fire 3 minutes after boot — well after the position
+        # resolver and exit-policy jobs have had their first ticks,
+        # so a freshly-settled row from this boot is in the table by
+        # the time the sweeper looks. 10 minute cadence is fast
+        # enough that a stuck winner clears within ~5 minutes of the
+        # user funding MATIC or pasting Builder API keys, slow
+        # enough that it doesn't hammer Polygon RPC when the queue
+        # is empty.
+        next_run_time=now_utc + timedelta(minutes=3),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )
