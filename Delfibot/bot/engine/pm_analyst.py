@@ -617,6 +617,43 @@ class PMAnalyst:
         # Local-first build: notifications go to the SQLite event_log table,
         # which the dashboard reads via GET /api/events. No Telegram, no
         # outbound network for user notifications.
+
+        # CRITICAL: read the ACTUAL persisted shares / cost / entry_price
+        # from the pm_positions row, not from the in-memory `decision`.
+        # `_open_live` mutates a LOCAL copy of `decision` after polling
+        # the actual fill, but the caller's reference (this method's
+        # `decision` arg) is the un-mutated INTENT. Reading the DB row
+        # — which has the post-fill values — makes the notification
+        # match what's actually on-chain. User-reported 2026-05-18:
+        # "you told me Stake is $3.23 but the actual value is $3.04.
+        # What happened to the $0.19?" Answer: the $0.19 never left
+        # the wallet (5-share intent only partially filled at 4.68
+        # shares), but the notification fired with intent values.
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import get_engine as _eng
+            with _eng().begin() as _conn:
+                _row = _conn.execute(_text(
+                    "SELECT shares, cost_usd, entry_price "
+                    "FROM pm_positions WHERE id = :pid"
+                ), {"pid": position_id}).fetchone()
+            if _row:
+                from dataclasses import replace as _replace
+                try:
+                    decision = _replace(
+                        decision,
+                        shares=float(_row[0]),
+                        stake_usd=float(_row[1]),
+                        entry_price=float(_row[2]),
+                    )
+                except TypeError:
+                    pass
+        except Exception as _exc:
+            print(
+                f"[pm_analyst] notify: actual-fill lookup failed for "
+                f"pos {position_id}: {_exc}",
+                file=sys.stderr,
+            )
         # Force a wallet-probe refresh so the bankroll we report
         # reflects the post-trade state (the order just spent N
         # dollars of pUSD). Without this, the cached probe is up to
