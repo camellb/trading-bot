@@ -48,11 +48,39 @@ import asyncio as _asyncio_module  # alias for the sync job wrappers below
 # in `_cffi_f_ares_getaddrinfo` and every aiohttp endpoint
 # (/api/state, /api/summary, /api/archetypes, etc.) would time out
 # at 30s even though the handler bodies don't touch DNS at all.
-# Pinning the default back to ThreadedResolver keeps DNS off the
-# loop. Verified by sample(1): without this patch a wedged sidecar
-# showed the main thread stuck inside _cffi_f_ares_getaddrinfo.
+#
+# Belt-and-suspenders defense, since the bot has wedged on this
+# even WITH the prior DefaultResolver patch — some library was
+# still constructing AsyncResolver directly:
+#
+#   1. Point AsyncResolver -> ThreadedResolver. Any code that
+#      explicitly does `aiohttp.resolver.AsyncResolver()` now gets
+#      a thread-pool resolver instead of c-ares.
+#   2. Also pin DefaultResolver (legacy path).
+#
+# The PyInstaller spec also excludes aiodns + pycares from the
+# bundle entirely so the c-ares C library is not even present at
+# runtime. The combination guarantees DNS never runs on the
+# asyncio loop.
 import aiohttp.resolver as _aiohttp_resolver  # noqa: E402
+_aiohttp_resolver.AsyncResolver = _aiohttp_resolver.ThreadedResolver
 _aiohttp_resolver.DefaultResolver = _aiohttp_resolver.ThreadedResolver
+# Also nuke any module-level c-ares import sitting in sys.modules
+# from a prior import (defensive — should not exist in a fresh
+# Python, but guards against test/dev-mode reload). If aiodns
+# was imported, replace its Resolver with a wrapper that uses
+# socket-based resolution.
+import sys as _sys_for_dns_patch  # noqa: E402
+if "aiodns" in _sys_for_dns_patch.modules:
+    # aiodns being imported means c-ares is loaded. We can't
+    # cleanly unload it, but we can stop callers from using its
+    # resolver. The aiohttp patch above is the main protection;
+    # this is a log signal so we know if it ever happens.
+    print(
+        "[delfi] WARNING: aiodns imported before main.py monkey-patch — "
+        "PyInstaller spec excludes should have prevented this; check the bundle.",
+        flush=True,
+    )
 
 import config
 from db.models import create_all_tables

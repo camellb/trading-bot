@@ -142,6 +142,19 @@ a = Analysis(
     # Tests, dev tooling, and Jupyter cruft that drift in via transitive
     # deps. Excluding them shrinks the bundle by tens of MB.
     excludes=[
+        # CRITICAL: aiodns + pycares pull in the c-ares C library
+        # which aiohttp auto-detects at import time and uses as its
+        # default async DNS resolver. c-ares runs ON the asyncio
+        # event loop and has wedged the daemon repeatedly when a
+        # single slow DNS lookup hits an internal mutex. By
+        # excluding them from the bundle the c library is not even
+        # present at runtime, so aiohttp falls back to
+        # ThreadedResolver unconditionally. ccxt (which transitively
+        # pulled aiodns in) works fine without it — aiodns is
+        # OPTIONAL for aiohttp.
+        "aiodns",
+        "pycares",
+        # Other dev/test/dead-weight modules.
         "tkinter",
         "matplotlib",
         "IPython",
