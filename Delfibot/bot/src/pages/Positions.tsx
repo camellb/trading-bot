@@ -582,6 +582,10 @@ export default function Positions() {
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
                   const dConfPct = e.confidence != null ? Math.round(e.confidence * 100) : null;
                   const reasoning = (e.reasoning ?? "").trim();
+                  // Polymarket slug → external link. Matches the open-row
+                  // pattern further up the file.
+                  const slug = e.slug as string | null | undefined;
+                  const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
                   return (
                     <React.Fragment key={e.id}>
                       <tr
@@ -628,6 +632,19 @@ export default function Positions() {
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {reasoning || "No reasoning recorded."}
                             </div>
+                            {polyUrl && (
+                              <a
+                                className="pos-detail-link"
+                                href={polyUrl}
+                                onClick={(ev) => {
+                                  ev.preventDefault();
+                                  ev.stopPropagation();
+                                  openExternal(polyUrl);
+                                }}
+                              >
+                                View on Polymarket →
+                              </a>
+                            )}
                           </td>
                         </tr>
                       )}

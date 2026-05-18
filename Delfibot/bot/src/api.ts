@@ -544,6 +544,12 @@ export interface MarketEvaluation {
   reasoning_short: string | null;
   reasoning: string | null;
   market_archetype: string | null;
+  // Polymarket slug + event slug (both already stored on
+  // market_evaluations by the analyst write-back). Used by the
+  // dashboard to render "View on Polymarket →" links on skipped
+  // rows.
+  slug?: string | null;
+  event_slug?: string | null;
   mode?: string;
   // Settled outcome of the underlying market (back-filled by the
   // skipped-eval resolver). Values: "YES" / "NO" / "INVALID", or

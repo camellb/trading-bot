@@ -841,7 +841,19 @@ def _build_search_queries(
     """
     Build targeted search queries based on market category.
     Different categories need fundamentally different information.
+
+    The year suffix is computed FRESH on every call from
+    `datetime.now(timezone.utc).year`. An earlier version hard-coded
+    "2025" in every query template, which silently pinned DDG results
+    to historical 2025 content forever — every market opened in 2026+
+    was researched against last-year's news, and the LLM correctly
+    flagged the date mismatch and skipped (e.g. "the research shows
+    this match already took place on May 15, 2025"). The dynamic
+    year keeps the queries current as the calendar advances; the
+    bot's 7-day-max market horizon means the resolution year almost
+    always matches today's year.
     """
+    year = datetime.now(timezone.utc).year
     queries = [question]
     cat = (category or "other").lower()
 
@@ -849,26 +861,26 @@ def _build_search_queries(
         sport_name = sport or ""
         if teams:
             team_str = " vs ".join(teams[:2])
-            queries.append(f"{team_str} odds prediction {sport_name} 2025")
+            queries.append(f"{team_str} odds prediction {sport_name} {year}")
             queries.append(f"{team_str} recent form stats {sport_name}")
             queries.append(f"{team_str} head to head record")
         elif keywords:
             queries.append(f"{' '.join(keywords[:2])} odds prediction today")
-            queries.append(f"{' '.join(keywords[:2])} stats form 2025")
+            queries.append(f"{' '.join(keywords[:2])} stats form {year}")
 
     elif cat == "politics":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest polls 2025")
+            queries.append(f"{' '.join(keywords[:3])} latest polls {year}")
             queries.append(f"{' '.join(keywords[:3])} political analysis forecast")
 
     elif cat in ("geopolitics", "economics"):
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest developments 2025")
+            queries.append(f"{' '.join(keywords[:3])} latest developments {year}")
             queries.append(f"{' '.join(keywords[:3])} expert analysis outlook")
 
     elif cat == "crypto":
         if keywords:
-            queries.append(f"{' '.join(keywords[:2])} price prediction analysis 2025")
+            queries.append(f"{' '.join(keywords[:2])} price prediction analysis {year}")
             queries.append(f"{' '.join(keywords[:2])} on-chain metrics sentiment")
 
     elif cat == "entertainment":
@@ -877,11 +889,11 @@ def _build_search_queries(
 
     elif cat == "science":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest research results 2025")
+            queries.append(f"{' '.join(keywords[:3])} latest research results {year}")
 
     else:
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest news 2025")
+            queries.append(f"{' '.join(keywords[:3])} latest news {year}")
 
     # Deduplicate while preserving order.
     seen: set[str] = set()
