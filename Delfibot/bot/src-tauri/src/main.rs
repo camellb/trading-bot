@@ -101,43 +101,80 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     // so the GUI keeps timing out forever (incident 2026-05-06).
     let port = read_existing_sidecar_port(&app).await;
 
-    // Use std::process::Command (not the Tauri shell plugin) so we
-    // don't have to widen capabilities/default.json's shell-execute
-    // allowlist beyond the sidecar binary. Wrapped in spawn_blocking
-    // because std::process::Command::output() is synchronous and we
-    // shouldn't block the Tauri runtime.
-    async_runtime::spawn_blocking(move || {
-        use std::process::Command;
+    // Every shelled command gets a HARD wall-clock budget. Without
+    // it, `launchctl kickstart -k` can wedge for >60s when launchd
+    // is in a half-stuck state — the GUI showed "Restarting..." for
+    // over a minute with no way to recover (incident 2026-05-18).
+    // The helper spawns the child, polls for exit, and returns Err
+    // on timeout. The daemon will still come back via launchd's
+    // KeepAlive=true — we just don't make the user wait for it.
+    fn run_with_timeout(
+        program: &str,
+        args: &[&str],
+        timeout: std::time::Duration,
+    ) -> Result<std::process::Output, String> {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(program)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn {program}: {e}"))?;
 
-        // Step 1: kill whatever process is currently bound to the
-        // sidecar port. lsof -nP -iTCP:<port> -sTCP:LISTEN -t prints
-        // PID-only. We SIGKILL each one. Any failure here is
-        // non-fatal - kickstart still runs.
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    return child.wait_with_output()
+                        .map_err(|e| format!("wait_with_output: {e}"));
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!(
+                            "{program} exceeded {}s budget",
+                            timeout.as_secs(),
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(format!("try_wait: {e}")),
+            }
+        }
+    }
+
+    async_runtime::spawn_blocking(move || -> Result<(), String> {
+        // Step 1: SIGKILL whatever owns the sidecar port. lsof prints
+        // pid-only (-t). Each step bounded so a stuck OS layer can't
+        // freeze the whole restart.
         if let Some(p) = port {
-            if let Ok(out) = Command::new("/usr/sbin/lsof")
-                .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-t",
-                       &format!("-iTCP:{p}")])
-                .output()
-            {
+            if let Ok(out) = run_with_timeout(
+                "/usr/sbin/lsof",
+                &["-nP", "-iTCP", "-sTCP:LISTEN", "-t",
+                  &format!("-iTCP:{p}")],
+                std::time::Duration::from_secs(5),
+            ) {
                 let pids = String::from_utf8_lossy(&out.stdout);
                 for line in pids.lines() {
                     let pid = line.trim();
                     if pid.is_empty() { continue; }
-                    let _ = Command::new("/bin/kill")
-                        .args(["-9", pid])
-                        .output();
+                    let _ = run_with_timeout(
+                        "/bin/kill", &["-9", pid],
+                        std::time::Duration::from_secs(3),
+                    );
                 }
             }
         }
 
-        // Step 2: ensure the LaunchAgent slot itself is fresh by
-        // running kickstart -k. This SIGTERMs the launchd-managed
-        // daemon (if any survived step 1) and starts a new one;
-        // KeepAlive then takes over for subsequent crashes.
-        let uid_out = Command::new("/usr/bin/id")
-            .arg("-u")
-            .output()
-            .map_err(|e| format!("failed to invoke id: {e}"))?;
+        // Step 2: kickstart -k the LaunchAgent. Normally fast, has
+        // hung indefinitely in practice. 15s is plenty of headroom
+        // for a healthy state; beyond that the daemon will still
+        // come up via KeepAlive and we don't make the GUI wait.
+        let uid_out = run_with_timeout(
+            "/usr/bin/id", &["-u"],
+            std::time::Duration::from_secs(3),
+        )?;
         if !uid_out.status.success() {
             return Err("id -u returned non-zero".into());
         }
@@ -146,18 +183,28 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
             return Err(format!("unexpected uid from id -u: {uid:?}"));
         }
         let service = format!("gui/{uid}/com.delfi.bot");
-        let out = Command::new("/bin/launchctl")
-            .args(["kickstart", "-k", &service])
-            .output()
-            .map_err(|e| format!("failed to invoke launchctl: {e}"))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "launchctl kickstart returned non-zero: {}",
-                stderr.trim()
-            ));
+
+        match run_with_timeout(
+            "/bin/launchctl",
+            &["kickstart", "-k", &service],
+            std::time::Duration::from_secs(15),
+        ) {
+            Ok(out) if !out.status.success() => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return Err(format!(
+                    "launchctl kickstart returned non-zero: {}",
+                    stderr.trim()
+                ));
+            }
+            Ok(_) => Ok(()),
+            // Timeout is non-fatal: KeepAlive will respawn the daemon
+            // anyway. Log only — the GUI proceeds with its reload.
+            Err(e) => {
+                eprintln!("[restart_sidecar] {e}; \
+                    KeepAlive will respawn the daemon");
+                Ok(())
+            }
         }
-        Ok::<(), String>(())
     })
     .await
     .map_err(|e| format!("restart task panicked: {e}"))?
