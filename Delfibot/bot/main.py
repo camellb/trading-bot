@@ -765,6 +765,46 @@ async def main() -> None:
             print(f"[delfi] evaluate_exits failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_balance_refresh():
+        """Refresh the cached Polymarket live-balance every 60s.
+
+        Without this, /api/summary's live-balance overlay had to
+        call the wallet probe on every dashboard poll (every 5s).
+        A slow DNS or SSL response on that probe could block the
+        thread for 30s+ and - because the probe holds a process-
+        level lock - queue every subsequent /api/summary behind it.
+        The dashboard then showed "sidecar may be stuck" until the
+        loop watchdog SIGKILLed the daemon. Moving the refresh
+        into a scheduled job decouples user requests from network
+        latency: /api/summary always reads the cache instantly;
+        this job is the only path that touches the network. If
+        THIS job wedges, the cache just goes slightly stale - no
+        user-visible impact.
+
+        No-op in simulation mode (no live key). Failure swallowed
+        so a network blip doesn't cascade.
+        """
+        try:
+            from engine.user_config import (
+                get_user_config, get_user_polymarket_creds,
+            )
+            from feeds.polymarket_wallet import refresh_live_balance_cache
+            cfg = get_user_config()
+            if (cfg.mode or "").lower() != "live":
+                proc_health.record_job_ok("pm_balance_refresh")
+                return
+            creds = get_user_polymarket_creds()
+            pk = (creds or {}).get("private_key") if creds else None
+            if not pk:
+                proc_health.record_job_ok("pm_balance_refresh")
+                return
+            refresh_live_balance_cache(pk)
+            proc_health.record_job_ok("pm_balance_refresh")
+        except Exception as exc:
+            proc_health.record_job_error("pm_balance_refresh")
+            print(f"[delfi] balance refresh failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_resolve_skipped():
         """Back-fill outcomes for skipped market_evaluations.
 
@@ -837,6 +877,19 @@ async def main() -> None:
         # First fire 2 minutes after boot — give the position resolver
         # priority on a fresh start, then catch up on skipped evals.
         next_run_time=now_utc + timedelta(minutes=2),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    scheduler.add_job(
+        _run_balance_refresh, IntervalTrigger(seconds=60),
+        id="pm_balance_refresh",
+        # First fire 15s after boot so the dashboard's live-balance
+        # number is populated before the user can even click around.
+        # 60s cadence is fast enough that a fresh Polymarket deposit
+        # shows up within a minute, slow enough that we don't hammer
+        # the CLOB. Runs on threadpool so a slow probe never blocks
+        # the aiohttp event loop.
+        next_run_time=now_utc + timedelta(seconds=15),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )

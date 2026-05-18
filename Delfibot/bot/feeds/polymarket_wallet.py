@@ -475,15 +475,39 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
             return info
 
     # Serialize the probe. The GUI polls /api/summary every 5 seconds
-    # on the threadpool; without this lock, 2-4 concurrent cache-miss
-    # callers all run the full 4-signature-type probe in parallel,
-    # multiplying SSL reads, holding the GIL across each handshake,
-    # and starving the asyncio main loop of accept(). The whole
-    # probe runs inside the critical section; double-checked locking
-    # handles waiters that arrive after another thread populated the
-    # cache. The try/finally guarantees the lock releases on every
-    # exit path.
-    with _POLY_SIGNER_LOCK:
+    # on the threadpool; without a lock, concurrent cache-miss callers
+    # all ran the 4-signature-type probe in parallel, contending for
+    # the GIL on every SSL read. With the lock, only one runs at a
+    # time.
+    #
+    # CRITICAL: the lock is acquired with a 12-second timeout, not
+    # indefinitely. If the holder is wedged inside a slow DNS or SSL
+    # call (c-ares wedge, network blip), every caller WAITING on the
+    # lock would otherwise queue forever, eventually saturating
+    # threadpool workers and starving the aiohttp accept() loop —
+    # the exact failure mode the user kept hitting as "/api/state
+    # timed out after 30s". With a timeout, waiters give up cleanly:
+    # they either return stale cache (defined behaviour upstream)
+    # or None. /api/summary's hot path uses get_cached_*() helpers
+    # below that bypass this lock entirely.
+    acquired = _POLY_SIGNER_LOCK.acquire(timeout=12.0)
+    if not acquired:
+        cached = _POLY_SIGNER_CACHE.get(cache_key)
+        if cached is not None:
+            info, _ = cached
+            print(
+                f"[polymarket_wallet] probe lock timed out — serving "
+                f"stale cache for {cache_key[:8]}…",
+                file=sys.stderr,
+            )
+            return info
+        print(
+            f"[polymarket_wallet] probe lock timed out and no cache "
+            f"available for {cache_key[:8]}… — returning None",
+            file=sys.stderr,
+        )
+        return None
+    try:
         # Double-check: another waiter may have populated the cache
         # while we were blocked on the lock.
         cached = _POLY_SIGNER_CACHE.get(cache_key)
@@ -628,6 +652,8 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
 
         _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
         return chosen
+    finally:
+        _POLY_SIGNER_LOCK.release()
 
 
 def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
@@ -638,3 +664,63 @@ def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
     """
     info = get_poly_signer_info(private_key)
     return float(info["balance"]) if info else None
+
+
+# ── Non-blocking helpers (for the request hot path) ─────────────────────────
+#
+# CRITICAL: these helpers NEVER acquire _POLY_SIGNER_LOCK and NEVER make a
+# network call. They serve from the in-process cache only. The hot path
+# (/api/summary, polled every 5s by the dashboard) goes through these so
+# a slow probe in a background thread cannot wedge user-facing requests.
+#
+# A separate scheduled job in main.py runs `get_poly_signer_info` every
+# 60s to keep the cache fresh. If that background job blocks (DNS
+# wedge, c-ares hang, anything), only the BACKGROUND cache update is
+# delayed — the dashboard keeps serving the last known good balance.
+#
+# Returns the cached value even if past the TTL. Stale cache > no
+# value; the cache only gets a "missing" answer on cold start before
+# the first background refresh completes. /api/summary's overlay
+# falls back to the DB-derived bankroll in that case.
+
+def get_cached_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
+    """Read the cached signer info without any blocking call.
+
+    Returns the last-known signer dict (signature_type, funder, eoa,
+    balance, allowance) or None if no probe has completed yet for
+    this key. NEVER touches the network and NEVER acquires the
+    probe lock. Safe to call from any request handler at any time.
+    """
+    if not private_key or not isinstance(private_key, str):
+        return None
+    import hashlib
+    cache_key = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    cached = _POLY_SIGNER_CACHE.get(cache_key)
+    if cached is None:
+        return None
+    info, _ = cached
+    return info
+
+
+def get_cached_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
+    """Non-blocking variant of get_live_clob_balance.
+
+    Returns the last-known wallet balance (USD float) without any
+    network call. None if no probe has populated the cache yet for
+    this key. Use this from request handlers; /api/summary's live
+    overlay reads it.
+    """
+    info = get_cached_poly_signer_info(private_key)
+    return float(info["balance"]) if info else None
+
+
+def refresh_live_balance_cache(private_key: Optional[str]) -> bool:
+    """Trigger a background probe to refresh the cached balance.
+
+    Used by the scheduler's pm_balance_refresh job (main.py). Runs
+    the same probe as get_poly_signer_info but in a context where
+    blocking is acceptable (no user request behind it). Returns True
+    on success, False on probe failure / lock timeout.
+    """
+    info = get_poly_signer_info(private_key)
+    return info is not None

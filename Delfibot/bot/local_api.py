@@ -1203,28 +1203,39 @@ class LocalAPI:
         # is funded. The authoritative source is Polymarket's CLOB
         # `/balance-allowance` endpoint, which knows the proxy and
         # returns the collateral the bot can actually trade with.
-        # Helper has a 60 s in-memory cache so the Dashboard poll
-        # loop doesn't slam the CLOB. On any failure we leave the
-        # DB-derived value alone (don't flash $0 on a network
-        # hiccup).
+        #
+        # CRITICAL: this overlay reads from the in-process cache
+        # ONLY — never the network. A separate scheduled job
+        # (pm_balance_refresh in main.py, 60s cadence) refreshes
+        # the cache in the background. Before this change, every
+        # /api/summary poll could trigger a fresh probe; a slow DNS
+        # or SSL call on that probe wedged the daemon for 30s+ and
+        # the dashboard kept showing "sidecar may be stuck". Moving
+        # the refresh off the user-request path means /api/summary
+        # always returns in milliseconds — at worst the bankroll
+        # number is up to 60s stale on a network blip.
         bankroll = stats.get("bankroll")
         equity   = stats.get("equity")
         open_cost = float(stats.get("open_cost") or 0.0)
         if stats.get("mode") == "live":
             try:
-                from feeds.polymarket_wallet import get_live_clob_balance
+                from feeds.polymarket_wallet import get_cached_live_clob_balance
                 pm_key = await self._offload(
                     _keyring_get, KEYRING_POLYMARKET_KEY,
                 )
                 if pm_key:
-                    clob_balance = await asyncio.get_event_loop().run_in_executor(
-                        None, get_live_clob_balance, pm_key,
-                    )
+                    # Non-blocking, no lock, no network. Reads the
+                    # last-known balance from _POLY_SIGNER_CACHE.
+                    # Returns None on cold start before the first
+                    # background refresh completes; we fall back to
+                    # the DB-derived bankroll in that case.
+                    clob_balance = get_cached_live_clob_balance(pm_key)
                     if clob_balance is not None:
                         bankroll = float(clob_balance)
                         equity = bankroll + open_cost
             except Exception as exc:
-                # Don't break the dashboard if the CLOB API blips.
+                # Should not be reachable now that the call is non-
+                # blocking and side-effect-free, but keep the guard.
                 print(f"[summary] live CLOB balance overlay failed: {exc}",
                       flush=True)
 
