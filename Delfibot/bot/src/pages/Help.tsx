@@ -58,7 +58,7 @@ export default function Help({ creds, config, goto }: Props) {
   }, []);
 
   return (
-    <div className="page-wrap">
+    <div className="page-wrap narrow">
       <div className="page-head">
         <div className="page-head-row">
           <div>

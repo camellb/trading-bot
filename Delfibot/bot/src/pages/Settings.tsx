@@ -64,7 +64,7 @@ export default function Settings({ tab, creds, config, onSaved }: Props) {
   // tab switching today; ignore it here without triggering noUnusedLocals.
   const t = TITLES[tab];
   return (
-    <div className="page-wrap">
+    <div className="page-wrap narrow">
       <div className="page-head">
         <div className="page-head-row">
           <div>

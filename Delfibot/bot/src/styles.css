@@ -2541,3 +2541,46 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   background: transparent;
   border-style: dashed;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   WIDE-VIEWPORT RESPONSIVE POLISH (2026-05-19)
+   ════════════════════════════════════════════════════════════════
+
+   At window widths above ~1500px the page-wrap caps at --max-width
+   (1400px) but narrow content - single-column forms, reading-heavy
+   guide blocks - sat anchored to the left with a large empty gutter
+   to the right. The reported symptom on Risk, Settings, and Help was
+   "wide empty space / unbalanced columns" at 1600px+ windows.
+
+   Three rules address it without touching narrow / mid-width
+   layouts:
+
+     1. Forms (.form-row, intrinsic max-width 640px) center within
+        their panel above ~1100px. Panel headers stay left-aligned
+        which produces a subtle title-left, form-centered shape that
+        reads as balanced rather than half-empty.
+
+     2. The archetype grid promotes to 3 columns above ~1500px so
+        cards don't grow to half-screen width when there's room for
+        a denser layout.
+
+     3. A new .page-wrap.narrow modifier caps text-heavy pages
+        (Settings, Help) at 960px so long-line text doesn't sprawl
+        across 1400px and forms naturally sit in a comfortable
+        reading column. Below ~1000px viewports the max-width is
+        a no-op because the parent constraints (app-main padding +
+        sidebar width) already dominate, so this never regresses
+        the smaller-window layout.
+*/
+
+@media (min-width: 1100px) {
+  .form-row { margin-left: auto; margin-right: auto; }
+}
+
+@media (min-width: 1500px) {
+  .archetype-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.page-wrap.narrow {
+  max-width: 960px;
+}
