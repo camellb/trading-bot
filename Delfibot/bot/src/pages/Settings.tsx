@@ -1019,7 +1019,6 @@ function ConnectionsPanel({
   goto: Goto;
 }) {
   const [pmKey, setPmKey] = useState("");
-  const [wallet, setWallet] = useState("");
   const [llmKey, setLlmKey] = useState("");
   const [llmBackup, setLlmBackup] = useState("");
   const [newsapi, setNewsapi] = useState("");
@@ -1028,10 +1027,6 @@ function ConnectionsPanel({
   const [pmRelayerKey, setPmRelayerKey] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (creds) setWallet(creds.wallet_address ?? "");
-  }, [creds]);
 
   // Older sidecars don't return `has_llm_key`; fall back to the legacy
   // `has_anthropic_key` so the "(stored)" placeholder is correct on
@@ -1050,7 +1045,6 @@ function ConnectionsPanel({
     try {
       const payload: Record<string, string> = {};
       if (pmKey.trim())       payload.polymarket_private_key = pmKey.trim();
-      if (wallet.trim())      payload.wallet_address = wallet.trim();
       if (llmKey.trim())      payload.llm_api_key = llmKey.trim();
       if (llmBackup.trim())   payload.llm_backup_key = llmBackup.trim();
       if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
@@ -1103,20 +1097,7 @@ function ConnectionsPanel({
             onChange={(e) => setPmKey(e.target.value)}
           />
           <p className="form-hint">
-            Signs Polymarket orders in live mode.
-          </p>
-        </div>
-        <div className="form-field">
-          <label>Wallet address</label>
-          <input
-            type="text"
-            autoComplete="off"
-            placeholder="0x..."
-            value={wallet}
-            onChange={(e) => setWallet(e.target.value)}
-          />
-          <p className="form-hint">
-            Auto-derives from the private key above.
+            Signs Polymarket orders in live mode. The wallet address auto-derives from this key.
           </p>
         </div>
 

@@ -450,6 +450,7 @@ const NAV: NavItem[] = [
   { id: "performance",  label: "Performance",  icon: IconTrend() },
   { id: "intelligence", label: "Intelligence", icon: IconBolt() },
   { id: "risk",         label: "Risk controls", icon: IconShield() },
+  { id: "help",         label: "Help",          icon: IconHelp() },
   {
     id: "settings",
     label: "Settings",
@@ -462,7 +463,6 @@ const NAV: NavItem[] = [
       { id: "notifications", label: "Notifications" },
     ],
   },
-  { id: "help",         label: "Help",          icon: IconHelp() },
 ];
 
 function Sidebar({
