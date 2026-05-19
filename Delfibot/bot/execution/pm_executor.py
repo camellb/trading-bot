@@ -601,26 +601,60 @@ class PMExecutor:
         # SINGLE source of truth for bankroll + equity, used by every
         # downstream surface (Dashboard /api/summary, settlement
         # Telegram messages via polymarket_runner, learning-cycle
-        # bookkeeping). Two formulas used to live here; they disagreed
-        # in live mode and produced "$6.34 Balance" on a WIN message
-        # while the new-position message ten seconds earlier said
-        # "$15.30 Leftover cash" against the same wallet.
+        # bookkeeping).
         #
-        # The unification:
-        #   bankroll = self.get_bankroll()
-        #     LIVE: real total wallet at funder (pUSD + USDC.e), via
-        #           the cached probe in feeds.polymarket_wallet.
-        #     SIM : DB formula (starting_cash + sum realized - sum open).
-        #   equity   = bankroll + open_cost
-        #     Total wealth = spendable cash + cost basis of every
-        #     open position. Matches the Dashboard "Total equity"
-        #     tile and the new_position message's "Total equity".
+        # bankroll = wallet (real on-chain or DB formula) + pending
+        #            redemption payouts for live winners that have
+        #            settled but whose redeem+wrap chain hasn't yet
+        #            credited the wallet.
+        # equity   = bankroll + open_cost (cost basis of open positions).
         #
-        # The old "equity = starting + realized" formula (which
-        # *excluded* open exposure) is dropped. It was incoherent: a
-        # $100 starting bankroll with $50 in open positions and no
-        # realized P&L showed equity=$100, hiding the $50 at risk.
-        bankroll = float(self.get_bankroll())
+        # Why the pending-payout projection:
+        # The redeem+wrap chain typically completes within 30-60s of
+        # settle_position firing. During that window the real wallet
+        # probe still shows the pre-redeem balance, so a WIN
+        # notification would render "Balance: $X" where X doesn't yet
+        # include the just-won money. Users read this as "the win
+        # wasn't credited" even though it's already on its way. The
+        # projection closes that gap: we add the expected payout
+        # (cost_usd + realized_pnl_usd) for every settled winner whose
+        # `redeem_tx_hash` is still NULL, so the displayed Balance
+        # matches what the wallet will reach as soon as the in-flight
+        # relayer transactions mine. Once they mine, the wallet probe
+        # picks them up natively and the projection drops back to 0.
+        #
+        # Sim mode never needs this: get_bankroll() already counts
+        # realized P&L for settled rows via the DB formula. Losers and
+        # voided markets contribute 0 to the projection (their
+        # cost_usd + realized_pnl_usd = 0 for losers, = cost_usd for
+        # invalid refunds, so the formula is correct for both).
+        bankroll_wallet  = float(self.get_bankroll())
+        pending_payout   = 0.0
+        if self.mode == "live":
+            try:
+                with get_engine().begin() as conn:
+                    pending = conn.execute(text(
+                        "SELECT COALESCE(SUM("
+                        "  cost_usd + COALESCE(realized_pnl_usd, 0)"
+                        "), 0) "
+                        "FROM pm_positions "
+                        "WHERE user_id = :uid "
+                        "  AND mode = 'live' "
+                        "  AND status IN ('settled', 'invalid') "
+                        "  AND redeem_tx_hash IS NULL "
+                        "  AND ("
+                        "    side = settlement_outcome "  # winning binary
+                        "    OR status = 'invalid'"        # voided refund
+                        "  )"
+                    ), {"uid": self.user_id}).scalar() or 0.0
+                    pending_payout = float(pending)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] pending-payout probe failed for "
+                    f"{self.user_id}: {exc}",
+                    file=sys.stderr,
+                )
+        bankroll = bankroll_wallet + pending_payout
         equity   = bankroll + open_cost
         return {
             "mode":            self.mode,
@@ -1705,6 +1739,28 @@ class PMExecutor:
                                 f"pos {position_id}: {result.error}",
                                 file=sys.stderr,
                             )
+                        # Force-refresh the cached wallet probe so the
+                        # WIN Telegram message (rendered right after
+                        # settle_position returns) shows a Balance that
+                        # already includes the just-credited payout.
+                        # Without this, the probe stays cached up to 60s
+                        # and the notification displays a pre-payout
+                        # balance, making users think the win wasn't
+                        # credited. Cheap: one extra Polygon RPC probe,
+                        # only on actual winners.
+                        if result.redeemed and private_key:
+                            try:
+                                from feeds.polymarket_wallet import (
+                                    refresh_live_balance_cache,
+                                )
+                                refresh_live_balance_cache(private_key)
+                            except Exception as exc:
+                                print(
+                                    f"[pm_executor] post-redeem cache "
+                                    f"refresh failed for pos "
+                                    f"{position_id}: {exc}",
+                                    file=sys.stderr,
+                                )
                 except Exception as exc:
                     # Never let a redeem-side problem mark settlement as
                     # failed - the DB is already correct, the on-chain

@@ -775,12 +775,44 @@ def get_cached_total_funder_balance(
 
 
 def refresh_live_balance_cache(private_key: Optional[str]) -> bool:
-    """Trigger a background probe to refresh the cached balance.
+    """Force-refresh the cached wallet probe for this key.
 
-    Used by the scheduler's pm_balance_refresh job (main.py). Runs
-    the same probe as get_poly_signer_info but in a context where
-    blocking is acceptable (no user request behind it). Returns True
-    on success, False on probe failure / lock timeout.
+    Invalidates the existing cache entry and runs a fresh probe so the
+    very next ``get_cached_total_funder_balance`` read reflects current
+    on-chain state instead of a stale value from up to 5 minutes ago.
+
+    Call this immediately after an on-chain state change for the user's
+    funder:
+
+      * new position opened (cost spent from wallet)
+      * winning position redeemed (payout arrives as USDC.e or pUSD)
+      * USDC.e -> pUSD wrap completes
+      * deposit / withdrawal observed
+
+    Without the explicit invalidation, the previous implementation just
+    called ``get_poly_signer_info`` which served from cache when fresh,
+    making this function a no-op when it was called immediately after a
+    state change (exactly the case it exists for). That broke the
+    "Balance in WIN notification includes the just-won money" UX:
+    settle_position redeemed synchronously, then the next
+    ``get_portfolio_stats`` call read the stale cached wallet and the
+    Telegram message rendered a pre-payout balance.
+
+    Used by the scheduler's pm_balance_refresh job (main.py),
+    pm_analyst's post-open hook, and settle_position's post-redeem hook.
+    Returns True on success, False on probe failure / lock timeout.
     """
+    if not private_key:
+        return False
+    try:
+        import hashlib
+        cache_key = hashlib.sha256(
+            private_key.encode("utf-8")
+        ).hexdigest()[:16]
+        _POLY_SIGNER_CACHE.pop(cache_key, None)
+    except Exception:
+        # Best-effort: if invalidation fails for any reason the probe
+        # below still runs, it just might serve the stale value.
+        pass
     info = get_poly_signer_info(private_key)
     return info is not None
