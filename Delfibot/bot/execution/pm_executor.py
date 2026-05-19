@@ -382,6 +382,12 @@ def _extract_filled_cost(
        if this row's recorded cost diverges from on-chain.
     """
     # Source 1: client.get_trades() for the order. Most reliable.
+    # Prefer `usdcSize` (the actual USDC sent on-chain, INCLUDING
+    # taker fees) over `price * size` (which strips the fee). The
+    # difference is small per trade (~1-2%) but compounds across
+    # the position log and produces realized-P&L drift against
+    # Polymarket's own number - the source of the user-visible
+    # "Polymarket says X, Delfi says Y" complaint.
     if client is not None and order_id:
         try:
             from py_clob_client_v2.clob_types import TradeParams  # type: ignore
@@ -395,6 +401,19 @@ def _extract_filled_cost(
             for t in trades:
                 if not isinstance(t, dict):
                     continue
+                # Prefer the actual USDC sent (with fees) if present.
+                usdc = t.get("usdcSize") or t.get("usdc_size")
+                if usdc is not None:
+                    try:
+                        u = float(usdc)
+                        if u > 0:
+                            total += u
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                # Fallback: price * size if the trade row only has
+                # the per-share data (older SDK builds, or maker
+                # fills that don't carry a usdcSize).
                 try:
                     p = float(t.get("price") or 0)
                     s = float(t.get("size") or 0)
@@ -405,7 +424,8 @@ def _extract_filled_cost(
             if total > 0:
                 return total
 
-    # Source 2: inline fills array on the order response.
+    # Source 2: inline fills array on the order response. Same
+    # usdcSize-preference logic.
     for src in (final, resp):
         if not isinstance(src, dict):
             continue
@@ -416,6 +436,15 @@ def _extract_filled_cost(
         for f in fills:
             if not isinstance(f, dict):
                 continue
+            usdc = f.get("usdcSize") or f.get("usdc_size")
+            if usdc is not None:
+                try:
+                    u = float(usdc)
+                    if u > 0:
+                        total += u
+                        continue
+                except (TypeError, ValueError):
+                    pass
             try:
                 p = float(f.get("price") or 0)
                 s = float(f.get("size") or 0)

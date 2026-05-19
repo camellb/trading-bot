@@ -61,6 +61,14 @@ from feeds.polymarket_wallet import get_poly_signer_info
 # that resolved to zero) is surfaced - those still need a status flag
 # in Delfi to land on the Closed positions tab.
 _DATA_API_POSITIONS = "https://data-api.polymarket.com/positions"
+# Activity feed exposes per-trade `usdcSize` - the actual USDC sent
+# on-chain INCLUDING taker fees. We aggregate this per
+# (conditionId, outcomeIndex) to compute the true cost of every
+# position, instead of relying on /positions.initialValue which is
+# `size * avgPrice` and strips the fee. The two differ by ~1-2% per
+# trade and compound into realized-P&L drift against Polymarket's own
+# numbers.
+_DATA_API_ACTIVITY  = "https://data-api.polymarket.com/activity"
 _DATA_API_TIMEOUT_S = 15.0
 _HTTP_HEADERS = {"User-Agent": "delfibot/1.0 reconciler"}
 
@@ -166,6 +174,12 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
 
     summary["checked"] = len(rows)
 
+    # Fetch per-trade USDC totals once per pass - same source the
+    # executor uses (client.get_trades). Lets _import_position write
+    # the fee-inclusive cost instead of /positions.initialValue
+    # which strips the fee.
+    activity_costs = _fetch_activity_costs(funder)
+
     # Look up every existing (condition_id, side) pair in pm_positions
     # in one query so the per-row check is in-memory. Keyed by
     # (condition_id_lower, side); value carries the existing
@@ -210,7 +224,10 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
                 _check_drift(existing[(cond_id, side)], r, side)
                 continue
 
-            _import_position(user_id=user_id, row=r, side=side)
+            _import_position(
+                user_id=user_id, row=r, side=side,
+                activity_costs=activity_costs,
+            )
             summary["imported"] += 1
             existing[(cond_id, side)] = {
                 "id":     None, "shares": float(r.get("size") or 0.0),
@@ -324,6 +341,55 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
     return summary
 
 
+def _fetch_activity_costs(funder: str) -> dict:
+    """Return {(cond_id_lower, outcome_idx) -> total_usdc_paid}.
+
+    Walks the Polymarket activity feed and aggregates BUY trades.
+    `usdcSize` on each trade is the actual USDC sent on-chain
+    INCLUDING taker fees - the same number Polymarket uses to
+    compute its realized P&L. Reading this instead of /positions'
+    `initialValue` keeps Delfi's cost_usd within rounding error of
+    Polymarket's view.
+
+    Returns an empty dict on fetch failure; the caller falls back
+    to /positions.initialValue, so the reconciler still works
+    (just with the ~1-2% fee gap).
+    """
+    out: dict[tuple[str, int], float] = {}
+    try:
+        resp = requests.get(
+            _DATA_API_ACTIVITY,
+            params={"user": funder, "limit": "200", "type": "TRADE"},
+            headers=_HTTP_HEADERS,
+            timeout=_DATA_API_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+    except Exception as exc:
+        print(f"[pm_reconciler] activity fetch failed: "
+              f"{type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return out
+    if not isinstance(rows, list):
+        return out
+    for r in rows:
+        if r.get("type") != "TRADE" or r.get("side") != "BUY":
+            continue
+        cid = (r.get("conditionId") or "").lower()
+        idx = r.get("outcomeIndex")
+        if not cid or idx is None:
+            continue
+        try:
+            u = float(r.get("usdcSize") or 0)
+        except (TypeError, ValueError):
+            continue
+        if u <= 0:
+            continue
+        key = (cid, int(idx))
+        out[key] = out.get(key, 0.0) + u
+    return out
+
+
 def _outcome_to_side(row: dict) -> Optional[str]:
     """Map a data-api position outcome to a Delfi pm_positions.side.
 
@@ -350,7 +416,8 @@ def _outcome_to_side(row: dict) -> Optional[str]:
     return None
 
 
-def _import_position(*, user_id: str, row: dict, side: str) -> None:
+def _import_position(*, user_id: str, row: dict, side: str,
+                     activity_costs: Optional[dict] = None) -> None:
     """INSERT a single on-chain position into pm_positions.
 
     All fields populated from the data-api row are the on-chain truth:
@@ -370,7 +437,16 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
     size        = float(row.get("size") or 0.0)
     avg_price   = float(row.get("avgPrice") or 0.0)
     cur_value   = float(row.get("currentValue") or 0.0)
-    init_value  = float(row.get("initialValue") or (size * avg_price))
+    # Prefer the fee-inclusive cost from /activity if we have it
+    # (matches the executor's new _extract_filled_cost behaviour).
+    # Falls back to /positions.initialValue, then size*avgPrice.
+    init_value  = None
+    if activity_costs is not None:
+        idx = 0 if side.upper() == "YES" else 1
+        init_value = activity_costs.get((cond_id, idx))
+    if not init_value:
+        init_value = float(row.get("initialValue") or (size * avg_price))
+    init_value = float(init_value)
     redeemable  = bool(row.get("redeemable"))
     title       = (row.get("title") or "(unknown)").strip()
     slug        = row.get("slug") or None
