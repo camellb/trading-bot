@@ -666,16 +666,56 @@ class PMExecutor:
                     f"{self.user_id}: {exc}",
                     file=sys.stderr,
                 )
+
+        # Locked Capital (= equity contribution from open positions).
+        #
+        # In LIVE mode we ask Polymarket's own data-api for the sum of
+        # currentValue across EVERY position the wallet holds, including
+        # ones the user opened manually outside the bot. That's the same
+        # source Polymarket's "Portfolio" UI reads, so the Dashboard +
+        # Telegram numbers reconcile to the cent. The bot's P&L,
+        # win-rate, and position-count fields below stay scoped to
+        # pm_positions (bot-tracked rows) so manual trades don't pollute
+        # the bot's track record.
+        #
+        # On any failure (network, parse, non-2xx) we fall through to
+        # `open_cost` from the SQL above, which is already
+        # SUM(COALESCE(current_value_usd, cost_usd)) for bot-tracked
+        # opens. That's a strictly worse but never-wrong floor.
+        locked_capital = open_cost
+        if self.mode == "live":
+            try:
+                from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import (
+                    get_total_open_positions_value, get_poly_signer_info,
+                )
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    info = get_poly_signer_info(pk)
+                    funder = (info or {}).get("funder")
+                    if funder:
+                        total_open_value = get_total_open_positions_value(funder)
+                        if total_open_value is not None:
+                            locked_capital = float(total_open_value)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] locked_capital probe failed for "
+                    f"{self.user_id}: {exc}",
+                    file=sys.stderr,
+                )
+
         bankroll = bankroll_wallet + pending_payout
-        equity   = bankroll + open_cost
+        equity   = bankroll + locked_capital
         return {
             "mode":            self.mode,
             "starting_cash":   starting,
             "bankroll":        bankroll,
             "equity":          equity,
-            "locked_capital":  open_cost,  # user-facing alias for open_cost
+            "locked_capital":  locked_capital,  # data-api sum in live, DB sum in sim
             "open_positions":  open_n,
-            "open_cost":       open_cost,
+            "open_cost":       locked_capital,  # alias; kept for legacy callers
+            "bot_open_cost":   open_cost,       # bot-tracked only (for P&L analysis)
             "settled_total":   settled_n,
             "settled_wins":    wins,
             "skipped_total":   skipped_n,

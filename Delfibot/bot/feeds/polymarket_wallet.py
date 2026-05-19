@@ -218,6 +218,15 @@ def clear_cache() -> None:
 _CLOB_BALANCE_CACHE: Dict[str, Tuple[float, float]] = {}
 _CLOB_BALANCE_TTL_SECONDS = 60.0
 
+# Cache for the data-api positions sum (per funder).
+# Used by pm_executor.get_portfolio_stats to compute Locked Capital
+# from the authoritative Polymarket source (= every position the
+# wallet holds, including manual trades the bot didn't open). 60s
+# TTL is enough that the Dashboard's 5s poll doesn't hammer the
+# data-api endpoint.
+_POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float]] = {}
+_POSITIONS_VALUE_TTL_SECONDS = 60.0
+
 _POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
 _POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
 
@@ -853,6 +862,79 @@ def get_cached_total_funder_balance(
     pusd  = float(info.get("balance") or 0.0)
     usdce = float(info.get("usdce_legacy") or 0.0)
     return pusd + usdce
+
+
+def get_total_open_positions_value(
+    funder_address: Optional[str],
+) -> Optional[float]:
+    """Sum currentValue of every open position the user holds on
+    Polymarket, INCLUDING positions opened manually outside the bot.
+
+    Authoritative source for the Dashboard's "Locked Capital" tile and
+    the equity number on every Telegram message. Bot-internal P&L /
+    win-rate counts still come from pm_positions filtered by user_id +
+    mode, so manual trades don't pollute the bot's track record.
+
+    Returns the sum in USD on success, or None on any failure (caller
+    falls through to the DB-tracked sum of current_value_usd, then to
+    cost_usd via the COALESCE chain in pm_executor.get_portfolio_stats).
+    Cached per funder for 60s so the Dashboard's 5s /api/summary poll
+    doesn't hammer Polymarket's data-api.
+
+    Data-api endpoint:
+        https://data-api.polymarket.com/positions?user=<funder>
+    Returns a JSON array of position dicts. Each row carries:
+        title:        market question
+        outcome:      'Yes' | 'No' (or sport-specific labels)
+        size:         shares held
+        curPrice:     current ask / mid for the held side
+        currentValue: size * curPrice (USD value at current prices)
+        initialValue: size * entry price
+        cashPnl:      currentValue - initialValue
+    Lost positions linger in the response with curPrice=0 (and
+    currentValue=0), so summing across the whole list is safe.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    now = time.monotonic()
+    cached = _POSITIONS_VALUE_CACHE.get(key)
+    if cached is not None and now - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
+        return cached[0]
+    try:
+        import requests as _r
+        resp = _r.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder_address},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            print(
+                f"[polymarket_wallet] data-api positions returned "
+                f"{resp.status_code} for {funder_address}",
+                file=sys.stderr,
+            )
+            return None
+        data = resp.json()
+        if not isinstance(data, list):
+            return None
+        total = 0.0
+        for row in data:
+            try:
+                v = float(row.get("currentValue") or 0.0)
+                if v > 0:
+                    total += v
+            except (TypeError, ValueError):
+                continue
+        _POSITIONS_VALUE_CACHE[key] = (float(total), now)
+        return float(total)
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] data-api positions fetch failed for "
+            f"{funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
 
 
 def refresh_live_balance_cache(private_key: Optional[str]) -> bool:

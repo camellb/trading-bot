@@ -1391,7 +1391,15 @@ class LocalAPI:
             "equity":         equity,
             "starting_cash":  starting,
             "open_positions": stats.get("open_positions"),
+            # open_cost is the user-facing "Locked Capital" number:
+            # sum of current market value of EVERY position the wallet
+            # holds (bot-opened + manually-opened on Polymarket).
+            # Source is Polymarket's data-api in live mode, the DB sum
+            # in sim mode. bot_open_cost is the bot-tracked subset
+            # used for the bot's own P&L bookkeeping; surfaces that
+            # want to show "tracked vs untracked" can subtract.
             "open_cost":      stats.get("open_cost"),
+            "bot_open_cost":  stats.get("bot_open_cost"),
             "settled_total":  stats.get("settled_total"),
             "settled_wins":   stats.get("settled_wins"),
             "skipped_total":  stats.get("skipped_total"),
