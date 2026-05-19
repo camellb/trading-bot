@@ -700,7 +700,7 @@ export default function Positions() {
                 <tr>
                   <th>Market</th>
                   <th>Side</th>
-                  <th>Stake</th>
+                  <th>Size</th>
                   <th>Reason</th>
                   <th>When</th>
                 </tr>
