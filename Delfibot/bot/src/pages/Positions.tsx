@@ -735,7 +735,9 @@ export default function Positions() {
                       <td className="truncate" title={question}>{question}</td>
                       <td className={`mono ${sideClass}`}>{side}</td>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
-                        {size && price ? `${size} @ $${price}` : "—"}
+                        {size && price
+                          ? `$${(Number(size) * Number(price)).toFixed(0)}`
+                          : "—"}
                       </td>
                       <td
                         style={{
