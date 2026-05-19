@@ -986,6 +986,14 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(minutes=4),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        # misfire_grace_time=None: ALWAYS run, no matter how late.
+        # APScheduler's default 1-second grace caused this job to be
+        # silently dropped for hours under load (analyst LLM calls
+        # held threadpool slots, every fire missed the 1s window and
+        # was discarded). Wrapping USDC.e to pUSD is a 'must
+        # eventually happen' job; we never want to drop a fire.
+        # coalesce=True means N missed fires still result in one run.
+        misfire_grace_time=None,
     )
     scheduler.add_job(
         _run_redeem_sweeper, IntervalTrigger(minutes=10),
@@ -1001,6 +1009,12 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(minutes=3),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        # misfire_grace_time=None: same reasoning as pm_activate_legacy
+        # above. Redeeming a winner is a 'must eventually happen' job.
+        # The user's money is sitting at the CTF contract; we don't
+        # want APScheduler dropping fires just because the threadpool
+        # was busy with analyst LLM work.
+        misfire_grace_time=None,
     )
     scheduler.add_job(
         _run_balance_refresh, IntervalTrigger(seconds=60),

@@ -167,24 +167,30 @@ def resolve_collateral_for_position(
     except Exception:
         return None
 
-    rpc_url = POLYGON_RPC_URLS[0]
-
+    # Try each RPC in turn. Hardcoding POLYGON_RPC_URLS[0] used to fail
+    # silently when llamarpc DNS was unreachable, leaving the redeem
+    # to fall back to USDCE_ADDRESS by default and (if the market
+    # actually settled in pUSD) emit PayoutRedemption(payout=0).
     def _eth_call(data_hex: str) -> Optional[str]:
-        try:
-            r = _requests.post(
-                rpc_url,
-                json={
-                    "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-                    "params": [
-                        {"to": CTF_ADDRESS, "data": data_hex},
-                        "latest",
-                    ],
-                },
-                timeout=10,
-            )
-            return r.json().get("result")
-        except Exception:
-            return None
+        for rpc_url in POLYGON_RPC_URLS:
+            try:
+                r = _requests.post(
+                    rpc_url,
+                    json={
+                        "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                        "params": [
+                            {"to": CTF_ADDRESS, "data": data_hex},
+                            "latest",
+                        ],
+                    },
+                    timeout=10,
+                )
+                result = r.json().get("result")
+                if result:
+                    return result
+            except Exception:
+                continue
+        return None
 
     # The 4-byte selectors for the three CTF helpers we need. Hashing
     # locally avoids an extra import / RPC.
@@ -467,6 +473,42 @@ def redeem_winning_position(
         acct_address=acct.address,
     )
     if relayer_result is not None:
+        # Chain the wrap step IMMEDIATELY on a successful redeem so
+        # the user's funds become tradeable pUSD on Polymarket within
+        # one round-trip, not after the next pm_activate_legacy tick
+        # (up to 10 minutes of "Confirm pending deposit" in the UI).
+        #
+        # Two failure modes are both safe to swallow:
+        #   1. activate_legacy itself errors. It's idempotent and the
+        #      periodic pm_activate_legacy job will retry on its next
+        #      10-min tick. We log and move on.
+        #   2. USDC.e balance at the funder is 0 (already wrapped, or
+        #      market settled in pUSD directly). activate_legacy's
+        #      internal balance check short-circuits with no submission.
+        if relayer_result.redeemed:
+            try:
+                wrap_summary = activate_legacy_collateral_balance()
+                if wrap_summary.get("tx_hash"):
+                    print(
+                        f"[pm_redeemer] post-redeem wrap chain fired: "
+                        f"${wrap_summary.get('activated_usd', 0):.2f} "
+                        f"tx={wrap_summary['tx_hash']}",
+                        file=sys.stderr, flush=True,
+                    )
+                elif wrap_summary.get("error"):
+                    print(
+                        f"[pm_redeemer] post-redeem wrap chain returned "
+                        f"with error (will retry on next 10-min tick): "
+                        f"{wrap_summary['error']}",
+                        file=sys.stderr, flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"[pm_redeemer] post-redeem wrap chain raised "
+                    f"(will retry on next 10-min tick): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
         return relayer_result  # relayer succeeded or terminally failed
 
     # ── Path 1b: Gasless via Builder API Key HMAC (POLY_BUILDER_*) ───
@@ -1116,6 +1158,23 @@ def activate_legacy_collateral_balance(*, max_per_run: int = 1) -> dict:
     if not wallet or not pk:
         return summary  # no creds, nothing we can do
 
+    # Resolve the funder (smart-wallet contract that holds USDC.e
+    # after a redeem). Same reasoning as the relayer redeem path:
+    # USDC.e is paid out to the funder, not the signing EOA. Probing
+    # balanceOf at the EOA returns 0 and the wrap never fires. Pass
+    # the funder to BOTH the balance probe AND the relayer wallet_address.
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        signer_info = get_poly_signer_info(pk) or {}
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] activate-legacy: signer-info probe failed: {exc}; "
+            f"falling back to raw wallet address",
+            file=sys.stderr, flush=True,
+        )
+        signer_info = {}
+    funder = (signer_info.get("funder") or wallet)
+
     # Check funder USDC.e balance via eth_call. Free; no submission
     # unless balance > 0.
     try:
@@ -1125,25 +1184,50 @@ def activate_legacy_collateral_balance(*, max_per_run: int = 1) -> dict:
         summary["error"] = f"deps missing: {exc}"
         return summary
 
-    rpc_url = POLYGON_RPC_URLS[0]
     bal_sel = _keccak(text="balanceOf(address)")[:4].hex()
-    addr_padded = "00" * 12 + wallet.lower().removeprefix("0x")
-    try:
-        r = _requests.post(
-            rpc_url,
-            json={
-                "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-                "params": [
-                    {"to": USDCE_ADDRESS,
-                     "data": "0x" + bal_sel + addr_padded},
-                    "latest",
-                ],
-            },
-            timeout=10,
+    addr_padded = "00" * 12 + funder.lower().removeprefix("0x")
+    # Try each RPC in turn. Hardcoding POLYGON_RPC_URLS[0] used to
+    # silently kill the activator when llamarpc DNS failed on the user's
+    # network (the failure mode that left a $5 USDC.e payout stuck at
+    # the DepositWallet for hours). Iterate and accept the first
+    # successful response.
+    balance_raw: Optional[int] = None
+    probe_errors: list[str] = []
+    for rpc_url in POLYGON_RPC_URLS:
+        try:
+            r = _requests.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                    "params": [
+                        {"to": USDCE_ADDRESS,
+                         "data": "0x" + bal_sel + addr_padded},
+                        "latest",
+                    ],
+                },
+                timeout=10,
+            )
+            raw = r.json().get("result")
+            if not raw:
+                probe_errors.append(f"{rpc_url}: no result")
+                continue
+            balance_raw = int(raw, 16)
+            break
+        except Exception as exc:
+            probe_errors.append(
+                f"{rpc_url}: {type(exc).__name__}: {str(exc)[:120]}"
+            )
+            continue
+    if balance_raw is None:
+        summary["error"] = (
+            f"balance probe failed on all RPCs: "
+            f"{' | '.join(probe_errors[:3])}"
         )
-        balance_raw = int(r.json()["result"], 16)
-    except Exception as exc:
-        summary["error"] = f"balance probe failed: {exc}"
+        print(
+            f"[pm_redeemer] activate-legacy balance probe failed on "
+            f"all RPCs: {summary['error']}",
+            file=sys.stderr, flush=True,
+        )
         return summary
 
     if balance_raw <= 0:
@@ -1180,7 +1264,7 @@ def activate_legacy_collateral_balance(*, max_per_run: int = 1) -> dict:
     wrap_args = _encode(
         ["address", "address", "uint256"],
         [to_checksum_address(USDCE_ADDRESS),
-         to_checksum_address(wallet),
+         to_checksum_address(funder),
          balance_raw],
     )
     wrap_data = "0x" + (wrap_sel + wrap_args).hex()
@@ -1203,7 +1287,7 @@ def activate_legacy_collateral_balance(*, max_per_run: int = 1) -> dict:
         dw_args = DepositWalletTransactionArgs(
             from_address=signer.address(),
             chain_id=POLYGON_CHAIN_ID,
-            wallet_address=wallet,
+            wallet_address=funder,
             nonce=nonce,
             deadline=str(int(time.time()) + 3600),
             calls=[approve_call, wrap_call],
