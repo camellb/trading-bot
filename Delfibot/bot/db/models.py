@@ -115,6 +115,16 @@ pm_positions = Table(
     # is deferred to a later commit.
     Column("volume_24h_at_entry", Float, nullable=True),
     Column("liquidity_at_entry",  Float, nullable=True),
+    # Current mark-to-market value of the position. Written by the
+    # exit-policy job in polymarket_runner.evaluate_open_positions
+    # every 60s: shares * current_bid (gamma outcomePrices midpoint
+    # for the held side). NULL on rows from before this migration,
+    # on positions whose market has gone closed/illiquid, and on the
+    # first 60s after open. Read by pm_executor.get_portfolio_stats
+    # via COALESCE(current_value_usd, cost_usd) so the Dashboard's
+    # "Locked Capital" tile matches Polymarket's "Portfolio" number
+    # instead of showing the cost basis.
+    Column("current_value_usd", Float, nullable=True),
     # ── Early-exit tracking ─────────────────────────────────────────────
     # Filled when the exit-policy engine closes a position before its
     # natural settlement. `closed_at` is the timestamp of the SELL fill.
@@ -737,6 +747,11 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE pm_positions ADD COLUMN "
                 "liquidity_at_entry REAL"
+            ))
+        if "current_value_usd" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN "
+                "current_value_usd REAL"
             ))
 
         # ── Early-exit columns (added 2026-05-18, exit-policy feature) ──

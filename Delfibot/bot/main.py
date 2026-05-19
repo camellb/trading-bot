@@ -966,6 +966,14 @@ async def main() -> None:
         # threshold. Correctness > cost on this cadence.
         max_instances=1, coalesce=False,
         executor="threadpool",
+        # misfire_grace_time=None: same reasoning as pm_activate_legacy
+        # and pm_redeem_sweep. This job ALSO writes per-position
+        # current_value_usd (mark-to-market) which feeds the Dashboard
+        # "Locked Capital" + "Total Equity" tiles and every settlement
+        # Telegram message. Default 1s grace caused most fires to be
+        # silently dropped under threadpool load, leaving market values
+        # NULL in the DB and the dashboard stuck on cost basis.
+        misfire_grace_time=None,
     )
     scheduler.add_job(
         _run_resolve_skipped, IntervalTrigger(minutes=15),

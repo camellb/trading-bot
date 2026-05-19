@@ -36,8 +36,25 @@ from typing import Dict, Optional, Tuple
 import aiohttp
 
 
-# Public Polygon RPC - override via env for paid providers.
+# Public Polygon RPC fallbacks. Tried in order until one returns a
+# usable result. The legacy single-URL constant POLYGON_RPC_URL stays
+# as the FIRST entry for backward-compat with code/tests that reach
+# for one URL. New code should iterate POLYGON_RPC_URLS. Same set as
+# execution.pm_redeemer's _DEFAULT_RPC_URLS, kept independent to avoid
+# a cross-module import cycle (pm_redeemer imports this file).
 POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+_env_rpc_urls = os.environ.get("POLYGON_RPC_URLS")
+if _env_rpc_urls:
+    POLYGON_RPC_URLS = [u.strip() for u in _env_rpc_urls.split(",") if u.strip()]
+else:
+    POLYGON_RPC_URLS = [
+        POLYGON_RPC_URL,  # honor any single-URL env override at index 0
+        "https://polygon-bor-rpc.publicnode.com",
+        "https://1rpc.io/matic",
+        "https://polygon.drpc.org",
+        "https://polygon.llamarpc.com",
+        "https://rpc.ankr.com/polygon",
+    ]
 
 # USDC-equivalent collateral contracts on Polygon.
 #
@@ -613,23 +630,87 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                     # winnings still in USDC.e form — user sees
                     # "Won +$5" and "Balance $3.47" and the math doesn't
                     # add up.
+                    # USDC.e balance probe. Iterate through every
+                    # configured Polygon RPC and stop at the first
+                    # success. The earlier version hardcoded
+                    # POLYGON_RPC_URL (= POLYGON_RPC_URLS[0]) which
+                    # is polygon.llamarpc.com; DNS resolution for
+                    # that host has been failing on this network. On
+                    # failure the silent fallback to 0 caused the
+                    # Telegram "Balance" to omit any USDC.e at the
+                    # funder ("WIN +$1.67, Balance $9.99" while the
+                    # on-chain wallet was actually $14.99 with $5 of
+                    # the win sitting unwrapped as USDC.e). Same
+                    # iteration pattern as the earlier fixes in
+                    # pm_redeemer.resolve_collateral_for_position
+                    # and pm_redeemer.activate_legacy_collateral_balance.
                     usdce_at_funder = 0.0
                     try:
                         import requests as _r
-                        _resp = _r.post(
-                            POLYGON_RPC_URL,
-                            json={
-                                "jsonrpc": "2.0", "id": 1, "method": "eth_call",
-                                "params": [
-                                    {"to": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
-                                     "data": "0x" + _encode_balance_of_call(funder)},
-                                    "latest",
-                                ],
-                            },
-                            timeout=5,
-                        )
-                        _raw = (_resp.json() or {}).get("result", "0x0")
-                        usdce_at_funder = int(_raw, 16) / (10 ** _USDC_DECIMALS)
+                        # NB: _encode_balance_of_call already returns
+                        # the "0x" prefix (it returns
+                        # _BALANCE_OF_SELECTOR + padded, and the
+                        # selector is "0x70a08231"). Prepending another
+                        # "0x" produces "0x0x..." which every RPC
+                        # rejects as "invalid hex" — this is why the
+                        # probe has been quietly returning 0 USDC.e for
+                        # weeks regardless of which RPC we hit. Fix is
+                        # the single character below.
+                        _usdce_payload = {
+                            "jsonrpc": "2.0", "id": 1,
+                            "method": "eth_call",
+                            "params": [
+                                {"to": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                                 "data": _encode_balance_of_call(funder)},
+                                "latest",
+                            ],
+                        }
+                        _usdce_errors: list[str] = []
+                        _usdce_ok = False
+                        for _rpc_url in POLYGON_RPC_URLS:
+                            try:
+                                _resp = _r.post(
+                                    _rpc_url, json=_usdce_payload,
+                                    timeout=10,
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "Accept": "application/json",
+                                    },
+                                )
+                                _body = _resp.json() if _resp is not None else {}
+                                _raw = (_body or {}).get("result")
+                                if not _raw:
+                                    # Include first 120 chars of the
+                                    # body so we can see whether the RPC
+                                    # is rate-limiting, returning an
+                                    # error, or just garbage.
+                                    _body_str = (
+                                        str(_body)[:120] if _body
+                                        else str(_resp.text)[:120]
+                                    )
+                                    _usdce_errors.append(
+                                        f"{_rpc_url} status={_resp.status_code} "
+                                        f"body={_body_str}"
+                                    )
+                                    continue
+                                usdce_at_funder = (
+                                    int(_raw, 16) / (10 ** _USDC_DECIMALS)
+                                )
+                                _usdce_ok = True
+                                break
+                            except Exception as _exc:
+                                _usdce_errors.append(
+                                    f"{_rpc_url}: {type(_exc).__name__}: "
+                                    f"{str(_exc)[:60]}"
+                                )
+                                continue
+                        if not _usdce_ok:
+                            print(
+                                f"[polymarket_wallet] usdce probe failed "
+                                f"on all RPCs: "
+                                f"{' | '.join(_usdce_errors[:3])}",
+                                file=sys.stderr,
+                            )
                     except Exception as exc:
                         print(
                             f"[polymarket_wallet] usdce probe failed: {exc}",

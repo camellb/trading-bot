@@ -487,6 +487,32 @@ async def evaluate_open_positions() -> dict:
         else:
             continue
 
+        # Mark-to-market: write the position's current market value to
+        # pm_positions.current_value_usd so pm_executor.get_portfolio_stats
+        # can report market value in "Locked Capital" / "Total Equity"
+        # instead of cost basis. value = shares * current_bid using the
+        # same outcomePrices midpoint we already parsed. Fires every 60s
+        # for every open position, regardless of whether the user has
+        # exit-policy enabled (the rest of this loop short-circuits when
+        # the policy is off, but the mark-to-market is universal). Cheap
+        # single-row UPDATE per position.
+        try:
+            _shares = float(p.get("shares") or 0.0)
+            if _shares > 0.0:
+                _value_usd = float(current_bid) * _shares
+                with get_engine().begin() as _conn:
+                    _conn.execute(text(
+                        "UPDATE pm_positions "
+                        "SET current_value_usd = :v "
+                        "WHERE id = :pid"
+                    ), {"v": _value_usd, "pid": p["id"]})
+        except Exception as _exc:
+            print(
+                f"[evaluate_exit] current_value_usd write failed for "
+                f"#{p.get('id')}: {_exc}",
+                file=sys.stderr, flush=True,
+            )
+
         # Per-user config + executor: snapshot once per user.
         if user_id not in cfg_cache:
             try:

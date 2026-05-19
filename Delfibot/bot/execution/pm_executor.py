@@ -566,7 +566,19 @@ class PMExecutor:
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')) AS settled_n, "
-                    "  COALESCE(SUM(cost_usd) FILTER (WHERE status = 'open'), 0) AS open_cost, "
+                    # open_cost = mark-to-market value of open positions
+                    # when the refresher has populated current_value_usd,
+                    # otherwise cost basis. Single number that
+                    # Dashboard's "Locked Capital" tile + WIN/LOSS /
+                    # new_position Telegram blocks all read so surfaces
+                    # agree. polymarket_runner.evaluate_open_positions
+                    # writes current_value_usd = shares * outcomePrices
+                    # for the held side every 60s.
+                    "  COALESCE("
+                    "    SUM(COALESCE(current_value_usd, cost_usd)) "
+                    "      FILTER (WHERE status = 'open'),"
+                    "    0"
+                    "  ) AS open_cost, "
                     "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')), 0) AS realized, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early') AND realized_pnl_usd > 0) AS wins "
                     "FROM pm_positions WHERE user_id = :uid AND mode = :m"
