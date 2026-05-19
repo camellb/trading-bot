@@ -1050,16 +1050,15 @@ async def main() -> None:
     scheduler.add_job(
         _run_pm_reconcile, IntervalTrigger(minutes=2),
         id="pm_reconcile",
-        # First fire 45s after boot so:
-        #  - the live-balance probe (15s offset) has already cached
-        #    the funder address, so reconciler's get_poly_signer_info
-        #    is a free cache hit
-        #  - the dashboard's first poll has already rendered, so any
-        #    backfill happens with the user already looking
-        # 2-minute cadence is fast enough that a missed-fill position
-        # appears within ~2 min of the fill landing, slow enough that
-        # data-api isn't hammered.
-        next_run_time=now_utc + timedelta(seconds=45),
+        # First fire 5s after boot. Earlier than balance-refresh on
+        # purpose: any in-flight order from a previous daemon
+        # incarnation (crash, restart, install.sh kill) might have
+        # filled while we were down. We want that backfilled BEFORE
+        # the dashboard's first /api/positions poll lands, so the
+        # user never sees a "missing position" flash. The 5s gives
+        # the aiohttp accept loop time to bind without competing
+        # for the threadpool.
+        next_run_time=now_utc + timedelta(seconds=5),
         max_instances=1, coalesce=True,
         executor="threadpool",
         # misfire_grace_time=None: missing a tick (e.g. busy threadpool)

@@ -73,6 +73,14 @@ _HTTP_HEADERS = {"User-Agent": "delfibot/1.0 reconciler"}
 # we never cancel an order that's about to land.
 _STALE_ORDER_AGE_S = 60 * 60
 
+# Drift tolerance: the reconciler logs a warning when an existing
+# pm_positions row's `shares` or `cost_usd` diverges from on-chain by
+# more than this fraction. Values inside the tolerance can drift
+# legitimately (early-exit partials, fees, MTM noise) and aren't a
+# bug. Outside the tolerance is almost always the limit-vs-fill price
+# bug or a missed close - both worth surfacing to the user.
+_DRIFT_TOLERANCE = 0.10
+
 
 def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
     """Pull on-chain positions, import any missing ones, cancel stale
@@ -152,17 +160,24 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
     summary["checked"] = len(rows)
 
     # Look up every existing (condition_id, side) pair in pm_positions
-    # in one query so the per-row check is in-memory. Set of
-    # (condition_id_lower, side) tuples.
-    existing: set[tuple[str, str]] = set()
+    # in one query so the per-row check is in-memory. Keyed by
+    # (condition_id_lower, side); value carries the existing
+    # shares/cost so we can detect drift below without a second query.
+    existing: dict[tuple[str, str], dict] = {}
     with get_engine().connect() as conn:
         cur = conn.execute(text(
-            "SELECT condition_id, side FROM pm_positions "
+            "SELECT id, condition_id, side, shares, cost_usd, status "
+            "FROM pm_positions "
             "WHERE condition_id IS NOT NULL AND user_id = :uid"
         ), {"uid": user_id})
-        for cond, side in cur.fetchall():
+        for pid, cond, side, shares, cost, status in cur.fetchall():
             if cond and side:
-                existing.add((cond.lower(), side.upper()))
+                existing[(cond.lower(), side.upper())] = {
+                    "id":     pid,
+                    "shares": float(shares or 0.0),
+                    "cost":   float(cost or 0.0),
+                    "status": (status or "open").lower(),
+                }
 
     for r in rows:
         try:
@@ -181,11 +196,17 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
                 continue
             if (cond_id, side) in existing:
                 summary["already"] += 1
+                _check_drift(existing[(cond_id, side)], r, side)
                 continue
 
             _import_position(user_id=user_id, row=r, side=side)
             summary["imported"] += 1
-            existing.add((cond_id, side))
+            existing[(cond_id, side)] = {
+                "id":     None, "shares": float(r.get("size") or 0.0),
+                "cost":   float(r.get("initialValue") or 0.0),
+                "status": "open",
+            }
+            _alert_import(row=r, side=side)
             print(f"[pm_reconciler] imported on-chain position "
                   f"cond={cond_id[:10]}... side={side} "
                   f"size={r.get('size')} title={(r.get('title') or '')[:60]!r}",
@@ -363,39 +384,75 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
         settlement_outcome = None
         realized_pnl = None
 
-    # Match the original market_id used by the bot's open path when
-    # possible. data-api returns conditionId, not the gamma marketId,
-    # so we look it up in market_evaluations first - the analyst's
-    # evaluation row keyed off the gamma marketId and stored the same
-    # conditionId. If no eval exists (e.g. position predates the eval
-    # logging), fall back to using conditionId as the market_id.
+    # Pull the original forecaster fields from market_evaluations so
+    # the reconciler-imported row shows the same context a normally-
+    # opened position does: category, archetype, Claude probability,
+    # confidence, ev_bps, the full reasoning narrative, and the
+    # gamma market_id (not just the condition_id). Bot-placed
+    # positions always have a matching evaluation; if the lookup
+    # misses (very rare - pre-eval-logging row, or evaluation table
+    # was wiped), the row still goes in with NULLs for those columns
+    # and a placeholder reasoning so it's visible in the UI.
     market_id: Optional[str] = None
-    pred_id: Optional[int] = None
+    pred_id: Optional[int]   = None
+    eval_category:           Optional[str]   = None
+    eval_archetype:          Optional[str]   = None
+    eval_claude_probability: Optional[float] = None
+    eval_confidence:         Optional[float] = None
+    eval_ev_bps:             Optional[float] = None
+    eval_reasoning:          Optional[str]   = None
     with get_engine().connect() as conn:
         cur = conn.execute(text(
-            "SELECT market_id, prediction_id FROM market_evaluations "
+            "SELECT market_id, prediction_id, category, market_archetype, "
+            "       claude_probability, confidence, ev_bps, reasoning "
+            "FROM market_evaluations "
             "WHERE LOWER(condition_id) = :c "
             "ORDER BY id DESC LIMIT 1"
         ), {"c": cond_id})
         hit = cur.fetchone()
         if hit:
-            market_id, pred_id = hit
+            (market_id, pred_id, eval_category, eval_archetype,
+             eval_claude_probability, eval_confidence, eval_ev_bps,
+             eval_reasoning) = hit
     if not market_id:
         market_id = cond_id  # last-resort identifier
+
+    # data-api gives us the market's natural resolution date (gamma
+    # endDate, YYYY-MM-DD). Parse into a datetime for the
+    # expected_resolution_at column so the Positions "Closes" column
+    # populates the same way a normally-opened row does. Failure to
+    # parse is non-fatal; we just leave the column NULL.
+    expected_resolution_at = _parse_end_date(row.get("endDate"))
+
+    # Reasoning fallback: prefer the forecaster's original narrative
+    # so the expanded row reads identically to a bot-opened position.
+    # When the eval is missing entirely (legacy row), tag the
+    # placeholder clearly so the user can spot reconciler-only
+    # imports.
+    reasoning_text = (
+        eval_reasoning if eval_reasoning
+        else "[imported by reconciler from Polymarket data-api - "
+             "no matching evaluation found]"
+    )
 
     with get_engine().begin() as conn:
         conn.execute(text(
             "INSERT INTO pm_positions ("
             "  user_id, prediction_id, market_id, condition_id, "
-            "  slug, question, side, shares, entry_price, cost_usd, "
+            "  slug, question, category, "
+            "  side, shares, entry_price, cost_usd, "
+            "  claude_probability, ev_bps, confidence, "
             "  mode, status, settled_at, settlement_outcome, "
-            "  realized_pnl_usd, event_slug, venue, reasoning"
+            "  realized_pnl_usd, expected_resolution_at, "
+            "  event_slug, market_archetype, venue, reasoning"
             ") VALUES ("
-            "  :uid, :pid, :mid, :cond, :slug, :q, :side, :sz, "
-            "  :px, :cost, 'live', :status, "
+            "  :uid, :pid, :mid, :cond, :slug, :q, :cat, "
+            "  :side, :sz, :px, :cost, "
+            "  :cp, :ev, :conf, "
+            "  'live', :status, "
             "  CASE WHEN :status = 'settled' THEN CURRENT_TIMESTAMP ELSE NULL END, "
-            "  :outcome, :pnl, :event_slug, 'polymarket', "
-            "  '[imported by reconciler from Polymarket data-api]'"
+            "  :outcome, :pnl, :resolved_at, "
+            "  :event_slug, :arch, 'polymarket', :reasoning"
             ")"
         ), {
             "uid":         user_id,
@@ -404,14 +461,21 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
             "cond":        cond_id,
             "slug":        slug,
             "q":           title,
+            "cat":         eval_category,
             "side":        side,
             "sz":          size,
             "px":          avg_price,
             "cost":        init_value if init_value > 0 else (size * avg_price),
+            "cp":          eval_claude_probability,
+            "ev":          eval_ev_bps,
+            "conf":        eval_confidence,
             "status":      status,
             "outcome":     settlement_outcome,
             "pnl":         realized_pnl,
+            "resolved_at": expected_resolution_at,
             "event_slug":  event_slug,
+            "arch":        eval_archetype,
+            "reasoning":   reasoning_text,
         })
 
     # If we found a matching evaluation, link it back. This makes the
@@ -430,8 +494,111 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
             ), {"c": cond_id, "side": side, "pid": pred_id})
 
 
+def _parse_end_date(s: Optional[str]):
+    """Convert data-api's gamma endDate to a datetime, or None.
+
+    Polymarket returns this as "YYYY-MM-DD" most of the time, but the
+    occasional full ISO-8601 timestamp shows up too. Bare dates land
+    at midnight UTC - close enough for the "Closes in X" UI column.
+    """
+    if not s or not isinstance(s, str):
+        return None
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        try:
+            return datetime.strptime(s, "%Y-%m-%d")
+        except Exception:
+            return None
+
+
 def _opposite(side: str) -> str:
     return "NO" if side.upper() == "YES" else "YES"
+
+
+def _check_drift(existing: dict, row: dict, side: str) -> None:
+    """Warn the user when the DB and on-chain disagree on size or cost.
+
+    The reconciler does not auto-overwrite existing rows (that would
+    destroy the audit trail) but it can detect when something is
+    definitely wrong and surface it. The dominant case is the
+    limit-vs-fill bug: pm_executor recorded `cost_usd = shares * limit
+    price`, but the order actually filled at a better price, so
+    on-chain cost < DB cost. The Solana 1AM ET position was the first
+    instance the user noticed ($3.85 DB vs $2.31 on-chain).
+    """
+    if existing.get("status") != "open":
+        # Settled rows can legitimately drift from the live MTM that
+        # data-api returns; don't alarm on those.
+        return
+    onchain_shares = float(row.get("size") or 0.0)
+    onchain_cost   = float(row.get("initialValue") or 0.0)
+    db_shares = existing.get("shares") or 0.0
+    db_cost   = existing.get("cost") or 0.0
+
+    drifts = []
+    if onchain_shares > 0 and abs(db_shares - onchain_shares) / onchain_shares > _DRIFT_TOLERANCE:
+        drifts.append(f"shares: db={db_shares:.3f} on-chain={onchain_shares:.3f}")
+    if onchain_cost > 0 and abs(db_cost - onchain_cost) / onchain_cost > _DRIFT_TOLERANCE:
+        drifts.append(f"cost: db=${db_cost:.2f} on-chain=${onchain_cost:.2f}")
+    if not drifts:
+        return
+
+    pid = existing.get("id")
+    title = (row.get("title") or "")[:60]
+    msg = (
+        f"pm_positions id={pid} ({title!r}) drift: "
+        + "; ".join(drifts)
+    )
+    print(f"[pm_reconciler] DRIFT WARNING: {msg}", flush=True)
+    try:
+        from db.logger import log_event
+        log_event(
+            event_type="position_drift",
+            severity=2,
+            description=(
+                "Polymarket position #" + str(pid) + " (" + title +
+                ") disagrees with on-chain state: " + "; ".join(drifts) +
+                ". Most likely the original fill landed at a better "
+                "price than the limit Delfi recorded. The DB row will "
+                "NOT be auto-overwritten; review and fix manually if "
+                "the difference matters for P&L."
+            ),
+            source="pm_reconciler.drift",
+        )
+    except Exception as exc:
+        print(f"[pm_reconciler] log_event failed: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _alert_import(row: dict, side: str) -> None:
+    """Fire a user-visible event when the reconciler backfills a
+    position. If this fires regularly, _open_live's poll-timeout
+    behaviour is leaking - the safety net is loud about catching
+    each case so the user notices.
+    """
+    title = (row.get("title") or "")[:80]
+    size  = row.get("size")
+    cost  = row.get("initialValue")
+    redeemable = bool(row.get("redeemable"))
+    state = "settled" if redeemable else "open"
+    try:
+        from db.logger import log_event
+        log_event(
+            event_type="position_reconciled",
+            severity=1,
+            description=(
+                f"Reconciler imported missing Polymarket position "
+                f"({state}): {title} {side} size={size} cost=${cost}. "
+                f"This means _open_live placed the order but lost the "
+                f"fill confirmation; the safety net caught it."
+            ),
+            source="pm_reconciler.import",
+        )
+    except Exception as exc:
+        print(f"[pm_reconciler] log_event failed: {exc}",
+              file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
