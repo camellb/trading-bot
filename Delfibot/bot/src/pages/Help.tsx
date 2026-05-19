@@ -263,12 +263,12 @@ function ChecklistRow({
           {row.ok ? row.done : row.todo}
         </div>
       </div>
-      <StatusPill ok={row.ok} required={row.required} />
       {!row.ok && (
         <button className="btn small" onClick={onSetup}>
           Set up
         </button>
       )}
+      <StatusPill ok={row.ok} required={row.required} />
     </div>
   );
 }

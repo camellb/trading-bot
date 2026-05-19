@@ -96,9 +96,15 @@ class LoopHeartbeat:
         max_silence_s: float = 120.0,
         check_interval_s: float = 5.0,
         api_port_getter=None,
-        self_probe_interval_s: float = 30.0,
+        # Self-probe cadence + tolerance. Tightened 2026-05-20 after a
+        # user-visible wedge that left the GUI in a "timed out" state
+        # for ~2 min before the old 30s/3-failure config could
+        # SIGKILL+respawn. 10s/2-failure means wedge -> recovery in
+        # ~30s, which is faster than the user can articulate "it's
+        # broken again".
+        self_probe_interval_s: float = 10.0,
         self_probe_timeout_s: float = 5.0,
-        self_probe_max_failures: int = 3,
+        self_probe_max_failures: int = 2,
     ) -> None:
         self._loop = loop
         self._heartbeat_interval_s = heartbeat_interval_s
@@ -179,12 +185,14 @@ class LoopHeartbeat:
                     f"leaked_sockets={leaked}",
                     file=sys.stderr, flush=True,
                 )
-                if leaked >= 40:
+                if leaked >= 15:
                     self._abort(
                         silence,
                         reason=(
-                            f"{leaked} CLOSE_WAIT/FIN_WAIT_2 sockets "
-                            "on listen port (handler-cleanup wedge)"
+                            f"{leaked} CLOSE_WAIT/FIN_WAIT_2/CLOSED "
+                            "sockets on listen port (handler-cleanup "
+                            "wedge - GUI requests will start timing "
+                            "out before this clears on its own)"
                         ),
                     )
                     return
@@ -203,15 +211,24 @@ class LoopHeartbeat:
                         return
 
     def _count_leaked_sockets(self) -> int:
-        """Count CLOSE_WAIT + FIN_WAIT_2 sockets on our listen port.
+        """Count stuck-cleanup sockets on our listen port.
 
-        These states accumulate when aiohttp accepts a TCP
-        connection but the per-request handler never properly
-        closes it (client side closed, server side never followed
-        up). A healthy daemon has <10 of them at any time; >40 is
-        a strong signal that something has wedged in the request
-        path and the listener will start dropping new connections
-        soon. Hard signal to SIGKILL — launchd respawns in <10s.
+        Three states qualify:
+          - CLOSE_WAIT: peer sent FIN, daemon hasn't called close()
+          - FIN_WAIT_2: daemon sent FIN, waiting for peer's FIN+ACK
+          - CLOSED:     full four-way handshake done but FD is still
+                        in the process's fd table - this is the
+                        signature 2026-05-20's wedge produced (lsof
+                        showed 6 sockets in CLOSED state on the
+                        daemon side while WebKit's new SYNs piled up
+                        in SYN_SENT because the listen backlog was
+                        full)
+
+        Threshold lowered from 40 to 15: even 15 leaked sockets is
+        well past normal (Tauri GUI typically holds <10) and is
+        already enough to fill the OS-level accept queue and start
+        dropping new connections. SIGKILLing earlier means recovery
+        completes before the user can articulate "it's broken".
         """
         try:
             port = self._api_port_getter() if self._api_port_getter else None
@@ -234,7 +251,9 @@ class LoopHeartbeat:
         for line in r.stdout.decode("utf-8", "replace").splitlines():
             if port_str not in line:
                 continue
-            if "CLOSE_WAIT" in line or "FIN_WAIT_2" in line:
+            if ("CLOSE_WAIT" in line
+                    or "FIN_WAIT_2" in line
+                    or "CLOSED" in line):
                 count += 1
         return count
 

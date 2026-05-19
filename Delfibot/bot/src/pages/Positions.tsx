@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, ClobOpenOrder, EventLogRow, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
+import { api, EventLogRow, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
 import { formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
@@ -30,7 +30,7 @@ function openExternal(url: string): void {
  * clickable to expand reasoning + key-value detail.
  */
 
-type Filter = "all" | "open" | "orders" | "closed" | "skipped" | "errors";
+type Filter = "all" | "open" | "closed" | "skipped" | "errors";
 
 // Local aliases that delegate to the central tz-aware formatters
 // (src/lib/format.ts). Kept as small wrappers so the rest of the
@@ -212,7 +212,6 @@ export default function Positions() {
   const [positions, setPositions] = useState<PMPosition[]>([]);
   const [evals, setEvals] = useState<MarketEvaluation[]>([]);
   const [events, setEvents] = useState<EventLogRow[]>([]);
-  const [openOrders, setOpenOrders] = useState<ClobOpenOrder[]>([]);
   // Server-side aggregate counts. Used for chip labels so the chip
   // numbers reconcile with the Dashboard tile (which also reads from
   // /api/summary). Without this, the chips show counts limited to
@@ -226,7 +225,7 @@ export default function Positions() {
 
   const refresh = useCallback(async () => {
     try {
-      const [p, e, s, ev, oo] = await Promise.all([
+      const [p, e, s, ev] = await Promise.all([
         api.positions(100).then((r) => r.positions),
         api.evaluations(50).then((r) => r.evaluations),
         api.summary(),
@@ -234,17 +233,11 @@ export default function Positions() {
         // filter client-side to order_error rows below; everything
         // else from event_log we ignore.
         api.events(200).then((r) => r.events),
-        // Open orders from the CLOB. Best-effort: when the user
-        // has no Polymarket key or the CLOB is unreachable the
-        // server returns an empty list and we render an empty
-        // panel - never block the rest of the page on it.
-        api.openOrders().then((r) => r.orders).catch(() => []),
       ]);
       setPositions(p);
       setEvals(e);
       setSummary(s);
       setEvents(ev);
-      setOpenOrders(oo);
       setLoaded(true);
       // Clear error only on confirmed success - prevents the 0.3s
       // flash where a stale error vanishes pre-await and then the
@@ -373,9 +366,6 @@ export default function Positions() {
           </button>
           <button className={`chip ${filter === "open" ? "on" : ""}`} onClick={() => setFilter("open")}>
             Open ({summary?.open_positions ?? open.length})
-          </button>
-          <button className={`chip ${filter === "orders" ? "on" : ""}`} onClick={() => setFilter("orders")}>
-            Open orders ({openOrders.length})
           </button>
           <button className={`chip ${filter === "closed" ? "on" : ""}`} onClick={() => setFilter("closed")}>
             Closed ({summary?.settled_total ?? settled.length})
@@ -560,104 +550,6 @@ export default function Positions() {
                         </tr>
                       )}
                     </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {(filter === "all" || filter === "orders") && (
-        <div className="panel">
-          <div className="panel-head">
-            <h2 className="panel-title">Open orders</h2>
-            <span className="panel-meta">
-              {openOrders.length} on Polymarket
-            </span>
-          </div>
-          {openOrders.length === 0 ? (
-            <div className="empty-state">
-              {loaded
-                ? "No unfilled limit orders. The bot's last order either filled or was cancelled."
-                : "Loading..."}
-            </div>
-          ) : (
-            <table className="table-simple" style={{ tableLayout: "fixed", width: "100%" }}>
-              <colgroup>
-                <col style={{ width: "32%" }} />
-                <col style={{ width: 64 }} />
-                <col style={{ width: 100 }} />
-                <col style={{ width: 80 }} />
-                <col style={{ width: 80 }} />
-                <col style={{ width: 100 }} />
-                <col style={{ width: 100 }} />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th>Market</th>
-                  <th>Side</th>
-                  <th>Filled</th>
-                  <th>Price</th>
-                  <th>Size</th>
-                  <th>Total</th>
-                  <th>Placed</th>
-                </tr>
-              </thead>
-              <tbody>
-                {openOrders.map((o, idx) => {
-                  const id = o.id ?? o.orderID ?? o.orderId ?? `order-${idx}`;
-                  // The CLOB returns price/size as strings; coerce.
-                  const price = Number(o.price ?? 0);
-                  const size  = Number(o.size ?? 0);
-                  const matched = Number(o.size_matched ?? 0);
-                  const total = price * size;
-                  // "Side" here is the BUY side semantically, but
-                  // we display the OUTCOME (Yes/No) so it reads
-                  // the same as the Open positions table. CLOB
-                  // outcome string is title-case ("Yes"/"No"),
-                  // normalise to upper.
-                  const outcome = (o.outcome || "").toUpperCase();
-                  const sideClass =
-                    outcome === "YES" ? "side-yes"
-                    : outcome === "NO" ? "side-no"
-                    : "";
-                  // Resolve the market title against our existing
-                  // map - the CLOB only gives us the conditionId.
-                  const condId = (o.market || "").toLowerCase();
-                  const fromPositions = positions.find(
-                    (p) => (p as unknown as Record<string, unknown>).condition_id
-                      && String((p as unknown as Record<string, unknown>).condition_id).toLowerCase() === condId
-                  );
-                  const market = fromPositions?.question
-                    ?? evals.find((e) => (e as unknown as Record<string, unknown>).condition_id
-                      && String((e as unknown as Record<string, unknown>).condition_id).toLowerCase() === condId)?.question
-                    ?? condId.slice(0, 12) + "…";
-                  // created_at can be ISO string or unix ms.
-                  let placedIso: string | null = null;
-                  if (typeof o.created_at === "string") {
-                    placedIso = o.created_at;
-                  } else if (typeof o.created_at === "number") {
-                    let ms = o.created_at;
-                    if (ms < 10_000_000_000) ms *= 1000; // seconds -> ms
-                    placedIso = new Date(ms).toISOString();
-                  }
-                  return (
-                    <tr key={id}>
-                      <td className="truncate" title={market}>{market}</td>
-                      <td className={`mono ${sideClass}`}>{outcome || "-"}</td>
-                      <td className="mono">
-                        {matched > 0
-                          ? `${matched.toFixed(2)} / ${size.toFixed(2)}`
-                          : `0 / ${size.toFixed(0)}`}
-                      </td>
-                      <td className="mono">${price.toFixed(3)}</td>
-                      <td className="mono">{size.toFixed(0)}</td>
-                      <td className="mono">${total.toFixed(2)}</td>
-                      <td className="mono" title={placedIso ?? ""}>
-                        {placedIso ? timeAgo(placedIso) : "—"}
-                      </td>
-                    </tr>
                   );
                 })}
               </tbody>

@@ -411,6 +411,13 @@ export interface PerformanceSummary {
   skipped_total: number | null;
   win_rate: number | null;
   realized_pnl: number | null;
+  // Unrealized P&L on currently-open positions: data-api MTM minus
+  // DB cost basis. Total P&L = realized + unrealized; matches the
+  // semantics of Polymarket's "All-Time Profit/Loss" tile better
+  // than realized-only, which understates whenever positions are
+  // open at a gain.
+  unrealized_pnl?: number | null;
+  total_pnl?: number | null;
   roi: number | null;
   brier: number | null;
   resolved_predictions: number | null;

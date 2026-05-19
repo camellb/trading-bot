@@ -1426,6 +1426,20 @@ class LocalAPI:
 
         roi = (realized / starting) if starting > 0 else None
 
+        # Unrealized P&L = mark-to-market value of currently-open
+        # positions minus their cost basis. open_cost is the data-api
+        # MTM sum, bot_open_cost is the DB cost basis sum. Their diff
+        # is the unrealized gain/loss. Total P&L matches Polymarket's
+        # "All-Time Profit/Loss" tile, which is (current portfolio
+        # value - cumulative deposits) - i.e. realized + unrealized
+        # over every trade ever made. Without this, Delfi's
+        # realized-only number underrepresents performance against
+        # the Polymarket UI any time positions are open at a gain.
+        open_cost_mtm   = float(stats.get("open_cost") or 0.0)
+        open_cost_basis = float(stats.get("bot_open_cost") or 0.0)
+        unrealized_pnl  = open_cost_mtm - open_cost_basis
+        total_pnl       = realized + unrealized_pnl
+
         payload = {
             "mode":           stats.get("mode"),
             "bankroll":       bankroll,
@@ -1446,6 +1460,8 @@ class LocalAPI:
             "skipped_total":  stats.get("skipped_total"),
             "win_rate":       stats.get("win_rate"),
             "realized_pnl":   stats.get("realized_pnl"),
+            "unrealized_pnl": unrealized_pnl,
+            "total_pnl":      total_pnl,
             "roi":            roi,
             "brier":          brier.get("brier"),
             "resolved_predictions": brier.get("resolved"),

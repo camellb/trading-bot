@@ -186,7 +186,15 @@ export default function Dashboard({ state, goto }: Props) {
   const mode = (state?.mode as "simulation" | "live") ?? "simulation";
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? 0;
-  const pnl = summary?.realized_pnl ?? 0;
+  // Headline P&L = realized + unrealized. Matches the semantics of
+  // Polymarket's "All-Time Profit/Loss" tile, which always includes
+  // the MTM gain/loss on currently-open positions. The summary
+  // endpoint computes this server-side from `open_cost - bot_open_cost`
+  // (= data-api MTM minus DB cost basis) + realized_pnl. Older
+  // sidecars without total_pnl fall back to realized-only.
+  const realizedOnly = summary?.realized_pnl ?? 0;
+  const totalPnl     = summary?.total_pnl ?? null;
+  const pnl    = totalPnl != null ? Number(totalPnl) : realizedOnly;
   const pnlPct = starting > 0 ? (pnl / starting) * 100 : 0;
   const winRate = summary?.win_rate ?? null;
   const closed = summary?.settled_total ?? 0;
@@ -383,7 +391,7 @@ function DashHero({
         </div>
         <div className="hero-deltas">
           <div className="hero-delta">
-            <div className="hero-delta-label">Realized P&amp;L</div>
+            <div className="hero-delta-label">P&amp;L</div>
             <div className={`hero-delta-val t-num ${pnlTone}`}>
               {loaded ? (
                 <>
