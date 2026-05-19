@@ -244,11 +244,10 @@ function ChecklistRow({
   return (
     <div
       style={{
-        display: "grid",
-        gridTemplateColumns: "auto 1fr auto",
-        gap: 14,
+        display: "flex",
         alignItems: "center",
-        padding: "12px 14px",
+        gap: 14,
+        padding: "12px 16px",
         borderRadius: 10,
         background: row.ok
           ? "rgba(50, 180, 100, 0.06)"
@@ -258,13 +257,13 @@ function ChecklistRow({
           : "rgba(220, 160, 60, 0.22)"}`,
       }}
     >
-      <StatusPill ok={row.ok} required={row.required} />
-      <div>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, marginBottom: 2 }}>{row.title}</div>
         <div className="form-hint" style={{ margin: 0 }}>
           {row.ok ? row.done : row.todo}
         </div>
       </div>
+      <StatusPill ok={row.ok} required={row.required} />
       {!row.ok && (
         <button className="btn small" onClick={onSetup}>
           Set up
@@ -314,11 +313,13 @@ function StatusPill({ ok, required }: { ok: boolean; required: boolean }) {
 // ── Guides ───────────────────────────────────────────────────────────────
 
 /** Canonical anchor IDs for deep-linking from Settings help-hints.
- *  Keep this list in sync with HELP_ANCHORS in Settings.tsx. */
+ *  The three LLM fields (primary, backup, search) all share the same
+ *  guide because the steps are identical (create a key with any major
+ *  provider, paste it into the matching field). */
 export const HELP_ANCHORS = {
   llm: "llm-key",
-  llmBackup: "llm-backup",
-  searchLlm: "search-llm",
+  llmBackup: "llm-key",
+  searchLlm: "llm-key",
   polymarketKey: "polymarket-key",
   polymarketRelayer: "polymarket-relayer",
   newsapi: "newsapi",
@@ -340,8 +341,6 @@ function Guides({
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <GuideLlm anchor={anchor} clearAnchor={clearAnchor} />
-        <GuideBackupLlm anchor={anchor} clearAnchor={clearAnchor} />
-        <GuideSearchLlm anchor={anchor} clearAnchor={clearAnchor} />
         <GuidePolymarketKey anchor={anchor} clearAnchor={clearAnchor} />
         <GuideRelayerKey anchor={anchor} clearAnchor={clearAnchor} />
         <GuideNewsapi anchor={anchor} clearAnchor={clearAnchor} />
@@ -396,14 +395,16 @@ function GuideLlm({ anchor, clearAnchor }: GuideHookProps) {
   return (
     <Guide
       id={HELP_ANCHORS.llm}
-      title="Connect your LLM"
+      title="Connect an LLM"
       anchor={anchor}
       clearAnchor={clearAnchor}
     >
       <p>
-        The forecaster reads each market and produces a probability.
-        Bring your own API key from any major provider. The key is
-        stored in the operating system keychain on this device.
+        Delfi uses three LLM slots: the primary forecaster reads
+        every market, the backup takes over when the primary errors
+        or rate-limits, and the Search LLM does keyword extraction
+        and headline filtering. The steps are the same for all
+        three, only the field you paste into differs.
       </p>
       <Step n={1} title="Create an API key with your chosen provider">
         Provider key pages:
@@ -411,63 +412,15 @@ function GuideLlm({ anchor, clearAnchor }: GuideHookProps) {
       </Step>
       <Step n={2} title="Paste it into Delfi">
         Open <strong>Settings &rarr; Connections</strong> and paste
-        the key into <em>LLM API key</em>. Save.
+        into the matching field: <em>LLM API key</em> for the
+        primary forecaster, <em>Backup LLM API key</em> for the
+        fallback, or <em>Search LLM API key</em> for keyword
+        extraction. Save.
       </Step>
       <Step n={3} title="Add billing at the provider">
         Most providers gate sustained usage behind a saved payment
-        method. At default cadence Delfi costs single-digit cents per
-        market evaluated.
-      </Step>
-    </Guide>
-  );
-}
-
-function GuideBackupLlm({ anchor, clearAnchor }: GuideHookProps) {
-  return (
-    <Guide
-      id={HELP_ANCHORS.llmBackup}
-      title="Add a backup LLM"
-      anchor={anchor}
-      clearAnchor={clearAnchor}
-    >
-      <p>
-        A second LLM Delfi falls back to when the primary errors or
-        rate-limits. Pick a different provider from the primary so a
-        single-provider outage does not stall the bot.
-      </p>
-      <Step n={1} title="Create an API key with a second provider">
-        Provider key pages:
-        <LlmProviderLinks />
-      </Step>
-      <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings &rarr; Connections</strong> and paste
-        into <em>Backup LLM API key</em>. Save.
-      </Step>
-    </Guide>
-  );
-}
-
-function GuideSearchLlm({ anchor, clearAnchor }: GuideHookProps) {
-  return (
-    <Guide
-      id={HELP_ANCHORS.searchLlm}
-      title="Add a Search LLM"
-      anchor={anchor}
-      clearAnchor={clearAnchor}
-    >
-      <p>
-        Used for keyword extraction and headline filtering before
-        material reaches the primary forecaster. Cheap models
-        recommended.
-      </p>
-      <Step n={1} title="Create an API key">
-        Any cheap-tier model from a major provider works. Provider
-        key pages:
-        <LlmProviderLinks />
-      </Step>
-      <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings &rarr; Connections</strong> and paste
-        into the Search LLM field. Save.
+        method. At default cadence Delfi costs single-digit cents
+        per market evaluated.
       </Step>
     </Guide>
   );
