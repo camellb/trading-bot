@@ -1923,6 +1923,60 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   color: var(--vellum-60);
   margin-bottom: 8px;
 }
+
+/* Wraps a credential field's <label> together with the inline
+   "Need help?" pill so they sit on the same baseline. Without this
+   the HelpHint would block-stack below the label. */
+.form-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.form-label-row > label { margin-bottom: 0; }
+
+/* Small inline button next to a credential label. Renders as a "?"
+   chip with the words "Need help?" beside it; clicking deep-links
+   to the matching guide on the Help page. Styled as a tertiary
+   affordance, not a primary CTA. */
+.help-hint {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--font-body);
+  color: var(--vellum-60);
+  background: rgba(170, 210, 240, 0.06);
+  border: 1px solid rgba(170, 210, 240, 0.18);
+  transition: background var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease);
+}
+.help-hint > [aria-hidden="true"] {
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(170, 210, 240, 0.16);
+  color: rgb(170, 210, 240);
+}
+.help-hint:hover {
+  background: rgba(170, 210, 240, 0.12);
+  color: var(--vellum);
+}
+.help-hint:focus-visible {
+  outline: 2px solid rgba(170, 210, 240, 0.45);
+  outline-offset: 2px;
+}
+.help-hint-label { letter-spacing: 0.04em; }
+
 .form-hint { font-size: 12px; color: var(--vellum-40); margin-top: 6px; line-height: 1.4; }
 
 .form-notice,

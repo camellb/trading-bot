@@ -1,49 +1,36 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type Credentials, type TelegramConfig } from "../api";
 import type { Page, SettingsTab } from "../App";
 
 /**
  * Help and setup guides. Top-level page.
  *
- * Two sections:
+ * Sections:
+ *   1. Setup checklist - grouped by purpose (Forecaster / Trading /
+ *      Research / Alerts). Reads /api/credentials + /api/config polled
+ *      by App.tsx, plus a one-shot /api/config/telegram fetch.
+ *   2. Guides - inline expand/collapse walkthroughs for each step the
+ *      user has to perform.
+ *   3. Troubleshooting - common error / fix entries.
  *
- *   1. Setup checklist. Grouped by purpose (Forecaster / Trading /
- *      Research / Alerts) so a fresh install sees what's missing
- *      without scrolling through a flat list. Reads /api/credentials
- *      and /api/config (already polled by App.tsx) plus a one-shot
- *      /api/config/telegram fetch for the Telegram row.
+ * Naming stays LLM-agnostic. The forecaster is "LLM" and the keyword
+ * extractor is "Search LLM" - we link to instructions for each major
+ * provider rather than pushing one.
  *
- *   2. Guides. Inline expand/collapse walkthroughs for each step the
- *      user actually has to perform. Things Delfi auto-derives
- *      (wallet address, the polymarket api-key/secret/passphrase
- *      trio that the CLOB issues on first login) are NOT documented
- *      as setup steps; only as troubleshooting entries when they
- *      need a manual override.
- *
- *   3. Troubleshooting. Common error → fix entries.
- *
- * What this file deliberately does NOT cover:
- *   - License activation. The whole app is gated behind LicenseGate;
- *     anyone who can see this page already activated their license.
- *   - Polymarket account creation. The user already has one; if
- *     they didn't, they wouldn't have a private key to paste.
- *
- * Naming: the app is LLM-agnostic. The forecaster is "LLM", not
- * "Anthropic" or "Claude". The keyword extractor is "Search LLM"
- * (Gemini is the recommendation, not the only option).
+ * `anchor` is the deep-link target from Settings help-hints. When set,
+ * the matching guide auto-opens and scrolls into view; clearAnchor()
+ * runs after the scroll so back/forth navigation resets cleanly.
  */
 
 interface Props {
   creds: Credentials | null;
   config: Record<string, unknown> | null;
-  goto: (p: Page, tab?: SettingsTab) => void;
+  goto: (p: Page, tab?: SettingsTab, helpAnchor?: string) => void;
+  anchor: string | null;
+  clearAnchor: () => void;
 }
 
-export default function Help({ creds, config, goto }: Props) {
-  // Telegram lives on a separate endpoint (chat-id is discovered server-side
-  // from getUpdates, not stored alongside other creds). One-shot fetch on
-  // mount + re-fetch every 15s so the checklist row updates after the user
-  // saves a token.
+export default function Help({ creds, config, goto, anchor, clearAnchor }: Props) {
   const [telegram, setTelegram] = useState<TelegramConfig | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -63,9 +50,6 @@ export default function Help({ creds, config, goto }: Props) {
         <div className="page-head-row">
           <div>
             <h1 className="page-h1">Help</h1>
-            <p className="page-sub">
-              Connect your integrations and find fixes for common errors.
-            </p>
           </div>
         </div>
       </div>
@@ -76,7 +60,7 @@ export default function Help({ creds, config, goto }: Props) {
         telegram={telegram}
         goto={goto}
       />
-      <Guides />
+      <Guides anchor={anchor} clearAnchor={clearAnchor} />
       <Troubleshooting />
     </div>
   );
@@ -93,13 +77,11 @@ function SetupChecklist({
   creds: Credentials | null;
   config: Record<string, unknown> | null;
   telegram: TelegramConfig | null;
-  goto: (p: Page, tab?: SettingsTab) => void;
+  goto: (p: Page, tab?: SettingsTab, helpAnchor?: string) => void;
 }) {
   const c = (creds ?? {}) as Record<string, unknown>;
   const cfg = (config ?? {}) as Record<string, unknown>;
 
-  // Source of truth: the booleans returned by /api/credentials. See
-  // Delfibot/bot/local_api.py: `_read_all()` builds this set.
   const hasLlm        = c.has_llm_key === true || c.has_anthropic_key === true;
   const hasLlmBackup  = c.has_llm_backup_key === true;
   const hasSearchLlm  = c.has_gemini_key === true; // server still keys this as "gemini"
@@ -111,100 +93,87 @@ function SetupChecklist({
                             && telegram.chat_id);
   const mode          = (cfg.mode as string) || "simulation";
 
-  // Grouped by purpose so a fresh user reads it top-down: get the
-  // forecaster running, then connect trading, then optionally improve
-  // research and alerts.
-  const groups: Array<{
-    title: string;
-    blurb: string;
-    rows: ChecklistItem[];
-  }> = [
+  const groups: Array<{ title: string; rows: ChecklistItem[] }> = [
     {
       title: "Forecaster",
-      blurb: "The model Delfi uses to evaluate each market.",
       rows: [
         {
           title: "LLM API key",
           ok: hasLlm,
           required: true,
-          done: "Connected. Delfi can evaluate markets.",
-          todo: "Bring your own key from any major LLM provider. Required for Delfi to do anything.",
+          done: "Connected.",
+          todo: "BYO API key from any LLM provider.",
           actionTab: "connections",
         },
         {
           title: "Backup LLM API key",
           ok: hasLlmBackup,
           required: false,
-          done: "Connected. Delfi falls back to this if the primary errors or rate-limits.",
-          todo: "Optional. A second LLM Delfi falls back to on errors or rate limits.",
+          done: "Connected.",
+          todo: "Second LLM used when the primary errors or rate-limits.",
           actionTab: "connections",
         },
         {
           title: "Search LLM",
           ok: hasSearchLlm,
           required: false,
-          done: "Connected. Keyword extraction is fast.",
-          todo: "Optional. Cheap fast model used for keyword extraction and headline filtering. Gemini recommended (generous free tier).",
+          done: "Connected.",
+          todo: "Used for keyword extraction and headline filtering. Cheap models recommended.",
           actionTab: "connections",
         },
       ],
     },
     {
       title: "Trading",
-      blurb: "Polymarket access. Required for live mode.",
       rows: [
         {
           title: "Polymarket private key",
           ok: hasPmKey,
           required: mode === "live",
-          done: "Connected. Delfi can sign orders. The wallet address auto-derives.",
-          todo: mode === "live"
-            ? "Required for live mode. The private key of the wallet that controls your Polymarket account."
-            : "Optional in simulation. Required if you switch to live.",
+          done: "Connected.",
+          todo: "Signs Polymarket orders in live mode.",
           actionTab: "connections",
         },
         {
           title: "Polymarket Relayer API key",
           ok: hasRelayerKey,
           required: false,
-          done: "Connected. Winning positions auto-redeem with no MATIC needed.",
-          todo: "Optional but recommended. Without this Delfi can't claim winnings automatically; you'd click Redeem on Polymarket yourself after every win.",
+          done: "Connected.",
+          todo: "Enables auto-redeem of winning positions.",
           actionTab: "connections",
         },
       ],
     },
     {
       title: "Research",
-      blurb: "Extra context for the forecaster. All optional.",
       rows: [
         {
           title: "NewsAPI key",
           ok: hasNewsapi,
           required: false,
-          done: "Connected. Breaking news headlines feed into market evaluations.",
-          todo: "Optional. Pulls news headlines into research for geopolitical, economic, and current-event markets. Free tier at newsapi.org.",
+          done: "Connected.",
+          todo: "Headlines for geopolitical, economic, and current-event markets.",
           actionTab: "connections",
         },
         {
           title: "CryptoPanic key",
           ok: hasCrypto,
           required: false,
-          done: "Connected. Crypto news feeds into research.",
-          todo: "Optional. Crypto-specific news (tokens, regulators, exchanges) for Polymarket crypto markets. Free at cryptopanic.com.",
+          done: "Connected.",
+          todo: "Crypto-specific news for Polymarket crypto markets.",
           actionTab: "connections",
         },
       ],
     },
     {
       title: "Alerts",
-      blurb: "Optional notifications.",
       rows: [
         {
           title: "Telegram",
           ok: hasTelegram,
           required: false,
-          done: "Connected. You'll get position and summary alerts.",
-          todo: "Optional. Get Telegram messages on every new position, every win or loss, and a daily summary.",
+          done: "Connected.",
+          todo: "Push positions, settlements, and summaries to your phone.",
           actionTab: "notifications",
         },
       ],
@@ -223,9 +192,6 @@ function SetupChecklist({
         <h2 className="panel-title">Setup checklist</h2>
         <span className="panel-meta">{okCount} of {totalRows} connected</span>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Status updates within a few seconds of saving a credential.
-      </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
         {groups.map((g) => (
           <div key={g.title}>
@@ -236,17 +202,11 @@ function SetupChecklist({
                 textTransform: "uppercase",
                 letterSpacing: 0.6,
                 opacity: 0.7,
-                marginBottom: 8,
+                marginBottom: 10,
               }}
             >
               {g.title}
             </div>
-            <p
-              className="form-hint"
-              style={{ marginTop: 0, marginBottom: 10 }}
-            >
-              {g.blurb}
-            </p>
             <div
               style={{ display: "flex", flexDirection: "column", gap: 10 }}
             >
@@ -353,204 +313,241 @@ function StatusPill({ ok, required }: { ok: boolean; required: boolean }) {
 
 // ── Guides ───────────────────────────────────────────────────────────────
 
-function Guides() {
+/** Canonical anchor IDs for deep-linking from Settings help-hints.
+ *  Keep this list in sync with HELP_ANCHORS in Settings.tsx. */
+export const HELP_ANCHORS = {
+  llm: "llm-key",
+  llmBackup: "llm-backup",
+  searchLlm: "search-llm",
+  polymarketKey: "polymarket-key",
+  polymarketRelayer: "polymarket-relayer",
+  newsapi: "newsapi",
+  cryptopanic: "cryptopanic",
+  telegram: "telegram",
+} as const;
+
+function Guides({
+  anchor,
+  clearAnchor,
+}: {
+  anchor: string | null;
+  clearAnchor: () => void;
+}) {
   return (
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Guides</h2>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Step-by-step walkthroughs for each connector.
-      </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <GuideLlm />
-        <GuideBackupLlm />
-        <GuideSearchLlm />
-        <GuidePolymarketKey />
-        <GuideRelayerKey />
-        <GuideNews />
-        <GuideTelegram />
+        <GuideLlm anchor={anchor} clearAnchor={clearAnchor} />
+        <GuideBackupLlm anchor={anchor} clearAnchor={clearAnchor} />
+        <GuideSearchLlm anchor={anchor} clearAnchor={clearAnchor} />
+        <GuidePolymarketKey anchor={anchor} clearAnchor={clearAnchor} />
+        <GuideRelayerKey anchor={anchor} clearAnchor={clearAnchor} />
+        <GuideNewsapi anchor={anchor} clearAnchor={clearAnchor} />
+        <GuideCryptopanic anchor={anchor} clearAnchor={clearAnchor} />
+        <GuideTelegram anchor={anchor} clearAnchor={clearAnchor} />
       </div>
     </div>
   );
 }
 
-function GuideLlm() {
+// Reusable list of major LLM provider key pages. Stays provider-agnostic:
+// no "recommended", no ordering implying preference, no commentary on
+// cost or quality. Sorted alphabetically.
+function LlmProviderLinks() {
   return (
-    <Guide title="Connect your LLM (required)">
+    <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+      <li>
+        <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
+          Anthropic
+        </a>
+      </li>
+      <li>
+        <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">
+          Google Cloud / Vertex
+        </a>
+      </li>
+      <li>
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">
+          Google AI Studio (Gemini)
+        </a>
+      </li>
+      <li>
+        <a href="https://console.mistral.ai/api-keys" target="_blank" rel="noreferrer">
+          Mistral
+        </a>
+      </li>
+      <li>
+        <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">
+          OpenAI
+        </a>
+      </li>
+      <li>
+        <a href="https://console.x.ai/team/default/api-keys" target="_blank" rel="noreferrer">
+          xAI (Grok)
+        </a>
+      </li>
+    </ul>
+  );
+}
+
+function GuideLlm({ anchor, clearAnchor }: GuideHookProps) {
+  return (
+    <Guide
+      id={HELP_ANCHORS.llm}
+      title="Connect your LLM"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
-        Delfi's forecaster runs on whichever LLM you connect. The key
-        is stored in your operating system keychain and never leaves
-        your machine. Recommended provider: Anthropic Claude. Any
-        major provider works as long as it exposes a Messages API.
+        The forecaster reads each market and produces a probability.
+        Bring your own API key from any major provider. The key is
+        stored in the operating system keychain on this device.
       </p>
-      <Step n={1} title="Get an API key from your provider">
-        For Anthropic, go to{" "}
-        <a
-          href="https://console.anthropic.com/settings/keys"
-          target="_blank"
-          rel="noreferrer"
-        >
-          console.anthropic.com → API Keys
-        </a>{" "}
-        and click <strong>Create Key</strong>. You'll only see the
-        full key once.
+      <Step n={1} title="Create an API key with your chosen provider">
+        Provider key pages:
+        <LlmProviderLinks />
       </Step>
       <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings → Connections</strong> and paste the
-        key into the <em>LLM API key</em> field. Save.
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        the key into <em>LLM API key</em>. Save.
       </Step>
-      <Step n={3} title="(Optional) Add a credit card to the provider">
-        Anthropic's free allowance is small. At default scan cadence
-        Delfi typically spends single-digit cents per market
-        evaluated; add a card at the provider if you plan to run for
-        more than a day or two.
+      <Step n={3} title="Add billing at the provider">
+        Most providers gate sustained usage behind a saved payment
+        method. At default cadence Delfi costs single-digit cents per
+        market evaluated.
       </Step>
     </Guide>
   );
 }
 
-function GuideBackupLlm() {
+function GuideBackupLlm({ anchor, clearAnchor }: GuideHookProps) {
   return (
-    <Guide title="Add a backup LLM (optional)">
+    <Guide
+      id={HELP_ANCHORS.llmBackup}
+      title="Add a backup LLM"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
-        If your primary LLM rate-limits or errors out, Delfi will fall
-        back to this one for the same evaluation. Useful at higher
-        trading volume and as a hedge against single-provider outages.
-        Pick a different provider from your primary (Anthropic and
-        OpenAI both work).
+        A second LLM Delfi falls back to when the primary errors or
+        rate-limits. Pick a different provider from the primary so a
+        single-provider outage does not stall the bot.
       </p>
-      <Step n={1} title="Get a key from a second provider">
-        Pick anything that's not your primary. The key is stored the
-        same way (keychain only).
+      <Step n={1} title="Create an API key with a second provider">
+        Provider key pages:
+        <LlmProviderLinks />
       </Step>
       <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings → Connections</strong> and paste into{" "}
-        <em>Backup LLM API key</em>. Save.
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        into <em>Backup LLM API key</em>. Save.
       </Step>
     </Guide>
   );
 }
 
-function GuideSearchLlm() {
+function GuideSearchLlm({ anchor, clearAnchor }: GuideHookProps) {
   return (
-    <Guide title="Add a Search LLM (optional)">
+    <Guide
+      id={HELP_ANCHORS.searchLlm}
+      title="Add a Search LLM"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
-        The Search LLM is a smaller, cheaper model Delfi uses for
-        keyword extraction and headline pre-filtering before sending
-        material to the main forecaster. Recommended provider:{" "}
-        <strong>Google Gemini</strong>. Generous free tier, fast.
-        Without a Search LLM, Delfi falls back to raw RSS titles
-        (still works, just noisier inputs).
+        Used for keyword extraction and headline filtering before
+        material reaches the primary forecaster. Cheap models
+        recommended.
       </p>
-      <Step n={1} title="Get a Gemini key">
-        Go to{" "}
-        <a
-          href="https://aistudio.google.com/app/apikey"
-          target="_blank"
-          rel="noreferrer"
-        >
-          aistudio.google.com → API Keys
-        </a>{" "}
-        and create one. Free tier covers Delfi's needs.
+      <Step n={1} title="Create an API key">
+        Any cheap-tier model from a major provider works. Provider
+        key pages:
+        <LlmProviderLinks />
       </Step>
       <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings → Connections</strong> and paste into
-        the Search LLM field. Save.
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        into the Search LLM field. Save.
       </Step>
     </Guide>
   );
 }
 
-function GuidePolymarketKey() {
+function GuidePolymarketKey({ anchor, clearAnchor }: GuideHookProps) {
   return (
-    <Guide title="Connect your Polymarket trading key (required for live)">
+    <Guide
+      id={HELP_ANCHORS.polymarketKey}
+      title="Connect your Polymarket private key"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
         Delfi signs Polymarket orders with the private key of the
-        wallet that controls your Polymarket account. The key stays
-        in your operating system keychain on this device. Skip this
-        step if you only want to run in simulation.
+        wallet that controls the Polymarket account. The key stays in
+        the operating system keychain on this device.
       </p>
       <p>
-        Everything else about your Polymarket account auto-derives
-        from this key: wallet address, the funder address that holds
-        your trading balance, your signature type, and your CLOB
-        API credentials. You won't need to copy any of those by hand.
+        Everything else about the Polymarket account auto-derives from
+        this key: wallet address, funder address, signature type, CLOB
+        API credentials.
       </p>
       <Step n={1} title="Export the private key from Polymarket">
-        Polymarket gives you a wallet when you sign up. To export the
-        private key, go to{" "}
+        Polymarket&apos;s docs on exporting the embedded wallet key:{" "}
         <a
-          href="https://polymarket.com/settings"
+          href="https://learn.polymarket.com/docs/guides/get-started/export-wallet"
           target="_blank"
           rel="noreferrer"
         >
-          polymarket.com → Settings
-        </a>{" "}
-        and look for an <em>Export private key</em> or{" "}
-        <em>Reveal private key</em> option. The exact wording depends
-        on which wallet provider Polymarket assigned to your account
-        (Magic.link or Privy on most accounts). You'll usually need
-        to confirm your email or pass a 2FA check before the key is
-        shown.
+          learn.polymarket.com &rarr; Export wallet
+        </a>
+        .
       </Step>
-      <Step n={2} title="Treat it like cash">
-        The key is a 64-character hex string starting with{" "}
-        <code>0x</code>. Anyone with this key can move every dollar
-        in your Polymarket account. Don't paste it into chat apps,
-        screenshots, password managers you share, or anywhere except
-        Delfi's Settings page on this device.
+      <Step n={2} title="Treat the key like cash">
+        It is a 64-character hex string starting with{" "}
+        <code>0x</code>. Anyone with the key can move every dollar in
+        the account. Do not paste it into chat apps, screenshots, or
+        shared password managers.
       </Step>
       <Step n={3} title="Paste it into Delfi">
-        Open <strong>Settings → Connections</strong> and paste it
-        into the <em>Polymarket private key</em> field. Save. The
-        wallet address auto-fills and you're done.
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        into <em>Polymarket private key</em>. Save. The wallet
+        address auto-fills.
       </Step>
       <CommonIssues>
-        <Issue title="My Polymarket account doesn't expose an export option">
+        <Issue title="Polymarket account does not expose an export option">
           Older Magic.link sessions sometimes hide the export.
-          Contact Polymarket support and ask them to walk you through
-          retrieving the wallet's seed phrase, then derive the
-          private key from that. See{" "}
-          <a
-            href="https://learn.polymarket.com"
-            target="_blank"
-            rel="noreferrer"
-          >
-            learn.polymarket.com
-          </a>{" "}
-          for their current help articles.
+          Contact Polymarket support and ask them to walk through
+          recovering the wallet seed phrase, then derive the private
+          key from that.
         </Issue>
       </CommonIssues>
     </Guide>
   );
 }
 
-function GuideRelayerKey() {
+function GuideRelayerKey({ anchor, clearAnchor }: GuideHookProps) {
   return (
-    <Guide title="Enable auto-redeem (Polymarket Relayer API key)">
+    <Guide
+      id={HELP_ANCHORS.polymarketRelayer}
+      title="Connect Polymarket Relayer API key"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
-        Without this, Delfi sees that you won and tells you about it
-        but can't actually claim the payout. Your winnings sit as
-        unclaimed CTF tokens in your Polymarket balance until you
-        visit polymarket.com and click Redeem.
+        Enables auto-redeem of winning positions. Polymarket pays the
+        gas through their relayer. Without this, winnings sit as
+        unclaimed CTF tokens in the Polymarket balance until you click
+        Redeem on polymarket.com.
       </p>
-      <p>
-        The Relayer API key lets Delfi submit a gasless transaction
-        through Polymarket's relayer. Polymarket pays the gas. You
-        don't need MATIC on your wallet.
-      </p>
-      <Step n={1} title="Open Polymarket → Relayer API keys">
-        Go to{" "}
+      <Step n={1} title="Open Polymarket Relayer API keys">
         <a
           href="https://polymarket.com/settings?tab=relayer-api-keys"
           target="_blank"
           rel="noreferrer"
         >
-          polymarket.com → Settings → Relayer API keys
+          polymarket.com &rarr; Settings &rarr; Relayer API keys
         </a>
-        . Log in with the same account whose private key you pasted
-        into Delfi.
+        . Log in with the account whose private key is in Delfi.
       </Step>
       <Step n={2} title="Create a new key">
         Click <strong>Create New</strong>. A UUID like{" "}
@@ -558,99 +555,122 @@ function GuideRelayerKey() {
         Copy it.
       </Step>
       <Step n={3} title="Paste it into Delfi">
-        Open <strong>Settings → Connections</strong> and paste it
-        into <em>Polymarket Relayer API key</em>. Save. From the next
-        winner on, Delfi auto-redeems within 10 minutes of resolution.
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        into <em>Polymarket Relayer API key</em>. Save.
       </Step>
       <CommonIssues>
         <Issue title="Relayer rejected with 401">
-          The Relayer key was created on a different Polymarket
-          account than the one whose private key you pasted into
-          Delfi. Delete the key on polymarket.com, log in with the
-          right account, create a fresh one, paste it in.
+          The key was created on a different Polymarket account than
+          the one whose private key is in Delfi. Delete the key on
+          polymarket.com, log in with the right account, create a
+          fresh one, paste it in.
         </Issue>
       </CommonIssues>
     </Guide>
   );
 }
 
-function GuideNews() {
+function GuideNewsapi({ anchor, clearAnchor }: GuideHookProps) {
   return (
-    <Guide title="Add news sources (optional)">
+    <Guide
+      id={HELP_ANCHORS.newsapi}
+      title="Connect NewsAPI"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
-        News feeds add late-breaking context to Delfi's research.
-        Both are optional: without them Delfi falls back to RSS,
-        which still works.
+        Pulls news headlines into research for geopolitical, economic,
+        and current-event markets.
       </p>
-      <Step n={1} title="NewsAPI for general news">
-        Sign up at{" "}
+      <Step n={1} title="Get a NewsAPI key">
         <a
           href="https://newsapi.org/register"
           target="_blank"
           rel="noreferrer"
         >
-          newsapi.org
+          newsapi.org &rarr; Register
         </a>
-        . Free tier is enough for personal use. Paste the key into{" "}
-        <strong>Settings → Connections → NewsAPI key</strong>. Save.
+        . Free tier exists.
       </Step>
-      <Step n={2} title="CryptoPanic for crypto news">
-        Sign up at{" "}
-        <a
-          href="https://cryptopanic.com/developers/api/"
-          target="_blank"
-          rel="noreferrer"
-        >
-          cryptopanic.com → API
-        </a>
-        . Paste the key into <strong>Settings → Connections →
-        CryptoPanic key</strong>. Save. This is the source Delfi
-        leans on for Polymarket crypto markets (BTC thresholds, ETH
-        ETF, exchange events).
+      <Step n={2} title="Paste it into Delfi">
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        into <em>NewsAPI key</em>. Save.
       </Step>
     </Guide>
   );
 }
 
-function GuideTelegram() {
+function GuideCryptopanic({ anchor, clearAnchor }: GuideHookProps) {
   return (
-    <Guide title="Connect Telegram for notifications (optional)">
+    <Guide
+      id={HELP_ANCHORS.cryptopanic}
+      title="Connect CryptoPanic"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
       <p>
-        Optional. With Telegram set up you get a message on every new
-        position, every win or loss, and a daily summary.
+        Crypto-specific news (tokens, regulators, exchanges) for
+        Polymarket crypto markets.
+      </p>
+      <Step n={1} title="Get a CryptoPanic key">
+        <a
+          href="https://cryptopanic.com/developers/api/"
+          target="_blank"
+          rel="noreferrer"
+        >
+          cryptopanic.com &rarr; API
+        </a>
+        . Free tier exists.
+      </Step>
+      <Step n={2} title="Paste it into Delfi">
+        Open <strong>Settings &rarr; Connections</strong> and paste
+        into <em>CryptoPanic key</em>. Save.
+      </Step>
+    </Guide>
+  );
+}
+
+function GuideTelegram({ anchor, clearAnchor }: GuideHookProps) {
+  return (
+    <Guide
+      id={HELP_ANCHORS.telegram}
+      title="Connect Telegram"
+      anchor={anchor}
+      clearAnchor={clearAnchor}
+    >
+      <p>
+        Push positions, settlements, and summaries to your phone.
       </p>
       <Step n={1} title="Create a Telegram bot">
-        Open Telegram, search for{" "}
+        In Telegram, open{" "}
         <a
           href="https://t.me/BotFather"
           target="_blank"
           rel="noreferrer"
         >
           @BotFather
-        </a>
-        , and send <code>/newbot</code>. Follow the prompts. BotFather
-        replies with an HTTP API token. Copy the whole token.
+        </a>{" "}
+        and send <code>/newbot</code>. BotFather returns an HTTP API
+        token. Copy the full token.
       </Step>
       <Step n={2} title="Send the bot a message">
-        In Telegram, open the new bot's chat (search for its
-        username) and send any message (<code>/start</code> works).
-        This creates a chat the bot can post into. Delfi reads the
-        chat ID from the bot's updates feed automatically; you don't
-        need to copy anything else.
+        Open the new bot&apos;s chat and send any message
+        (<code>/start</code> works). This creates a chat the bot can
+        post into. Delfi reads the chat id from the bot&apos;s updates
+        feed automatically.
       </Step>
       <Step n={3} title="Paste the token into Delfi">
-        Open <strong>Settings → Notifications</strong> and paste the
-        BotFather token into <em>Telegram bot token</em>. Save.
+        Open <strong>Settings &rarr; Notifications</strong> and paste
+        the BotFather token into <em>Telegram bot token</em>. Save.
       </Step>
       <Step n={4} title="Send a test message">
-        Use the <strong>Send test</strong> button in the
-        Notifications panel. If you get the message in Telegram,
-        you're done.
+        Click <strong>Send test</strong> in the Notifications panel.
       </Step>
       <CommonIssues>
         <Issue title="Test message never arrives">
-          You haven't sent the bot a message yet (step 2). The bot
-          can only post to chats that started the conversation first.
+          The bot needs an initial message from you before it can
+          post into a chat. Send any message to the bot in Telegram,
+          then run Test again.
         </Issue>
       </CommonIssues>
     </Guide>
@@ -665,115 +685,103 @@ function Troubleshooting() {
       <div className="panel-head">
         <h2 className="panel-title">Troubleshooting</h2>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Common errors and their fixes.
-      </p>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <Guide title="Bot keeps skipping every market">
           <p>
             The most common cause is sizing math falling under the
-            Polymarket platform minimum (every order must clear $1 and
-            5 shares). Open <strong>Risk controls → Sizing and
-            limits</strong> and check:
+            Polymarket platform minimum (every order must clear $1
+            and 5 shares). Open <strong>Risk controls &rarr; Sizing
+            and limits</strong> and check:
           </p>
           <ul>
             <li>
-              <strong>Max stake percentage</strong> toggle: at small
-              live bankrolls (under roughly $50) leave this off. The
-              sizer will bump each order to whatever Polymarket
-              actually accepts.
+              <strong>Max stake hard cap</strong>: at small live
+              bankrolls (under roughly $50) leave this off. The
+              sizer bumps each order to whatever Polymarket accepts.
             </li>
             <li>
-              <strong>Base stake</strong>: base stake × bankroll has
-              to clear the minimum at the favourite's price. At $10
-              bankroll and 2% base, base stake is $0.20, under the
-              platform minimum, so most markets get skipped.
+              <strong>Base stake</strong>: base stake &times;
+              bankroll has to clear the minimum at the
+              favourite&apos;s price. At $10 bankroll and 2% base,
+              base stake is $0.20, under the platform minimum.
             </li>
             <li>
-              <strong>Archetype skip list</strong>: open Risk → the
-              per-archetype grid and confirm you haven't toggled off
-              the categories you actually want Delfi trading.
+              <strong>Archetype skip list</strong>: open Risk and
+              confirm the per-archetype grid still has the
+              categories you want enabled.
             </li>
           </ul>
         </Guide>
 
         <Guide title="Winning position not auto-redeemed">
-          <p>Most likely causes, in order:</p>
           <ul>
             <li>
               <strong>No Relayer API key set.</strong> The setup
-              checklist at the top of this page flags it. Without
-              the key Delfi has no way to submit a gasless redeem.
+              checklist flags it. Without the key Delfi cannot
+              submit a gasless redeem.
             </li>
             <li>
               <strong>Relayer key was created with the wrong
-              account.</strong> If the key was created while logged
-              in with a different Polymarket account, the relayer
-              rejects it as 401. Recreate it while logged in with
-              the same account whose private key is in Delfi.
+              account.</strong> The relayer rejects it as 401.
+              Recreate it while logged in with the same Polymarket
+              account whose private key is in Delfi.
             </li>
             <li>
               <strong>Negative-risk multi-outcome market.</strong>
               These use a different on-chain contract that Delfi
-              doesn't redeem yet. Click Redeem on polymarket.com
-              for this one.
+              does not redeem yet. Click Redeem on polymarket.com
+              for these.
             </li>
             <li>
-              <strong>Market hasn't resolved on-chain yet.</strong>
-              Polymarket's UMA oracle usually reports 1-3 hours
-              after the underlying event ends. If the market page
-              still says <em>Resolution pending</em>, wait.
+              <strong>Market not resolved on-chain yet.</strong>
+              Polymarket&apos;s UMA oracle usually reports 1-3
+              hours after the underlying event ends.
             </li>
           </ul>
         </Guide>
 
         <Guide title="'API state timed out after 30s' banner">
-          <p>
-            The sidecar daemon's accept loop got starved by heavy
-            background work. Dashboard endpoints have a dedicated
-            threadpool isolated from the analyst, so this shouldn't
-            happen in steady state. If it does:
-          </p>
           <ul>
             <li>
               Click <strong>Restart Delfi</strong> on the banner.
-              The restart has hard timeouts on every shelled command;
-              it can't hang forever.
+              The restart has hard timeouts on every shelled
+              command.
             </li>
             <li>
-              If the banner keeps coming back after a restart, check{" "}
-              <strong>Settings → Diagnostics</strong> for stuck
-              scheduler jobs.
+              If the banner keeps coming back, check{" "}
+              <strong>Settings &rarr; Diagnostics</strong> for
+              stuck scheduler jobs.
             </li>
           </ul>
         </Guide>
 
         <Guide title="Restart Delfi button seems stuck">
           <p>
-            Worst case the restart shell-command set takes ~15 seconds
-            and the GUI reload waits another 8 seconds, total around
-            23 seconds before the dashboard reconnects. Wait for the
-            full window.
+            Worst case the restart shell-command set takes ~15
+            seconds and the GUI reload waits another 8 seconds,
+            total around 23 seconds before the dashboard
+            reconnects. Wait the full window.
           </p>
           <p>
-            If after a full minute you're still on "Restarting...",
-            quit Delfi from the macOS menu bar and relaunch from
-            /Applications. The daemon runs under launchd and is
-            unaffected; only the GUI shell needs to come back.
+            If after a full minute the dashboard is still on
+            &quot;Restarting...&quot;, quit Delfi from the macOS
+            menu bar and relaunch from /Applications. The daemon
+            runs under launchd and is unaffected; only the GUI
+            shell needs to come back.
           </p>
         </Guide>
 
-        <Guide title="Numbers in Telegram don't match the dashboard">
+        <Guide title="Numbers in Telegram do not match the dashboard">
           <p>
-            They should match: notifications read the actual fill
-            value from the database (not the limit-order intent) and
-            the dashboard reads the same source. Bankroll is the live
-            on-chain wallet total (pUSD plus USDC.e). Total equity is
-            bankroll plus the cost of every open position.
+            Bankroll is the live on-chain wallet total (pUSD plus
+            USDC.e). Total equity is bankroll plus the cost of every
+            open position. Notifications read the actual fill value
+            from the database and the dashboard reads the same
+            source.
           </p>
           <p>
-            If you do see a mismatch, please open a support ticket
-            with screenshots of both surfaces.
+            If there is a mismatch, open a support ticket with
+            screenshots of both surfaces.
           </p>
         </Guide>
       </div>
@@ -783,22 +791,52 @@ function Troubleshooting() {
 
 // ── Generic primitives ───────────────────────────────────────────────────
 
+interface GuideHookProps {
+  anchor: string | null;
+  clearAnchor: () => void;
+}
+
 function Guide({
+  id,
   title,
   children,
   defaultOpen = false,
+  anchor,
+  clearAnchor,
 }: {
+  id?: string;
   title: string;
   children: ReactNode;
   defaultOpen?: boolean;
+  anchor?: string | null;
+  clearAnchor?: () => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // Deep-link from Settings: when an anchor matches this Guide's id,
+  // auto-open + scroll into view, then clear the anchor so navigating
+  // away and back doesn't re-trigger.
+  useEffect(() => {
+    if (!id || !anchor || anchor !== id) return;
+    setOpen(true);
+    const el = ref.current;
+    if (el) {
+      requestAnimationFrame(() => {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+    clearAnchor?.();
+  }, [anchor, id, clearAnchor]);
+
   return (
     <div
+      ref={ref}
       style={{
         border: "1px solid rgba(255,255,255,0.07)",
         borderRadius: 8,
         background: "rgba(255,255,255,0.015)",
+        scrollMarginTop: 80,
       }}
     >
       <button
@@ -824,7 +862,7 @@ function Guide({
             transition: "transform 0.15s",
           }}
         >
-          ›
+          &rsaquo;
         </span>
       </button>
       {open && (

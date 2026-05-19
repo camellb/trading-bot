@@ -145,9 +145,17 @@ export default function App() {
     }
   };
 
-  const goto = (p: Page, tab?: SettingsTab) => {
+  // Deep-link target for the Help page: when a "?" help-hint in
+  // Settings calls goto("help", undefined, "polymarket-key"), Help
+  // auto-opens that guide and scrolls to it. Cleared on navigation
+  // away and after Help consumes it.
+  const [helpAnchor, setHelpAnchor] = useState<string | null>(null);
+  const clearHelpAnchor = useCallback(() => setHelpAnchor(null), []);
+
+  const goto = (p: Page, tab?: SettingsTab, anchor?: string) => {
     setPage(p);
     if (p === "settings" && tab) setSettingsTab(tab);
+    setHelpAnchor(p === "help" ? (anchor ?? null) : null);
   };
 
   if (!connected) {
@@ -222,10 +230,17 @@ export default function App() {
             creds={creds}
             config={config}
             onSaved={refresh}
+            goto={goto}
           />
         )}
         {page === "help" && (
-          <Help creds={creds} config={config} goto={goto} />
+          <Help
+            creds={creds}
+            config={config}
+            goto={goto}
+            anchor={helpAnchor}
+            clearAnchor={clearHelpAnchor}
+          />
         )}
       </main>
     </div>

@@ -19,7 +19,29 @@ import {
   resolvedTz,
   setDisplayTz,
 } from "../lib/format";
-import type { SettingsTab } from "../App";
+import type { Page, SettingsTab } from "../App";
+import { HELP_ANCHORS } from "./Help";
+
+// Routing helper passed from App. `goto("help", undefined, anchor)`
+// switches to the Help page and auto-opens the matching guide.
+type Goto = (p: Page, tab?: SettingsTab, helpAnchor?: string) => void;
+
+/** Compact "?" affordance rendered inline with a credential label.
+ *  Clicking it routes to Help and opens the matching guide. */
+function HelpHint({ anchor, goto }: { anchor: string; goto: Goto }) {
+  return (
+    <button
+      type="button"
+      className="help-hint"
+      onClick={() => goto("help", undefined, anchor)}
+      aria-label="Open setup guide"
+      title="Need help? Open the setup guide."
+    >
+      <span aria-hidden="true">?</span>
+      <span className="help-hint-label">Need help?</span>
+    </button>
+  );
+}
 
 /**
  * Settings - SaaS-parity layout, with desktop additions:
@@ -49,6 +71,7 @@ interface Props {
   creds: Credentials | null;
   config: ConfigShape | null;
   onSaved: () => void;
+  goto: Goto;
 }
 
 const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
@@ -59,7 +82,7 @@ const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   notifications: { h1: "Notifications",   sub: "" },
 };
 
-export default function Settings({ tab, creds, config, onSaved }: Props) {
+export default function Settings({ tab, creds, config, onSaved, goto }: Props) {
   // setTab is in Props for future use (eg deep-linking) but the sidebar owns
   // tab switching today; ignore it here without triggering noUnusedLocals.
   const t = TITLES[tab];
@@ -77,8 +100,8 @@ export default function Settings({ tab, creds, config, onSaved }: Props) {
       {tab === "account"       && <AccountPanel       config={config} onSaved={onSaved} />}
       {tab === "app"           && <AppPanel />}
       {tab === "diagnostics"   && <DiagnosticsPanel />}
-      {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} />}
-      {tab === "notifications" && <NotificationsPanel />}
+      {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} goto={goto} />}
+      {tab === "notifications" && <NotificationsPanel goto={goto} />}
     </div>
   );
 }
@@ -989,9 +1012,11 @@ function LicensePanel() {
 function ConnectionsPanel({
   creds,
   onSaved,
+  goto,
 }: {
   creds: Credentials | null;
   onSaved: () => void;
+  goto: Goto;
 }) {
   const [pmKey, setPmKey] = useState("");
   const [wallet, setWallet] = useState("");
@@ -1066,7 +1091,10 @@ function ConnectionsPanel({
       </p>
       <form className="form-row" onSubmit={save}>
         <div className="form-field">
-          <label>Polymarket private key</label>
+          <div className="form-label-row">
+            <label>Polymarket private key</label>
+            <HelpHint anchor={HELP_ANCHORS.polymarketKey} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1075,8 +1103,7 @@ function ConnectionsPanel({
             onChange={(e) => setPmKey(e.target.value)}
           />
           <p className="form-hint">
-            Signs Polymarket orders for live trading. Required only when you
-            switch Delfi to Live mode.
+            Signs Polymarket orders in live mode.
           </p>
         </div>
         <div className="form-field">
@@ -1089,12 +1116,15 @@ function ConnectionsPanel({
             onChange={(e) => setWallet(e.target.value)}
           />
           <p className="form-hint">
-            The public 0x address paired with the private key above.
+            Auto-derives from the private key above.
           </p>
         </div>
 
         <div className="form-field">
-          <label>LLM API key</label>
+          <div className="form-label-row">
+            <label>LLM API key</label>
+            <HelpHint anchor={HELP_ANCHORS.llm} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1103,32 +1133,49 @@ function ConnectionsPanel({
             onChange={(e) => setLlmKey(e.target.value)}
           />
           <p className="form-hint">
-            The model that reads each Polymarket market and produces
-            Delfi&apos;s forecast. Without this, Delfi can&apos;t decide
-            whether to trade. Bring your own key from any major LLM
-            provider.
+            The forecaster that reads each market.
           </p>
         </div>
 
         <div className="form-field">
-          <label>Backup LLM API key (optional)</label>
+          <div className="form-label-row">
+            <label>Backup LLM API key</label>
+            <HelpHint anchor={HELP_ANCHORS.llmBackup} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
-            placeholder={hasLlmBackup ? "(stored)" : "sk-..."}
+            placeholder={hasLlmBackup ? "(stored)" : "Paste a second LLM API key"}
             value={llmBackup}
             onChange={(e) => setLlmBackup(e.target.value)}
           />
           <p className="form-hint">
-            A second LLM Delfi falls back to if the primary is rate-limited
-            or returns an error. Useful at higher trading volume or as a
-            hedge against provider outages. Stored now; failover wiring lands
-            with multi-provider support.
+            Used when the primary LLM errors or rate-limits.
           </p>
         </div>
 
         <div className="form-field">
-          <label>NewsAPI key (optional)</label>
+          <div className="form-label-row">
+            <label>Search LLM API key</label>
+            <HelpHint anchor={HELP_ANCHORS.searchLlm} goto={goto} />
+          </div>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasGemini ? "(stored)" : "Paste a Search LLM API key"}
+            value={gemini}
+            onChange={(e) => setGemini(e.target.value)}
+          />
+          <p className="form-hint">
+            Used for keyword extraction and headline filtering. Cheap models recommended.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <div className="form-label-row">
+            <label>NewsAPI key</label>
+            <HelpHint anchor={HELP_ANCHORS.newsapi} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1137,15 +1184,15 @@ function ConnectionsPanel({
             onChange={(e) => setNewsapi(e.target.value)}
           />
           <p className="form-hint">
-            Pulls breaking news headlines around event-resolution windows.
-            Adds context to forecasts on geopolitical, economic, and
-            current-event markets. Free tier at newsapi.org. Without it
-            Delfi falls back to RSS feeds and may miss late-breaking context.
+            Headlines for geopolitical, economic, and current-event markets.
           </p>
         </div>
 
         <div className="form-field">
-          <label>CryptoPanic key (optional)</label>
+          <div className="form-label-row">
+            <label>CryptoPanic key</label>
+            <HelpHint anchor={HELP_ANCHORS.cryptopanic} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1154,40 +1201,15 @@ function ConnectionsPanel({
             onChange={(e) => setCryptopanic(e.target.value)}
           />
           <p className="form-hint">
-            Pulls crypto-specific news (tokens, regulators, exchange events)
-            into Delfi&apos;s research feed. Useful for Polymarket&apos;s
-            crypto-themed markets (BTC threshold, ETH ETF, exchange events).
-            Free at cryptopanic.com.
+            Crypto-specific news for Polymarket crypto markets.
           </p>
         </div>
 
         <div className="form-field">
-          <label>Search LLM API key (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasGemini ? "(stored)" : "AIzaSy..."}
-            value={gemini}
-            onChange={(e) => setGemini(e.target.value)}
-          />
-          <p className="form-hint">
-            A small, fast model Delfi uses for keyword extraction and
-            headline pre-filtering before sending material to the
-            primary forecaster. Recommended: Gemini (free tier at{" "}
-            <a
-              href="https://aistudio.google.com/app/apikey"
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              aistudio.google.com
-            </a>
-            ). Without it, Delfi falls back to raw RSS titles. Still
-            works, just noisier inputs.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket Relayer API key</label>
+          <div className="form-label-row">
+            <label>Polymarket Relayer API key</label>
+            <HelpHint anchor={HELP_ANCHORS.polymarketRelayer} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1196,19 +1218,7 @@ function ConnectionsPanel({
             onChange={(e) => setPmRelayerKey(e.target.value)}
           />
           <p className="form-hint">
-            One-time paste: enables auto-redeem of winning positions
-            with no MATIC needed. Go to{" "}
-            <a
-              href="https://polymarket.com/settings?tab=relayer-api-keys"
-              target="_blank"
-              rel="noreferrer noopener"
-            >
-              polymarket.com &rarr; Settings &rarr; Relayer API keys
-            </a>
-            , click Create New, copy the UUID, paste it here. Without
-            this, Delfi knows you won but can&apos;t collect the
-            payout: the tokens stay in your CTF balance until you
-            click Redeem on the Polymarket site.
+            Enables auto-redeem of winning positions.
           </p>
         </div>
 
@@ -1256,7 +1266,7 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   },
 };
 
-function NotificationsPanel() {
+function NotificationsPanel({ goto }: { goto: Goto }) {
   const [notif, setNotif] = useState<NotificationsConfig | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [prefSavingKey, setPrefSavingKey] = useState<string | null>(null);
@@ -1311,7 +1321,7 @@ function NotificationsPanel() {
 
   return (
     <>
-      <TelegramConnectorPanel />
+      <TelegramConnectorPanel goto={goto} />
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">What Delfi will surface</h2>
@@ -1372,7 +1382,7 @@ function NotificationsPanel() {
  * `bot_token_configured: boolean`, never the token itself. Disconnect
  * wipes both.
  */
-function TelegramConnectorPanel() {
+function TelegramConnectorPanel({ goto }: { goto: Goto }) {
   const [tg, setTg] = useState<TelegramConfig | null>(null);
   const [token, setToken] = useState("");
   const [chat, setChat] = useState("");
@@ -1470,28 +1480,12 @@ function TelegramConnectorPanel() {
           {isConnected ? "Connected" : "Not connected"}
         </span>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Push trades, settlements, and risk events to your phone.
-        Create a bot via{" "}
-        <a
-          href="https://t.me/BotFather"
-          onClick={(e) => { e.preventDefault(); void openUrl("https://t.me/BotFather"); }}
-        >
-          @BotFather
-        </a>{" "}
-        to get a token, then send any message to your bot so it has a
-        chat id. Find your chat id via{" "}
-        <a
-          href="https://t.me/userinfobot"
-          onClick={(e) => { e.preventDefault(); void openUrl("https://t.me/userinfobot"); }}
-        >
-          @userinfobot
-        </a>.
-      </p>
-
       <form className="form-row" onSubmit={save}>
         <div className="form-field">
-          <label>Bot token</label>
+          <div className="form-label-row">
+            <label>Bot token</label>
+            <HelpHint anchor={HELP_ANCHORS.telegram} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
