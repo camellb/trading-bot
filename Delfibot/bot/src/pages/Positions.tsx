@@ -259,6 +259,30 @@ export default function Positions() {
     [events],
   );
 
+  // Lookup table: question text -> category. The event_log row
+  // doesn't carry a category column - it's just the executor's
+  // string description - so we resolve it on the client by matching
+  // each error's parsed question text against the positions +
+  // evaluations already loaded for this page. Bot-placed orders
+  // always have a matching evaluation, so this covers everything in
+  // practice. The lookup is normalised on whitespace so minor
+  // formatting differences (trailing periods, double spaces) don't
+  // miss the hit.
+  const questionToCategory = useMemo(() => {
+    const norm = (q: string) => q.trim().toLowerCase().replace(/\s+/g, " ");
+    const map = new Map<string, string>();
+    for (const p of positions) {
+      const cat = (p.category as string | null | undefined) ?? null;
+      if (p.question && cat) map.set(norm(p.question), cat);
+    }
+    for (const e of evals) {
+      if (e.question && e.category && !map.has(norm(e.question))) {
+        map.set(norm(e.question), e.category);
+      }
+    }
+    return map;
+  }, [positions, evals]);
+
   // Sort states. One per table so they're independent. Defaults
   // mirror "most recent first" or "biggest first" depending on
   // what users will scan for in that view.
@@ -684,21 +708,22 @@ export default function Positions() {
             <table className="table-simple" style={{ tableLayout: "fixed", width: "100%" }}>
               <colgroup>
                 {/* Market: takes a comfortable chunk; truncates long
-                    questions. Side: pill width. Stake: enough for
-                    "25.26 @ $0.850" without wrapping. Reason: takes
-                    the rest, which is the column with real information
-                    density - was previously capped at 320px causing
-                    the rest of the table to balloon with dead space.
-                    When: short relative-time cell. */}
+                    questions. Category: short tag. Side: pill
+                    width. Size: enough for "$1234" without
+                    wrapping. Reason: takes the rest, which is the
+                    column with real information density. When:
+                    short relative-time cell. */}
                 <col style={{ width: "26%" }} />
+                <col style={{ width: 96 }} />
                 <col style={{ width: 64 }} />
-                <col style={{ width: 140 }} />
+                <col style={{ width: 80 }} />
                 <col />
                 <col style={{ width: 96 }} />
               </colgroup>
               <thead>
                 <tr>
                   <th>Market</th>
+                  <th>Category</th>
                   <th>Side</th>
                   <th>Size</th>
                   <th>Reason</th>
@@ -730,9 +755,15 @@ export default function Positions() {
                     side === "YES" ? "side-yes"
                     : side === "NO" ? "side-no"
                     : "";
+                  // Resolve category by matching the parsed question
+                  // text against the positions/evaluations map built
+                  // above. Falls through to "-" if no match (rare).
+                  const lookupKey = question.trim().toLowerCase().replace(/\s+/g, " ");
+                  const category = questionToCategory.get(lookupKey) ?? "-";
                   return (
                     <tr key={row.id}>
                       <td className="truncate" title={question}>{question}</td>
+                      <td className="truncate" title={category}>{category}</td>
                       <td className={`mono ${sideClass}`}>{side}</td>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
                         {size && price
