@@ -1,5 +1,5 @@
 import { ReactNode, useCallback, useEffect, useState } from "react";
-import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar } from "./api";
+import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar, waitForSidecar } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
@@ -319,18 +319,19 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
     setRestartError(null);
     try {
       await tauriRestartSidecar();
-      // 8s before reload: kickstart's SIGKILL + respawn is instant
-      // but the PyInstaller bootloader needs 8-12s to finish
-      // unpacking, importing the heavy stack (anthropic, web3, ccxt,
-      // py-clob-client-v2...), and binding the aiohttp socket. The
-      // Rust-side port probe (read_existing_sidecar_port) then has
-      // its own 15s retry budget on top, so the full chain gives
-      // ~23s of headroom - enough that "Restart Delfi" reliably
-      // ends in a connected GUI instead of bouncing right back to
-      // "Delfi could not start". Earlier value was 1500ms which
-      // reloaded mid-bootloader and tripped the boot probe before
-      // the daemon was ready.
-      setTimeout(() => window.location.reload(), 8000);
+      // Wait for the daemon to come back, then reload. If it doesn't
+      // come back within 30 s, surface a concrete next step instead
+      // of an infinite spinner.
+      const alive = await waitForSidecar(30_000);
+      if (alive) {
+        window.location.reload();
+      } else {
+        setRestartError(
+          "Daemon did not come back. Quit Delfi from the macOS menu " +
+          "bar and reopen from /Applications.",
+        );
+        setRestarting(false);
+      }
     } catch (e) {
       setRestartError(e instanceof Error ? e.message : String(e));
       setRestarting(false);
@@ -371,21 +372,20 @@ function BootScreen({ error }: { error: string | null }) {
     setRestartError(null);
     try {
       await tauriRestartSidecar();
-      // Force the app back into "Launching..." state. Reload picks
-      // up the fresh sidecar.port that the respawned daemon writes
-      // and the GUI re-runs its boot probe with no stale cache.
-      // 8s before reload: kickstart's SIGKILL + respawn is instant
-      // but the PyInstaller bootloader needs 8-12s to finish
-      // unpacking, importing the heavy stack (anthropic, web3, ccxt,
-      // py-clob-client-v2...), and binding the aiohttp socket. The
-      // Rust-side port probe (read_existing_sidecar_port) then has
-      // its own 15s retry budget on top, so the full chain gives
-      // ~23s of headroom - enough that "Restart Delfi" reliably
-      // ends in a connected GUI instead of bouncing right back to
-      // "Delfi could not start". Earlier value was 1500ms which
-      // reloaded mid-bootloader and tripped the boot probe before
-      // the daemon was ready.
-      setTimeout(() => window.location.reload(), 8000);
+      // Wait for the daemon to come back, then reload so the GUI
+      // re-runs its boot probe with a clean cache. If the daemon
+      // doesn't come back within 30 s, surface a concrete next step
+      // instead of an infinite spinner.
+      const alive = await waitForSidecar(30_000);
+      if (alive) {
+        window.location.reload();
+      } else {
+        setRestartError(
+          "Daemon did not come back. Quit Delfi from the macOS menu " +
+          "bar and reopen from /Applications.",
+        );
+        setRestarting(false);
+      }
     } catch (e) {
       setRestartError(e instanceof Error ? e.message : String(e));
       setRestarting(false);

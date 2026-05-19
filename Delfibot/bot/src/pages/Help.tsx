@@ -693,7 +693,7 @@ function Troubleshooting() {
           </ul>
         </Guide>
 
-        <Guide title="'API state timed out after 30s' banner">
+        <Guide title="'/api/state: timed out' banner">
           <ul>
             <li>
               Click <strong>Restart Delfi</strong> on the banner.

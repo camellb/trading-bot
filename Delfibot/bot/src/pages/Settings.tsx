@@ -11,6 +11,8 @@ import {
   LoginItemStatus,
   NotificationsConfig,
   TelegramConfig,
+  tauriRestartSidecar,
+  waitForSidecar,
 } from "../api";
 import {
   COMMON_TIMEZONES,
@@ -564,11 +566,23 @@ function LoginItemPanel() {
 
 // ── Restart Delfi ───────────────────────────────────────────────────────
 
-/** One-click restart of the daemon. Sends SIGTERM via launchctl
- *  kickstart -k; launchd respawns within ThrottleInterval (10s). The
- *  api.ts retry-on-connection-error logic transparently re-resolves
- *  the new port, so the user typically sees a brief "Restarting..."
- *  spinner and then everything resumes. */
+/** One-click restart of the daemon.
+ *
+ *  Uses the Tauri-side `restart_sidecar` command, which runs in the
+ *  shell process (not the daemon) and is therefore reachable even
+ *  when the daemon's HTTP loop is wedged. The Rust command:
+ *    1. reads the port file
+ *    2. lsof's the actual pid listening on that port
+ *    3. SIGKILLs that pid (so it can't survive in a hung state)
+ *    4. runs `launchctl kickstart -k gui/<uid>/com.delfi.bot` as a
+ *       belt-and-braces respawn trigger
+ *  Step 3 is the bulletproof bit: it bypasses launchd's tracked-pid
+ *  state entirely. KeepAlive=true on the LaunchAgent respawns the
+ *  daemon regardless.
+ *
+ *  After triggering, we poll /api/state until the new daemon is
+ *  reachable (or 30s elapses). On timeout we tell the user to quit
+ *  + relaunch Delfi manually so they have a concrete next step. */
 function RestartPanel() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -578,9 +592,24 @@ function RestartPanel() {
     setBusy(true);
     setMsg(null);
     try {
-      const r = await api.restart();
-      setMsg({ kind: "ok", text: r.detail || "Restart signal sent." });
+      await tauriRestartSidecar();
       setConfirm(false);
+
+      // Poll Rust IPC directly for the new daemon's port. The Rust
+      // command returns as soon as it's fired the kill + kickstart;
+      // the daemon usually comes back in 5-10 s (launchd
+      // ThrottleInterval=10 s + PyInstaller cold-start).
+      const alive = await waitForSidecar(30_000);
+      if (alive) {
+        setMsg({ kind: "ok", text: "Delfi restarted." });
+      } else {
+        setMsg({
+          kind: "err",
+          text: "Daemon did not come back within 30 seconds. " +
+                "Quit Delfi from the macOS menu bar and reopen " +
+                "from /Applications.",
+        });
+      }
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
     } finally {

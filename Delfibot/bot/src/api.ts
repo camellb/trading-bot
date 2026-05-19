@@ -118,6 +118,47 @@ export async function tauriRestartSidecar(): Promise<void> {
   await invoke("restart_sidecar");
 }
 
+/**
+ * Poll the Rust shell's `get_api_port` IPC until the sidecar reports
+ * a live port (ready=true) or the deadline expires.
+ *
+ * Use after `tauriRestartSidecar()` to wait for the new daemon to
+ * come back. Returns true if the daemon is live, false on timeout.
+ * The caller renders the timeout case to the user with a concrete
+ * next step ("quit and relaunch from /Applications").
+ *
+ * Why this exists instead of just awaiting `api.state()`: `port()`
+ * internally polls Rust IPC for up to 120 s before the actual HTTP
+ * call ever fires. A naive `while (deadline) { await api.state() }`
+ * loop is broken because one slow `api.state()` blows past the
+ * caller's deadline. Polling `get_api_port` directly keeps the loop
+ * tight: every iteration is bounded by `pollIntervalMs`.
+ */
+export async function waitForSidecar(timeoutMs = 30_000): Promise<boolean> {
+  if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
+    return false;
+  }
+  const pollInterval = 500;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await invoke<{ port: number; ready: boolean }>(
+        "get_api_port",
+      );
+      if (res.ready && res.port > 0) {
+        cachedPort = res.port;
+        portPromise = null;
+        return true;
+      }
+    } catch {
+      // IPC failed (Rust shell wedged?) - keep polling, deadline
+      // catches us if it never comes back.
+    }
+    await new Promise((r) => setTimeout(r, pollInterval));
+  }
+  return false;
+}
+
 /** True if `err.message` looks like a daemon-not-reachable error
  *  rather than an application-level error. The page-level error
  *  banners use this to suppress the global connection error and let
@@ -128,7 +169,7 @@ export function isConnectionError(msg: string | null | undefined): boolean {
   return (
     m.includes("could not connect to delfi") ||
     m.includes("delfi took too long to start") ||
-    m.includes("the sidecar may be stuck")
+    m.includes(": timed out")
   );
 }
 
@@ -186,10 +227,7 @@ async function request<T>(
     // the UI can render directly.
     const isAbort = err instanceof DOMException && err.name === "AbortError";
     if (isAbort) {
-      throw new Error(
-        `${path}: timed out after ${Math.round(timeoutMs / 1000)}s. ` +
-          "The sidecar may be stuck - restart Delfi if this keeps happening.",
-      );
+      throw new Error(`${path}: timed out`);
     }
     // Connection refused. The most common cause is a daemon respawn
     // (launchd KeepAlive, autostart toggle, install rebuild) that

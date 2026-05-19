@@ -145,9 +145,9 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     async_runtime::spawn_blocking(move || -> Result<(), String> {
-        // Step 1: SIGKILL whatever owns the sidecar port. lsof prints
-        // pid-only (-t). Each step bounded so a stuck OS layer can't
-        // freeze the whole restart.
+        // Step 1 (best-effort): SIGKILL whatever owns the sidecar
+        // port. Targets the right pid even if launchd is desynced.
+        // Skipped if no port file - covered by Step 2's pkill.
         if let Some(p) = port {
             if let Ok(out) = run_with_timeout(
                 "/usr/sbin/lsof",
@@ -167,10 +167,28 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
             }
         }
 
-        // Step 2: kickstart -k the LaunchAgent. Normally fast, has
-        // hung indefinitely in practice. 15s is plenty of headroom
-        // for a healthy state; beyond that the daemon will still
-        // come up via KeepAlive and we don't make the GUI wait.
+        // Step 2: BULLETPROOF KILL. SIGKILL every delfi-sidecar
+        // process by name. This is the primitive that makes Restart
+        // a 100%-effective recovery: regardless of whether the port
+        // file is missing/stale, whether launchd's tracked pid is
+        // right, or whether multiple orphans are alive (singleton
+        // race after install.sh's bootout/rsync/bootstrap dance),
+        // this clears the field. SIGKILL (not SIGTERM) so a hung
+        // signal handler can't keep a wedged daemon alive.
+        // KeepAlive=true respawns afterward.
+        let _ = run_with_timeout(
+            "/usr/bin/pkill",
+            &["-KILL", "-x", "delfi-sidecar"],
+            std::time::Duration::from_secs(5),
+        );
+
+        // Step 3: kickstart -k the LaunchAgent as the respawn
+        // trigger (belt-and-braces; KeepAlive=true would respawn
+        // anyway, but kickstart skips the ThrottleInterval for a
+        // snappier recovery). With Step 2 having killed everything,
+        // any non-zero exit here is non-fatal: the polling loop on
+        // the React side will surface "quit + relaunch manually" if
+        // no daemon comes back.
         let uid_out = run_with_timeout(
             "/usr/bin/id", &["-u"],
             std::time::Duration::from_secs(3),
@@ -191,14 +209,14 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
         ) {
             Ok(out) if !out.status.success() => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                return Err(format!(
-                    "launchctl kickstart returned non-zero: {}",
-                    stderr.trim()
-                ));
+                eprintln!(
+                    "[restart_sidecar] kickstart non-zero: {}; \
+                    relying on KeepAlive respawn",
+                    stderr.trim(),
+                );
+                Ok(())
             }
             Ok(_) => Ok(()),
-            // Timeout is non-fatal: KeepAlive will respawn the daemon
-            // anyway. Log only — the GUI proceeds with its reload.
             Err(e) => {
                 eprintln!("[restart_sidecar] {e}; \
                     KeepAlive will respawn the daemon");

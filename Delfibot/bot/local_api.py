@@ -2153,27 +2153,35 @@ class LocalAPI:
     # ── System ops: restart, logs, backup, launch stats, login item ─────────
 
     async def _post_restart(self, _req: web.Request) -> web.Response:
-        """Restart the daemon via launchctl kickstart -k.
+        """Restart the daemon by self-SIGTERMing the running process.
 
-        Sends SIGTERM, launchd respawns within ThrottleInterval
-        (10s). The respawned daemon picks a fresh port and rewrites
-        sidecar.port; the GUI's request retry logic picks it up
-        without the user having to do anything.
+        We used to call `launchctl kickstart -k`, which kicks the pid
+        launchd CURRENTLY THINKS is the daemon. When launchd loses
+        track of the right pid (which happens after install.sh's
+        bootout/rsync/bootstrap dance leaves the original daemon
+        alive while a duplicate respawn wins launchd's tracked-pid
+        slot), kickstart aims at a ghost and the real lock-holding
+        daemon never receives SIGTERM. Restart hangs forever and
+        the user sees a stuck spinner.
 
-        Self-restart is a deadlock trap: `launchctl kickstart -k`
-        blocks until the killed process exits, and we ARE that
-        process, blocked inside subprocess.run waiting for launchctl
-        to return. A 5s timeout used to fire before either side
-        moved, so the restart never happened. The fix detaches
-        launchctl into a background shell with a brief pre-sleep,
-        which gives us time to send this HTTP response before
-        launchd SIGTERMs us.
+        os.kill(getpid(), SIGTERM) targets the actual running daemon
+        unconditionally. Whether launchd's tracked pid is right is
+        irrelevant. KeepAlive=true on the LaunchAgent respawns us
+        within ThrottleInterval (10s); the respawn wins the
+        singleton lock cleanly (we just freed it) and writes a fresh
+        sidecar.port that the GUI's retry logic picks up.
 
-        macOS-only for now. On Windows we'd need to terminate the
-        process and rely on the user's manually-launched fallback,
-        or wire a Windows Service equivalent.
+        Probing launchd first confirms the service is bootstrapped
+        (i.e. respawn WILL happen). If it isn't, we'd die and never
+        come back, leaving a dead app.
+
+        macOS-only for now. On Windows we'd need to wire a Windows
+        Service equivalent.
         """
+        import asyncio as _asyncio
+        import os
         import platform
+        import signal
         import subprocess
 
         if platform.system() != "Darwin":
@@ -2182,9 +2190,8 @@ class LocalAPI:
         _, service_id = self._autostart_paths()
 
         # Probe the LaunchAgent before scheduling the kill. If the
-        # service isn't bootstrapped, launchctl kickstart will silently
-        # do nothing and the daemon will never come back, leaving the
-        # user with a dead app.
+        # service isn't bootstrapped, no respawn will happen and the
+        # daemon stays dead.
         try:
             probe = subprocess.run(
                 ["launchctl", "print", service_id],
@@ -2199,20 +2206,18 @@ class LocalAPI:
                 400,
             )
 
-        # Fire-and-forget the kickstart. The 1s sleep buys us enough
-        # runway to finish writing this HTTP response before launchd
-        # SIGTERMs us. start_new_session=True detaches the shell from
-        # our process group so it survives our death.
-        try:
-            subprocess.Popen(
-                ["sh", "-c",
-                 f"sleep 1; exec launchctl kickstart -k {service_id}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            return _err(f"failed to spawn restart: {exc}", 500)
+        # Schedule self-SIGTERM AFTER returning the HTTP response. We
+        # need enough runway to finish writing the response body back
+        # to the client before our event loop tears down. 500 ms is
+        # comfortable - the aiohttp handler returns in milliseconds.
+        async def _self_terminate() -> None:
+            await _asyncio.sleep(0.5)
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except OSError as exc:
+                print(f"[restart] self-SIGTERM failed: {exc}", flush=True)
+
+        _asyncio.create_task(_self_terminate())
 
         return _ok({"ok": True, "detail": "Restart signal sent. The daemon "
                     "will be back online in a few seconds."})
