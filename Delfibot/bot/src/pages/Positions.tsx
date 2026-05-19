@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, EventLogRow, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
-import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
+import { formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
 // Tauri webviews swallow `target="_blank"` clicks by default - the link
@@ -34,8 +34,9 @@ type Filter = "all" | "open" | "closed" | "skipped" | "errors";
 
 // Local aliases that delegate to the central tz-aware formatters
 // (src/lib/format.ts). Kept as small wrappers so the rest of the
-// file reads the same as before.
-const fmt = formatDate;
+// file reads the same as before. Closed/Skipped/Errors columns now
+// show relative time (timeAgo) with the full ISO on hover; only
+// the long-form fmtDateTime is needed locally for the title text.
 const fmtDateTime = formatDateTime;
 function daysFromNow(iso: string | null | undefined): string {
   if (!iso) return "-";
@@ -680,7 +681,21 @@ export default function Positions() {
                 : "Loading..."}
             </div>
           ) : (
-            <table className="table-simple">
+            <table className="table-simple" style={{ tableLayout: "fixed", width: "100%" }}>
+              <colgroup>
+                {/* Market: takes a comfortable chunk; truncates long
+                    questions. Side: pill width. Stake: enough for
+                    "25.26 @ $0.850" without wrapping. Reason: takes
+                    the rest, which is the column with real information
+                    density - was previously capped at 320px causing
+                    the rest of the table to balloon with dead space.
+                    When: short relative-time cell. */}
+                <col style={{ width: "26%" }} />
+                <col style={{ width: 64 }} />
+                <col style={{ width: 140 }} />
+                <col />
+                <col style={{ width: 96 }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Market</th>
@@ -717,7 +732,7 @@ export default function Positions() {
                     : "";
                   return (
                     <tr key={row.id}>
-                      <td>{question}</td>
+                      <td className="truncate" title={question}>{question}</td>
                       <td className={`mono ${sideClass}`}>{side}</td>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
                         {size && price ? `${size} @ $${price}` : "—"}
@@ -725,7 +740,6 @@ export default function Positions() {
                       <td
                         style={{
                           color: "var(--vellum-60)",
-                          maxWidth: 320,
                           whiteSpace: "normal",
                           wordBreak: "break-word",
                           overflowWrap: "anywhere",
@@ -734,8 +748,9 @@ export default function Positions() {
                       >
                         {reason}
                       </td>
-                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
-                        {fmt(row.timestamp)}
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}
+                          title={row.timestamp ? fmtDateTime(row.timestamp) : ""}>
+                        {row.timestamp ? timeAgo(row.timestamp) : "—"}
                       </td>
                     </tr>
                   );
