@@ -697,32 +697,6 @@ function Troubleshooting() {
           </ul>
         </Guide>
 
-        <Guide title="'maker address not allowed' or 'the order signer address has to be the address of the API KEY'">
-          <p>
-            Polymarket's CLOB has a different address registered as
-            your trading signer than the one Delfi auto-derives from
-            your private key. This happens occasionally on accounts
-            that were created via the web with an older session key.
-          </p>
-          <p>
-            Fix: go to{" "}
-            <a
-              href="https://polymarket.com/settings?tab=api-keys"
-              target="_blank"
-              rel="noreferrer"
-            >
-              polymarket.com → Settings → API Keys
-            </a>
-            , generate fresh credentials while logged in with the
-            same wallet whose private key is in Delfi, then paste the
-            three values (api-key, secret, passphrase) into the
-            matching override fields in{" "}
-            <strong>Settings → Connections</strong>. Normally Delfi
-            auto-derives these, so they only need to be set as a
-            manual override.
-          </p>
-        </Guide>
-
         <Guide title="Winning position not auto-redeemed">
           <p>Most likely causes, in order:</p>
           <ul>

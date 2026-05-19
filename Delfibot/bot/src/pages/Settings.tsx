@@ -1000,9 +1000,6 @@ function ConnectionsPanel({
   const [newsapi, setNewsapi] = useState("");
   const [cryptopanic, setCryptopanic] = useState("");
   const [gemini, setGemini] = useState("");
-  const [pmApiKey, setPmApiKey] = useState("");
-  const [pmApiSecret, setPmApiSecret] = useState("");
-  const [pmApiPass, setPmApiPass] = useState("");
   const [pmRelayerKey, setPmRelayerKey] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1019,9 +1016,6 @@ function ConnectionsPanel({
   const hasNewsapi = creds?.has_newsapi_key ?? false;
   const hasCryptopanic = creds?.has_cryptopanic_key ?? false;
   const hasGemini = (creds as Record<string, unknown> | null | undefined)?.has_gemini_key === true;
-  const hasPmApiKey  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_key === true;
-  const hasPmApiSec  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_secret === true;
-  const hasPmApiPass = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_passphrase === true;
   const hasPmRelayerKey = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_relayer_api_key === true;
 
   const save = async (e: React.FormEvent) => {
@@ -1037,9 +1031,6 @@ function ConnectionsPanel({
       if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
       if (cryptopanic.trim()) payload.cryptopanic_key = cryptopanic.trim();
       if (gemini.trim())      payload.gemini_key = gemini.trim();
-      if (pmApiKey.trim())    payload.polymarket_api_key = pmApiKey.trim();
-      if (pmApiSecret.trim()) payload.polymarket_api_secret = pmApiSecret.trim();
-      if (pmApiPass.trim())   payload.polymarket_api_passphrase = pmApiPass.trim();
       if (pmRelayerKey.trim()) payload.polymarket_relayer_api_key = pmRelayerKey.trim();
       if (Object.keys(payload).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
@@ -1052,9 +1043,6 @@ function ConnectionsPanel({
       setNewsapi("");
       setCryptopanic("");
       setGemini("");
-      setPmApiKey("");
-      setPmApiSecret("");
-      setPmApiPass("");
       setPmRelayerKey("");
       setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
@@ -1222,52 +1210,6 @@ function ConnectionsPanel({
             payout: the tokens stay in your CTF balance until you
             click Redeem on the Polymarket site.
           </p>
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket API key (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmApiKey ? "(stored)" : "leave blank to auto-derive"}
-            value={pmApiKey}
-            onChange={(e) => setPmApiKey(e.target.value)}
-          />
-          <p className="form-hint">
-            Normally Delfi derives this automatically from your
-            private key. Use this override only if Positions &rarr;
-            Errors shows &quot;the order signer address has to be the
-            address of the API KEY&quot;. That rejection means
-            Polymarket&apos;s CLOB has a different address authorised
-            as your trading signer (common when the account was first
-            opened via the web with a Magic.link session key). Fix: go
-            to polymarket.com &rarr; Settings &rarr; API Keys, generate
-            fresh credentials for the wallet you pasted into Delfi,
-            then paste the api-key, secret, and passphrase into all
-            three fields here.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket API secret (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmApiSec ? "(stored)" : ""}
-            value={pmApiSecret}
-            onChange={(e) => setPmApiSecret(e.target.value)}
-          />
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket API passphrase (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmApiPass ? "(stored)" : ""}
-            value={pmApiPass}
-            onChange={(e) => setPmApiPass(e.target.value)}
-          />
         </div>
 
         <div className="form-actions">
