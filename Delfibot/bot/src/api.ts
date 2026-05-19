@@ -324,6 +324,28 @@ export interface Credentials {
   has_cryptopanic_key?: boolean;
 }
 
+/** A raw row from the CLOB `/orders` endpoint, surfaced via
+ *  /api/open-orders. These are limit orders currently sitting on the
+ *  Polymarket book - placed by Delfi but not yet filled (or partially
+ *  filled). The Positions page renders these in a read-only sub-tab
+ *  so the user has a single place to see anything tying up capital
+ *  on the book; the reconciler cancels any with zero matched-size
+ *  older than 1 hour. */
+export interface ClobOpenOrder {
+  id?: string;
+  orderID?: string;
+  orderId?: string;
+  market?: string;          // conditionId hex
+  asset_id?: string;        // CTF position token id
+  outcome?: string;         // "Yes"/"No"/"Up"/"Down"/etc
+  side?: string;            // "BUY" / "SELL"
+  price?: number | string;
+  size?: number | string;
+  size_matched?: number | string;
+  created_at?: string | number;
+  expiration?: string | number | null;
+}
+
 export interface PMPosition {
   id: number;
   user_id: string;
@@ -347,6 +369,10 @@ export interface PMPosition {
   expected_resolution_at?: string | null;
   ev_bps?: number | null;
   confidence?: number | null;
+  // Live mark-to-market value of the position (shares * current_bid),
+  // written by the exit-policy job every 60s. NULL on rows whose
+  // market has gone illiquid or in the first 60s after open.
+  current_value_usd?: number | null;
   // Exit-policy fields. NULL on natural settlements.
   // `close_reason` is one of 'take_profit' | 'stop_loss' | 'time_decay'.
   // `counterfactual_pnl_usd` is hold-PnL minus exit-PnL — positive
@@ -689,6 +715,8 @@ export const api = {
   // Live data
   positions:     (limit = 100) =>
     request<{ positions: PMPosition[] }>(`/api/positions?limit=${limit}`),
+  openOrders:    () =>
+    request<{ orders: ClobOpenOrder[] }>("/api/open-orders"),
   events:        (limit = 200) =>
     request<{ events: EventLogRow[] }>(`/api/events?limit=${limit}`),
   evaluations:   (limit = 100) =>

@@ -81,6 +81,13 @@ _STALE_ORDER_AGE_S = 60 * 60
 # bug or a missed close - both worth surfacing to the user.
 _DRIFT_TOLERANCE = 0.10
 
+# Track conditions for which we've already fired a "multi-outcome
+# skipped" alert. Without this, the same untrackable position would
+# trigger a Telegram ping on every 2-minute reconciler tick. Resets
+# when the daemon restarts (intentional: a restart means the user
+# saw nothing in stderr for a while and we want to re-flag).
+_MULTI_OUTCOME_ALERTED: set[str] = set()
+
 
 def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
     """Pull on-chain positions, import any missing ones, cancel stale
@@ -186,13 +193,17 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
                 continue
             side = _outcome_to_side(r)
             if side is None:
-                # Negative-risk multi-outcome market with an outcome
-                # index we don't map cleanly. Log and skip - importing
-                # without a side would corrupt the row.
+                # Negative-risk multi-outcome market. Delfi's
+                # pm_positions.side is CHAR(3) YES/NO and we don't
+                # have a clean mapping for 3+ outcome markets yet.
+                # Log to stderr AND fire a one-shot event_log entry
+                # per cond so the user can spot any exposure that
+                # Delfi can't track.
                 print(f"[pm_reconciler] skipping unmappable outcome "
                       f"for cond={cond_id} outcome="
                       f"{r.get('outcome')!r} idx={r.get('outcomeIndex')!r}",
                       flush=True)
+                _alert_multi_outcome_skip(row=r)
                 continue
             if (cond_id, side) in existing:
                 summary["already"] += 1
@@ -631,6 +642,43 @@ def _check_drift(existing: dict, row: dict, side: str) -> None:
                 "the difference matters for P&L."
             ),
             source="pm_reconciler.drift",
+        )
+    except Exception as exc:
+        print(f"[pm_reconciler] log_event failed: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _alert_multi_outcome_skip(row: dict) -> None:
+    """Fire a user-visible alert the first time we see an unmappable
+    multi-outcome position. Delfi can't track it (pm_positions.side
+    is binary YES/NO), so the user needs to know they have exposure
+    the dashboard won't reflect.
+
+    Deduplicated by conditionId so we don't spam Telegram on every
+    reconciler tick - same market only fires once per daemon
+    incarnation.
+    """
+    cond_id = (row.get("conditionId") or "").lower()
+    if not cond_id or cond_id in _MULTI_OUTCOME_ALERTED:
+        return
+    _MULTI_OUTCOME_ALERTED.add(cond_id)
+    title    = (row.get("title") or "(unknown)")[:80]
+    size     = row.get("size")
+    outcome  = row.get("outcome")
+    try:
+        from db.logger import log_event
+        log_event(
+            event_type="position_untracked",
+            severity=2,
+            description=(
+                f"Polymarket position on '{title}' (outcome: "
+                f"{outcome!r}, size: {size}) cannot be imported into "
+                f"Delfi - it's a multi-outcome / negative-risk market "
+                f"and pm_positions.side only supports binary YES/NO. "
+                f"The position is real on-chain; manage it manually "
+                f"on polymarket.com until multi-outcome support lands."
+            ),
+            source="pm_reconciler.untracked",
         )
     except Exception as exc:
         print(f"[pm_reconciler] log_event failed: {exc}",

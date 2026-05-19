@@ -441,6 +441,7 @@ class LocalAPI:
         app.router.add_get("/api/credentials", self._get_credentials)
         app.router.add_put("/api/credentials", self._put_credentials)
         app.router.add_get("/api/positions",   self._get_positions)
+        app.router.add_get("/api/open-orders", self._get_open_orders)
         app.router.add_get("/api/events",      self._get_events)
         app.router.add_post("/api/bot/start",  self._bot_start)
         app.router.add_post("/api/bot/stop",   self._bot_stop)
@@ -1154,6 +1155,46 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to read positions: {exc}", 500)
         return _ok({"positions": rows})
+
+    async def _get_open_orders(self, _req: web.Request) -> web.Response:
+        """Read-only proxy for CLOB get_open_orders().
+
+        The Positions page surfaces this as an "Open orders" sub-tab
+        so the user can see any unfilled limit orders sitting on the
+        Polymarket book - the same orders the reconciler will cancel
+        if they age past _STALE_ORDER_AGE_S. Returns an empty list if
+        the user has no Polymarket key configured or the CLOB is
+        unreachable; never errors the page.
+        """
+        def _read() -> list[dict]:
+            from engine.user_config import (
+                get_active_polymarket_creds, get_user_config,
+            )
+            from execution.pm_executor import _get_clob_client
+            cfg = get_user_config()
+            creds = get_active_polymarket_creds(cfg)
+            pk = (creds.get("private_key") or "").strip()
+            wallet = (creds.get("wallet_address") or "").strip()
+            if not pk or not wallet:
+                return []
+            try:
+                client = _get_clob_client(wallet, pk)
+                if client is None:
+                    return []
+                orders = client.get_open_orders()  # type: ignore[union-attr]
+            except Exception as exc:
+                print(f"[open_orders] CLOB fetch failed: {exc}",
+                      file=sys.stderr, flush=True)
+                return []
+            return orders if isinstance(orders, list) else []
+
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
+        except Exception as exc:
+            return _err(f"failed to read open orders: {exc}", 500)
+        return _ok({"orders": rows})
 
     async def _get_events(self, req: web.Request) -> web.Response:
         try:

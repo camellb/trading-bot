@@ -300,18 +300,133 @@ def _extract_filled_size(final: dict, resp: dict) -> float:
     return 0.0
 
 
+def _lookup_on_chain_position(
+    *, funder_address: Optional[str], condition_id: Optional[str],
+    side: str,
+) -> Optional[dict]:
+    """Probe Polymarket's data-api for a current position on (condition_id,
+    side) and return the matching row, or None if no such position
+    exists.
+
+    Used by _open_live to close the gap between order placement and
+    fill confirmation: if the CLOB poll says "no fill" but the
+    matcher already landed the trade on-chain, the position is in
+    data-api before the order endpoint catches up. Without this
+    fast-path, the bot would cancel the (already-filled) order, lose
+    the row, and rely on the 2-minute reconciler tick to backfill.
+    """
+    if not funder_address or not condition_id:
+        return None
+    target_cond = condition_id.lower()
+    # Map Delfi's binary YES/NO onto data-api's outcomeIndex 0/1 -
+    # same convention as the reconciler.
+    target_idx  = 0 if side.upper() == "YES" else 1
+    try:
+        import requests
+        r = requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={
+                "user": funder_address,
+                "sizeThreshold": "0.01",
+                "limit": "200",
+            },
+            headers={"User-Agent": "delfibot/1.0 _open_live"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        rows = r.json()
+    except Exception as exc:
+        print(f"[pm_executor] data-api position probe failed: "
+              f"{type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        cid = (row.get("conditionId") or "").lower()
+        idx = row.get("outcomeIndex")
+        size = float(row.get("size") or 0.0)
+        if cid == target_cond and idx == target_idx and size > 0:
+            return row
+    return None
+
+
 def _extract_filled_cost(
     final: dict, resp: dict, filled_shares: float,
-    *, fallback_price: float,
+    *, fallback_price: float, client=None, order_id: Optional[str] = None,
 ) -> float:
     """Pull the ACTUAL collateral spent for the filled shares.
 
-    Same multi-source probing pattern as `_extract_filled_size`.
-    Falls back to `filled_shares * fallback_price` when the CLOB
-    response doesn't include a cost field (most order responses do
-    expose this; the fallback is just belt-and-suspenders so the
-    function never returns 0 on a positive fill).
+    Three sources of truth, tried in order:
+
+    1. The CLOB's per-trade records via `client.get_trades(id=order_id)`.
+       This is the on-chain truth - every match emits a Trade row with
+       its own (price, size). Sum price*size across all trades for the
+       order to get the volume-weighted USDC cost, which exactly
+       matches what hit the wallet. Marketable BUYs frequently fill
+       BELOW the limit price (price improvement), and the bot was
+       previously recording the limit as cost which produced ghost
+       P&L drift in pm_positions (Solana 1AM ET case: DB $3.85,
+       on-chain $2.31).
+
+    2. Inline `fills` array on the order response (some SDK builds
+       echo trades back inline). Same math.
+
+    3. Single-amount fields if the CLOB returned one. Less reliable -
+       some are maker shares, not USDC - but salvages any positive
+       value over the limit-price fallback.
+
+    4. Final fallback: `filled_shares * fallback_price`. Last resort
+       only. Logs a warning so we can spot the case in production;
+       the reconciler's drift detector will alert on the next tick
+       if this row's recorded cost diverges from on-chain.
     """
+    # Source 1: client.get_trades() for the order. Most reliable.
+    if client is not None and order_id:
+        try:
+            from py_clob_client_v2.clob_types import TradeParams  # type: ignore
+            trades = client.get_trades(TradeParams(id=str(order_id)))
+        except Exception as exc:
+            print(f"[pm_executor] get_trades({order_id}) failed: {exc}",
+                  file=sys.stderr)
+            trades = None
+        if isinstance(trades, list) and trades:
+            total = 0.0
+            for t in trades:
+                if not isinstance(t, dict):
+                    continue
+                try:
+                    p = float(t.get("price") or 0)
+                    s = float(t.get("size") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if p > 0 and s > 0:
+                    total += p * s
+            if total > 0:
+                return total
+
+    # Source 2: inline fills array on the order response.
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        fills = src.get("fills") or src.get("trades") or src.get("events")
+        if not isinstance(fills, list):
+            continue
+        total = 0.0
+        for f in fills:
+            if not isinstance(f, dict):
+                continue
+            try:
+                p = float(f.get("price") or 0)
+                s = float(f.get("size") or 0)
+            except (TypeError, ValueError):
+                continue
+            if p > 0 and s > 0:
+                total += p * s
+        if total > 0:
+            return total
+
+    # Source 3: single-amount fields on the order response.
     for src in (final, resp):
         if not isinstance(src, dict):
             continue
@@ -326,7 +441,19 @@ def _extract_filled_cost(
                 continue
             if fv > 0:
                 return fv
+
+    # Source 4: limit-price fallback. This is the bug path - it's the
+    # original limit, not the actual fill. Log so we can spot the case
+    # in production. The reconciler's drift detector will surface a
+    # warning if the limit/fill mismatch persists.
     if filled_shares > 0:
+        print(
+            f"[pm_executor] WARN _extract_filled_cost falling back to "
+            f"limit price for order={order_id!r}; pm_positions.cost_usd "
+            f"may differ from on-chain truth. Drift detector will alert "
+            f"on the next reconciler tick.",
+            file=sys.stderr, flush=True,
+        )
         return filled_shares * float(fallback_price)
     return 0.0
 
@@ -923,6 +1050,17 @@ class PMExecutor:
                 file=sys.stderr,
             )
             return None
+        # Derive the funder address once up front. POSITIONS live on the
+        # funder (the proxy contract for sig_type=1/2 accounts, the EOA
+        # for sig_type=0); we need this address to probe data-api below
+        # when the CLOB fill poll times out. Cached in
+        # get_poly_signer_info so repeated calls are cheap.
+        try:
+            from feeds.polymarket_wallet import get_poly_signer_info
+            _info = get_poly_signer_info(private_key)
+            funder_address: Optional[str] = (_info or {}).get("funder")
+        except Exception:
+            funder_address = None
         if not market.clob_token_ids:
             print(
                 f"[pm_executor] _open_live refused: market {market.id!r} has "
@@ -1179,14 +1317,67 @@ class PMExecutor:
         # that don't exist on-chain (user-reported 2026-05-18:
         # Delfi showed 3 open positions while Polymarket showed only 1).
         filled_shares = _extract_filled_size(final, resp)
-        filled_cost   = _extract_filled_cost(final, resp, filled_shares,
-                                              fallback_price=entry_price)
+        filled_cost   = _extract_filled_cost(
+            final, resp, filled_shares,
+            fallback_price=entry_price,
+            client=client, order_id=str(order_id),
+        )
 
         if filled_shares <= 0:
-            # Zero fill. Cancel the order if it's still on the book and
-            # do NOT persist a position row. The dashboard would
-            # otherwise show a fake "open position" with no on-chain
-            # counterpart.
+            # Zero fill PER THE CLOB POLL. But the CLOB matcher
+            # frequently lands the fill on-chain BEFORE its public
+            # poll endpoint reflects the match. The 2-minute
+            # reconciler safety net catches this eventually, but
+            # the analyst could re-open into the same market in the
+            # meantime. Synchronously check data-api/positions
+            # against this market's conditionId BEFORE cancelling -
+            # if the position is already on-chain, persist it from
+            # the on-chain truth and skip the cancel. Closes the
+            # 2-min reconciler gap to ~zero on this hot path.
+            on_chain = _lookup_on_chain_position(
+                funder_address=funder_address,
+                condition_id=getattr(market, "condition_id", None),
+                side=decision.side,
+            )
+            if on_chain is not None:
+                print(
+                    f"[pm_executor][live] zero-fill per poll but data-api "
+                    f"shows fill landed on-chain "
+                    f"(size={on_chain.get('size')}, "
+                    f"avg=${on_chain.get('avgPrice')}). Persisting from "
+                    f"on-chain truth instead of cancelling.",
+                    flush=True,
+                )
+                from dataclasses import replace as _replace
+                onchain_shares = float(on_chain.get("size") or 0.0)
+                onchain_avg    = float(on_chain.get("avgPrice") or 0.0)
+                try:
+                    decision = _replace(
+                        decision,
+                        shares=onchain_shares,
+                        stake_usd=onchain_shares * onchain_avg,
+                        entry_price=onchain_avg,
+                    )
+                except TypeError:
+                    try:
+                        decision.shares     = onchain_shares  # type: ignore[misc]
+                        decision.stake_usd  = onchain_shares * onchain_avg  # type: ignore[misc]
+                        decision.entry_price = onchain_avg  # type: ignore[misc]
+                    except Exception:
+                        pass
+                return self._persist_live_position(
+                    market=market, decision=decision, claude_p=claude_p,
+                    prediction_id=prediction_id,
+                    reasoning=reasoning, category=category,
+                    market_archetype=market_archetype,
+                    clob_order_id=str(order_id),
+                    tx_hash=None,
+                )
+
+            # Genuine zero-fill (or the CLOB really didn't match).
+            # Cancel the order if it's still on the book and do NOT
+            # persist a position row. The dashboard would otherwise
+            # show a fake "open position" with no on-chain counterpart.
             try:
                 if final_status not in (
                     "CANCELED", "CANCELLED", "REJECTED",
