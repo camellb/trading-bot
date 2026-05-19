@@ -891,6 +891,7 @@ class PMAnalyst:
 
         bankroll_after = 0.0
         equity_after: float = 0.0
+        locked_capital_after: float = float(decision.stake_usd)
         try:
             bankroll_after = float(executor.get_bankroll())
             # Total equity = leftover cash + cost of every open
@@ -907,7 +908,8 @@ class PMAnalyst:
                     "  AND status = 'open'"
                 ), {"uid": user_id,
                     "m": executor.trading_mode}).scalar() or 0.0
-            equity_after = bankroll_after + float(_open_cost)
+            locked_capital_after = float(_open_cost)
+            equity_after = bankroll_after + locked_capital_after
         except Exception:
             equity_after = bankroll_after + float(decision.stake_usd)
         market_pct = decision.p_win * 100.0
@@ -954,6 +956,7 @@ class PMAnalyst:
                 confidence=float(evaluation.confidence or 0.0),
                 bankroll_after=bankroll_after,
                 equity_after=equity_after,
+                locked_capital=locked_capital_after,
                 mode=mode,
             )
         except Exception as exc:

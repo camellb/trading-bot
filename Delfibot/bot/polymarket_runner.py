@@ -270,6 +270,10 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                     stats = stats_executor.get_portfolio_stats()
                     bankroll_after = float(stats.get("bankroll", 0.0))
                     equity_after   = float(stats.get("equity",   bankroll_after))
+                    locked_capital = float(
+                        stats.get("locked_capital", stats.get("open_cost", 0.0))
+                        or 0.0
+                    )
                     cost = float(p.get("cost_usd", 0.0) or 0.0)
                     roi = (pnl / cost) if cost > 0 else 0.0
                     common = dict(
@@ -280,6 +284,7 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                         roi=roi,
                         bankroll=bankroll_after,
                         equity=equity_after,
+                        locked_capital=locked_capital,
                         mode=p.get("mode") or "simulation",
                     )
                     if outcome == side:

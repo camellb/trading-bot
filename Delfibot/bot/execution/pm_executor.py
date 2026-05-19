@@ -598,12 +598,36 @@ class PMExecutor:
                   file=sys.stderr)
             open_n = settled_n = wins = skipped_n = 0
             open_cost = realized = 0.0
-        bankroll = float(starting) + realized - open_cost
+        # SINGLE source of truth for bankroll + equity, used by every
+        # downstream surface (Dashboard /api/summary, settlement
+        # Telegram messages via polymarket_runner, learning-cycle
+        # bookkeeping). Two formulas used to live here; they disagreed
+        # in live mode and produced "$6.34 Balance" on a WIN message
+        # while the new-position message ten seconds earlier said
+        # "$15.30 Leftover cash" against the same wallet.
+        #
+        # The unification:
+        #   bankroll = self.get_bankroll()
+        #     LIVE: real total wallet at funder (pUSD + USDC.e), via
+        #           the cached probe in feeds.polymarket_wallet.
+        #     SIM : DB formula (starting_cash + sum realized - sum open).
+        #   equity   = bankroll + open_cost
+        #     Total wealth = spendable cash + cost basis of every
+        #     open position. Matches the Dashboard "Total equity"
+        #     tile and the new_position message's "Total equity".
+        #
+        # The old "equity = starting + realized" formula (which
+        # *excluded* open exposure) is dropped. It was incoherent: a
+        # $100 starting bankroll with $50 in open positions and no
+        # realized P&L showed equity=$100, hiding the $50 at risk.
+        bankroll = float(self.get_bankroll())
+        equity   = bankroll + open_cost
         return {
             "mode":            self.mode,
             "starting_cash":   starting,
             "bankroll":        bankroll,
-            "equity":          float(starting) + realized,  # excludes open exposure
+            "equity":          equity,
+            "locked_capital":  open_cost,  # user-facing alias for open_cost
             "open_positions":  open_n,
             "open_cost":       open_cost,
             "settled_total":   settled_n,
