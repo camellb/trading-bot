@@ -1895,6 +1895,25 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
 
 .form-row { display: flex; flex-direction: column; gap: 20px; max-width: 640px; }
 .form-field { display: flex; flex-direction: column; }
+
+/* Dense input grid used on the Risk page so numeric/percent fields fill
+   the panel width instead of clumping in the left half. Auto-fit with a
+   220px minimum gracefully degrades from 3-col -> 2-col -> 1-col as the
+   panel narrows. The .risk-grid-full child opts out (spans every
+   column) so toggles/descriptions can sit full-bleed across the grid. */
+.risk-grid {
+  display: grid;
+  gap: 18px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: start;
+}
+.risk-grid-3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.risk-grid-2 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.risk-grid-full { grid-column: 1 / -1; }
+@media (min-width: 1100px) {
+  .risk-grid-3 { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
+  .risk-grid-2 { grid-template-columns: repeat(2, minmax(240px, 1fr)); }
+}
 .form-field > label {
   display: block;
   font-family: var(--font-mono);

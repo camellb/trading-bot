@@ -237,7 +237,7 @@ function ExitPolicyPanel({
               disabled={disabled}
             />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
+          <div className="risk-grid risk-grid-2">
             <PercentField
               label="Take-profit threshold" step="1"
               fractionRange={BOUNDS.take_profit_threshold_pct}
@@ -258,7 +258,7 @@ function ExitPolicyPanel({
               disabled={disabled}
             />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
+          <div className="risk-grid risk-grid-2">
             <PercentField
               label="Stop-loss threshold (loss %)" step="1"
               fractionRange={BOUNDS.stop_loss_threshold_pct}
@@ -286,7 +286,7 @@ function ExitPolicyPanel({
               disabled={disabled}
             />
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
+          <div className="risk-grid risk-grid-2">
             <NumField
               label="Max hours open" step="1"
               range={BOUNDS.time_decay_max_hours}
@@ -305,7 +305,7 @@ function ExitPolicyPanel({
 
         <div className="form-divider" style={{ marginTop: 18, opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
           <h3 className="panel-subtitle" style={{ marginBottom: 8 }}>Safety floor</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
+          <div className="risk-grid risk-grid-2">
             <NumField
               label="Skip exits when market resolves in (minutes)" step="1"
               range={BOUNDS.exit_min_time_to_resolution_minutes}
@@ -492,7 +492,7 @@ function ResolutionWindowPanel({
         at 0 means no constraint on that side.
       </p>
       <form onSubmit={save}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
+        <div className="risk-grid risk-grid-2">
           <NumField
             label="Minimum days to resolution"
             step="1"
@@ -624,7 +624,7 @@ function RiskPanel({
         crossed.
       </p>
       <form onSubmit={saveRisk}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
+        <div className="risk-grid risk-grid-3">
           <PercentField
             label="Base stake" step="0.1"
             fractionRange={BOUNDS.base_stake_pct}
@@ -643,14 +643,13 @@ function RiskPanel({
                 : "Hard cap is OFF (default). Sizer bumps each live order to whatever Polymarket actually accepts, even if that exceeds this number. Turn ON when bankroll is large enough that you want a safety cap on the per-trade size."
             }
           />
-          <div style={{ gridColumn: "1 / -1" }}>
-            <ToggleRow
-              label="Enforce max stake as a hard cap"
-              description="Off: bot bumps each live order to Polymarket's $1-and-5-share platform minimum, even when the bumped stake exceeds this percentage of bankroll. Use this at small live bankrolls so the bot can trade at all. On: bot strictly respects the cap and skips any market whose 5-share minimum exceeds bankroll × max-stake-pct."
-              checked={risk.max_stake_pct_enabled}
-              onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
-            />
-          </div>
+          <PercentField
+            label="Dry powder reserve" step="1"
+            fractionRange={BOUNDS.dry_powder_reserve_pct}
+            fractionValue={risk.dry_powder_reserve_pct}
+            onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
+            note="Capital held back from new entries. Keeps a buffer for fees and slippage on exits."
+          />
           <PercentField
             label="Daily loss limit" step="1"
             fractionRange={BOUNDS.daily_loss_limit_pct}
@@ -675,12 +674,14 @@ function RiskPanel({
             value={risk.streak_cooldown_losses}
             onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
           />
-          <PercentField
-            label="Dry powder reserve" step="1"
-            fractionRange={BOUNDS.dry_powder_reserve_pct}
-            fractionValue={risk.dry_powder_reserve_pct}
-            onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
-          />
+          <div className="risk-grid-full">
+            <ToggleRow
+              label="Enforce max stake as a hard cap"
+              description="Off: bot bumps each live order to Polymarket's $1-and-5-share platform minimum, even when the bumped stake exceeds this percentage of bankroll. Use this at small live bankrolls so the bot can trade at all. On: bot strictly respects the cap and skips any market whose 5-share minimum exceeds bankroll × max-stake-pct."
+              checked={risk.max_stake_pct_enabled}
+              onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
+            />
+          </div>
         </div>
         <div className="form-actions" style={{ marginTop: 18 }}>
           <button type="submit" className="btn small" disabled={busy}>
