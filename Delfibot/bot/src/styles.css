@@ -1865,6 +1865,14 @@ select {
   transition: border-color var(--dur-quick) var(--ease);
   width: 100%;
 }
+
+/* Numeric inputs (Capital, Risk thresholds, multipliers, etc.) hold
+   short values - typically 1 to 7 chars. The shared rule above sets
+   width:100% which made them sprawl across the full panel on wide
+   layouts (Settings -> Capital sat at ~1200px wide for a 4-digit
+   "1000"). Cap at 240px so the input matches the value, while
+   keeping text/password inputs full-width for credential pastes. */
+input[type="number"] { max-width: 240px; }
 input:focus, textarea:focus, select:focus { border-color: var(--teal); }
 textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono); font-size: 13px; }
 input::placeholder, textarea::placeholder { color: var(--vellum-40); }
