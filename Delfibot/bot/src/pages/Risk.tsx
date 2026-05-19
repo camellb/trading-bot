@@ -761,7 +761,7 @@ function PercentField({
   return (
     <div className="form-field">
       <label>{label}</label>
-      <div style={{ position: "relative" }}>
+      <div style={{ position: "relative", maxWidth: 240 }}>
         <input
           type="number"
           step={step}
@@ -780,6 +780,9 @@ function PercentField({
             const fraction = Math.round(n / 100 * 1_000_000) / 1_000_000;
             onChangeFraction(String(fraction));
           }}
+          // paddingRight leaves room for the absolute-positioned "%"
+          // suffix inside the input. The native spinner buttons are
+          // hidden globally in styles.css so 28px is enough clearance.
           style={{ paddingRight: 28 }}
         />
         <span style={{
