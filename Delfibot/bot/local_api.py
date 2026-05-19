@@ -644,7 +644,7 @@ class LocalAPI:
         # the GUI's 30s splash timeout fires and the user sees
         # "Delfi could not start". Offload to the default thread pool.
         cfg = await asyncio.get_event_loop().run_in_executor(
-            None, get_user_config,
+            self._api_executor, get_user_config,
         )
         # `can_trade_live` is gated on `mode == 'live'` (correct for
         # the sizer's "am I actually live right now" check) but that
@@ -674,7 +674,7 @@ class LocalAPI:
         try:
             from engine.pm_analyst import is_scan_idle_for_bankroll
             if await asyncio.get_event_loop().run_in_executor(
-                None, is_scan_idle_for_bankroll,
+                self._api_executor, is_scan_idle_for_bankroll,
             ):
                 idle_reason = "insufficient_bankroll"
         except Exception:
@@ -701,7 +701,7 @@ class LocalAPI:
 
     async def _get_config(self, _req: web.Request) -> web.Response:
         cfg = await asyncio.get_event_loop().run_in_executor(
-            None, get_user_config,
+            self._api_executor, get_user_config,
         )
         return _ok(_config_to_dict(cfg))
 
@@ -792,7 +792,7 @@ class LocalAPI:
         # config-update response should not block on a third-party
         # HTTPS call.
         try:
-            asyncio.get_event_loop().run_in_executor(None, _send)
+            asyncio.get_event_loop().run_in_executor(self._api_executor, _send)
         except Exception as exc:
             print(
                 f"[local_api] could not dispatch telegram notify: {exc}",
@@ -1471,7 +1471,7 @@ class LocalAPI:
         )
         try:
             report = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: calibration.get_report(
                     source=None if source == "all" else source,
                     since_days=since_int,
@@ -1542,7 +1542,7 @@ class LocalAPI:
         include_snoozed = req.query.get("include_snoozed", "1") != "0"
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: list_pending_suggestions(
                     DEFAULT_USER_ID, include_snoozed=include_snoozed,
                 ),
@@ -1565,7 +1565,7 @@ class LocalAPI:
         limit = max(1, min(200, limit))
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: list_resolved_suggestions(DEFAULT_USER_ID, limit=limit),
             )
         except Exception as exc:
@@ -1631,7 +1631,7 @@ class LocalAPI:
         limit = max(1, min(limit, 50))
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: list_learning_reports(
                     user_id=DEFAULT_USER_ID, limit=limit, include_admin=False,
                 ),
