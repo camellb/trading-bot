@@ -422,9 +422,10 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
     # Classifier fallback for category + archetype when no eval row
     # exists. classify_archetype is the same pure function the bot
     # runs on every market during scan, so the derived label matches
-    # what a bot-opened position would have. category mirrors the
-    # archetype label here because the UI only cares about a short
-    # human-readable tag in the cell.
+    # what a bot-opened position would have. Archetype is the fine-
+    # grained label (crypto_short, sports_other, etc.); category is
+    # the broad human-facing family (crypto, sports, politics, ...)
+    # that the UI's Category column expects.
     if not eval_archetype or not eval_category:
         try:
             from engine.archetype_classifier import classify_archetype
@@ -432,7 +433,7 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
             if not eval_archetype:
                 eval_archetype = derived
             if not eval_category:
-                eval_category = derived
+                eval_category = _archetype_to_category(derived)
         except Exception as exc:
             print(f"[pm_reconciler] classifier fallback failed for "
                   f"cond={cond_id}: {type(exc).__name__}: {exc}",
@@ -536,6 +537,49 @@ def _parse_end_date(s: Optional[str]):
 
 def _opposite(side: str) -> str:
     return "NO" if side.upper() == "YES" else "YES"
+
+
+# Broad-family category derivation from the bot's fine-grained
+# archetype taxonomy. The Positions page's Category column expects
+# a short human-readable family ("crypto", "sports", "politics", ...)
+# not the internal sub-tier label ("crypto_short", "sports_other"...).
+# When the reconciler can't pull a category from a matching
+# evaluation, classify_archetype gives us the archetype and this
+# mapping collapses it into the user-facing family.
+_ARCHETYPE_FAMILY: dict[str, str] = {
+    # crypto
+    "crypto":            "crypto",
+    "crypto_short":      "crypto",
+    "price_threshold":   "crypto",
+    # sports
+    "basketball":        "sports",
+    "baseball":          "sports",
+    "football":          "sports",
+    "soccer":            "sports",
+    "hockey":            "sports",
+    "tennis":            "sports",
+    "cricket":           "sports",
+    "esports":           "sports",
+    "sports_other":      "sports",
+    # politics / geo
+    "election":          "politics",
+    "policy_event":      "politics",
+    "geopolitical_event": "geopolitics",
+    # misc
+    "activity_count":    "other",
+    "binary_event":      "other",
+}
+
+
+def _archetype_to_category(archetype: Optional[str]) -> Optional[str]:
+    """Collapse a fine-grained archetype into the broad category the
+    UI Category column expects. Unknown labels (e.g. a new archetype
+    added since this map was written) fall through unchanged so
+    nothing gets silently mislabelled - the user will spot the new
+    label in the column and we can update the map."""
+    if not archetype:
+        return None
+    return _ARCHETYPE_FAMILY.get(archetype, archetype)
 
 
 def _check_drift(existing: dict, row: dict, side: str) -> None:
