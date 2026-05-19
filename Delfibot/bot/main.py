@@ -876,6 +876,29 @@ async def main() -> None:
             print(f"[delfi] legacy-balance activator failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_pm_reconcile():
+        """Pull on-chain Polymarket positions, import any missing ones.
+
+        Safety net for the executor's poll-timeout class of bug: when
+        `_open_live`'s fill poll times out before the CLOB matcher
+        broadcasts the fill, the order STILL fills on-chain but no
+        pm_positions row gets written. The user then sees fewer
+        positions in Delfi than on Polymarket. The reconciler walks
+        data-api/positions every 2 minutes, looks each entry up by
+        (condition_id, side), and INSERTs anything missing using the
+        on-chain truth. Conservative: only ADDS rows, never deletes
+        or modifies. Cheap when in sync (single HTTPS GET + a
+        SELECT-and-set diff).
+        """
+        try:
+            from engine.pm_reconciler import reconcile_positions
+            reconcile_positions()
+            proc_health.record_job_ok("pm_reconcile")
+        except Exception as exc:
+            proc_health.record_job_error("pm_reconcile")
+            print(f"[delfi] reconciler failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_redeem_sweeper():
         """Retry on-chain redemption for live winners that never
         completed their first redeem attempt.
@@ -1022,6 +1045,28 @@ async def main() -> None:
         # The user's money is sitting at the CTF contract; we don't
         # want APScheduler dropping fires just because the threadpool
         # was busy with analyst LLM work.
+        misfire_grace_time=None,
+    )
+    scheduler.add_job(
+        _run_pm_reconcile, IntervalTrigger(minutes=2),
+        id="pm_reconcile",
+        # First fire 45s after boot so:
+        #  - the live-balance probe (15s offset) has already cached
+        #    the funder address, so reconciler's get_poly_signer_info
+        #    is a free cache hit
+        #  - the dashboard's first poll has already rendered, so any
+        #    backfill happens with the user already looking
+        # 2-minute cadence is fast enough that a missed-fill position
+        # appears within ~2 min of the fill landing, slow enough that
+        # data-api isn't hammered.
+        next_run_time=now_utc + timedelta(seconds=45),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        # misfire_grace_time=None: missing a tick (e.g. busy threadpool)
+        # would mean a freshly-filled position sits invisible in Delfi
+        # for an extra 2 min and the analyst could double-open into
+        # the same market. Like pm_redeem_sweep, this is a
+        # 'must eventually happen' job.
         misfire_grace_time=None,
     )
     scheduler.add_job(
