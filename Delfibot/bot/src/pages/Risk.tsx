@@ -630,7 +630,7 @@ function RiskPanel({
             fractionRange={BOUNDS.base_stake_pct}
             fractionValue={risk.base_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
-            note="Polymarket's per-order minimum is $1, with a 5-share size floor. Live trades below $1 are bumped to $1; trades that would buy less than 5 shares (ask > $0.20 with a $1 stake) are skipped instead of bumped higher."
+            note="Stake per trade. Polymarket minimum is $1 / 5 shares."
           />
           <PercentField
             label="Max stake" step="0.1"
@@ -639,8 +639,8 @@ function RiskPanel({
             onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
             note={
               risk.max_stake_pct_enabled
-                ? "Hard per-trade cap is ON. Markets where Polymarket's $1-and-5-share floor exceeds this cap will be skipped."
-                : "Hard cap is OFF (default). Sizer bumps each live order to whatever Polymarket actually accepts, even if that exceeds this number. Turn ON when bankroll is large enough that you want a safety cap on the per-trade size."
+                ? "Hard cap ON. Trades above this are skipped."
+                : "Hard cap OFF. Sizer may bump above this to hit the $1 / 5-share floor."
             }
           />
           <PercentField
@@ -648,7 +648,7 @@ function RiskPanel({
             fractionRange={BOUNDS.dry_powder_reserve_pct}
             fractionValue={risk.dry_powder_reserve_pct}
             onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
-            note="Capital held back from new entries. Keeps a buffer for fees and slippage on exits."
+            note="Held back for fees and exit slippage."
           />
           <PercentField
             label="Daily loss limit" step="1"
@@ -677,7 +677,7 @@ function RiskPanel({
           <div className="risk-grid-full">
             <ToggleRow
               label="Enforce max stake as a hard cap"
-              description="Off: bot bumps each live order to Polymarket's $1-and-5-share platform minimum, even when the bumped stake exceeds this percentage of bankroll. Use this at small live bankrolls so the bot can trade at all. On: bot strictly respects the cap and skips any market whose 5-share minimum exceeds bankroll × max-stake-pct."
+              description="Off: sizer bumps to Polymarket's $1 / 5-share floor when needed. On: trades above max stake are skipped."
               checked={risk.max_stake_pct_enabled}
               onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
             />
