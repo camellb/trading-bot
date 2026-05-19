@@ -657,6 +657,31 @@ class LocalAPI:
             cfg.wallet_address
             and _keyring_get(KEYRING_POLYMARKET_KEY) is not None
         )
+
+        # idle_reason: when the scan is being skipped to save LLM tokens
+        # because the user has nothing to spend, surface that on the
+        # dashboard so they see a clear "the bot paused itself, here's
+        # why" message instead of silent inaction. Today the only
+        # programmatic idle state is insufficient_bankroll; other halts
+        # (bot_enabled=False, /pause, circuit breaker) are reflected by
+        # the existing bot_enabled / ready_to_trade fields.
+        #
+        # Cheap because the wallet probe behind it is cached with a 60s
+        # TTL; offloaded to the executor anyway so a cold-cache call
+        # can't block the aiohttp event loop.
+        idle_reason: Optional[str] = None
+        try:
+            from engine.pm_analyst import is_scan_idle_for_bankroll
+            if await asyncio.get_event_loop().run_in_executor(
+                None, is_scan_idle_for_bankroll,
+            ):
+                idle_reason = "insufficient_bankroll"
+        except Exception:
+            # Fail-quiet: idle_reason stays None and the dashboard
+            # shows no banner. The scan gate itself is the source of
+            # truth; this is just a UI hint.
+            pass
+
         return _ok({
             "mode": cfg.mode,
             "bot_enabled": bool(getattr(cfg, "bot_enabled", False)),
@@ -666,6 +691,7 @@ class LocalAPI:
             "is_onboarded": cfg.is_onboarded,
             "can_trade_live": cfg.can_trade_live,
             "live_creds_ready": live_creds_ready,
+            "idle_reason": idle_reason,
             "uptime_s": proc_health.uptime_seconds,
             "started_at": (proc_health.start_time.isoformat()
                            if proc_health.start_time else None),

@@ -260,6 +260,13 @@ export interface BotState {
    *  mode toggle when the user is currently in simulation. Older
    *  sidecars don't surface it; the UI defaults missing to false. */
   live_creds_ready?: boolean;
+  /** Programmatic-pause reason, if any. Today the only value is
+   *  `"insufficient_bankroll"` - set when the scan gate halts the
+   *  Claude evaluation loop because the user has nothing to spend.
+   *  null when the bot is scanning normally. Other paused states
+   *  (manual /pause, bot_enabled=false, circuit breakers) are
+   *  reflected by existing fields and do NOT populate this. */
+  idle_reason?: string | null;
   uptime_s: number;
   started_at: string | null;
   error_count: number;

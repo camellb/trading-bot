@@ -45,7 +45,9 @@ from engine.user_config import (
 )
 from db.logger import log_event
 from execution.pm_executor import PMExecutor
-from execution.pm_sizer import size_position, SizingDecision
+from execution.pm_sizer import (
+    size_position, SizingDecision, POLYMARKET_MIN_ORDER_USD,
+)
 from feeds.polymarket_feed import PolymarketFeed, PolyMarket
 from research.fetcher import fetch_research, ResearchBundle
 
@@ -60,6 +62,120 @@ SOURCE = "polymarket"
 # not a critical event the user needs to see every time.
 _POLYMARKET_MIN_SKIP_NOTIFIED: set = set()
 
+
+# ─── Bankroll precondition gate ───────────────────────────────────────────
+#
+# Halt the scan entirely when the user can't afford to place even a
+# minimum-size bet. Calling Claude on markets we couldn't trade on is
+# pure waste on the user's LLM bill (the user pays for tokens).
+#
+# Threshold = POLYMARKET_MIN_ORDER_USD ($1) — the absolute platform
+# floor. Any deployable cash above this can theoretically buy something
+# on a longshot market (5 shares × $0.20 = $1.00). Below this, no bet
+# can pass Polymarket's size check regardless of which market we look
+# at. Pre-Claude.
+#
+# Recovery is automatic: the 60s `pm_balance_refresh` job keeps the
+# cached wallet probe fresh; the next scan tick re-checks and resumes
+# as soon as a deposit lands or an open position settles back to cash.
+#
+# Same rule applies in simulation: LLM tokens cost the same in both
+# modes, so a $0 sim bankroll halts scanning identically.
+#
+# Flag persists in-process only. Resets on daemon restart, which is
+# acceptable: the alert is informational, not critical.
+
+_bankroll_pause_announced: bool = False
+
+
+def _user_deployable_cash(user_id: str) -> Optional[tuple[float, float]]:
+    """Return ``(bankroll, deployable)`` for ``user_id``, or None on error.
+
+    ``deployable = bankroll * (1 - dry_powder_reserve_pct)``.
+
+    Open positions are already netted by `executor.get_bankroll()` in
+    both live (wallet probe reflects on-chain spent collateral) and
+    simulation (DB formula subtracts open cost).
+    """
+    try:
+        cfg = get_user_config(user_id)
+        exec_ = PMExecutor(user_id)
+        if not exec_.ready:
+            return None
+        bankroll = float(exec_.get_bankroll())
+        reserve_pct = float(getattr(cfg, "dry_powder_reserve_pct", 0.0) or 0.0)
+        deployable = bankroll * max(0.0, 1.0 - reserve_pct)
+        return bankroll, deployable
+    except Exception as exc:
+        print(
+            f"[pm_analyst] deployable probe failed for {user_id}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def is_scan_idle_for_bankroll(user_id: str = "local") -> bool:
+    """True iff `user_id` is currently below the platform-minimum
+    deployable floor.
+
+    Used by:
+      * scan_and_analyze   as the gate that skips per-market LLM work.
+      * local_api._state   to surface `idle_reason` on the dashboard.
+
+    Cheap: the wallet probe is cached with a 60s TTL, so this is a
+    dict lookup in steady state. Fail-open on any error (caller treats
+    'unknown' as 'not idle' so the scan still runs and the downstream
+    sizer remains the source of truth).
+    """
+    try:
+        cfg = get_user_config(user_id)
+    except Exception:
+        return False
+    if not getattr(cfg, "bot_enabled", False):
+        # Different state entirely (manually paused / not onboarded).
+        # The dashboard surfaces those separately.
+        return False
+    pair = _user_deployable_cash(user_id)
+    if pair is None:
+        return False
+    _, deployable = pair
+    return deployable < POLYMARKET_MIN_ORDER_USD
+
+
+def _maybe_broadcast_bankroll_pause(
+    user_id: str, bankroll: float, deployable: float,
+) -> None:
+    """One-shot Telegram alert on the active→paused transition.
+
+    Subsequent paused scans no-op until the flag is reset by a
+    resume (via `_reset_bankroll_pause_announcement`).
+    """
+    global _bankroll_pause_announced
+    if _bankroll_pause_announced:
+        return
+    _bankroll_pause_announced = True
+    try:
+        from feeds.telegram_notifier import notify
+        notify(
+            "💤 Evaluator paused to save tokens. Your available cash "
+            "is below the minimum needed to place a bet. Bot will "
+            "resume automatically when a position closes or you top "
+            "up your wallet.",
+            user_id=user_id,
+        )
+    except Exception as exc:
+        print(
+            f"[pm_analyst] bankroll-pause telegram failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _reset_bankroll_pause_announcement() -> None:
+    """Called every time a scan actually runs (gate passes). Lets the
+    next active→paused transition re-broadcast."""
+    global _bankroll_pause_announced
+    _bankroll_pause_announced = False
 
 
 @dataclass
@@ -467,6 +583,54 @@ class PMAnalyst:
                 "no_trade": 0, "skipped": 0,
                 "skip_reason": "bot_disabled",
             }
+
+        # Bankroll precondition: if NO bot-enabled user has deployable
+        # cash above the platform minimum, halt the entire scan. Calling
+        # Claude on markets we can't trade is pure spend on the user's
+        # LLM bill. See the module-level docstring for the full rationale.
+        bankroll_summaries: list[tuple[str, float, float]] = []
+        any_can_trade = False
+        for _uid in _uids:
+            try:
+                if not get_user_config(_uid).bot_enabled:
+                    continue
+            except Exception:
+                continue
+            pair = _user_deployable_cash(_uid)
+            if pair is None:
+                # Fail-open: if we can't read this user's bankroll we let
+                # the scan run. The sizer's per-market check remains the
+                # source of truth.
+                any_can_trade = True
+                continue
+            bankroll, deployable = pair
+            bankroll_summaries.append((_uid, bankroll, deployable))
+            if deployable >= POLYMARKET_MIN_ORDER_USD:
+                any_can_trade = True
+
+        if not any_can_trade and bankroll_summaries:
+            # Fire one Telegram per active→paused transition (per user).
+            for _uid, _bk, _dep in bankroll_summaries:
+                _maybe_broadcast_bankroll_pause(_uid, _bk, _dep)
+            _summary_line = " | ".join(
+                f"{u}: bankroll=${b:.2f} deployable=${d:.2f}"
+                for u, b, d in bankroll_summaries
+            )
+            print(
+                f"[pm_analyst] scan halted: insufficient bankroll. "
+                f"{_summary_line}",
+                flush=True,
+            )
+            return {
+                "fetched": 0, "analyzed": 0, "opened": 0,
+                "no_trade": 0, "skipped": 0,
+                "skip_reason": "insufficient_bankroll",
+            }
+
+        # Scan is going to run: reset the pause-announce flag so the
+        # next active→paused transition re-broadcasts.
+        _reset_bankroll_pause_announcement()
+
         if _uids:
             _ucfg = get_user_config(_uids[0])
             user_min = _ucfg.min_days_to_resolution

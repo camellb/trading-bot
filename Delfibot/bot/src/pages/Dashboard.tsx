@@ -226,6 +226,36 @@ export default function Dashboard({ state, goto }: Props) {
         <div className="error">{error}</div>
       )}
 
+      {state?.idle_reason === "insufficient_bankroll" && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 14px",
+            margin: "0 0 14px",
+            borderRadius: 8,
+            background: "rgba(120, 180, 220, 0.06)",
+            border: "1px solid rgba(120, 180, 220, 0.22)",
+            color: "var(--vellum-90, #e8e6e1)",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{ fontSize: 16, opacity: 0.8 }}
+          >
+            💤
+          </span>
+          <span>
+            Evaluator paused to save tokens. Available cash is below
+            the minimum for an order. The bot will resume automatically
+            when a position closes or you top up your wallet.
+          </span>
+        </div>
+      )}
+
       <DashHero
         mode={mode}
         bankroll={bankroll}
