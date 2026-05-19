@@ -1191,7 +1191,18 @@ class PMExecutor:
                 if final_status not in (
                     "CANCELED", "CANCELLED", "REJECTED",
                 ):
-                    client.cancel_order(str(order_id))
+                    # py-clob-client-v2 has two cancel APIs:
+                    #   cancel_order(payload: OrderPayload) - takes an
+                    #     object with .orderID; raises
+                    #     "'str' object has no attribute 'orderID'"
+                    #     when passed a bare hash string.
+                    #   cancel_orders(order_hashes: list[str]) - takes
+                    #     a list of order-hash strings, which is what
+                    #     we have here.
+                    # Use the plural form. The earlier single-form call
+                    # was throwing on every zero-fill order, leaving
+                    # them live on Polymarket's order book forever.
+                    client.cancel_orders([str(order_id)])
             except Exception as exc:
                 print(
                     f"[pm_executor] _open_live: cancel of order "
