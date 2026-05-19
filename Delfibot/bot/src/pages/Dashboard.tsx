@@ -702,14 +702,15 @@ function buildRisk(
   const dailyLoss = Math.max(0, -((summary?.realized_pnl ?? 0)));
   const dailyCap = Math.max(1, bankroll * (config.daily_loss_limit_pct ?? 0.10));
   const ddCapPct = (config.drawdown_halt_pct ?? 0.40) * 100;
-  // Gross exposure cap is a HARD limit, not a moving one. Computed
-  // off starting cash * (1 - dry_powder_reserve) so it doesn't shrink
-  // as positions accumulate. Matches the risk_manager check that
-  // halts new trades when open_cost crosses this cap.
-  const exposureCap = Math.max(
-    1,
-    starting * Math.max(0, 1 - (config.dry_powder_reserve_pct ?? 0.20)),
-  );
+  // Gross exposure is "how much of my money is currently at risk":
+  // open-position cost over total equity (bankroll + open_cost).
+  // At 100% every dollar is tied up in open positions. Falls back to
+  // bankroll+exposure if `summary.equity` is missing on older
+  // sidecars.
+  const totalEquity = summary?.equity != null
+    ? Number(summary.equity)
+    : bankroll + exposure;
+  const exposureCap = Math.max(1, totalEquity);
   return {
     dailyLoss: { used: Math.round(dailyLoss), cap: Math.round(dailyCap), label: "Daily loss cap" },
     drawdown:  { used: +ddPct.toFixed(1), cap: +ddCapPct.toFixed(0), label: "Drawdown" },
