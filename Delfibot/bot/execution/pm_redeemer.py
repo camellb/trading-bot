@@ -485,12 +485,14 @@ def redeem_winning_position(
     if gasless_result is not None:
         return gasless_result  # gasless succeeded or terminally failed
 
-    # Direct-RPC path: the funder (wallet) is the smart contract
-    # proxy that holds the tokens, not the EOA. We don't require
-    # acct.address == wallet because for V2 sig_type=3 the EOA signs
-    # but the proxy holds. Previous strict equality check was a
-    # leftover from V1 EOA-trades and broke direct-RPC redeems for
-    # every V2 user.
+    # Direct-RPC path. NOTE: this path only works for sig_type=0
+    # (raw-EOA) accounts. For sig_type=1 (POLY_PROXY) and sig_type=3
+    # (V2 DepositWallet) accounts the CTF tokens live at the funder,
+    # not the EOA, so calling redeemPositions from the EOA would
+    # burn zero tokens and pay out zero, the same payout=0 failure mode
+    # the verifier catches. The relayer path above is what handles
+    # those accounts; this fallback only succeeds for the rare
+    # MetaMask-direct user.
 
     # Try each RPC URL in turn. The "build + send" step is the one
     # that 401s on gated RPCs; reads (get_transaction_count, gas
@@ -833,15 +835,44 @@ def _try_gasless_redeem_via_relayer_api_key(
         )
         return None
 
+    # Resolve the user's POLY_PROXY / DepositWallet ("funder").
+    #
+    # The relayer's wallet-registry is keyed by the funder address
+    # (the smart-wallet contract that actually holds the CTF tokens),
+    # NOT by the signing EOA. Submitting with the raw EOA produces a
+    # 400: `wallet registry validation failed: wallet 0x... is not
+    # registered`. Same address mismatch causes the on-chain balance
+    # probe in `resolve_collateral_for_position` to see zero balance
+    # at the EOA and silently fall back to the wrong default
+    # collateral. Fix once, here, and pass the funder to both.
+    #
+    # `funder` = DepositWallet address for sig_type=3 (V2 default
+    # accounts), POLY_PROXY for sig_type=1 (legacy V1 magic users),
+    # the EOA itself for sig_type=0 (MetaMask-connect users). The
+    # probe returns the right shape for whatever the user has.
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        signer_info = get_poly_signer_info(private_key) or {}
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] relayer path: signer-info probe failed: {exc}; "
+            f"falling back to raw wallet address",
+            file=sys.stderr, flush=True,
+        )
+        signer_info = {}
+    funder = (signer_info.get("funder") or wallet)
+
     # Resolve the actual collateral this market settled in by
-    # reading on-chain balances. USDC.e for most markets; pUSD for
-    # some V2-only markets. Hardcoded pUSD was the bug behind
-    # position 317's "payout=0" no-op redeem (tx 0x10bb58...).
+    # reading on-chain balances at the FUNDER (not the EOA, the CTF
+    # tokens live on the smart wallet that placed the order).
+    # USDC.e for most markets; pUSD for some V2-only markets.
+    # Hardcoded pUSD was the bug behind position 317's "payout=0"
+    # no-op redeem (tx 0x10bb58...).
     collateral_for_redeem = (
         resolve_collateral_for_position(
             cond_bytes=cond_bytes,
             index_sets=index_sets,
-            holder_address=wallet,
+            holder_address=funder,
         )
         or USDCE_ADDRESS
     )
@@ -875,10 +906,14 @@ def _try_gasless_redeem_via_relayer_api_key(
         nonce_resp.raise_for_status()
         nonce = str(nonce_resp.json().get("nonce", "0"))
 
-        # `wallet_address` here is the funder/proxy address (the
-        # signature_type=3 DepositWallet). The Builder path also
-        # uses this; for the user we care about, it's the address
-        # that holds the CTF tokens we want to redeem.
+        # `wallet_address` MUST be the funder/proxy address (the
+        # smart-wallet that holds the CTF tokens), NOT the signer EOA.
+        # The relayer's wallet-registry is keyed by funder; submitting
+        # with the EOA produces "wallet registry validation failed:
+        # wallet 0x... is not registered" (HTTP 400) and the redeem
+        # never reaches chain. The funder we resolved above via
+        # get_poly_signer_info handles every account shape (sig_type=0
+        # EOA, sig_type=1 POLY_PROXY, sig_type=3 V2 DepositWallet).
         #
         # Deadline = +1 hour. The relayer rejects deadlines under
         # roughly 10 minutes with "deadline too soon"; +4 minutes
@@ -888,7 +923,7 @@ def _try_gasless_redeem_via_relayer_api_key(
         dw_args = DepositWalletTransactionArgs(
             from_address=signer.address(),
             chain_id=POLYGON_CHAIN_ID,
-            wallet_address=wallet,
+            wallet_address=funder,
             nonce=nonce,
             deadline=str(int(time.time()) + 3600),
             calls=[call],
