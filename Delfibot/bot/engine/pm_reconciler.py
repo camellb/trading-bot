@@ -391,8 +391,10 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
     # gamma market_id (not just the condition_id). Bot-placed
     # positions always have a matching evaluation; if the lookup
     # misses (very rare - pre-eval-logging row, or evaluation table
-    # was wiped), the row still goes in with NULLs for those columns
-    # and a placeholder reasoning so it's visible in the UI.
+    # was wiped), category + archetype still get derived locally
+    # from the question text via the same classifier the bot uses,
+    # so the UI never shows a blank category cell for an imported
+    # position.
     market_id: Optional[str] = None
     pred_id: Optional[int]   = None
     eval_category:           Optional[str]   = None
@@ -416,6 +418,25 @@ def _import_position(*, user_id: str, row: dict, side: str) -> None:
              eval_reasoning) = hit
     if not market_id:
         market_id = cond_id  # last-resort identifier
+
+    # Classifier fallback for category + archetype when no eval row
+    # exists. classify_archetype is the same pure function the bot
+    # runs on every market during scan, so the derived label matches
+    # what a bot-opened position would have. category mirrors the
+    # archetype label here because the UI only cares about a short
+    # human-readable tag in the cell.
+    if not eval_archetype or not eval_category:
+        try:
+            from engine.archetype_classifier import classify_archetype
+            derived = classify_archetype(title, event_slug=event_slug)
+            if not eval_archetype:
+                eval_archetype = derived
+            if not eval_category:
+                eval_category = derived
+        except Exception as exc:
+            print(f"[pm_reconciler] classifier fallback failed for "
+                  f"cond={cond_id}: {type(exc).__name__}: {exc}",
+                  file=sys.stderr, flush=True)
 
     # data-api gives us the market's natural resolution date (gamma
     # endDate, YYYY-MM-DD). Parse into a datetime for the
