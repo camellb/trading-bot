@@ -349,9 +349,9 @@ function ToggleRow({
     <div
       style={{
         display: "flex",
-        gap: 16,
-        alignItems: "flex-start",
-        padding: "10px 14px",
+        flexDirection: "column",
+        gap: 6,
+        padding: "12px 14px",
         border: "1px solid var(--border, #2a2a2a)",
         borderRadius: 8,
         background: "var(--surface-2, rgba(255,255,255,0.02))",
@@ -362,7 +362,6 @@ function ToggleRow({
         alignItems: "center",
         cursor: disabled ? "not-allowed" : "pointer",
         gap: 10,
-        minWidth: 200,
       }}>
         <input
           type="checkbox"
@@ -372,7 +371,13 @@ function ToggleRow({
         />
         <span style={{ fontWeight: 600 }}>{label}</span>
       </label>
-      <span className="form-hint" style={{ flex: 1, color: "var(--text-muted, #888)" }}>
+      <span
+        className="form-hint"
+        style={{
+          color: "var(--text-muted, #888)",
+          marginLeft: 26, // align with label text after checkbox
+        }}
+      >
         {description}
       </span>
     </div>

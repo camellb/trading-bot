@@ -615,7 +615,6 @@ button { font: inherit; }
   font-size: 15px;
   color: var(--vellum-60);
   margin: 0;
-  max-width: 70ch;
   line-height: 1.5;
 }
 
@@ -2581,9 +2580,14 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
         the smaller-window layout.
 */
 
-@media (min-width: 1100px) {
-  .form-row { margin-left: auto; margin-right: auto; }
-}
+/* Forms stay left-anchored within their panel at every viewport
+   width. The earlier rule auto-centered them above 1100px to fill the
+   visual gap on wide screens, but that made the layout read as
+   "centered with whitespace" instead of "form on the left of a
+   sensible reading column". Pages that want a narrower container
+   already use .page-wrap.narrow (Settings + Help), which caps the
+   whole wrap at 960px so the form-row's 640px max-width naturally
+   fits with a modest gutter on the right. */
 
 @media (min-width: 1500px) {
   .archetype-grid { grid-template-columns: repeat(3, 1fr); }
