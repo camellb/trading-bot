@@ -547,7 +547,9 @@ export default function Positions() {
                       <td className="mono">{mYesPct}%</td>
                       <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                       <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
-                      <td className="mono">{fmt(settledAt)}</td>
+                      <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
+                        {settledAt ? timeAgo(settledAt) : "-"}
+                      </td>
                     </tr>
                   );
                 })}
@@ -604,7 +606,9 @@ export default function Positions() {
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
-                        <td className="mono">{fmt(e.evaluated_at)}</td>
+                        <td className="mono" title={e.evaluated_at ? fmtDateTime(e.evaluated_at) : ""}>
+                          {e.evaluated_at ? timeAgo(e.evaluated_at) : "-"}
+                        </td>
                         <td>
                           {(() => {
                             // RESULT pill: PENDING / YES / NO / VOID.
