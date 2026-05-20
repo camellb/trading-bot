@@ -503,13 +503,14 @@ class LocalAPI:
         - current_value: sum of shares * live_market_price for each position
         - open_cost:     sum of cost_usd (purchase price; used for risk calcs)
 
-        Fetches outcomePrices from the gamma API concurrently. Falls back
-        to cost_usd per position on network failure so the dashboard never
-        shows $0. Partial failures degrade gracefully - fetched markets use
-        live prices, failed markets fall back to cost.
+        Fetches outcomePrices from the gamma API via synchronous urllib
+        calls offloaded to an executor thread. Using urllib (not aiohttp)
+        avoids async/event-loop interaction issues inside PyInstaller
+        bundles. Partial failures degrade gracefully - failed markets fall
+        back to cost_usd so the dashboard never shows $0.
         """
-        import aiohttp as _aio
         import json as _j
+        import urllib.request as _ur
 
         def _open_rows():
             with get_engine().connect() as conn:
@@ -527,33 +528,33 @@ class LocalAPI:
         market_ids = list({str(r[0]) for r in rows})
 
         GAMMA = "https://gamma-api.polymarket.com"
-        price_map: dict[str, dict[str, float]] = {}
-        try:
-            async with _aio.ClientSession(
-                timeout=_aio.ClientTimeout(total=8),
-                headers={"User-Agent": "Delfi/1.0"},
-            ) as sess:
-                async def _one(mid: str):
-                    try:
-                        async with sess.get(f"{GAMMA}/markets/{mid}") as r:
-                            if r.status != 200:
-                                return mid, {}
-                            d = await r.json(content_type=None)
-                            # outcomePrices is a JSON-encoded string in
-                            # the gamma response, not a native list.
-                            outcomes = _j.loads(d.get("outcomes") or "[]")
-                            prices   = _j.loads(d.get("outcomePrices") or "[]")
-                            return mid, {
-                                str(o).upper(): float(p)
-                                for o, p in zip(outcomes, prices)
-                            }
-                    except Exception:
-                        return mid, {}
 
-                results = await asyncio.gather(*(_one(m) for m in market_ids))
-                price_map = dict(results)
+        def _fetch_prices(mids: list) -> dict:
+            """Synchronous: fetch outcomePrices for each market_id."""
+            result: dict[str, dict[str, float]] = {}
+            for mid in mids:
+                try:
+                    req = _ur.Request(
+                        f"{GAMMA}/markets/{mid}",
+                        headers={"User-Agent": "Delfi/1.0"},
+                    )
+                    with _ur.urlopen(req, timeout=6) as resp:
+                        d = _j.loads(resp.read())
+                    # outcomePrices is a JSON-encoded string in gamma responses.
+                    outcomes = _j.loads(d.get("outcomes") or "[]")
+                    prices   = _j.loads(d.get("outcomePrices") or "[]")
+                    result[str(mid)] = {
+                        str(o).upper(): float(p)
+                        for o, p in zip(outcomes, prices)
+                    }
+                except Exception:
+                    result[str(mid)] = {}
+            return result
+
+        try:
+            price_map = await self._offload(_fetch_prices, market_ids)
         except Exception:
-            pass  # stays empty; all positions fall back to cost_usd
+            price_map = {}
 
         current_value = 0.0
         for market_id, side, shares, cost_usd in rows:
@@ -1297,10 +1298,26 @@ class LocalAPI:
                         # exposure cap, live_starting). position_value is the
                         # MTM figure exposed to the frontend so that:
                         #   balance + position_value == equity (always)
-                        mtm_value, _ = await self._fetch_mtm_position_value(
-                            DEFAULT_USER_ID
-                        )
-                        position_value = mtm_value
+                        #
+                        # Hard 9s outer timeout guards against aiohttp
+                        # hanging inside the PyInstaller bundle (DNS stall,
+                        # socket never closed, etc.).  The inner
+                        # ClientTimeout(total=8) is a best-effort; this
+                        # wait_for is the guaranteed kill-switch.
+                        try:
+                            mtm_value, _ = await asyncio.wait_for(
+                                self._fetch_mtm_position_value(DEFAULT_USER_ID),
+                                timeout=9.0,
+                            )
+                            position_value = mtm_value
+                        except asyncio.TimeoutError:
+                            print("[summary] MTM fetch timed out - using cost basis",
+                                  flush=True)
+                            position_value = open_cost
+                        except Exception as mtm_exc:
+                            print(f"[summary] MTM fetch failed: {mtm_exc}",
+                                  flush=True)
+                            position_value = open_cost
                         equity = bankroll + position_value
                         unrealized_pnl = position_value - open_cost
             except Exception as exc:
