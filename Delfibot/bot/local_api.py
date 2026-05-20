@@ -1274,6 +1274,11 @@ class LocalAPI:
         bankroll = stats.get("bankroll")
         equity   = stats.get("equity")
         open_cost = float(stats.get("open_cost") or 0.0)
+        # position_value: current market value of open positions.
+        # In simulation = open_cost (no live prices). In live mode the
+        # MTM block below overwrites it. Always satisfies:
+        #   equity == bankroll + position_value
+        position_value: float = open_cost
         unrealized_pnl: float = 0.0
         if stats.get("mode") == "live":
             try:
@@ -1287,18 +1292,22 @@ class LocalAPI:
                     )
                     if clob_balance is not None:
                         bankroll = float(clob_balance)
-                        # Mark open positions to market rather than using
-                        # purchase cost. open_cost stays as original cost for
-                        # risk calculations (drawdown, exposure cap).
+                        # Mark open positions to market. open_cost stays as
+                        # original purchase cost for risk calcs (drawdown,
+                        # exposure cap, live_starting). position_value is the
+                        # MTM figure exposed to the frontend so that:
+                        #   balance + position_value == equity (always)
                         mtm_value, _ = await self._fetch_mtm_position_value(
                             DEFAULT_USER_ID
                         )
-                        equity = bankroll + mtm_value
-                        unrealized_pnl = mtm_value - open_cost
+                        position_value = mtm_value
+                        equity = bankroll + position_value
+                        unrealized_pnl = position_value - open_cost
             except Exception as exc:
                 # Don't break the dashboard if the CLOB API blips.
                 print(f"[summary] live CLOB balance overlay failed: {exc}",
                       flush=True)
+                position_value = open_cost
                 equity = bankroll + open_cost
 
         starting = float(stats.get("starting_cash") or 0.0)
@@ -1334,6 +1343,11 @@ class LocalAPI:
             "mode":            stats.get("mode"),
             "bankroll":        bankroll,
             "equity":          equity,
+            # position_value = current MTM value of open positions.
+            # balance + position_value == equity (by construction).
+            # open_cost = original purchase cost; kept for Risk panel
+            # (exposure cap, drawdown gauge) where cost basis is correct.
+            "position_value":  round(position_value, 4),
             "starting_cash":   starting,
             "open_positions":  stats.get("open_positions"),
             "open_cost":       stats.get("open_cost"),

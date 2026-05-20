@@ -331,6 +331,10 @@ export interface PerformanceSummary {
   skipped_total: number | null;
   win_rate: number | null;
   realized_pnl: number | null;
+  /** Current market value of open positions (shares * live price).
+   *  In live mode: balance + position_value == equity (always).
+   *  In simulation: equals open_cost (no live prices). */
+  position_value: number | null;
   /** Unrealized P&L on open positions (current market value - cost).
    *  Only populated in live mode; null in simulation. */
   unrealized_pnl: number | null;

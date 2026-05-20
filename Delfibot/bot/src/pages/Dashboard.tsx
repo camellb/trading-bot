@@ -197,11 +197,14 @@ export default function Dashboard({ state, goto }: Props) {
   // total positions would see locked capital + open trades silently
   // truncated. summary aggregates over the full pm_positions table
   // server-side and always reflects ground truth.
-  const lockedCapital = numberOr(summary?.open_cost, 0);
+  // position_value = current MTM value of open positions.
+  // Always satisfies: bankroll + position_value == totalEquity.
+  // Falls back to open_cost (purchase price) for older sidecar builds.
+  const lockedCapital = numberOr(summary?.position_value, numberOr(summary?.open_cost, 0));
   const totalEquity = numberOr(
     summary?.equity,
     // Fallback if the sidecar predates `equity` on the summary
-    // payload: derive from bankroll + open_cost.
+    // payload: derive from bankroll + position_value.
     bankroll + lockedCapital,
   );
   const openTrades = Math.round(numberOr(summary?.open_positions, open.length));
