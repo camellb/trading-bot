@@ -547,13 +547,22 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
             from py_clob_client_v2.clob_types import (
                 AssetType, BalanceAllowanceParams,
             )
-            # Derive the EOA from the key first — used as the funder
+            # Derive the EOA from the key first - used as the funder
             # for proxy queries.
             seed_client = _build_clob_client(private_key)
             eoa = seed_client.get_address()
         except Exception as exc:
             print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
                   file=sys.stderr)
+            # CLOB unreachable. Serve stale cache rather than returning
+            # None so the Dashboard keeps showing the last-known balance
+            # instead of flashing to fallback / $0. Do NOT overwrite the
+            # cache; next probe replaces it with fresh data.
+            stale = _POLY_SIGNER_CACHE.get(cache_key)
+            if stale is not None:
+                info, _ts = stale
+                if info is not None:
+                    return info
             return None
 
         # The funder we pass to the SDK is what ends up as the order's
@@ -605,6 +614,13 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
         ]
 
         chosen: Optional[dict] = None
+        # Track whether any probe returned a usable response (even
+        # balance=0). If every probe raises (CLOB unreachable, DNS
+        # wedge), we DO NOT want to cache the fake $0 default - that
+        # would persist for 5 minutes and show the user "Balance $0"
+        # while their wallet actually has money. Instead, fall back
+        # to stale cache after the loop.
+        any_probe_responded = False
         for sig_type, funder, label in probe_candidates:
             try:
                 client = _build_clob_client(
@@ -614,6 +630,10 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                     asset_type=AssetType.COLLATERAL, signature_type=sig_type,
                 )
                 result = client.get_balance_allowance(params) or {}
+                # If we got here without raising, at least this probe
+                # got a response from the CLOB - balance may be 0 or
+                # positive, but the network and SDK both worked.
+                any_probe_responded = True
                 raw = result.get("balance")
                 raw_allow = result.get("allowance")
                 if raw is None:
@@ -763,10 +783,24 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
                 continue
 
         if chosen is None:
-            # Everything probed zero. Default to the V2 DepositWallet
-            # shape — that's the path Polymarket's UI now pushes every
-            # new user through. A fresh deposit will land there and the
-            # next probe catches it.
+            if not any_probe_responded:
+                # Every probe RAISED an exception (CLOB unreachable /
+                # DNS wedge / SSL timeout). The user's wallet might
+                # have money - we just couldn't read it. Serve stale
+                # cache if any; do NOT cache a zero default that
+                # would override real balance for 5 minutes after
+                # CLOB recovers.
+                stale = _POLY_SIGNER_CACHE.get(cache_key)
+                if stale is not None:
+                    info, _ts = stale
+                    if info is not None:
+                        return info
+                return None
+            # At least one probe got a response and they all said $0.
+            # Default to the V2 DepositWallet shape - that's the path
+            # Polymarket's UI now pushes every new user through. A
+            # fresh deposit will land there and the next probe catches
+            # it. Cache the default so subsequent reads don't re-probe.
             chosen = {
                 "signature_type": 1,
                 "funder":         deposit_wallet,
@@ -930,10 +964,12 @@ def get_total_open_positions_value(
                 f"{resp.status_code} for {funder_address}",
                 file=sys.stderr,
             )
-            return None
+            # Serve stale cache if any. Do NOT cache the failure; next
+            # probe replaces this entry with fresh data.
+            return cached[0] if cached is not None else None
         data = resp.json()
         if not isinstance(data, list):
-            return None
+            return cached[0] if cached is not None else None
         total = 0.0
         for row in data:
             try:
@@ -950,7 +986,10 @@ def get_total_open_positions_value(
             f"{funder_address}: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-        return None
+        # Network blip: serve stale cache if any. The Dashboard's
+        # "Locked Capital" should keep showing the last sensible
+        # number rather than flashing to $0 when data-api hiccups.
+        return cached[0] if cached is not None else None
     finally:
         _POSITIONS_VALUE_LOCK.release()
 
@@ -985,15 +1024,36 @@ def refresh_live_balance_cache(private_key: Optional[str]) -> bool:
     """
     if not private_key:
         return False
+    # CRITICAL: do NOT pre-delete the existing cache entry. The
+    # earlier implementation called `_POLY_SIGNER_CACHE.pop()` here
+    # to force `get_poly_signer_info` to actually probe (it would
+    # otherwise serve the still-fresh cache). The problem: when the
+    # Polymarket CLOB is briefly unreachable (transient network or
+    # CLOB-side hiccup, observed 2026-05-20), the probe fails, the
+    # cache stays empty, and every /api/summary thereafter pays the
+    # full 8s+ probe-timeout cost. We want exactly the opposite -
+    # stale cache should keep serving instantly while the background
+    # job retries.
+    #
+    # Trick: temporarily set the cached timestamp to expired so
+    # get_poly_signer_info bypasses the freshness short-circuit and
+    # runs a probe. On probe success the cache is overwritten with
+    # the new value. On probe failure the old cache entry remains in
+    # the dict (probe never wrote anything), and downstream callers
+    # served via the lock-free `get_cached_poly_signer_info` see the
+    # last-known value rather than None.
     try:
         import hashlib
         cache_key = hashlib.sha256(
             private_key.encode("utf-8")
         ).hexdigest()[:16]
-        _POLY_SIGNER_CACHE.pop(cache_key, None)
+        cached = _POLY_SIGNER_CACHE.get(cache_key)
+        if cached is not None:
+            info, _ = cached
+            # Re-stamp with monotonic=0 so the TTL check fires but
+            # the value stays available if the probe fails.
+            _POLY_SIGNER_CACHE[cache_key] = (info, 0.0)
     except Exception:
-        # Best-effort: if invalidation fails for any reason the probe
-        # below still runs, it just might serve the stale value.
         pass
     info = get_poly_signer_info(private_key)
     return info is not None

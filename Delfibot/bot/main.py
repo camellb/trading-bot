@@ -667,50 +667,65 @@ async def main() -> None:
     # no longer needs an explicit notifier handle.
     analyst = PMAnalyst(news_feed=news_feed)
 
-    # ── Pre-warm signer cache BEFORE the API server accepts ────────────
-    # Without this, the first burst of GUI polls (7 endpoints fired
-    # in parallel every 5s) all contend for the signer-info lock
-    # against a cold cache. Each waiter gives up after 1.5s and falls
-    # through to None, which propagates to "Loading..." in the UI
-    # and piles up SYN_SENT sockets at the OS level when the burst
-    # keeps repeating. Synchronously running ONE probe here (with
-    # the daemon's full attention, no contention) populates the
-    # cache before the API ever accepts a connection. Failure is
-    # non-fatal: we proceed and let the background refresh job try
-    # again - downstream get_bankroll falls back to 0.0 in live mode
-    # rather than a $1000 SIM fabrication.
-    try:
-        from engine.user_config import get_user_polymarket_creds
-        from feeds.polymarket_wallet import (
-            refresh_live_balance_cache,
-            get_poly_signer_info,
-            get_total_open_positions_value,
-        )
-        _prewarm_creds = get_user_polymarket_creds()
-        _prewarm_pk = (_prewarm_creds or {}).get("private_key")
-        if _prewarm_pk:
-            print("[delfi] pre-warming Polymarket caches...", flush=True)
-            # 1. Signer cache (funder address + USDC balance).
-            refresh_live_balance_cache(_prewarm_pk)
-            # 2. Open-positions value (data-api MTM). Separate 60s
-            # cache; without prewarming, the FIRST /api/summary after
-            # boot still cold-fetches and blocks 1-2s per concurrent
-            # caller (no lock here, unlike the signer probe). Doing
-            # it synchronously up front makes the very first GUI
-            # poll burst land on warm cache for both probes.
-            try:
-                _info = get_poly_signer_info(_prewarm_pk)
-                _funder = (_info or {}).get("funder")
-                if _funder:
-                    get_total_open_positions_value(_funder)
-            except Exception as _exc2:
-                print(f"[delfi] positions cache pre-warm failed: "
-                      f"{_exc2} - non-fatal",
+    # ── Pre-warm signer cache in a BACKGROUND THREAD ───────────────────
+    # The prewarm makes a chain of CLOB SSL round-trips. When CLOB is
+    # unreachable (DNS wedge, transient outage, slow network) each
+    # call sits in an SSL read for up to 10s before raising. The
+    # original synchronous version blocked the daemon boot for up to
+    # 60s+ during a CLOB outage and the user saw the GUI sit on
+    # "Starting Delfi..." indefinitely while launchd kept respawning
+    # processes that never completed boot.
+    #
+    # Async prewarm: spawn a daemon thread, return immediately. The
+    # API server starts accepting connections right away. The first
+    # GUI poll arrives in 1-2s; if the cache isn't warm yet, the
+    # lock-free getters return None and downstream callers fall back
+    # to DB-derived bankroll. By the time the second poll arrives
+    # 5s later the prewarm has almost always landed, and even if
+    # CLOB is down forever the daemon stays responsive.
+    #
+    # The non-blocking lock on _POLY_SIGNER_LOCK guarantees only ONE
+    # probe runs at a time, so the prewarm thread doesn't race against
+    # the scheduled pm_balance_refresh job.
+    def _prewarm_poly_caches() -> None:
+        try:
+            from engine.user_config import get_user_polymarket_creds
+            from feeds.polymarket_wallet import (
+                refresh_live_balance_cache,
+                get_poly_signer_info,
+                get_total_open_positions_value,
+            )
+            _prewarm_creds = get_user_polymarket_creds()
+            _prewarm_pk = (_prewarm_creds or {}).get("private_key")
+            if _prewarm_pk:
+                print("[delfi] pre-warming Polymarket caches (bg)...",
                       flush=True)
-            print("[delfi] Polymarket caches warm", flush=True)
+                refresh_live_balance_cache(_prewarm_pk)
+                try:
+                    _info = get_poly_signer_info(_prewarm_pk)
+                    _funder = (_info or {}).get("funder")
+                    if _funder:
+                        get_total_open_positions_value(_funder)
+                except Exception as _exc2:
+                    print(f"[delfi] positions cache pre-warm failed: "
+                          f"{_exc2} - non-fatal",
+                          flush=True)
+                print("[delfi] Polymarket caches warm", flush=True)
+        except Exception as _exc:
+            print(f"[delfi] cache pre-warm failed: {_exc} - "
+                  "proceeding; background refresh will retry",
+                  flush=True)
+
+    try:
+        import threading as _t
+        _prewarm_thread = _t.Thread(
+            target=_prewarm_poly_caches,
+            name="poly-prewarm",
+            daemon=True,
+        )
+        _prewarm_thread.start()
     except Exception as _exc:
-        print(f"[delfi] cache pre-warm failed: {_exc} - "
-              "proceeding; background refresh will retry",
+        print(f"[delfi] failed to spawn prewarm thread: {_exc}",
               flush=True)
 
     # ── Local HTTP API ───────────────────────────────────────────────────────
