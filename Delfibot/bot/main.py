@@ -1071,13 +1071,13 @@ async def main() -> None:
     scheduler.add_job(
         _run_balance_refresh, IntervalTrigger(seconds=60),
         id="pm_balance_refresh",
-        # First fire 15s after boot so the dashboard's live-balance
-        # number is populated before the user can even click around.
-        # 60s cadence is fast enough that a fresh Polymarket deposit
-        # shows up within a minute, slow enough that we don't hammer
-        # the CLOB. Runs on threadpool so a slow probe never blocks
-        # the aiohttp event loop.
-        next_run_time=now_utc + timedelta(seconds=15),
+        # First fire immediately (1s after boot) so the signer cache
+        # is populated before /api/summary's first poll. Without
+        # this the dashboard hits a cold cache and Balance shows $0
+        # (post-2026-05-20 fix) or, in the buggy version that fix
+        # replaced, the SIM default $1000. 60s cadence afterwards is
+        # fast enough that a fresh deposit shows up within a minute.
+        next_run_time=now_utc + timedelta(seconds=1),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )

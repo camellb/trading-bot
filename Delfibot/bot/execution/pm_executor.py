@@ -93,6 +93,17 @@ _BALANCE_ALLOWANCE_SYNCED: set = set()
 _V2_SIGNER_MISMATCH_DETECTED: bool = False
 _V2_SIGNER_MISMATCH_NOTIFIED: bool = False
 
+# Last-known live wallet bankroll per user_id. Populated on every
+# successful get_cached_total_funder_balance() call in get_bankroll;
+# read as a fallback when the wallet probe misses (cold cache + lock
+# contention). Without this, get_bankroll fell through to the SIM
+# formula (`starting + realized - open_cost`), which uses the
+# configured starting_cash ($1000 onboarding default) and produced
+# fake "Balance: $989" Dashboard tiles. User-reported 2026-05-20.
+# In-process only; the next successful probe (within ~5s of boot)
+# overwrites it with the true value.
+_LIVE_BANKROLL_FALLBACK: dict[str, float] = {}
+
 
 def _is_v2_signer_mismatch(exc_str: str) -> bool:
     """Detect Polymarket's V2 'signer != api-key address' rejection so we
@@ -593,25 +604,39 @@ class PMExecutor:
         if self._user_config.starting_cash is None:
             return 0.0
         configured = float(self._user_config.starting_cash)
-        try:
-            if (
-                self._user_config.mode == "live"
-                and self._view_mode_override is None
-            ):
+        # LIVE mode: never return the configured starting_cash. That
+        # number is the SIM-mode default ($1000 typically), and
+        # treating it as real bankroll causes the sizer to build
+        # orders 100x bigger than the wallet can fund (Polymarket
+        # rejects). Use cached signer info (or the last-known live
+        # bankroll, or 0 as a safe floor) - never the SIM constant.
+        if (
+            self._user_config.mode == "live"
+            and self._view_mode_override is None
+        ):
+            try:
                 from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import get_cached_poly_signer_info
                 creds = get_user_polymarket_creds(self.user_id)
                 pk = (creds or {}).get("private_key") if creds else None
                 if pk:
-                    from feeds.polymarket_wallet import get_poly_signer_info
-                    info = get_poly_signer_info(pk)
+                    # Read from the in-process cache only - never
+                    # touch the lock here. The background probe
+                    # populates the cache; get_bankroll's fallback
+                    # mirror also populates _LIVE_BANKROLL_FALLBACK.
+                    info = get_cached_poly_signer_info(pk)
                     if info and isinstance(info.get("balance"), (int, float)):
                         return float(info["balance"])
-        except Exception as exc:
-            print(
-                f"[pm_executor] live starting_cash probe failed, falling back "
-                f"to configured ${configured:.2f}: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
+            except Exception as exc:
+                print(
+                    f"[pm_executor] live starting_cash cache read failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            # Cache miss in live mode: use the last-known live
+            # bankroll if any, else 0. Returning the configured $1000
+            # would produce fake equity numbers everywhere downstream.
+            return float(_LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0))
         return configured
 
     def get_bankroll(self) -> float:
@@ -655,16 +680,34 @@ class PMExecutor:
                 if pk:
                     total = get_cached_total_funder_balance(pk)
                     if total is not None:
+                        # Remember the last good probe so the next
+                        # cache-cold call can serve a real number.
+                        _LIVE_BANKROLL_FALLBACK[self.user_id] = float(total)
                         return float(total)
+                    # Probe missed: fall back to the LAST observed live
+                    # balance instead of dropping through to the SIM
+                    # formula. The SIM formula uses the configured
+                    # starting_cash (typically $1000 from onboarding)
+                    # and produces a fake "Balance: $989" the second
+                    # the cache is cold - the bug user-reported
+                    # 2026-05-20 ("what the actual fuck happened here?").
+                    # 0.0 floor is intentional for first-boot: better
+                    # to show $0 than a $989 fabrication.
+                    last = _LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0)
+                    return float(last)
             except Exception as exc:
                 print(
                     f"[pm_executor] live get_bankroll probe failed, "
-                    f"falling back to DB formula: "
+                    f"falling back to last-known live balance: "
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
+                last = _LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0)
+                return float(last)
 
-        # SIM mode (or live probe missed): DB-derived formula.
+        # SIM mode only: DB-derived formula. Never reached in live
+        # mode - the live branch above always returns something
+        # (either a fresh probe, the last-known live balance, or 0).
         starting = self.get_starting_cash()
         try:
             with get_engine().begin() as conn:
