@@ -96,9 +96,17 @@ class LoopHeartbeat:
         max_silence_s: float = 120.0,
         check_interval_s: float = 5.0,
         api_port_getter=None,
-        self_probe_interval_s: float = 30.0,
+        # Tighter probe cadence after the 2026-05-21 incident where the
+        # "listen but not accepting" wedge took 18+ hours to detect:
+        # the watchdog's own subprocess curl was fast-pathing through
+        # macOS loopback while the Tauri GUI and external clients were
+        # stuck in SYN_SENT with no SYN-ACK. Reduced from 30s/3 to 15s/2
+        # so recovery time is ~30s instead of ~90s. Also added the
+        # _count_syn_sent_blocked() check which catches this wedge class
+        # reliably regardless of whether the curl probe fast-paths.
+        self_probe_interval_s: float = 15.0,
         self_probe_timeout_s: float = 5.0,
-        self_probe_max_failures: int = 3,
+        self_probe_max_failures: int = 2,
     ) -> None:
         self._loop = loop
         self._heartbeat_interval_s = heartbeat_interval_s
@@ -179,12 +187,41 @@ class LoopHeartbeat:
                     f"leaked_sockets={leaked}",
                     file=sys.stderr, flush=True,
                 )
+                # Tertiary signal: count SYN_SENT connections to our port.
+                # This catches the "listen socket present but accept() never
+                # called" wedge where pycares' cleanup removed the FD from
+                # kqueue. The server socket stays LISTEN, the kernel holds
+                # pending connections, but SYN-ACKs stop. External clients
+                # stack up in SYN_SENT. The curl probe can false-positive
+                # (child-process loopback fast-path on macOS), but SYN_SENT
+                # accumulation is unambiguous. Threshold = 4 is well above
+                # one or two normal transient connects but catches the wedge
+                # state where the GUI's keep-alive reconnects pile up.
+                syn_sent = self._count_syn_sent_blocked()
+                print(
+                    f"[watchdog] self-probe ok={ok} "
+                    f"port={self._api_port_getter()} "
+                    f"failures={self._self_probe_failures} "
+                    f"leaked_sockets={leaked} "
+                    f"syn_sent_blocked={syn_sent}",
+                    file=sys.stderr, flush=True,
+                )
                 if leaked >= 40:
                     self._abort(
                         silence,
                         reason=(
                             f"{leaked} CLOSE_WAIT/FIN_WAIT_2 sockets "
                             "on listen port (handler-cleanup wedge)"
+                        ),
+                    )
+                    return
+                if syn_sent >= 4:
+                    self._abort(
+                        silence,
+                        reason=(
+                            f"{syn_sent} SYN_SENT connections to listen "
+                            "port (kqueue-corruption wedge: accept queue "
+                            "full, server not calling accept)"
                         ),
                     )
                     return
@@ -235,6 +272,43 @@ class LoopHeartbeat:
             if port_str not in line:
                 continue
             if "CLOSE_WAIT" in line or "FIN_WAIT_2" in line:
+                count += 1
+        return count
+
+    def _count_syn_sent_blocked(self) -> int:
+        """Count client connections stuck in SYN_SENT to our listen port.
+
+        When pycares' cleanup removes the server's FD from the main loop's
+        kqueue, the server socket stays LISTEN but Python never calls
+        accept(). The kernel completes the TCP handshake up to the point
+        where it puts connections into the accept queue, but if the accept
+        queue is full it drops new SYNs. Clients that can't get a SYN-ACK
+        stay in SYN_SENT. Four or more simultaneous SYN_SENT connections
+        to our port is unambiguous wedge evidence -- the GUI normally holds
+        <3 keep-alive sockets.
+        """
+        try:
+            port = self._api_port_getter() if self._api_port_getter else None
+        except Exception:
+            return 0
+        if not port or port <= 0:
+            return 0
+        import subprocess
+        try:
+            r = subprocess.run(
+                ["/usr/sbin/netstat", "-an", "-p", "tcp"],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            return 0
+        if r.returncode != 0:
+            return 0
+        # Match lines where the destination port is our listen port and
+        # the state is SYN_SENT (client side of a stalled handshake).
+        port_suffix = f".{port} "
+        count = 0
+        for line in r.stdout.decode("utf-8", "replace").splitlines():
+            if port_suffix in line and "SYN_SENT" in line:
                 count += 1
         return count
 

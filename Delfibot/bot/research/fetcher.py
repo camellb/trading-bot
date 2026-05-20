@@ -1248,7 +1248,16 @@ async def fetch_research(
     # Some sites (e.g. covers.com) ship CSP response headers larger than
     # aiohttp's 8190-byte default, which raises 400 before the body is read.
     # Bump both parser limits so those responses come back normally.
+    #
+    # Explicit ThreadedResolver: this session runs inside a scanner-thread
+    # asyncio.run() loop. aiohttp auto-selects AsyncResolver (pycares)
+    # when aiodns is installed. pycares binds its Channel to the scanner
+    # loop; when asyncio.run() closes it, pycares' shutdown thread calls
+    # loop.remove_reader() on the wrong (main) loop, which removes the
+    # aiohttp server's listen FD from kqueue and breaks TCP accept.
+    # ThreadedResolver has no event-loop association and no cleanup thread.
     async with aiohttp.ClientSession(
+        connector=aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver()),
         headers={"User-Agent": "trading-bot/1.0 (research-fetcher)"},
         max_line_size=32768,
         max_field_size=32768,

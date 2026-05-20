@@ -39,20 +39,42 @@ import asyncio as _asyncio_module  # alias for the sync job wrappers below
 
 # Force aiohttp's DNS resolver onto a thread pool BEFORE any
 # ClientSession is constructed anywhere else in the codebase.
-# Background: when ccxt was added as a dep it pulled aiodns in
-# transitively. aiohttp auto-detects aiodns at import time and
-# switches its default resolver from ThreadedResolver (socket-based,
-# runs in a thread, can never block the loop) to AsyncResolver
-# (c-ares, runs ON the event loop). A single slow / dropped DNS
-# packet from c-ares would then wedge the entire sidecar event loop
-# in `_cffi_f_ares_getaddrinfo` and every aiohttp endpoint
-# (/api/state, /api/summary, /api/archetypes, etc.) would time out
-# at 30s even though the handler bodies don't touch DNS at all.
-# Pinning the default back to ThreadedResolver keeps DNS off the
-# loop. Verified by sample(1): without this patch a wedged sidecar
-# showed the main thread stuck inside _cffi_f_ares_getaddrinfo.
+#
+# Background: when aiodns/pycares is installed, aiohttp auto-detects it
+# at import time and switches its default resolver from ThreadedResolver
+# (socket-based, runs in a thread pool, never blocks the loop) to
+# AsyncResolver (c-ares, runs ON the event loop via kqueue/epoll).
+#
+# This causes two categories of wedge:
+#
+# 1. Main-loop DNS stall: a slow/dropped DNS packet in c-ares blocks
+#    the main aiohttp event loop. Every /api endpoint times out even
+#    though the handlers don't touch DNS at all.
+#
+# 2. Scanner-thread kqueue corruption (confirmed 2026-05-21 via thread
+#    dump): scanner jobs run via asyncio.run() in a threadpool thread.
+#    asyncio.run() creates its own event loop. pycares creates a Channel
+#    (a c-ares DNS socket) associated with that loop. When asyncio.run()
+#    closes the scanner loop, pycares' _run_safe_shutdown_loop background
+#    thread tries to clean up by calling loop.remove_reader(). At that
+#    point asyncio.get_event_loop() returns the MAIN loop (scanner's
+#    loop is already closed/None). pycares removes the MAIN loop's
+#    server listen FD from kqueue. The server socket stays in LISTEN
+#    state but kqueue no longer fires EVFILT_READ, so Python never calls
+#    accept(). Accept queue fills, new SYNs get no SYN-ACK, GUI shows
+#    "timed out" indefinitely.
+#
+# Fix: patch BOTH the resolver module's DefaultResolver AND
+# aiohttp.connector's own copy. The connector module imports
+# DefaultResolver by reference at module load time
+# (`from .resolver import DefaultResolver`), so patching only
+# aiohttp.resolver.DefaultResolver is insufficient -- TCPConnector's
+# __init__ still sees AsyncResolver (as confirmed by the thread dump
+# showing pycares active after the previous one-sided patch).
 import aiohttp.resolver as _aiohttp_resolver  # noqa: E402
+import aiohttp.connector as _aiohttp_connector  # noqa: E402
 _aiohttp_resolver.DefaultResolver = _aiohttp_resolver.ThreadedResolver
+_aiohttp_connector.DefaultResolver = _aiohttp_resolver.ThreadedResolver
 
 import config
 from db.models import create_all_tables

@@ -275,7 +275,14 @@ class PolymarketFeed:
 
     async def __aenter__(self) -> "PolymarketFeed":
         if self._session is None:
+            # Explicit ThreadedResolver: PolymarketFeed is used inside
+            # scanner-thread asyncio.run() loops. Using AsyncResolver
+            # (pycares) there corrupts the main loop's kqueue on cleanup.
+            # See main.py resolver-patch comment for full explanation.
             self._session = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    resolver=aiohttp.ThreadedResolver(),
+                ),
                 headers={"User-Agent": "trading-bot/1.0"},
                 timeout=aiohttp.ClientTimeout(total=15),
             )
