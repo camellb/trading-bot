@@ -138,12 +138,26 @@ export async function waitForSidecar(timeoutMs = 30_000): Promise<boolean> {
   if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
     return false;
   }
+  // CRITICAL: call refresh_api_port (not get_api_port). The cached
+  // port in ApiState is set once at app startup; if the daemon
+  // respawned on a new port (Restart button, launchd respawn,
+  // install rebuild), get_api_port returns the OLD port with
+  // ready=true and waitForSidecar reports a false-success. The
+  // page reloads, hits the dead old port, and the user sees the
+  // same "/api/state: timed out" banner that triggered Restart in
+  // the first place. This was the 2026-05-20 "restart button is
+  // fucking useless" incident.
+  //
+  // refresh_api_port re-reads <app-data>/sidecar.port AND
+  // TCP-probes the listed port before reporting ready. A success
+  // here means the new daemon is genuinely listening, not just
+  // that some old cached number exists.
   const pollInterval = 500;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const res = await invoke<{ port: number; ready: boolean }>(
-        "get_api_port",
+        "refresh_api_port",
       );
       if (res.ready && res.port > 0) {
         cachedPort = res.port;

@@ -85,7 +85,10 @@ fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
 /// error string the UI renders; we don't have a Windows / Linux
 /// daemon supervisor wired up yet.
 #[tauri::command]
-async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
+async fn restart_sidecar(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ApiState>,
+) -> Result<(), String> {
     if !cfg!(target_os = "macos") {
         return Err(
             "Restart from the GUI is currently macOS-only. \
@@ -100,6 +103,22 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     // touches the launchd-managed slot and leaves the orphan up,
     // so the GUI keeps timing out forever (incident 2026-05-06).
     let port = read_existing_sidecar_port(&app).await;
+
+    // CRITICAL: clear the cached port. The user-visible bug from
+    // 2026-05-20: every Restart succeeded at the OS level (daemon
+    // killed + respawned on a fresh random port) but the JS
+    // `waitForSidecar` then called `get_api_port` which returned
+    // the OLD cached port with ready=true. waitForSidecar returned
+    // immediately, the page reloaded, and the reloaded page hit
+    // the dead old port and timed out again. The user saw the same
+    // "/api/state: timed out" banner that they clicked Restart to
+    // get rid of - the button was provably useless.
+    //
+    // By clearing the cache here, get_api_port returns ready=false
+    // until the new daemon's port-file write triggers a
+    // refresh_api_port call that re-resolves to the new port. The
+    // JS layer falls back to refresh_api_port when ready=false.
+    *state.port.lock().unwrap() = None;
 
     // Every shelled command gets a HARD wall-clock budget. Without
     // it, `launchctl kickstart -k` can wedge for >60s when launchd
@@ -225,7 +244,28 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
         }
     })
     .await
-    .map_err(|e| format!("restart task panicked: {e}"))?
+    .map_err(|e| format!("restart task panicked: {e}"))??;
+
+    // Block here until the respawned daemon has bound its new port
+    // AND we can TCP-connect to it. read_existing_sidecar_port has
+    // a 15s internal budget that polls + TCP-probes; on success we
+    // update the cached port so the JS layer's waitForSidecar
+    // immediately sees the new live port. On timeout we still
+    // return Ok - the caller's polling loop will keep retrying
+    // and surface a concrete "quit and reopen" message if it
+    // ultimately fails.
+    //
+    // This is the second half of the 2026-05-20 fix: clearing the
+    // cache at the top guarantees no stale reads during the
+    // kill+respawn window; populating it here guarantees the very
+    // first read after this function returns sees the new port.
+    if let Some(new_port) = read_existing_sidecar_port(&app).await {
+        *state.port.lock().unwrap() = Some(new_port);
+        println!("[restart_sidecar] new daemon up on port {new_port}");
+    } else {
+        eprintln!("[restart_sidecar] daemon did not bind a port within 15s; JS will keep polling");
+    }
+    Ok(())
 }
 
 /// Re-resolve the daemon's listening port and update ApiState.
