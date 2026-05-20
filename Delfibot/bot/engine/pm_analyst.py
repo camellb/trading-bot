@@ -318,7 +318,26 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
+        # Classify archetype up front so the SKIP rows below can record
+        # it; the sizer below uses the same value.
+        archetype = classify_archetype(
+            market.question,
+            category=evaluation.category,
+            event_slug=getattr(market, "event_slug", None),
+        )
+
         if executor.has_open_position_on_market(market.id):
+            # Persist a SKIP row so the user can see the bot DID look at
+            # this market and chose to pass because of an existing
+            # position. Without this, re-scans of held markets evaporate
+            # silently and the Recent Activity surface stays empty.
+            _log_market_evaluation(
+                market=market, evaluation=evaluation, decision=None,
+                research_sources=research.sources,
+                prediction_id=prediction_id, recommendation="SKIP",
+                market_archetype=archetype,
+                user_id=user_id, mode=user_config.mode,
+            )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_EXISTING_POSITION",
@@ -334,18 +353,22 @@ class PMAnalyst:
             user_id=user_id,
         )
         if verdict.halted:
+            # Record the risk-halt skip so the user can see why the bot
+            # passed on otherwise-tradeable markets when a circuit
+            # breaker is active.
+            _log_market_evaluation(
+                market=market, evaluation=evaluation, decision=None,
+                research_sources=research.sources,
+                prediction_id=prediction_id, recommendation="SKIP",
+                market_archetype=archetype,
+                user_id=user_id, mode=user_config.mode,
+            )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_RISK_HALT",
                 detail=verdict.halt_reason or "risk breaker tripped",
                 evaluation=evaluation, prediction_id=prediction_id,
             )
-
-        archetype = classify_archetype(
-            market.question,
-            category=evaluation.category,
-            event_slug=getattr(market, "event_slug", None),
-        )
 
         # Hard skip backstop: when the evaluator set
         # MarketEvaluation.force_skip = True (today only used by the
@@ -354,8 +377,23 @@ class PMAnalyst:
         # direction-agreement gate's strict `< 0` test produces 0
         # (market_p_yes exactly 0.50) and would otherwise let the
         # trade through. force_skip is the unconditional source of
-        # truth — no clever sizing math can override it.
+        # truth: no clever sizing math can override it.
+        #
+        # Persist the SKIP row BEFORE returning. The evaluator's
+        # force_skip is the dominant skip path in steady state
+        # (typically same_event_verified=no on sports markets where
+        # research returned placeholder content). Until 2026-05-20
+        # these never reached market_evaluations and the Dashboard's
+        # Recent Activity feed stayed empty for hours while the bot
+        # was scanning normally.
         if getattr(evaluation, "force_skip", False):
+            _log_market_evaluation(
+                market=market, evaluation=evaluation, decision=None,
+                research_sources=research.sources,
+                prediction_id=prediction_id, recommendation="SKIP",
+                market_archetype=archetype,
+                user_id=user_id, mode=user_config.mode,
+            )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_EVALUATOR",
@@ -999,7 +1037,7 @@ def _recently_predicted(market_id: str, days: int) -> bool:
 def _log_market_evaluation(
     market:           PolyMarket,
     evaluation:       MarketEvaluation,
-    decision:         SizingDecision,
+    decision:         Optional[SizingDecision],
     research_sources: list[str],
     prediction_id:    Optional[int],
     recommendation:   str,
@@ -1007,6 +1045,14 @@ def _log_market_evaluation(
     user_id:          Optional[str] = None,
     mode:             Optional[str] = None,
 ) -> Optional[int]:
+    # `decision` may be None for early-return skip paths (force_skip,
+    # risk halt, existing-position). Those bail before the sizer
+    # runs, but the evaluation still happened and is worth persisting
+    # so the Dashboard's Recent Activity surface (and Positions ->
+    # Skipped tab) can show the user WHY each market was passed on.
+    # Without this, force_skip rejections evaporated and the user
+    # saw a silent 5h gap in activity while the bot was actually
+    # running normally (2026-05-20 ticket).
     if user_id is None:
         from engine.user_config import DEFAULT_USER_ID
         user_id = DEFAULT_USER_ID
@@ -1017,6 +1063,7 @@ def _log_market_evaluation(
         from engine.user_config import get_user_config
         mode = get_user_config(user_id).mode or "simulation"
     try:
+        ev_bps = float(decision.ev * 10_000.0) if decision is not None else 0.0
         with get_engine().begin() as conn:
             row = conn.execute(text(
                 "INSERT INTO market_evaluations ("
@@ -1042,7 +1089,7 @@ def _log_market_evaluation(
                 "mp":   market.yes_price,
                 "cp":   evaluation.probability_yes,
                 "conf": evaluation.confidence,
-                "ev_bps": decision.ev * 10_000.0,
+                "ev_bps": ev_bps,
                 "rec":  recommendation,
                 "reason": evaluation.reasoning,
                 "reason_short": (getattr(evaluation, "reasoning_short", "") or None),
