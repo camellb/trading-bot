@@ -1373,6 +1373,7 @@ async def fetch_research(
     max_wiki_kws:        int           = 4,
     days_to_resolution:  Optional[float] = None,
     resolution_date:     Optional[datetime] = None,
+    event_slug:          Optional[str] = None,
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
@@ -1381,15 +1382,32 @@ async def fetch_research(
     `resolution_date` is the market's actual settlement timestamp. When
     provided, DDG queries get pinned to its month+year so search results
     surface the SPECIFIC edition of an event (e.g. "Italian Open 2026
-    semifinal" not last year's QF). Falls back to today() when not given
-    — same behaviour as before this argument existed.
+    semifinal" not last year's QF). Falls back to today() when not given -
+    same behaviour as before this argument existed.
+
+    `event_slug` is the parent-event identifier from Polymarket gamma (e.g.
+    "nba-sas-okc-2026-05-20"). For markets where the question alone lacks
+    the opponent/date (Polymarket bundles sub-markets like "Spread: Thunder
+    (-5.5)" under an event slug that carries the matchup + date), passing
+    the slug lets the keyword extractor see the full context and avoids
+    research about the wrong game.
     """
     bundle = ResearchBundle(question=question)
+
+    # Enrich the question with the parent-event slug when present. The
+    # raw slug ("nba-sas-okc-2026-05-20") is intelligible to the LLM
+    # keyword extractor, which parses out the league, opponents, and
+    # date. This is the difference between "Thunder" matching the next
+    # Thunder game on the schedule (often wrong) vs the SPECIFIC
+    # game the market is asking about.
+    extractor_question = question
+    if event_slug:
+        extractor_question = f"{question} [event: {event_slug}]"
 
     # 0. Gemini-powered keyword extraction (domain-aware, replaces regex).
     detected_event_name: Optional[str] = None
     detected_event_qualifier: Optional[str] = None
-    gemini_meta = await _extract_keywords_gemini(question)
+    gemini_meta = await _extract_keywords_gemini(extractor_question)
     if gemini_meta:
         bundle.keywords = (gemini_meta.get("search_terms") or [])[:4]
         detected_category = gemini_meta.get("category")
@@ -1399,7 +1417,7 @@ async def fetch_research(
         detected_event_qualifier = (gemini_meta.get("event_qualifier") or "").strip() or None
         bundle.sources.append("gemini_keywords")
     else:
-        sports_meta = _detect_sports_matchup(question)
+        sports_meta = _detect_sports_matchup(extractor_question)
         if sports_meta:
             bundle.keywords = sports_meta["search_terms"][:4]
             detected_category = "sports"
@@ -1408,7 +1426,7 @@ async def fetch_research(
             bundle.sources.append("sports_heuristic")
         else:
             # Try Claude for keyword extraction before falling back to regex
-            claude_meta = await _extract_keywords_claude(question)
+            claude_meta = await _extract_keywords_claude(extractor_question)
             if claude_meta:
                 bundle.keywords = (claude_meta.get("search_terms") or [])[:4]
                 detected_category = claude_meta.get("category")

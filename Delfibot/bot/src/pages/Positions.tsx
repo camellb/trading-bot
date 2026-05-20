@@ -678,7 +678,15 @@ export default function Positions() {
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
                   const dConfPct = e.confidence != null ? Math.round(e.confidence * 100) : null;
                   const reasoning = (e.reasoning ?? "").trim();
-                  // Polymarket slug → external link. Matches the open-row
+                  // Explicit decision-path reason ("Delfi disagrees with
+                  // the market", "Research does not match this event",
+                  // etc.). Shown as the HEADLINE; the LLM prose
+                  // (`reasoning`) renders underneath as supporting detail.
+                  // Legacy rows recorded before the skip_reason column
+                  // existed fall back to the prose alone.
+                  const skipReasonRaw = (e.skip_reason as string | null | undefined) ?? "";
+                  const skipReason = typeof skipReasonRaw === "string" ? skipReasonRaw.trim() : "";
+                  // Polymarket slug -> external link. Matches the open-row
                   // pattern further up the file.
                   const slug = e.slug as string | null | undefined;
                   const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
@@ -728,7 +736,44 @@ export default function Positions() {
                           <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
-                              {reasoning || "No reasoning recorded."}
+                              {skipReason ? (
+                                <>
+                                  <div
+                                    style={{
+                                      color: "var(--vellum-90)",
+                                      fontWeight: 500,
+                                      marginBottom: reasoning ? 12 : 0,
+                                      lineHeight: 1.45,
+                                    }}
+                                  >
+                                    {skipReason}
+                                  </div>
+                                  {reasoning && (
+                                    <div
+                                      style={{
+                                        color: "var(--vellum-60)",
+                                        fontSize: "0.92em",
+                                        lineHeight: 1.5,
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: "0.75em",
+                                          letterSpacing: "0.08em",
+                                          textTransform: "uppercase",
+                                          color: "var(--vellum-40)",
+                                          marginBottom: 6,
+                                        }}
+                                      >
+                                        Delfi's analysis
+                                      </div>
+                                      {reasoning}
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                reasoning || "No reasoning recorded."
+                              )}
                             </div>
                             {polyUrl && (
                               <a

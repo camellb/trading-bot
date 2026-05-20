@@ -194,6 +194,14 @@ market_evaluations = Table(
     # has to be back-filled from gamma rather than read from the
     # position-settler.
     Column("settlement_outcome", Text, nullable=True),
+    # Structural reason this evaluation was skipped. Captures the
+    # explicit decision-path message (sizer direction-disagreement,
+    # archetype skip-list, force_skip from research mismatch, risk-
+    # manager halt, max-concurrent cap, etc.) so the Positions
+    # "Skipped" tab can show users WHY the trade was passed on
+    # instead of leaving them to infer it from the LLM's prose.
+    # Null for non-SKIP rows.
+    Column("skip_reason", Text, nullable=True),
 )
 
 
@@ -831,11 +839,23 @@ def create_all_tables() -> None:
         # Counterfactual outcomes for skipped evaluations. Filled in
         # asynchronously after the market resolves so the user can see
         # "would Delfi have won this trade if it hadn't skipped?" on
-        # the Intelligence page. Nullable, no default — only the
+        # the Intelligence page. Nullable, no default - only the
         # resolver writes here.
         if "settlement_outcome" not in existing_eval_cols:
             conn.execute(sa_text(
                 "ALTER TABLE market_evaluations ADD COLUMN settlement_outcome TEXT"
+            ))
+        # Explicit skip reason captured at decision time. Without this,
+        # the Positions Skipped tab can only show the LLM's analysis
+        # prose, which describes WHAT Delfi thinks of the market but
+        # not WHY the trade was skipped (direction disagreement,
+        # archetype skip-list, research mismatch, risk halt, etc.).
+        # Null on existing rows by design - we can't reconstruct the
+        # reason after the fact; the UI falls back to the prose when
+        # this is null.
+        if "skip_reason" not in existing_eval_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE market_evaluations ADD COLUMN skip_reason TEXT"
             ))
 
         # Seed the singleton row if absent. Local install always has

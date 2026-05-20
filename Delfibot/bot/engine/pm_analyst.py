@@ -233,6 +233,13 @@ class PMAnalyst:
                     # like "head to head" surface 18-month-old results
                     # that confuse the forecaster.
                     resolution_date=market.resolution_at_estimate,
+                    # Event slug carries the opponent+date for markets
+                    # whose question is opaque on its own (e.g.
+                    # "Spread: Thunder (-5.5)" with event slug
+                    # "nba-sas-okc-2026-05-20"). Without this the
+                    # keyword extractor misses the opponent and pulls
+                    # research about the wrong game.
+                    event_slug=getattr(market, "event_slug", None),
                 ),
                 timeout=30,
             )
@@ -337,6 +344,7 @@ class PMAnalyst:
                 prediction_id=prediction_id, recommendation="SKIP",
                 market_archetype=archetype,
                 user_id=user_id, mode=user_config.mode,
+                skip_reason="Already holding an open position on this market.",
             )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
@@ -362,6 +370,10 @@ class PMAnalyst:
                 prediction_id=prediction_id, recommendation="SKIP",
                 market_archetype=archetype,
                 user_id=user_id, mode=user_config.mode,
+                skip_reason=(
+                    f"Risk circuit breaker is active: "
+                    f"{verdict.halt_reason or 'risk breaker tripped'}"
+                ),
             )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
@@ -393,6 +405,12 @@ class PMAnalyst:
                 prediction_id=prediction_id, recommendation="SKIP",
                 market_archetype=archetype,
                 user_id=user_id, mode=user_config.mode,
+                skip_reason=(
+                    evaluation.reasoning_short
+                    or "Research returned by the fetcher does not describe "
+                       "this specific event/edition - cannot forecast without "
+                       "on-event evidence."
+                ),
             )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
@@ -1044,6 +1062,7 @@ def _log_market_evaluation(
     market_archetype: Optional[str] = None,
     user_id:          Optional[str] = None,
     mode:             Optional[str] = None,
+    skip_reason:      Optional[str] = None,
 ) -> Optional[int]:
     # `decision` may be None for early-return skip paths (force_skip,
     # risk halt, existing-position). Those bail before the sizer
@@ -1065,19 +1084,31 @@ def _log_market_evaluation(
     try:
         ev_bps = float(decision.ev * 10_000.0) if decision is not None else 0.0
         with get_engine().begin() as conn:
+            # Derive an effective skip_reason. Three sources, in priority
+            # order:
+            #   1. Explicit `skip_reason` arg (from force_skip / risk halt /
+            #      existing-position / per-event cap / max-concurrent etc).
+            #   2. `decision.skip_reason` from the sizer (direction
+            #      disagreement, archetype skip-list, price-band, platform
+            #      minimum, etc).
+            #   3. None - only on BUY rows where there's nothing to explain.
+            effective_skip_reason = skip_reason
+            if effective_skip_reason is None and decision is not None:
+                effective_skip_reason = getattr(decision, "skip_reason", None)
+
             row = conn.execute(text(
                 "INSERT INTO market_evaluations ("
                 "  user_id, market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
                 "  ev_bps, recommendation, reasoning, reasoning_short, "
                 "  research_sources, prediction_id, market_archetype, event_slug, "
-                "  mode"
+                "  mode, skip_reason"
                 ") VALUES ("
                 "  :user_id, :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
                 "  :ev_bps, :rec, :reason, :reason_short, "
                 "  :srcs, :pid, :arch, :event_slug, "
-                "  :mode"
+                "  :mode, :skip_reason"
                 ") RETURNING id"
             ), {
                 "user_id": user_id,
@@ -1098,6 +1129,7 @@ def _log_market_evaluation(
                 "arch": market_archetype,
                 "event_slug": getattr(market, "event_slug", None),
                 "mode": mode,
+                "skip_reason": effective_skip_reason,
             }).fetchone()
             return int(row[0]) if row else None
     except Exception as exc:

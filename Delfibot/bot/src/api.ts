@@ -416,6 +416,10 @@ export interface PerformanceSummary {
   starting_cash: number | null;
   open_positions: number | null;
   open_cost: number | null;
+  /** Current MTM value of open positions.
+   *  In live mode: balance + position_value == equity (always).
+   *  In simulation: equals open_cost (no live prices). */
+  position_value: number | null;
   settled_total: number | null;
   settled_wins: number | null;
   /** Total skipped evaluations for this user (server-side aggregate
@@ -649,6 +653,14 @@ export interface MarketEvaluation {
   // tab to render the counterfactual ("would Delfi have won
   // if it hadn't skipped?").
   settlement_outcome?: string | null;
+  // Explicit reason this market was skipped (sizer direction
+  // disagreement, archetype skip-list, research mismatch / force
+  // skip, risk halt, existing position, etc.). Surfaced as the
+  // headline of the "Why Delfi skipped" detail block so the user
+  // doesn't have to infer the reason from the LLM's prose. Null
+  // for non-SKIP rows and for legacy rows recorded before this
+  // field was added.
+  skip_reason?: string | null;
   [k: string]: unknown;
 }
 
