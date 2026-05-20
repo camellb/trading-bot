@@ -43,7 +43,7 @@ from sqlalchemy import text
 
 import calibration
 from db.engine import get_engine, iso_utc
-from execution.pm_sizer import SizingDecision
+from execution.pm_sizer import SizingDecision, _MIN_ABSOLUTE_STAKE_USD
 from feeds.polymarket_feed import PolyMarket
 from engine.user_config import (
     UserConfig,
@@ -578,6 +578,42 @@ class PMExecutor:
             )
             return None
 
+        # ── Wallet balance pre-check ────────────────────────────────────
+        # The sizer computes stake from the internal DB bankroll, which
+        # may exceed the wallet's actual pUSD balance (e.g. user set
+        # starting_cash=$1000 but only deposited $25). Cap the stake at
+        # the real on-chain balance so we don't hammer the CLOB with
+        # orders it will reject for "not enough balance".
+        try:
+            from feeds.polymarket_wallet import get_poly_signer_info as _signer_info
+            _info = _signer_info(private_key)
+            if _info is not None:
+                wallet_bal = float(_info.get("balance", 0.0) or 0.0)
+                if wallet_bal < _MIN_ABSOLUTE_STAKE_USD:
+                    print(
+                        f"[pm_executor] _open_live: wallet balance "
+                        f"${wallet_bal:.2f} < minimum ${_MIN_ABSOLUTE_STAKE_USD:.2f} "
+                        f"- skipping order on '{market.question[:60]}'",
+                        flush=True,
+                    )
+                    return None
+                if decision.stake_usd > wallet_bal:
+                    old_stake = decision.stake_usd
+                    decision.stake_usd = round(wallet_bal, 4)
+                    decision.shares = round(
+                        decision.stake_usd / float(decision.entry_price), 4
+                    )
+                    print(
+                        f"[pm_executor] _open_live: capped stake "
+                        f"${old_stake:.2f} -> ${decision.stake_usd:.2f} "
+                        f"(wallet balance ${wallet_bal:.2f}) "
+                        f"on '{market.question[:60]}'",
+                        flush=True,
+                    )
+        except Exception as _bex:
+            print(f"[pm_executor] _open_live: balance pre-check failed: {_bex}",
+                  file=sys.stderr)
+
         # ── Build the CLOB client + place order ─────────────────────────
         try:
             client = _get_clob_client(wallet, private_key)
@@ -742,6 +778,17 @@ class PMExecutor:
                 file=sys.stderr,
             )
             return None
+
+        # Invalidate the signer-info cache so the NEXT order attempt in
+        # this scan re-probes the on-chain balance. Without this, the
+        # wallet balance pre-check above still sees the pre-order (higher)
+        # balance for up to 5 minutes and lets a second order through even
+        # though the wallet is now empty.
+        try:
+            from feeds.polymarket_wallet import invalidate_signer_cache as _inval
+            _inval(private_key)
+        except Exception:
+            pass
 
         # ── Wait for fill, then persist ─────────────────────────────────
         final = _poll_order_filled(client, str(order_id))

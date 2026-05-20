@@ -189,7 +189,8 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        if executor.has_open_position_on_market(market.id):
+        has_pos = executor.has_open_position_on_market(market.id)
+        if has_pos:
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_EXISTING_POSITION",

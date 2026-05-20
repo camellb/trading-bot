@@ -171,6 +171,24 @@ def clear_cache() -> None:
     _POLY_SIGNER_CACHE.clear()
 
 
+def invalidate_signer_cache(private_key: Optional[str]) -> None:
+    """Remove one key's entry from the signer-info cache.
+
+    Call this immediately after placing a live order so the next
+    order attempt in the same scan re-probes the on-chain balance
+    rather than reading the pre-order (higher) cached value. Also
+    clears _CLOB_BALANCE_CACHE entirely since it is keyed by derived
+    wallet address (which we don't have here) and has a short 60s
+    TTL anyway.
+    """
+    if not private_key or not isinstance(private_key, str):
+        return
+    import hashlib
+    cache_key = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    _POLY_SIGNER_CACHE.pop(cache_key, None)
+    _CLOB_BALANCE_CACHE.clear()
+
+
 # ── CLOB-side balance (authoritative for live trading) ──────────────────────
 #
 # Polymarket users have one of three account shapes, all signed by
