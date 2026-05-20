@@ -68,7 +68,7 @@ function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
 // the formatted string, so "+10%" sorts after "+9%" not before it.
 
 type OpenSk    = "market" | "category" | "side" | "size"
-                | "avg"   | "now"      | "towin" | "value" | "pnl"
+                | "avg"   | "now"      | "value" | "pnl"
                 | "myes"  | "dyes"     | "dconf" | "opened" | "closes";
 type ClosedSk  = "market" | "category" | "side" | "outcome"
                 | "entry" | "myes"     | "dyes"  | "pnl" | "settled";
@@ -91,7 +91,6 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
       if (cv != null && p.shares > 0) return Number(cv) / p.shares;
       return p.entry_price;
     }
-    case "towin":    return p.shares - p.cost_usd;
     case "value": {
       const cv = (p as unknown as Record<string, unknown>).current_value_usd as
         | number | null | undefined;
@@ -403,7 +402,7 @@ export default function Positions() {
                 <col style={{ width: "64px" }} />
                 <col style={{ width: "64px" }} />
                 <col style={{ width: "64px" }} />
-                <col style={{ width: "64px" }} />
+                <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "28px" }} />
@@ -416,9 +415,9 @@ export default function Positions() {
                   <SortableTh field="avg"      sort={openSort}>Avg</SortableTh>
                   <SortableTh field="now"      sort={openSort}>Now</SortableTh>
                   <SortableTh field="size"     sort={openSort}>Traded</SortableTh>
-                  <SortableTh field="towin"    sort={openSort}>To win</SortableTh>
                   <SortableTh field="value"    sort={openSort}>Value</SortableTh>
                   <SortableTh field="pnl"      sort={openSort}>P&amp;L</SortableTh>
+                  <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
                   <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
                   <th />
                 </tr>
@@ -442,10 +441,6 @@ export default function Positions() {
                   const nowPx = haveMark ? (Number(cv) / p.shares) : null;
                   const value = haveMark ? Number(cv) : null;
                   const pnl   = haveMark ? (Number(cv) - p.cost_usd) : null;
-                  // "To win" = payout if the held side wins (each
-                  // share pays $1) minus the cost basis. Matches
-                  // Polymarket's column.
-                  const toWin = p.shares - p.cost_usd;
                   const pnlClass =
                     pnl == null ? ""
                     : pnl > 0 ? "cell-up"
@@ -464,7 +459,6 @@ export default function Positions() {
                         <td className="mono">${p.entry_price.toFixed(3)}</td>
                         <td className="mono">{nowPx != null ? `$${nowPx.toFixed(3)}` : "—"}</td>
                         <td className="mono">${p.cost_usd.toFixed(0)}</td>
-                        <td className="mono">${toWin.toFixed(0)}</td>
                         <td className="mono">{value != null ? `$${value.toFixed(2)}` : "—"}</td>
                         <td className={`mono ${pnlClass}`}>{
                           pnl == null ? "—"
@@ -472,6 +466,9 @@ export default function Positions() {
                           : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
                           : "$0.00"
                         }</td>
+                        <td className="mono" title={p.created_at ? fmtDateTime(p.created_at) : ""}>
+                          {p.created_at ? timeAgo(p.created_at) : "—"}
+                        </td>
                         <td className="mono">{daysFromNow(closesAt)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>
                           <span style={{

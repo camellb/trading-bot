@@ -506,30 +506,27 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
     # the GIL on every SSL read. With the lock, only one runs at a
     # time.
     #
-    # CRITICAL: the lock is acquired with a 12-second timeout, not
-    # indefinitely. If the holder is wedged inside a slow DNS or SSL
-    # call (c-ares wedge, network blip), every caller WAITING on the
-    # lock would otherwise queue forever, eventually saturating
-    # threadpool workers and starving the aiohttp accept() loop —
-    # the exact failure mode the user kept hitting as "/api/state
-    # timed out after 30s". With a timeout, waiters give up cleanly:
-    # they either return stale cache (defined behaviour upstream)
-    # or None. /api/summary's hot path uses get_cached_*() helpers
-    # below that bypass this lock entirely.
-    acquired = _POLY_SIGNER_LOCK.acquire(timeout=12.0)
+    # CRITICAL: lock acquisition has a SHORT timeout (1.5s, tightened
+    # from 12s on 2026-05-20). The old 12s was producing /api/summary
+    # 25s+ timeouts: 8 _api_executor threads x 2 signer-info calls per
+    # summary = 16 lock waiters, all blocked for the full 12s when the
+    # probe-holder was mid-call. With 1.5s, contending waiters quickly
+    # fall through to stale cache (always populated except on the very
+    # first probe of the process). The cache TTL is 5 min so "stale"
+    # is at most 5 min old funder/balance, fine for dashboard purposes.
+    acquired = _POLY_SIGNER_LOCK.acquire(timeout=1.5)
     if not acquired:
         cached = _POLY_SIGNER_CACHE.get(cache_key)
         if cached is not None:
             info, _ = cached
-            print(
-                f"[polymarket_wallet] probe lock timed out — serving "
-                f"stale cache for {cache_key[:8]}…",
-                file=sys.stderr,
-            )
+            # Quietly serve stale; flooding stderr with one line per
+            # poll buried the actual incident logs in earlier
+            # failures. The probe still runs in the background and
+            # repopulates the cache once the holder finishes.
             return info
         print(
             f"[polymarket_wallet] probe lock timed out and no cache "
-            f"available for {cache_key[:8]}… — returning None",
+            f"available for {cache_key[:8]}… - returning None",
             file=sys.stderr,
         )
         return None
