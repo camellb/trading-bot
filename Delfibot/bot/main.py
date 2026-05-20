@@ -667,6 +667,33 @@ async def main() -> None:
     # no longer needs an explicit notifier handle.
     analyst = PMAnalyst(news_feed=news_feed)
 
+    # ── Pre-warm signer cache BEFORE the API server accepts ────────────
+    # Without this, the first burst of GUI polls (7 endpoints fired
+    # in parallel every 5s) all contend for the signer-info lock
+    # against a cold cache. Each waiter gives up after 1.5s and falls
+    # through to None, which propagates to "Loading..." in the UI
+    # and piles up SYN_SENT sockets at the OS level when the burst
+    # keeps repeating. Synchronously running ONE probe here (with
+    # the daemon's full attention, no contention) populates the
+    # cache before the API ever accepts a connection. Failure is
+    # non-fatal: we proceed and let the background refresh job try
+    # again - downstream get_bankroll falls back to 0.0 in live mode
+    # rather than a $1000 SIM fabrication.
+    try:
+        from engine.user_config import get_user_polymarket_creds
+        from feeds.polymarket_wallet import refresh_live_balance_cache
+        _prewarm_creds = get_user_polymarket_creds()
+        _prewarm_pk = (_prewarm_creds or {}).get("private_key")
+        if _prewarm_pk:
+            print("[delfi] pre-warming Polymarket signer cache...",
+                  flush=True)
+            refresh_live_balance_cache(_prewarm_pk)
+            print("[delfi] signer cache warm", flush=True)
+    except Exception as _exc:
+        print(f"[delfi] signer cache pre-warm failed: {_exc} - "
+              "proceeding; background refresh will retry",
+              flush=True)
+
     # ── Local HTTP API ───────────────────────────────────────────────────────
     # Bind to 127.0.0.1 only. The Tauri webview is the only thing that
     # talks to this port; nothing else on the machine should reach it.

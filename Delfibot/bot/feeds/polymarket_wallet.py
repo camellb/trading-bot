@@ -501,34 +501,31 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
             return info
 
     # Serialize the probe. The GUI polls /api/summary every 5 seconds
-    # on the threadpool; without a lock, concurrent cache-miss callers
-    # all ran the 4-signature-type probe in parallel, contending for
-    # the GIL on every SSL read. With the lock, only one runs at a
-    # time.
+    # and the dashboard fires 7 endpoints in parallel; without
+    # coordination, every burst spawned 7+ concurrent probes that
+    # contended for the GIL on every SSL read.
     #
-    # CRITICAL: lock acquisition has a SHORT timeout (1.5s, tightened
-    # from 12s on 2026-05-20). The old 12s was producing /api/summary
-    # 25s+ timeouts: 8 _api_executor threads x 2 signer-info calls per
-    # summary = 16 lock waiters, all blocked for the full 12s when the
-    # probe-holder was mid-call. With 1.5s, contending waiters quickly
-    # fall through to stale cache (always populated except on the very
-    # first probe of the process). The cache TTL is 5 min so "stale"
-    # is at most 5 min old funder/balance, fine for dashboard purposes.
-    acquired = _POLY_SIGNER_LOCK.acquire(timeout=1.5)
+    # Non-blocking acquire: if another thread is already probing,
+    # return INSTANTLY with whatever's cached (even stale, even None).
+    # The old `timeout=1.5s` blocked every waiter for 1.5s on cold
+    # cache; an /api/summary burst of 7 endpoints = 7 * 1.5s of
+    # serialized lock waits, which manifests as the user-visible
+    # "app times out" wedge of 2026-05-20. With non-blocking, the
+    # first request holds the lock and probes; subsequent requests
+    # return None / stale immediately. The first probe populates
+    # the cache; the next poll cycle hits warm cache for everyone.
+    acquired = _POLY_SIGNER_LOCK.acquire(blocking=False)
     if not acquired:
         cached = _POLY_SIGNER_CACHE.get(cache_key)
         if cached is not None:
             info, _ = cached
-            # Quietly serve stale; flooding stderr with one line per
-            # poll buried the actual incident logs in earlier
-            # failures. The probe still runs in the background and
-            # repopulates the cache once the holder finishes.
+            # Serve stale silently. The in-progress probe will
+            # refresh the cache shortly.
             return info
-        print(
-            f"[polymarket_wallet] probe lock timed out and no cache "
-            f"available for {cache_key[:8]}… - returning None",
-            file=sys.stderr,
-        )
+        # No cache yet AND another thread is probing. Returning None
+        # is the right answer - the caller (get_bankroll) falls back
+        # to _LIVE_BANKROLL_FALLBACK or 0.0 in live mode rather than
+        # blocking the caller waiting for a probe it doesn't own.
         return None
     try:
         # Double-check: another waiter may have populated the cache
