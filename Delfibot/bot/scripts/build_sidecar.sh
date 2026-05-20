@@ -91,6 +91,42 @@ mkdir -p "${OUT_DIR}"
 cp "${SRC}" "${OUT_PATH}"
 chmod 0755 "${OUT_PATH}"
 
+# Ad-hoc codesign so macOS doesn't SIGKILL the binary when we copy
+# it directly into /Applications without going through a full
+# `npm run tauri build`. Without this, macOS 13+ kills the binary
+# immediately (EXC_BAD_ACCESS / Code Signature Invalid) because the
+# hash no longer matches what was recorded at last-install time.
+if command -v codesign >/dev/null 2>&1; then
+  codesign --sign - --force "${OUT_PATH}" 2>&1 && \
+    echo "[build_sidecar] ad-hoc signed ${OUT_PATH}" || \
+    echo "[build_sidecar] codesign failed (non-fatal; full tauri build will sign)" >&2
+fi
+
 echo "[build_sidecar] wrote ${OUT_PATH}"
 echo "[build_sidecar] $(file "${OUT_PATH}" 2>/dev/null || true)"
 echo "[build_sidecar] size: $(du -h "${OUT_PATH}" | cut -f1)"
+
+# Sidecar-only hot-install (skips full Tauri build)
+# When /Applications/Delfi.app exists and only the Python code changed,
+# you can push the new sidecar without rebuilding the Tauri shell.
+# Usage:  DELFI_HOTINSTALL=1 ./scripts/build_sidecar.sh
+#
+# The script copies the sidecar into both locations the installed app
+# uses, ad-hoc re-signs both copies (required by macOS codesigning),
+# then SIGKILL's the running daemon so launchd respawns with the new binary.
+INSTALLED_APP="/Applications/Delfi.app"
+if [[ "${DELFI_HOTINSTALL:-0}" == "1" && -d "${INSTALLED_APP}" ]]; then
+  MAIN_BIN="${INSTALLED_APP}/Contents/MacOS/delfi-sidecar"
+  DAEMON_BIN="${INSTALLED_APP}/Contents/Library/Daemon/DelfiSidecar.app/Contents/MacOS/delfi-sidecar"
+  echo "[build_sidecar] hot-installing into ${INSTALLED_APP}..."
+  cp "${SRC}" "${MAIN_BIN}"   && chmod 0755 "${MAIN_BIN}"
+  cp "${SRC}" "${DAEMON_BIN}" && chmod 0755 "${DAEMON_BIN}"
+  codesign --sign - --force "${MAIN_BIN}"   2>&1
+  codesign --sign - --force "${DAEMON_BIN}" 2>&1
+  echo "[build_sidecar] re-signed installed binaries"
+  OLD_PID=$(pgrep -f "DelfiSidecar.app" 2>/dev/null | head -1)
+  if [[ -n "${OLD_PID}" ]]; then
+    kill -9 "${OLD_PID}" 2>/dev/null && echo "[build_sidecar] killed old daemon (launchd will respawn)"
+  fi
+  echo "[build_sidecar] hot-install done"
+fi

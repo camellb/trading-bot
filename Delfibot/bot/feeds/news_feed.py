@@ -228,7 +228,14 @@ class NewsFeed:
         if new_items:
             headlines = await self._summarise_with_gemini(new_items)
             self._latest_headlines = (self._latest_headlines + headlines)[-50:]
-            self._persist_headlines(headlines)
+            # Offload to executor: _persist_headlines is a synchronous SQLite
+            # write that can block for up to busy_timeout (5s) under write
+            # contention. Calling it inline on the event loop freezes the
+            # accept loop and causes all TCP connects to time out.
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None, self._persist_headlines, headlines
+            )
             cp_count  = sum(1 for i in new_items if i.get("source") == "cryptopanic")
             std_count = len(new_items) - cp_count
             print(

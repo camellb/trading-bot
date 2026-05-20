@@ -266,12 +266,15 @@ class LoopHeartbeat:
             return 0
         if r.returncode != 0:
             return 0
-        port_str = f".{port} "
+        # netstat fields are separated by multiple spaces, so we can't
+        # search for ".{port} " (single space). Split on whitespace and
+        # check whether any address token ends with ".{port}".
+        port_sfx = f".{port}"
         count = 0
         for line in r.stdout.decode("utf-8", "replace").splitlines():
-            if port_str not in line:
+            if "CLOSE_WAIT" not in line and "FIN_WAIT_2" not in line:
                 continue
-            if "CLOSE_WAIT" in line or "FIN_WAIT_2" in line:
+            if any(tok.endswith(port_sfx) for tok in line.split()):
                 count += 1
         return count
 
@@ -303,12 +306,15 @@ class LoopHeartbeat:
             return 0
         if r.returncode != 0:
             return 0
-        # Match lines where the destination port is our listen port and
-        # the state is SYN_SENT (client side of a stalled handshake).
-        port_suffix = f".{port} "
+        # Match lines where any address token ends with ".{port}" and
+        # the state is SYN_SENT. netstat fields are multi-space separated
+        # so we can't use a simple ".{port} " substring search.
+        port_sfx = f".{port}"
         count = 0
         for line in r.stdout.decode("utf-8", "replace").splitlines():
-            if port_suffix in line and "SYN_SENT" in line:
+            if "SYN_SENT" not in line:
+                continue
+            if any(tok.endswith(port_sfx) for tok in line.split()):
                 count += 1
         return count
 

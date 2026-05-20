@@ -76,6 +76,87 @@ import aiohttp.connector as _aiohttp_connector  # noqa: E402
 _aiohttp_resolver.DefaultResolver = _aiohttp_resolver.ThreadedResolver
 _aiohttp_connector.DefaultResolver = _aiohttp_resolver.ThreadedResolver
 
+import concurrent.futures as _cf  # noqa: E402
+import threading as _threading    # noqa: E402
+
+# ── Persistent job event-loop ────────────────────────────────────────────────
+#
+# Every _run_* job wrapper previously called asyncio.run(), which creates
+# a fresh event loop, runs the coroutine, then does cleanup. The cleanup
+# calls loop.shutdown_default_executor() which waits for ALL executor
+# threads to finish: DNS lookups (ThreadedResolver), DDGS search threads,
+# httpx initialisation. If any of those threads hang -- confirmed 2026-05-21
+# via thread dump: DDGS threads stuck in logging.getLogger (global lock
+# contention) and httpx.__init__, with concurrent futures thread.py:166
+# (submit) blocked waiting for _shutdown_lock -- the cleanup deadlocks.
+# The APScheduler worker thread stays blocked indefinitely. The accept
+# queue eventually fills because no new kqueue events drain it, and the
+# GUI shows the same "timed out" banner as the original pycares wedge.
+#
+# Fix: one persistent background event loop that lives for the process
+# lifetime. There is NO cleanup cycle (shutdown_default_executor is never
+# called), so NO deadlock. Executor threads that hang just time out on
+# their own network timeouts and return their slots to the pool. New scans
+# are unaffected because the pool has 16 named slots and is never shut down.
+#
+# The API loop (main asyncio.run(main()) loop) stays dedicated to aiohttp
+# request handling. All scheduler jobs run on _job_loop so a slow scan
+# cannot stall a /api/state call.
+_job_loop: asyncio.AbstractEventLoop | None = None
+_job_loop_lock = _threading.Lock()
+
+
+def _ensure_job_loop() -> asyncio.AbstractEventLoop:
+    """Return the singleton persistent job loop, starting it if needed."""
+    global _job_loop
+    # Fast path: already running.
+    if _job_loop is not None and _job_loop.is_running():
+        return _job_loop
+    with _job_loop_lock:
+        if _job_loop is not None and _job_loop.is_running():
+            return _job_loop
+        loop = asyncio.new_event_loop()
+        # Named threads make crash dumps readable: "delfi-job-0", etc.
+        loop.set_default_executor(
+            _cf.ThreadPoolExecutor(
+                max_workers=16,
+                thread_name_prefix="delfi-job",
+            )
+        )
+        t = _threading.Thread(
+            target=loop.run_forever,
+            name="delfi-job-loop",
+            daemon=True,
+        )
+        t.start()
+        _job_loop = loop
+        return loop
+
+
+def _submit_job(coro, outer_timeout_s: int) -> None:
+    """Submit *coro* to the persistent job loop and block the calling
+    APScheduler thread until the coroutine finishes or *outer_timeout_s*
+    elapses.
+
+    The coroutine is typically already wrapped with _bounded() which raises
+    asyncio.TimeoutError after its own shorter deadline. The outer fence
+    here is a belt-and-suspenders guard: if _bounded itself hangs (e.g.
+    asyncio.CancelledError doesn't propagate out of a stuck run_in_executor
+    call), the outer fence fires, we cancel the Future so the job-loop task
+    gets cancelled on the next iteration, and re-raise so the caller's
+    except-block can record the error.
+    """
+    future = asyncio.run_coroutine_threadsafe(coro, _ensure_job_loop())
+    try:
+        future.result(timeout=outer_timeout_s)
+    except _cf.TimeoutError:
+        future.cancel()
+        raise TimeoutError(
+            f"job hit outer {outer_timeout_s}s fence "
+            "(inner wait_for did not cancel in time)"
+        )
+
+
 import config
 from db.models import create_all_tables
 from engine.loop_watchdog import LoopHeartbeat
@@ -676,26 +757,30 @@ async def main() -> None:
 
     # ── Scheduler ────────────────────────────────────────────────────────────
     #
-    # Why a separate threadpool executor: APScheduler's AsyncIOScheduler
-    # default runs `async def` jobs ON the same event loop as aiohttp.
-    # If a job does ANY blocking sync I/O (sqlite read, anthropic call,
-    # urllib fetch in research/fetcher) the loop is blocked - new
-    # /api/state requests can't be dispatched and the GUI shows
-    # "Delfi could not start" after its 30s wait. Confirmed in production
-    # 2026-05-03: `/api/state` hung indefinitely while a 165-quota scan
-    # was mid-flight.
+    # Jobs run on _job_loop (the persistent background event loop defined
+    # at module level), NOT on the main API loop. This keeps two concerns
+    # isolated:
     #
-    # Fix: register a ThreadPoolExecutor and route the heavy jobs to it.
-    # Each job becomes a sync wrapper that calls asyncio.run() to spin
-    # up its own short-lived event loop on the worker thread, isolated
-    # from the API loop. The scan can take its full sweet time and
-    # /api/state stays responsive throughout.
+    #  1. The aiohttp API loop stays dedicated to HTTP request handling.
+    #     A slow 240s scan cannot stall a /api/state call.
+    #
+    #  2. The persistent _job_loop has no cleanup cycle. The old pattern
+    #     (asyncio.run() per scan) destroyed the loop after each scan and
+    #     called shutdown_default_executor(), which deadlocked whenever a
+    #     DDGS or httpx thread hung. See the module-level comment for the
+    #     full forensics.
+    #
+    # APScheduler's ThreadPoolExecutor fires the _run_* wrappers in its own
+    # thread pool. Each wrapper calls _submit_job() which submits the async
+    # coroutine to _job_loop via run_coroutine_threadsafe and blocks the
+    # APScheduler thread until the coroutine completes (or the outer fence
+    # fires). max_instances=1 per job prevents overlapping runs.
     #
     # The aiohttp client sessions used inside scan_and_analyze /
     # resolve_positions are created INSIDE the async body via
-    # `async with PolymarketFeed() as feed:` so they're bound to the
-    # job's own loop - they don't leak across loops. Same for the
-    # sqlalchemy sessions (per-thread connections by default).
+    # `async with PolymarketFeed() as feed:` -- they're bound to
+    # _job_loop and do not leak into the API loop. SQLAlchemy sessions
+    # use per-thread connections and are unaffected by the loop split.
     scheduler = AsyncIOScheduler(executors={
         "default":    AsyncIOExecutor(),
         "threadpool": APThreadPoolExecutor(max_workers=4),
@@ -727,15 +812,18 @@ async def main() -> None:
         if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
             return
         try:
-            _asyncio_module.run(_bounded(
-                scan_and_analyze(
-                    limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
-                    min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
-                    analyst        = analyst,
+            _submit_job(
+                _bounded(
+                    scan_and_analyze(
+                        limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
+                        min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
+                        analyst        = analyst,
+                    ),
+                    timeout_s=240,
+                    label="scan",
                 ),
-                timeout_s=240,
-                label="scan",
-            ))
+                outer_timeout_s=260,
+            )
             proc_health.record_job_ok("pm_scan")
         except Exception as exc:
             proc_health.record_job_error("pm_scan")
@@ -743,9 +831,10 @@ async def main() -> None:
 
     def _run_resolve():
         try:
-            _asyncio_module.run(_bounded(
-                resolve_positions(), timeout_s=180, label="resolve",
-            ))
+            _submit_job(
+                _bounded(resolve_positions(), timeout_s=180, label="resolve"),
+                outer_timeout_s=200,
+            )
             proc_health.record_job_ok("pm_resolve")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve")
@@ -753,10 +842,13 @@ async def main() -> None:
 
     def _run_resolve_fast():
         try:
-            _asyncio_module.run(_bounded(
-                resolve_positions(short_horizon_only=True),
-                timeout_s=45, label="resolve_fast",
-            ))
+            _submit_job(
+                _bounded(
+                    resolve_positions(short_horizon_only=True),
+                    timeout_s=45, label="resolve_fast",
+                ),
+                outer_timeout_s=60,
+            )
             proc_health.record_job_ok("pm_resolve_fast")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve_fast")
@@ -764,7 +856,10 @@ async def main() -> None:
 
     def _run_markouts():
         try:
-            _asyncio_module.run(check_markouts())
+            _submit_job(
+                _bounded(check_markouts(), timeout_s=120, label="markouts"),
+                outer_timeout_s=140,
+            )
             proc_health.record_job_ok("markout_check")
         except Exception as exc:
             proc_health.record_job_error("markout_check")
@@ -778,10 +873,13 @@ async def main() -> None:
         won?" audit surface, not a trading hot path. 120s budget is
         plenty for a 200-row batch against gamma."""
         try:
-            _asyncio_module.run(_bounded(
-                resolve_skipped_evaluations(), timeout_s=120,
-                label="resolve_skipped",
-            ))
+            _submit_job(
+                _bounded(
+                    resolve_skipped_evaluations(), timeout_s=120,
+                    label="resolve_skipped",
+                ),
+                outer_timeout_s=140,
+            )
             proc_health.record_job_ok("pm_resolve_skipped")
         except Exception as exc:
             proc_health.record_job_error("pm_resolve_skipped")

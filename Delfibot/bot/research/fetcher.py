@@ -17,10 +17,12 @@ with regex heuristics as a last resort.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -71,6 +73,26 @@ if _DDGS_AVAILABLE:
         # exactly that one scan.
         print(f"[research] DDGS warmup failed: {_ddgs_warm_exc}",
               file=sys.stderr, flush=True)
+
+# Serialize DDGS() construction across all threads.
+#
+# DDGS 9.x uses primp (a Rust TLS library) whose global initialization
+# is NOT thread-safe. When _parallel_search submits 4 workers to a
+# ThreadPoolExecutor, all four race to call DDGS() which calls
+# primp.Client(impersonate="random") at ddgs/http_client.py:53.
+# Concurrent primp.Client construction deadlocks.
+#
+# Python 3.12 makes this even worse: ThreadPoolExecutor.submit() holds
+# the module-level _global_shutdown_lock while calling t.start(). If
+# the new thread blocks in primp.Client init before signalling _started,
+# _global_shutdown_lock is held indefinitely and ALL thread pool
+# submit() calls across the entire process freeze - including the job
+# loop thread's DNS lookups, which causes the aiohttp server to stop
+# accepting connections.
+#
+# Fix: serialize DDGS() construction through this lock. The search
+# query itself runs outside the lock so only the init step is serialized.
+_ddgs_init_lock = threading.Lock()
 
 try:
     import trafilatura
@@ -801,7 +823,14 @@ def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
         # query was hitting that broken URL and silently dropping
         # the Wikipedia signal. Default region (None) gives clean
         # routing across all backends. Bug fixed 2026-05-03.
-        with DDGS() as ddg:
+        #
+        # Acquire _ddgs_init_lock before constructing DDGS() to prevent
+        # concurrent primp.Client initialization from deadlocking.
+        # The lock is released as soon as the DDGS object is constructed;
+        # the actual text search runs outside the lock.
+        with _ddgs_init_lock:
+            ddg = DDGS()
+        with ddg:
             return list(ddg.text(query, max_results=max_results) or [])
     except Exception as exc:
         print(f"[research] ddgs search failed for {query[:60]!r}: {exc}",
@@ -1006,13 +1035,32 @@ async def _fetch_web_search_raw(
 
     def _parallel_search():
         all_results: list[dict] = []
-        with ThreadPoolExecutor(max_workers=min(len(queries), 4)) as pool:
+        # Use shutdown(wait=False) so stuck threads (e.g. network hang) never
+        # block the caller. A 25s wall-clock timeout via concurrent.futures.wait
+        # gives each query a generous window while guaranteeing we return before
+        # the outer _bounded()/job-fence fires.
+        pool = ThreadPoolExecutor(
+            max_workers=min(len(queries), 4),
+            thread_name_prefix="delfi-ddgs",
+        )
+        try:
             futures = [pool.submit(_ddg_search_sync, q, 8) for q in queries]
-            for f in futures:
+            done, not_done = concurrent.futures.wait(futures, timeout=25)
+            for f in not_done:
+                f.cancel()
+                print(
+                    "[research] ddgs query timed out - cancelled",
+                    file=sys.stderr,
+                )
+            for f in done:
                 try:
                     all_results.extend(f.result())
                 except Exception:
                     pass
+        finally:
+            # wait=False: don't block on any threads that are still running
+            # inside a network call or stuck in primp init despite the lock.
+            pool.shutdown(wait=False)
         return all_results
 
     return await loop.run_in_executor(None, _parallel_search)
