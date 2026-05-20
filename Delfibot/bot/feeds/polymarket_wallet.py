@@ -226,6 +226,9 @@ _CLOB_BALANCE_TTL_SECONDS = 60.0
 # data-api endpoint.
 _POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float]] = {}
 _POSITIONS_VALUE_TTL_SECONDS = 60.0
+# Single-flight lock for get_total_open_positions_value (defined later
+# next to its sibling _POLY_SIGNER_LOCK after the threading import).
+_POSITIONS_VALUE_LOCK = None  # type: ignore[assignment]
 
 _POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
 _POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
@@ -253,6 +256,10 @@ _CLOB_CLIENT_CACHE: dict = {}
 # SIGKILLs the daemon).
 import threading as _threading
 _POLY_SIGNER_LOCK = _threading.Lock()
+# Same single-flight pattern for the data-api positions probe.
+# Without this, a 7-endpoint cold burst fires 7 parallel data-api
+# HTTPS calls with 8s timeout each, saturating the executor pool.
+_POSITIONS_VALUE_LOCK = _threading.Lock()
 
 
 # Process-level tracking of which (sig_type, funder) tuple we've
@@ -895,7 +902,22 @@ def get_total_open_positions_value(
     cached = _POSITIONS_VALUE_CACHE.get(key)
     if cached is not None and now - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
         return cached[0]
+    # Single-flight: /api/summary fires 7 endpoints in parallel. On
+    # cold positions cache, without this lock each request would
+    # independently fire its own HTTPS to data-api with an 8s
+    # timeout, holding an executor worker the entire time.
+    # Non-blocking acquire: first request runs the probe;
+    # subsequent concurrent requests instantly get the stale cache
+    # (None on the very first probe, the fresh value once it lands).
+    acquired = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
+    if not acquired:
+        return cached[0] if cached is not None else None
     try:
+        # Re-check the cache: another thread may have populated it
+        # while we were waiting on the GIL between get and acquire.
+        cached = _POSITIONS_VALUE_CACHE.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
+            return cached[0]
         import requests as _r
         resp = _r.get(
             "https://data-api.polymarket.com/positions",
@@ -929,6 +951,8 @@ def get_total_open_positions_value(
             file=sys.stderr,
         )
         return None
+    finally:
+        _POSITIONS_VALUE_LOCK.release()
 
 
 def refresh_live_balance_cache(private_key: Optional[str]) -> bool:

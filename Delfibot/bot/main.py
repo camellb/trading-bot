@@ -681,16 +681,35 @@ async def main() -> None:
     # rather than a $1000 SIM fabrication.
     try:
         from engine.user_config import get_user_polymarket_creds
-        from feeds.polymarket_wallet import refresh_live_balance_cache
+        from feeds.polymarket_wallet import (
+            refresh_live_balance_cache,
+            get_poly_signer_info,
+            get_total_open_positions_value,
+        )
         _prewarm_creds = get_user_polymarket_creds()
         _prewarm_pk = (_prewarm_creds or {}).get("private_key")
         if _prewarm_pk:
-            print("[delfi] pre-warming Polymarket signer cache...",
-                  flush=True)
+            print("[delfi] pre-warming Polymarket caches...", flush=True)
+            # 1. Signer cache (funder address + USDC balance).
             refresh_live_balance_cache(_prewarm_pk)
-            print("[delfi] signer cache warm", flush=True)
+            # 2. Open-positions value (data-api MTM). Separate 60s
+            # cache; without prewarming, the FIRST /api/summary after
+            # boot still cold-fetches and blocks 1-2s per concurrent
+            # caller (no lock here, unlike the signer probe). Doing
+            # it synchronously up front makes the very first GUI
+            # poll burst land on warm cache for both probes.
+            try:
+                _info = get_poly_signer_info(_prewarm_pk)
+                _funder = (_info or {}).get("funder")
+                if _funder:
+                    get_total_open_positions_value(_funder)
+            except Exception as _exc2:
+                print(f"[delfi] positions cache pre-warm failed: "
+                      f"{_exc2} - non-fatal",
+                      flush=True)
+            print("[delfi] Polymarket caches warm", flush=True)
     except Exception as _exc:
-        print(f"[delfi] signer cache pre-warm failed: {_exc} - "
+        print(f"[delfi] cache pre-warm failed: {_exc} - "
               "proceeding; background refresh will retry",
               flush=True)
 
