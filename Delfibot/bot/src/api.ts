@@ -331,6 +331,12 @@ export interface PerformanceSummary {
   skipped_total: number | null;
   win_rate: number | null;
   realized_pnl: number | null;
+  /** Unrealized P&L on open positions (current market value - cost).
+   *  Only populated in live mode; null in simulation. */
+  unrealized_pnl: number | null;
+  /** Total P&L = realized_pnl + unrealized_pnl. Use this for the
+   *  headline P&L display so it matches Polymarket's portfolio view. */
+  total_pnl: number | null;
   roi: number | null;
   brier: number | null;
   resolved_predictions: number | null;

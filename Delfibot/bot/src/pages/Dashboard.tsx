@@ -182,7 +182,10 @@ export default function Dashboard({ state, goto }: Props) {
   const mode = (state?.mode as "simulation" | "live") ?? "simulation";
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? 0;
-  const pnl = summary?.realized_pnl ?? 0;
+  // Use total P&L (realized + unrealized) when available so the number
+  // matches what Polymarket shows. Falls back to realized_pnl for
+  // simulation mode or older sidecar builds that don't include total_pnl.
+  const pnl = summary?.total_pnl ?? summary?.realized_pnl ?? 0;
   const pnlPct = starting > 0 ? (pnl / starting) * 100 : 0;
   const winRate = summary?.win_rate ?? null;
   const closed = summary?.settled_total ?? 0;
@@ -349,7 +352,7 @@ function DashHero({
         </div>
         <div className="hero-deltas">
           <div className="hero-delta">
-            <div className="hero-delta-label">Realized P&amp;L</div>
+            <div className="hero-delta-label">P&amp;L</div>
             <div className={`hero-delta-val t-num ${pnlTone}`}>
               {loaded ? (
                 <>

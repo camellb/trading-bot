@@ -495,6 +495,77 @@ class LocalAPI:
             )
         app.router.add_route("OPTIONS", "/{tail:.*}", _options)
 
+    # ── Live position mark-to-market ────────────────────────────────────────
+    async def _fetch_mtm_position_value(self, user_id: str) -> tuple[float, float]:
+        """Current market value of all open live positions.
+
+        Returns (current_value, open_cost):
+        - current_value: sum of shares * live_market_price for each position
+        - open_cost:     sum of cost_usd (purchase price; used for risk calcs)
+
+        Fetches outcomePrices from the gamma API concurrently. Falls back
+        to cost_usd per position on network failure so the dashboard never
+        shows $0. Partial failures degrade gracefully - fetched markets use
+        live prices, failed markets fall back to cost.
+        """
+        import aiohttp as _aio
+        import json as _j
+
+        def _open_rows():
+            with get_engine().connect() as conn:
+                return conn.execute(text(
+                    "SELECT market_id, side, shares, cost_usd "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = 'live' AND status = 'open'"
+                ), {"uid": user_id}).fetchall()
+
+        rows = await self._offload(_open_rows)
+        if not rows:
+            return 0.0, 0.0
+
+        open_cost = sum(float(r[3]) for r in rows)
+        market_ids = list({str(r[0]) for r in rows})
+
+        GAMMA = "https://gamma-api.polymarket.com"
+        price_map: dict[str, dict[str, float]] = {}
+        try:
+            async with _aio.ClientSession(
+                timeout=_aio.ClientTimeout(total=8),
+                headers={"User-Agent": "Delfi/1.0"},
+            ) as sess:
+                async def _one(mid: str):
+                    try:
+                        async with sess.get(f"{GAMMA}/markets/{mid}") as r:
+                            if r.status != 200:
+                                return mid, {}
+                            d = await r.json(content_type=None)
+                            # outcomePrices is a JSON-encoded string in
+                            # the gamma response, not a native list.
+                            outcomes = _j.loads(d.get("outcomes") or "[]")
+                            prices   = _j.loads(d.get("outcomePrices") or "[]")
+                            return mid, {
+                                str(o).upper(): float(p)
+                                for o, p in zip(outcomes, prices)
+                            }
+                    except Exception:
+                        return mid, {}
+
+                results = await asyncio.gather(*(_one(m) for m in market_ids))
+                price_map = dict(results)
+        except Exception:
+            pass  # stays empty; all positions fall back to cost_usd
+
+        current_value = 0.0
+        for market_id, side, shares, cost_usd in rows:
+            pm = price_map.get(str(market_id), {})
+            price = pm.get(str(side).upper())
+            if price and float(price) > 0:
+                current_value += float(shares) * float(price)
+            else:
+                current_value += float(cost_usd)
+
+        return current_value, open_cost
+
     # ── Executor offload helper ─────────────────────────────────────────────
     async def _offload(self, fn, *args, **kwargs):
         """Run a sync callable on the default executor.
@@ -1203,6 +1274,7 @@ class LocalAPI:
         bankroll = stats.get("bankroll")
         equity   = stats.get("equity")
         open_cost = float(stats.get("open_cost") or 0.0)
+        unrealized_pnl: float = 0.0
         if stats.get("mode") == "live":
             try:
                 from feeds.polymarket_wallet import get_live_clob_balance
@@ -1215,11 +1287,19 @@ class LocalAPI:
                     )
                     if clob_balance is not None:
                         bankroll = float(clob_balance)
-                        equity = bankroll + open_cost
+                        # Mark open positions to market rather than using
+                        # purchase cost. open_cost stays as original cost for
+                        # risk calculations (drawdown, exposure cap).
+                        mtm_value, _ = await self._fetch_mtm_position_value(
+                            DEFAULT_USER_ID
+                        )
+                        equity = bankroll + mtm_value
+                        unrealized_pnl = mtm_value - open_cost
             except Exception as exc:
                 # Don't break the dashboard if the CLOB API blips.
                 print(f"[summary] live CLOB balance overlay failed: {exc}",
                       flush=True)
+                equity = bankroll + open_cost
 
         starting = float(stats.get("starting_cash") or 0.0)
         realized = float(stats.get("realized_pnl") or 0.0)
@@ -1248,21 +1328,24 @@ class LocalAPI:
             starting = max(1.0, live_starting)
 
         roi = (realized / starting) if starting > 0 else None
+        total_pnl = realized + unrealized_pnl
 
         return _ok({
-            "mode":           stats.get("mode"),
-            "bankroll":       bankroll,
-            "equity":         equity,
-            "starting_cash":  starting,
-            "open_positions": stats.get("open_positions"),
-            "open_cost":      stats.get("open_cost"),
-            "settled_total":  stats.get("settled_total"),
-            "settled_wins":   stats.get("settled_wins"),
-            "skipped_total":  stats.get("skipped_total"),
-            "win_rate":       stats.get("win_rate"),
-            "realized_pnl":   stats.get("realized_pnl"),
-            "roi":            roi,
-            "brier":          brier.get("brier"),
+            "mode":            stats.get("mode"),
+            "bankroll":        bankroll,
+            "equity":          equity,
+            "starting_cash":   starting,
+            "open_positions":  stats.get("open_positions"),
+            "open_cost":       stats.get("open_cost"),
+            "settled_total":   stats.get("settled_total"),
+            "settled_wins":    stats.get("settled_wins"),
+            "skipped_total":   stats.get("skipped_total"),
+            "win_rate":        stats.get("win_rate"),
+            "realized_pnl":    stats.get("realized_pnl"),
+            "unrealized_pnl":  round(unrealized_pnl, 4),
+            "total_pnl":       round(total_pnl, 4),
+            "roi":             roi,
+            "brier":           brier.get("brier"),
             "resolved_predictions": brier.get("resolved"),
             "total_predictions":    brier.get("total"),
         })
