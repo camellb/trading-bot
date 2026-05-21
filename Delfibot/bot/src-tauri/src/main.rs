@@ -89,12 +89,69 @@ async fn restart_sidecar(
     app: tauri::AppHandle,
     state: tauri::State<'_, ApiState>,
 ) -> Result<(), String> {
+    // Non-macOS: the sidecar is the GUI-spawned child (no launchd /
+    // Service). Restart = kill the child, clear the cached port, and
+    // spawn a fresh sidecar via spawn_sidecar. setup()'s probe loop
+    // is one-shot and doesn't re-run after the initial connect, so
+    // we have to do the spawn here ourselves.
     if !cfg!(target_os = "macos") {
-        return Err(
-            "Restart from the GUI is currently macOS-only. \
-             On other platforms, quit and re-launch Delfi manually."
-                .into(),
-        );
+        // Take the existing child handle so we can kill it. Drop the
+        // lock guard before the kill in case the kill blocks.
+        let existing = {
+            let mut child_slot = state.child.lock().unwrap();
+            child_slot.take()
+        };
+        if let Some(child) = existing {
+            let _ = child.kill();
+        }
+        *state.port.lock().unwrap() = None;
+
+        // Small settle: let the OS reap the killed process before we
+        // spawn a new one (otherwise the singleton lock in the new
+        // sidecar may still see the old PID's file lock).
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let port = portpicker::pick_unused_port().unwrap_or(0);
+        let db_path = resolve_db_path(&app);
+        let (ready_tx, ready_rx) = oneshot::channel::<u16>();
+        let new_child = spawn_sidecar(&app, port, &db_path, ready_tx)
+            .map_err(|e| format!("restart spawn failed: {e}"))?;
+        {
+            let mut child_slot = state.child.lock().unwrap();
+            *child_slot = Some(new_child);
+        }
+        // Wait up to 30s for the sidecar to bind its port. We have
+        // two signals: the spawn_sidecar's stdout READY line (via
+        // ready_rx) and the port-file appearing. Whichever fires
+        // first wins.
+        let app_for_poll = app.clone();
+        let port_file_watcher = async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if let Some(p) = read_existing_sidecar_port(&app_for_poll).await {
+                    return p;
+                }
+            }
+        };
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
+        tokio::select! {
+            res = ready_rx => {
+                if let Ok(bound_port) = res {
+                    *state.port.lock().unwrap() = Some(bound_port);
+                    println!("[restart_sidecar] new sidecar ready on 127.0.0.1:{bound_port}");
+                } else {
+                    eprintln!("[restart_sidecar] ready channel dropped before READY line");
+                }
+            }
+            bound_port = port_file_watcher => {
+                *state.port.lock().unwrap() = Some(bound_port);
+                println!("[restart_sidecar] new sidecar came up via port file on 127.0.0.1:{bound_port}");
+            }
+            _ = timeout => {
+                eprintln!("[restart_sidecar] new sidecar did not bind a port within 30s");
+            }
+        }
+        return Ok(());
     }
     // Read the port file BEFORE we kill anything, so we can target
     // the actual port-holder by lsof. This handles the case where
@@ -542,23 +599,29 @@ fn main() {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
 
-                // Path 2: depends on build mode.
+                // Path 2: depends on build mode AND target OS.
                 //
-                // RELEASE: never spawn. Doing so creates a Tauri-owned
-                // sidecar that competes with the launchd-managed one.
-                // The Tauri spawn binds the port first; launchd's
-                // daemon hits the singleton lock and exits, launchd
-                // respawns it, hits the lock again, exits, and so on
-                // forever. The "Restart Delfi" button only kicks the
-                // launchd slot, leaving the Tauri orphan up - so to
-                // the user it looks like nothing happened. This was
+                // RELEASE on macOS: never spawn. Doing so creates a
+                // Tauri-owned sidecar that competes with the launchd-
+                // managed one. The Tauri spawn binds the port first;
+                // launchd's daemon hits the singleton lock and exits,
+                // launchd respawns it, hits the lock again, exits, and
+                // so on forever. The "Restart Delfi" button only kicks
+                // the launchd slot, leaving the Tauri orphan up - so
+                // to the user it looks like nothing happened. This was
                 // the 2026-05-06 incident.
                 //
-                // DEV: keep the spawn fallback. Dev mode runs
-                // `python main.py` with no LaunchAgent supervision,
-                // so the GUI itself is the only path to a running
-                // sidecar.
-                if cfg!(debug_assertions) {
+                // RELEASE on Windows / Linux: spawn from the GUI.
+                // There's no equivalent of launchd-with-KeepAlive set
+                // up by the installer (Tauri's MSI/NSIS just installs
+                // the .exe; there's no Service or scheduled task).
+                // Without GUI-spawn the sidecar never starts and the
+                // user sees the splash screen forever. GUI lifetime
+                // == sidecar lifetime on these platforms.
+                //
+                // DEV (any OS): keep the spawn fallback. Dev mode runs
+                // `python main.py` with no LaunchAgent supervision.
+                if cfg!(debug_assertions) || !cfg!(target_os = "macos") {
                     println!(
                         "[delfi] no daemon found via port file - falling \
                          back to spawning a sidecar from the GUI (dev mode)"
@@ -612,11 +675,14 @@ fn main() {
                         }
                     }
                 } else {
-                    // Release: kickstart launchd's LaunchAgent in case
-                    // it has crashed and is mid-throttle, then keep
-                    // polling the port file for another 60s. If still
-                    // nothing, surface the error to the splash screen
-                    // and let the user click Restart.
+                    // macOS release path. Other OSes are handled by
+                    // the spawn branch above (which is also dev-mode).
+                    //
+                    // Kickstart launchd's LaunchAgent in case it has
+                    // crashed and is mid-throttle, then keep polling
+                    // the port file for another 60s. If still nothing,
+                    // surface the error to the splash screen and let
+                    // the user click Restart.
                     eprintln!(
                         "[delfi] no daemon after 30s probe - kickstarting \
                          launchd LaunchAgent and continuing to wait"
@@ -701,23 +767,34 @@ fn main() {
             }
 
             if let RunEvent::Exit = event {
-                if cfg!(debug_assertions) {
-                    let state = app_handle.state::<ApiState>();
-                    // Bind the lock guard to a local so it drops before
-                    // `state` does (otherwise the borrow checker sees
-                    // the guard's destructor running after `state` is
-                    // gone).
-                    let mut child_slot = state.child.lock().unwrap();
-                    if let Some(child) = child_slot.take() {
+                // Kill the spawned child on:
+                //   - dev (any OS) - same reason as before, no
+                //     supervisor and orphans break the next dev run
+                //   - release on non-macOS - GUI lifetime == sidecar
+                //     lifetime because there's no launchd / Service
+                //     to take over. Leaving the child running would
+                //     orphan it and the next GUI launch would hit
+                //     the singleton lock and refuse to spawn a fresh
+                //     one.
+                //
+                // Release on macOS keeps the previous "detach without
+                // killing" behaviour: launchd's KeepAlive picks up
+                // the child immediately. The user has been explicit
+                // that closing the window must NOT stop the bot on
+                // mac.
+                let must_kill = cfg!(debug_assertions) || !cfg!(target_os = "macos");
+                let state = app_handle.state::<ApiState>();
+                // Bind the lock guard to a local so it drops before
+                // `state` does (otherwise the borrow checker sees
+                // the guard's destructor running after `state` is
+                // gone).
+                let mut child_slot = state.child.lock().unwrap();
+                if let Some(child) = child_slot.take() {
+                    if must_kill {
                         let _ = child.kill();
                     }
-                } else {
-                    // Release: drop the handle without killing. This
-                    // detaches the child from our process; launchd
-                    // takes over as the supervising parent.
-                    let state = app_handle.state::<ApiState>();
-                    let mut child_slot = state.child.lock().unwrap();
-                    let _ = child_slot.take();
+                    // else: drop handle without killing; macOS launchd
+                    // adopts the orphan via KeepAlive.
                 }
 
                 // macOS only: dedupe Delfi entries in the user's Dock

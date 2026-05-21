@@ -2075,7 +2075,12 @@ class LocalAPI:
             return {
                 "supported": False,
                 "enabled":   False,
-                "reason":    "Auto-start at login is currently macOS-only.",
+                "reason":    (
+                    "Auto-start at login is macOS-only for now. On "
+                    "Windows, launch Delfi manually from the Start "
+                    "Menu after each reboot; the bot runs while the "
+                    "Delfi window is open."
+                ),
             }
 
         plist, service_id = self._autostart_paths()
@@ -2425,12 +2430,19 @@ class LocalAPI:
         import subprocess
 
         if platform.system() != "Darwin":
+            # On non-macOS, the sidecar is spawned + supervised by the
+            # Tauri GUI (no launchd / Service). Report self-state so
+            # the daemon-health pill shows "running" instead of
+            # "unsupported": this endpoint only fires when the sidecar
+            # is alive enough to answer HTTP, so by definition we ARE
+            # running. runs / last_exit_code are not tracked because
+            # the GUI-spawned model has no respawn-counter equivalent.
             return _ok({
-                "supported": False,
-                "runs":      None,
+                "supported": True,
+                "runs":      1,
                 "last_exit_code": None,
-                "pid":       None,
-                "state":     None,
+                "pid":       os.getpid(),
+                "state":     "running",
             })
 
         _, service_id = self._autostart_paths()
