@@ -1,32 +1,40 @@
 """
-Smoke-test the event_slug research enrichment.
+End-to-end smoke test: does the research bundle actually describe the
+correct market?
 
-Pulls ~20 active markets from the local DB (recently scanned), runs
-fetch_research() with the new event_slug parameter, and checks whether
-the extracted keywords actually correspond to the parent event.
+This is the REAL test of the event_slug fix. We don't just check that
+the keyword extractor saw the slug - we run the full research pipeline
+and ask an LLM the same question the forecaster asks itself
+(`same_event_verified`): does this evidence describe THIS specific
+event, or a different edition / matchup / date?
 
-The historical failure mode this targets: opaque sub-market titles like
-"Spread: Thunder (-5.5)" whose research used to surface games about
-some OTHER Thunder matchup because the question alone has no opponent.
-After the event_slug fix, the keyword extractor sees the full context
-(e.g. "Spread: Thunder (-5.5) [event: nba-sas-okc-2026-05-20]") and
-should produce keywords that include the actual opponent (Spurs / SAS).
+For each of N recent markets:
+  1. fetch_research(question, event_slug=...)  - full pipeline, with
+     web search, Wikipedia, news, base rates.
+  2. Build the prompt block the forecaster would see.
+  3. Ask Claude (or fallback LLM): given the market question and the
+     research bundle, is the research about the CORRECT event? Answer
+     YES / PARTIAL / NO with a one-sentence reason.
+  4. Per-market verdict:
+       MATCH    - LLM says YES, research aligns with the market
+       PARTIAL  - some on-event evidence, some off-event
+       MISMATCH - research describes a DIFFERENT event (the user's
+                  original complaint - Thunder/Spurs market with
+                  Thunder/Timberwolves research)
+       NO_RESEARCH - bundle was empty (research failed)
 
-Pass/fail per market:
-  PASS - keywords include at least one token from the event_slug that
-         isn't already in the question (i.e. the slug added signal)
-  FLAG - sports market with opaque question, no event_slug present, OR
-         keyword extractor didn't pick up opponent tokens from the slug
-  SKIP - non-sports market, or question already self-explanatory
+Exit non-zero if ANY sports/event market comes back MISMATCH.
 
 Run from Delfibot/bot/:
 
+    DELFI_DB_PATH=~/Library/Application\\ Support/com.delfi.desktop/delfi.db \\
     ../../.venv/bin/python scripts/smoke_research_match.py
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -36,39 +44,81 @@ _BOT_DIR = Path(__file__).resolve().parent.parent
 if str(_BOT_DIR) not in sys.path:
     sys.path.insert(0, str(_BOT_DIR))
 
+from datetime import datetime, timezone  # noqa: E402
+
 from sqlalchemy import text  # noqa: E402
 from db.engine import get_engine  # noqa: E402
 from research.fetcher import fetch_research  # noqa: E402
+from engine.llm_client import get_llm  # noqa: E402
 
 
-# Tokens we strip when comparing question vs slug content. These are
-# noise tokens that appear in slugs but don't carry matchup signal.
-_SLUG_NOISE = {
-    "nba", "nfl", "mlb", "nhl", "soccer", "atp", "wta", "epl", "ucl",
-    "spread", "moneyline", "ml", "ou", "over", "under", "home", "away",
-    "pt5", "5pt5", "yes", "no", "the", "vs", "v", "and", "or",
-    "winner", "team", "game", "match", "round", "set", "leg",
-}
+_VERIFY_PROMPT = (
+    "You are auditing a research bundle for a prediction market. "
+    "Your job is simple: does the research describe the SAME event the "
+    "market is asking about? "
+    "\n\n"
+    "The market often has a date (explicit in the question or implicit in the "
+    "event slug). The research may describe a DIFFERENT edition of the same "
+    "recurring event - last year's tournament, a different game in a series, "
+    "a different round, a different matchup. If most of the research is "
+    "about a different event, that is a MISMATCH and the trade should be "
+    "skipped (the bot already does this; we are testing whether the research "
+    "fetcher is giving good data). "
+    "\n\n"
+    "Output STRICT JSON only, no prose:\n"
+    "{\n"
+    '  "verdict": "MATCH" | "PARTIAL" | "MISMATCH" | "NO_RESEARCH",\n'
+    '  "reason": "<= 200 char one-sentence justification, cite which '
+    "snippet(s) made you decide\"\n"
+    "}\n"
+    "\n"
+    "MATCH    = >=70% of research clearly describes THIS event/edition/date.\n"
+    "PARTIAL  = some on-event evidence but mixed with off-event noise.\n"
+    "MISMATCH = research is mostly about a different game/date/edition - "
+    "the trade would be a coin flip if Delfi traded on this.\n"
+    "NO_RESEARCH = the bundle is essentially empty or only generic "
+    "background with no event-specific facts.\n"
+)
 
 
-def _tokenize(s: str) -> set[str]:
-    """Lowercase token set, alphanumeric runs only, dropping noise."""
-    if not s:
-        return set()
-    raw = re.findall(r"[a-z0-9]+", s.lower())
-    return {t for t in raw if t and t not in _SLUG_NOISE and not t.isdigit()}
-
-
-def _slug_signal_tokens(slug: str | None) -> set[str]:
-    """Tokens from the event slug that AREN'T just dates / league names."""
-    if not slug:
-        return set()
-    return _tokenize(slug)
+async def _verify_one(question: str, event_slug: str | None,
+                      research_block: str) -> dict:
+    llm = get_llm()
+    user_prompt = (
+        f"MARKET QUESTION: {question}\n"
+        f"EVENT SLUG (parent event on Polymarket): {event_slug or '(none)'}\n"
+        f"\n"
+        f"--- RESEARCH BUNDLE START ---\n"
+        f"{research_block}\n"
+        f"--- RESEARCH BUNDLE END ---\n"
+    )
+    raw = await llm.call(
+        system=_VERIFY_PROMPT,
+        user=user_prompt,
+        max_tokens=400,
+        temperature=0.0,
+    )
+    if not raw:
+        return {"verdict": "ERROR", "reason": "LLM returned no response"}
+    raw = raw.strip()
+    # Strip markdown code fence if Claude wrapped the JSON
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return {"verdict": "PARSE_ERROR",
+                "reason": f"could not parse LLM output: {exc}; raw={raw[:200]!r}"}
+    verdict = str(obj.get("verdict") or "").upper().strip()
+    if verdict not in ("MATCH", "PARTIAL", "MISMATCH", "NO_RESEARCH"):
+        return {"verdict": "PARSE_ERROR",
+                "reason": f"unknown verdict {verdict!r}; raw={raw[:200]!r}"}
+    return {"verdict": verdict,
+            "reason": (str(obj.get("reason") or "")[:300])}
 
 
 async def _eval_one(row: dict) -> dict:
-    """Compare research WITH and WITHOUT event_slug, report whether the
-    slug version produced better-anchored research."""
     question = row["question"]
     event_slug = row.get("event_slug") or None
     market_id = row["market_id"]
@@ -76,77 +126,48 @@ async def _eval_one(row: dict) -> dict:
 
     out = {
         "market_id": market_id,
-        "question": question[:60],
+        "question": question[:80],
         "event_slug": event_slug,
         "category": category,
     }
 
-    if not event_slug:
-        out["verdict"] = "NO_SLUG"
-        out["detail"] = "no event_slug on this market - nothing to enrich"
-        return out
-
-    # Run research BOTH ways: with slug (new behaviour) and without
-    # (legacy behaviour). The difference between the two is exactly the
-    # signal the fix adds.
+    # Faithful production reproduction: pass resolution_date so DDG
+    # queries get pinned to the right month+year (the production
+    # caller in pm_analyst does this via market.resolution_at_estimate).
+    # We don't have the per-market resolution date in the DB row we
+    # pulled, so use "today" - same fallback the fetcher uses when
+    # resolution_date is None.
+    resolution_date = datetime.now(timezone.utc)
     try:
-        baseline, enriched = await asyncio.gather(
-            asyncio.wait_for(
-                fetch_research(question, category, event_slug=None),
-                timeout=30,
+        bundle = await asyncio.wait_for(
+            fetch_research(
+                question, category,
+                event_slug=event_slug,
+                resolution_date=resolution_date,
             ),
-            asyncio.wait_for(
-                fetch_research(question, category, event_slug=event_slug),
-                timeout=30,
-            ),
+            timeout=60,
         )
     except Exception as exc:
         out["verdict"] = "RESEARCH_FAIL"
-        out["detail"] = f"fetch_research raised: {exc!r}"
+        out["reason"] = f"fetch_research raised: {exc!r}"
         return out
 
-    baseline_kws = baseline.keywords or []
-    enriched_kws = enriched.keywords or []
-    baseline_tok = set()
-    for kw in baseline_kws:
-        baseline_tok |= _tokenize(kw)
-    enriched_tok = set()
-    for kw in enriched_kws:
-        enriched_tok |= _tokenize(kw)
+    research_block = bundle.to_prompt_block()
+    out["bundle_chars"] = len(research_block)
+    out["sources"] = bundle.sources
 
-    novel_tokens = enriched_tok - baseline_tok
-    lost_tokens = baseline_tok - enriched_tok
+    if len(research_block.strip()) < 200:
+        out["verdict"] = "NO_RESEARCH"
+        out["reason"] = f"bundle too small ({len(research_block)} chars) - fetcher returned almost nothing"
+        return out
 
-    # The metric that actually matters: did the enriched run produce
-    # keyword tokens not present in the baseline run? If so, the slug
-    # contributed real signal.
-    out["baseline_keywords"] = baseline_kws[:6]
-    out["enriched_keywords"] = enriched_kws[:6]
-    out["novel_tokens"] = sorted(novel_tokens)
-    out["lost_tokens"] = sorted(lost_tokens)
-
-    if novel_tokens:
-        out["verdict"] = "ENRICHED"
-        out["detail"] = (
-            f"enriched run added {len(novel_tokens)} token(s) not in "
-            f"baseline: {sorted(novel_tokens)[:8]}"
-        )
-    elif baseline_kws == enriched_kws:
-        out["verdict"] = "NO_DELTA"
-        out["detail"] = "baseline already captured everything; slug added no new signal"
-    else:
-        out["verdict"] = "SAME_TOKENS"
-        out["detail"] = (
-            "keyword phrasing differs but token set is unchanged "
-            f"(baseline={baseline_kws[:3]} enriched={enriched_kws[:3]})"
-        )
+    verdict_obj = await _verify_one(question, event_slug, research_block)
+    out["verdict"] = verdict_obj["verdict"]
+    out["reason"] = verdict_obj["reason"]
     return out
 
 
 async def main() -> int:
-    # Pull the 20 most-recent unique-question markets the bot has
-    # evaluated. We dedupe on question so we don't run 4 copies of
-    # the same Bitcoin price market.
     limit = int(os.environ.get("DELFI_RESEARCH_TEST_N", "20"))
     print(f"[smoke-research] fetching {limit} recent unique markets...")
     with get_engine().connect() as conn:
@@ -161,42 +182,53 @@ async def main() -> int:
             LIMIT :n
         """), {"n": limit}).mappings().all()
     markets = [dict(r) for r in rows]
-    print(f"[smoke-research] got {len(markets)} markets to test")
-    print()
+    print(f"[smoke-research] got {len(markets)} markets to test\n")
 
-    # Run sequentially to avoid hammering DDG / LLM rate limits.
     results: list[dict] = []
     for i, m in enumerate(markets, start=1):
-        print(f"[{i}/{len(markets)}] {m['question'][:60]}")
-        print(f"        slug: {m['event_slug']}")
+        print(f"[{i}/{len(markets)}] {m['question'][:70]}")
+        print(f"          slug: {m['event_slug']}")
         r = await _eval_one(m)
         results.append(r)
-        print(f"        => {r['verdict']}: {r['detail']}")
+        bundle_chars = r.get("bundle_chars")
+        if bundle_chars is not None:
+            print(f"          bundle: {bundle_chars} chars, sources={r.get('sources')}")
+        print(f"          => {r['verdict']}: {r['reason']}")
         print()
 
     # Summary
-    by_verdict: dict[str, int] = {}
+    counts: dict[str, int] = {}
     for r in results:
-        by_verdict[r["verdict"]] = by_verdict.get(r["verdict"], 0) + 1
-    print("=" * 60)
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    print("=" * 70)
     print("SUMMARY")
-    print("=" * 60)
-    for v, n in sorted(by_verdict.items(), key=lambda kv: -kv[1]):
-        print(f"  {v:14s}  {n:3d}")
+    print("=" * 70)
+    for v in ("MATCH", "PARTIAL", "MISMATCH", "NO_RESEARCH",
+              "RESEARCH_FAIL", "ERROR", "PARSE_ERROR"):
+        n = counts.get(v, 0)
+        if n:
+            print(f"  {v:14s}  {n:3d}")
     print()
-    enriched = [r for r in results if r["verdict"] == "ENRICHED"]
-    if enriched:
-        print(f"ENRICHED markets ({len(enriched)}) - slug added signal:")
-        for r in enriched:
+
+    mismatches = [r for r in results if r["verdict"] == "MISMATCH"]
+    if mismatches:
+        print(f"!!! {len(mismatches)} MISMATCH(es) - research about wrong event:")
+        for r in mismatches:
             print(f"  - {r['question']}")
-            print(f"    slug: {r['event_slug']}")
-            print(f"    baseline keywords: {r.get('baseline_keywords')}")
-            print(f"    enriched keywords: {r.get('enriched_keywords')}")
-            print(f"    novel tokens:      {r['novel_tokens']}")
+            print(f"    slug:   {r['event_slug']}")
+            print(f"    reason: {r['reason']}")
             print()
-    # Exit code: success if every market either improved or genuinely
-    # needed no enrichment. The user's complaint was about cases where
-    # the slug WOULD have added signal but didn't reach the extractor.
+        return 1
+
+    partials = [r for r in results if r["verdict"] == "PARTIAL"]
+    if partials:
+        print(f"PARTIAL ({len(partials)}) - some off-event noise but on-event "
+              "evidence present:")
+        for r in partials:
+            print(f"  - {r['question']}")
+            print(f"    reason: {r['reason']}")
+            print()
+    print(f"PASS: zero MISMATCH out of {len(results)} markets tested.")
     return 0
 
 
