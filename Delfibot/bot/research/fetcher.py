@@ -105,6 +105,14 @@ class ResearchBundle:
     live_market_data: Optional[str] = None
     keywords:         list[str]     = field(default_factory=list)
     sources:          list[str]     = field(default_factory=list)
+    # Curated bundle text produced by the post-fetch relevance filter.
+    # When non-None, to_prompt_block() returns THIS instead of the raw
+    # concatenation of fetched sources. The curator drops off-event
+    # snippets (adjacent game in a series, prior tournament edition,
+    # adjacent tweet-count window, etc.) that would otherwise pollute
+    # the forecaster's context and trip same_event_verified=no.
+    curated_block:    Optional[str] = None
+    curation_status:  Optional[str] = None  # "match" | "partial" | "insufficient" | "skipped" | "failed"
 
     def to_prompt_block(self) -> str:
         """Format everything into a context block for the forecaster.
@@ -116,7 +124,15 @@ class ResearchBundle:
         that no longer applies under BYO-keys. The fetcher itself
         still caps per-source fetch volume; this method just stops
         re-truncating what we already collected.
+
+        When curated_block is set, return THAT instead. The curator
+        drops off-event snippets (adjacent game, prior edition,
+        adjacent micro-window) so the forecaster sees only on-event
+        evidence. Falls through to the raw assembly if curation was
+        skipped, failed, or returned nothing.
         """
+        if self.curated_block:
+            return self.curated_block
         parts: list[str] = []
         if self.live_market_data:
             parts.append(
@@ -562,6 +578,146 @@ async def _extract_keywords_claude(question: str) -> Optional[dict]:
     return None
 
 
+# ── Post-fetch relevance curation ───────────────────────────────────────────
+#
+# The web search returns lots of off-event noise: adjacent games in a
+# series ("Thunder Game 1 box score" when the market is for Game 2),
+# adjacent micro-windows ("Elon Musk tweets May 8-15" when the market is
+# May 15-22), prior editions of recurring tournaments, etc. Even with
+# date-precise queries, DDG ranks pages by site authority + keyword
+# match, so adjacent-event pages sneak in.
+#
+# The curation pass asks Gemini Flash (cheap, fast) to rewrite the
+# bundle keeping ONLY snippets that describe the same event as the
+# market. Output goes into ResearchBundle.curated_block, which
+# to_prompt_block() then returns in place of the raw concatenation.
+#
+# Cost: ~5-10K tokens in, ~3-5K out per market. At Gemini 2.0 Flash
+# rates that's <$0.005/market. Worth it.
+_CURATION_SYSTEM = (
+    "You are curating a research bundle for a prediction market. "
+    "Keep ONLY snippets that describe the SAME EVENT the market is "
+    "asking about. Drop snippets about different editions, different "
+    "dates, different matchups, different price windows, different "
+    "bands of the same recurring market.\n"
+    "\n"
+    "Rules:\n"
+    "1. The original bundle is divided into named sections ('-- Web "
+    "search results --', '-- Detailed web research --', '-- Wikipedia "
+    "--', etc.). Preserve those section headers in your output.\n"
+    "2. Within each section, keep each snippet VERBATIM if it is "
+    "on-event. Drop it entirely if it is off-event. Do not summarize, "
+    "edit, or paraphrase.\n"
+    "3. KEEP general background sections (Wikipedia, Historical base "
+    "rate, Sports data) - they're contextual, rarely off-event.\n"
+    "4. KEEP the LIVE MARKET DATA section verbatim - it's always the "
+    "current state.\n"
+    "5. If a snippet is ambiguous (could be on-event, hard to tell), "
+    "KEEP it - the forecaster will judge.\n"
+    "6. After curation, append a single line:\n"
+    "   '-- Curation note --\\nMATCH' if at least 60% of original "
+    "evidence is on-event,\n"
+    "   '-- Curation note --\\nPARTIAL' if some on-event evidence "
+    "remains but most was dropped,\n"
+    "   '-- Curation note --\\nINSUFFICIENT' if no clearly on-event "
+    "evidence was found.\n"
+    "7. Output the curated bundle text only. No prose, no JSON, no "
+    "commentary outside the bundle."
+)
+
+
+async def _curate_bundle_for_event(
+    raw_block: str,
+    market_question: str,
+    event_slug: Optional[str],
+    resolution_date: Optional[datetime],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (curated_block, status). On failure or skip, returns
+    (None, status) and the caller falls back to the raw bundle.
+
+    status: 'match' | 'partial' | 'insufficient' | 'skipped' | 'failed'
+    """
+    if not raw_block or len(raw_block.strip()) < 500:
+        return None, "skipped"
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        # No Gemini key - skip curation rather than fall back to Claude
+        # (which would double the per-market cost). The forecaster's
+        # own same_event_verified gate still protects downstream.
+        return None, "skipped"
+    res_date_str = (
+        resolution_date.strftime("%Y-%m-%d")
+        if resolution_date else "(unknown)"
+    )
+    user_prompt = (
+        f"MARKET QUESTION: {market_question}\n"
+        f"EVENT SLUG: {event_slug or '(none)'}\n"
+        f"RESOLUTION DATE: {res_date_str}\n"
+        f"\n"
+        f"--- ORIGINAL BUNDLE START ---\n"
+        f"{raw_block}\n"
+        f"--- ORIGINAL BUNDLE END ---\n"
+    )
+
+    global _gemini_client
+    if _gemini_client is None:
+        try:
+            from google import genai
+            _gemini_client = genai.Client(api_key=gemini_key)
+        except Exception as exc:
+            print(f"[research] curation: gemini client init failed: {exc}",
+                  file=sys.stderr)
+            return None, "failed"
+    client = _gemini_client
+
+    def _call():
+        return client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=[_CURATION_SYSTEM, user_prompt],
+            config={
+                # Up to ~10K tokens of curated bundle. Most fall well
+                # short; this just stops a runaway response from being
+                # truncated.
+                "max_output_tokens": 12000,
+                "temperature": 0.0,
+            },
+        ).text
+
+    loop = asyncio.get_running_loop()
+    try:
+        raw = await loop.run_in_executor(None, _call)
+    except Exception as exc:
+        print(f"[research] curation gemini call failed: {exc}",
+              file=sys.stderr)
+        return None, "failed"
+    if not raw:
+        return None, "failed"
+    curated = raw.strip()
+    # Extract the curation note. Tolerate either the prescribed format
+    # or a stray '-- Curation note --' header. Default to 'partial' so
+    # the bundle is still used.
+    status = "partial"
+    m = re.search(
+        r"--\s*Curation note\s*--\s*\n?\s*(MATCH|PARTIAL|INSUFFICIENT)",
+        curated,
+        re.IGNORECASE,
+    )
+    if m:
+        status = m.group(1).lower()
+    if status == "insufficient":
+        # No on-event evidence: return a minimal stub block so the
+        # forecaster sees the curation verdict and skips. The
+        # same_event_verified gate already handles this downstream.
+        stub = (
+            f"(post-fetch curation found NO on-event research for "
+            f"this market. The original bundle described different "
+            f"editions/dates/matchups. The forecaster should set "
+            f"same_event_verified=no.)"
+        )
+        return stub, "insufficient"
+    return curated, status
+
+
 # ── ESPN sports data ────────────────────────────────────────────────────────
 _ESPN_SPORTS = {
     "nhl":    "hockey/nhl",
@@ -880,6 +1036,36 @@ _MONTH_NAMES = [
 ]
 
 
+# Slugs like nba-sas-okc-2026-05-20 carry the EXACT game date. Without
+# this, queries pin only to "May 2026" and DDG happily returns adjacent
+# games in the same series (Game 1 vs Game 2). Extracting the YYYY-MM-DD
+# from the slug lets us add day-precise queries that anchor on the
+# specific game.
+_SLUG_DATE_RE = re.compile(r"(?P<y>20\d{2})[-_/](?P<m>\d{1,2})[-_/](?P<d>\d{1,2})")
+
+
+def _extract_slug_date(slug: Optional[str]) -> Optional[datetime]:
+    """Extract a YYYY-MM-DD date from a Polymarket event slug.
+
+    Returns None if no date pattern is present (which is fine: many
+    slugs are stable event names without dates).
+    """
+    if not slug:
+        return None
+    m = _SLUG_DATE_RE.search(slug)
+    if not m:
+        return None
+    try:
+        return datetime(
+            year=int(m.group("y")),
+            month=int(m.group("m")),
+            day=int(m.group("d")),
+            tzinfo=timezone.utc,
+        )
+    except (ValueError, TypeError):
+        return None
+
+
 def _build_search_queries(
     question: str,
     keywords: list[str],
@@ -889,6 +1075,7 @@ def _build_search_queries(
     event_name: Optional[str] = None,
     event_qualifier: Optional[str] = None,
     resolution_date: Optional[datetime] = None,
+    event_slug: Optional[str] = None,
 ) -> list[str]:
     """
     Build targeted search queries based on market category and event context.
@@ -925,17 +1112,36 @@ def _build_search_queries(
 
     if cat == "sports" or sport:
         sport_name = sport or ""
+        # Day-precise tag when the slug has the exact game date. Without
+        # this, DDG returns adjacent games in the same series (Game 1
+        # when the market is Game 2, etc). Two formats because different
+        # sportsbook/news sites use different conventions.
+        slug_dt = _extract_slug_date(event_slug)
+        day_tag_iso = slug_dt.strftime("%Y-%m-%d") if slug_dt else None
+        day_tag_natural = (
+            slug_dt.strftime(f"{_MONTH_NAMES[slug_dt.month - 1]} %d %Y")
+            if slug_dt else None
+        )
         if teams:
             team_str = " vs ".join(teams[:2])
-            # Three queries pinned to the SPECIFIC edition+round of the
-            # event, not generic "head to head record" which evergreen-
-            # surfaces every prior meeting.
+            # Generic edition+month queries (still useful for sites
+            # whose pages list the whole series).
             queries.append(f"{team_str} {event_tag} preview")
             queries.append(f"{team_str} {event_tag} odds prediction {sport_name}")
             queries.append(f"{team_str} head to head {sport_name} {year}")
+            # Day-precise queries when slug carries the date. These
+            # are what fixes the Thunder Game 1 vs Game 2 case: DDG
+            # ranks pages mentioning the exact date much higher than
+            # the generic month-pinned ones.
+            if day_tag_natural:
+                queries.append(f"{team_str} {day_tag_natural} {sport_name} preview")
+                queries.append(f"{team_str} {day_tag_natural} box score result")
+                queries.append(f"{team_str} {day_tag_iso}")
         elif keywords:
             queries.append(f"{' '.join(keywords[:2])} {event_tag} preview")
             queries.append(f"{' '.join(keywords[:2])} {event_tag} odds")
+            if day_tag_natural:
+                queries.append(f"{' '.join(keywords[:2])} {day_tag_natural}")
 
     elif cat == "politics":
         if keywords:
@@ -1138,6 +1344,7 @@ async def _fetch_web_search_raw(
     event_name: Optional[str] = None,
     event_qualifier: Optional[str] = None,
     resolution_date: Optional[datetime] = None,
+    event_slug: Optional[str] = None,
 ) -> list[dict]:
     if not _DDGS_AVAILABLE:
         return []
@@ -1147,6 +1354,7 @@ async def _fetch_web_search_raw(
         event_name=event_name,
         event_qualifier=event_qualifier,
         resolution_date=resolution_date,
+        event_slug=event_slug,
     )
 
     loop = asyncio.get_running_loop()
@@ -1457,6 +1665,11 @@ async def fetch_research(
             event_name=detected_event_name,
             event_qualifier=detected_event_qualifier,
             resolution_date=resolution_date,
+            # Pass the slug so the query builder can extract the exact
+            # game date and add day-precise queries. Without this, DDG
+            # returns adjacent games in the same series (Thunder Game 1
+            # when the market is Game 2).
+            event_slug=event_slug,
         )
     )
 
@@ -1570,7 +1783,84 @@ async def fetch_research(
     if bundle.base_rate_note:
         bundle.sources.append("base_rate")
 
+    # Post-fetch relevance curation. Reads the assembled bundle, drops
+    # off-event snippets via a Gemini Flash pass, stores the result in
+    # bundle.curated_block (which to_prompt_block() then returns in
+    # place of the raw concatenation). The curator is hard-bounded by
+    # a short timeout because some bundles are huge and we don't want
+    # to slow the scan loop.
+    try:
+        raw_block = ResearchBundle.to_prompt_block.__wrapped__(bundle) \
+            if hasattr(ResearchBundle.to_prompt_block, "__wrapped__") \
+            else _assemble_raw_block(bundle)
+    except Exception:
+        raw_block = ""
+    if raw_block and len(raw_block.strip()) >= 500:
+        try:
+            curated, status = await asyncio.wait_for(
+                _curate_bundle_for_event(
+                    raw_block, question, event_slug, resolution_date,
+                ),
+                timeout=20.0,
+            )
+            if curated:
+                bundle.curated_block = curated
+                bundle.curation_status = status
+                bundle.sources.append(f"curated:{status}")
+            elif status:
+                bundle.curation_status = status
+                bundle.sources.append(f"curation:{status}")
+        except asyncio.TimeoutError:
+            print("[research] curation timed out - falling back to raw bundle",
+                  file=sys.stderr)
+            bundle.curation_status = "failed"
+            bundle.sources.append("curation:failed")
+        except Exception as exc:
+            print(f"[research] curation raised: {exc}", file=sys.stderr)
+            bundle.curation_status = "failed"
+            bundle.sources.append("curation:failed")
+
     return bundle
+
+
+def _assemble_raw_block(b: "ResearchBundle") -> str:
+    """Build the unfiltered prompt block without consulting
+    curated_block. Used by the curator (which must see the raw bundle,
+    not its own potentially-stale output) without recursing through
+    to_prompt_block."""
+    parts: list[str] = []
+    if b.live_market_data:
+        parts.append(
+            f"-- LIVE MARKET DATA (REAL-TIME) --\n{b.live_market_data.strip()}"
+        )
+    if b.web_pages:
+        parts.append("-- Detailed web research --\n" + "\n\n".join(b.web_pages))
+    if b.web_search:
+        parts.append(
+            "-- Web search results (current) --\n"
+            + "\n".join(f"• {s}" for s in b.web_search)
+        )
+    if b.crypto_prices and not b.live_market_data:
+        parts.append(f"-- Spot price (CoinGecko) --\n{b.crypto_prices.strip()}")
+    if b.sports_context:
+        parts.append(f"-- Sports data --\n{b.sports_context.strip()}")
+    if b.wikipedia:
+        parts.append(f"-- Wikipedia --\n{b.wikipedia.strip()}")
+    if b.news_snippets:
+        parts.append(
+            "-- Recent headlines (RSS) --\n"
+            + "\n".join(f"• {h}" for h in b.news_snippets)
+        )
+    if b.external_news:
+        parts.append(
+            "-- Recent headlines (NewsAPI) --\n"
+            + "\n".join(f"• {h}" for h in b.external_news)
+        )
+    if b.base_rate_note:
+        parts.append(f"-- Historical base rate --\n{b.base_rate_note}")
+    if not parts:
+        return ""
+    return "\n\n".join(parts)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
