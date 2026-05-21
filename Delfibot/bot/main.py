@@ -1195,7 +1195,98 @@ async def main() -> None:
     print("[delfi] bye", flush=True)
 
 
+def _install_log_file_tee() -> None:
+    """Mirror every print() to <app-data>/logs/sidecar.log.
+
+    On macOS the LaunchAgent plist captures stdout/stderr via
+    StandardOutPath. On Windows there's no equivalent: the GUI-spawned
+    sidecar has its stdout piped into the Tauri shell process, which
+    re-prints to its own stdout/stderr - but Windows GUI apps don't
+    show those anywhere. Without this tee, a Windows user has NO
+    way to read sidecar output for troubleshooting.
+
+    The tee writes to the file AND to the original stream (so Tauri's
+    capture still works on every platform). Failures writing to the
+    file are swallowed so a permission glitch can't take the daemon
+    down.
+    """
+    try:
+        # Import here, not at module top, because db.engine pulls in
+        # SQLAlchemy and we want the log file open BEFORE anything
+        # heavyweight has a chance to print.
+        from db.engine import app_data_dir
+        log_dir = app_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # Rotate at boot: rename old sidecar.log to sidecar.log.prev
+        # so the user always has the previous session's full log
+        # available without the file growing unboundedly. Two files
+        # only (current + previous) keeps disk usage trivial.
+        log_path = log_dir / "sidecar.log"
+        prev_path = log_dir / "sidecar.log.prev"
+        if log_path.exists():
+            try:
+                if prev_path.exists():
+                    prev_path.unlink()
+                log_path.rename(prev_path)
+            except Exception:
+                pass
+        fh = open(log_path, "a", encoding="utf-8", buffering=1)
+    except Exception as exc:
+        # If we can't open the file, don't die - just print and
+        # carry on without the tee.
+        try:
+            print(f"[delfi] log file tee disabled: {exc}",
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return
+
+    class _Tee:
+        def __init__(self, original, file):
+            self._original = original
+            self._file = file
+        def write(self, data):
+            try:
+                self._original.write(data)
+            except Exception:
+                pass
+            try:
+                self._file.write(data)
+            except Exception:
+                pass
+        def flush(self):
+            try:
+                self._original.flush()
+            except Exception:
+                pass
+            try:
+                self._file.flush()
+            except Exception:
+                pass
+        # Some libraries (e.g. faulthandler) check isatty() on the
+        # underlying stream. Delegate to original so they see a real
+        # answer.
+        def isatty(self):
+            try:
+                return bool(self._original.isatty())
+            except Exception:
+                return False
+        # fileno is needed by subprocess for inheriting stdio. Return
+        # the ORIGINAL fd so child processes write to the same console
+        # as before - the tee only captures Python-level writes.
+        def fileno(self):
+            return self._original.fileno()
+
+    sys.stdout = _Tee(sys.stdout, fh)
+    sys.stderr = _Tee(sys.stderr, fh)
+    try:
+        print(f"[delfi] log tee writing to {log_path}", flush=True)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _install_log_file_tee()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
