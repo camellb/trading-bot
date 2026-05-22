@@ -717,23 +717,28 @@ function buildRisk(
   const exposure = summary?.open_cost != null
     ? Number(summary.open_cost)
     : open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
-  const ddPct = starting > 0 ? Math.max(0, ((starting - bankroll) / starting) * 100) : 0;
-  const dailyLoss = Math.max(0, -((summary?.realized_pnl ?? 0)));
-  const dailyCap = Math.max(1, bankroll * (config.daily_loss_limit_pct ?? 0.10));
-  const ddCapPct = (config.drawdown_halt_pct ?? 0.40) * 100;
-  // Gross exposure is "how much of my money is currently at risk":
-  // open-position cost over total equity (bankroll + open_cost).
-  // At 100% every dollar is tied up in open positions. Falls back to
-  // bankroll+exposure if `summary.equity` is missing on older
-  // sidecars.
+  // Equity = cash + position MTM. Falls back to bankroll + exposure
+  // (cost-basis equity) on older sidecars that don't return summary.equity.
   const totalEquity = summary?.equity != null
     ? Number(summary.equity)
     : bankroll + exposure;
+  // Drawdown compares EQUITY to starting capital, not bankroll. With
+  // bankroll the formula treated open positions as losses (e.g. cash
+  // $5 + positions $25 vs $30 starting → bankroll formula read 83%
+  // drawdown even though equity matched starting). User-visible bug
+  // 2026-05-23: widget showed 76.3% on a profitable account.
+  // risk_manager.evaluate uses the equity formula too; this matches.
+  const ddPct = starting > 0 ? Math.max(0, ((starting - totalEquity) / starting) * 100) : 0;
+  const dailyLoss = Math.max(0, -((summary?.realized_pnl ?? 0)));
+  // Daily/weekly loss caps are denominated in starting capital, NOT
+  // current bankroll — matches what risk_manager.evaluate does.
+  const dailyCap = Math.max(1, starting * (config.daily_loss_limit_pct ?? 0.10));
+  const ddCapPct = (config.drawdown_halt_pct ?? 0.40) * 100;
   const exposureCap = Math.max(1, totalEquity);
   return {
-    dailyLoss: { used: Math.round(dailyLoss), cap: Math.round(dailyCap), label: "Daily loss cap" },
-    drawdown:  { used: +ddPct.toFixed(1), cap: +ddCapPct.toFixed(0), label: "Drawdown" },
-    exposure:  { used: Math.round(exposure), cap: Math.round(exposureCap), label: "Gross exposure" },
+    dailyLoss: { used: Math.round(dailyLoss), cap: Math.round(dailyCap), label: "Daily loss limit" },
+    drawdown:  { used: +ddPct.toFixed(1), cap: +ddCapPct.toFixed(0), label: "Maximum drawdown" },
+    exposure:  { used: Math.round(exposure), cap: Math.round(exposureCap), label: "Capital deployed" },
   };
 }
 

@@ -1062,19 +1062,24 @@ _USER_PNL_LOCK = _threading.Lock()
 
 
 def cached_user_total_pnl(funder_address: Optional[str]) -> Optional[float]:
-    """Cache-only read: return the cached All-Time P&L if fresh,
-    else None. Never makes a network call.
+    """Cache-only read: return the most-recently-cached All-Time P&L
+    if we have one, else None. Never makes a network call.
 
-    Called from request handlers (pm_executor.get_portfolio_stats
-    → /api/summary) so a slow user-pnl-api response can never hold
-    an api_executor worker. The cache is kept warm by the
-    pm_pnl_refresh scheduler job, which calls get_user_total_pnl
-    (the network-fetching variant) every 60s.
+    NO staleness cutoff. Polymarket is the source of truth — if their
+    endpoint is briefly unreachable the right answer is "show the
+    last Polymarket-authoritative value we got", not "fall back to a
+    local realized+unrealized computation that drifts by $1-3 from
+    what the user sees on polymarket.com". The refresh job retries
+    every 60s; when it succeeds the cache updates. If it stays down
+    for hours the user sees a slightly stale Polymarket number,
+    which is still better than a wrong local number that pretends
+    to be authoritative.
 
-    On the first scheduler tick after a fresh daemon start, this
-    returns None and /api/summary falls back to the local
-    realized+unrealized total. Within ~60s the cache is hot and
-    subsequent /api/summary calls get the authoritative number.
+    The cache is warmed at daemon boot by _prewarm_poly_caches and
+    refreshed every 60s by pm_balance_refresh. There is a window of
+    ~1-3 seconds at startup where the cache is genuinely empty
+    (boot has begun but prewarm hasn't completed the round-trip);
+    during that window this returns None.
     """
     if not funder_address:
         return None
@@ -1082,31 +1087,22 @@ def cached_user_total_pnl(funder_address: Optional[str]) -> Optional[float]:
     cached = _USER_PNL_CACHE.get(key)
     if cached is None:
         return None
-    value, fetched_at = cached
-    if time.monotonic() - fetched_at > _USER_PNL_TTL_SECONDS * 3:
-        # Stale beyond 3x TTL = the refresh job is failing or the
-        # endpoint has been unreachable for minutes. Stop returning
-        # the stale number so the dashboard falls back to the
-        # local computation rather than misleading the user with
-        # values from many minutes ago.
-        return None
-    return value
+    return cached[0]
 
 
 def cached_total_open_positions_cash_pnl(
     funder_address: Optional[str],
 ) -> Optional[float]:
     """Cache-only read counterpart to
-    get_total_open_positions_cash_pnl. Same staleness window
-    semantics as cached_user_total_pnl.
+    get_total_open_positions_cash_pnl. Same no-staleness-cutoff
+    policy as cached_user_total_pnl — always return the most recent
+    Polymarket-authoritative value if we ever got one.
     """
     if not funder_address:
         return None
     key = funder_address.lower()
     cached = _POSITIONS_VALUE_CACHE.get(key)
     if cached is None:
-        return None
-    if time.monotonic() - cached[2] > _POSITIONS_VALUE_TTL_SECONDS * 3:
         return None
     return cached[1]
 
