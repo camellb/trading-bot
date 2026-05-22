@@ -1054,7 +1054,7 @@ async def main() -> None:
             from feeds.polymarket_wallet import (
                 refresh_live_balance_cache,
                 get_poly_signer_info,
-                get_total_open_positions_value,
+                refresh_pnl_caches,
             )
             _prewarm_creds = get_user_polymarket_creds()
             _prewarm_pk = (_prewarm_creds or {}).get("private_key")
@@ -1066,10 +1066,21 @@ async def main() -> None:
                     _info = get_poly_signer_info(_prewarm_pk)
                     _funder = (_info or {}).get("funder")
                     if _funder:
-                        get_total_open_positions_value(_funder)
+                        # Warms BOTH the positions sum (currentValue
+                        # for "locked capital") AND the user-pnl
+                        # endpoint (Polymarket's authoritative
+                        # all-time P&L) in one shot. Without this
+                        # warm, the first ~60s of /api/summary after
+                        # a daemon restart returned a local-fallback
+                        # P&L that drifted from Polymarket's headline
+                        # by $1-3. The dashboard showed the wrong
+                        # number until pm_balance_refresh fired the
+                        # first scheduled refresh — exactly the
+                        # symptom in the 2026-05-23 screenshot.
+                        refresh_pnl_caches(_funder)
                 except Exception as _exc2:
-                    print(f"[delfi] positions cache pre-warm failed: "
-                          f"{_exc2} - non-fatal",
+                    print(f"[delfi] positions/pnl cache pre-warm "
+                          f"failed: {_exc2} - non-fatal",
                           flush=True)
                 print("[delfi] Polymarket caches warm", flush=True)
         except Exception as _exc:
