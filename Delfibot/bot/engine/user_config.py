@@ -370,6 +370,15 @@ V1_DEFAULT_ARCHETYPE_SKIP_LIST: Tuple[str, ...] = (
     # forecast (no edge) or a same-event-verified-no rejection
     # (wasted tokens). User instruction 2026-05-18.
     "crypto_short",
+    # Activity-count markets ("Will X post 340-359 tweets between
+    # May 19 and May 26?"). Same un-researchable shape as
+    # crypto_short: real-time per-user tweet/post counts aren't
+    # publicly indexed, so the LLM gets handed a generic profile
+    # article and produces a same-event-verified-no rejection on
+    # every evaluation. Of the last 200 evals before this default
+    # landed, 9/40 research-mismatch skips were these. Adding to
+    # the default skip list stops the wasted LLM spend.
+    "activity_count",
 )
 V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS: Dict[str, float] = {
     "basketball": 1.5,

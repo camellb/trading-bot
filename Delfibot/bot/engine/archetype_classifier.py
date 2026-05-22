@@ -380,6 +380,17 @@ def classify_archetype(
     if cat == "geopolitics" or _GEOPOLITICAL_RE.search(q):
         return "geopolitical_event"
 
+    # Activity-count markets ("Will X post N-M tweets/posts/messages...")
+    # MUST be checked before tech_release. Polymarket tags Musk-tweet
+    # markets with category="tech", so the tech_release branch otherwise
+    # captures them and downstream research fetches an unrelated tech
+    # article. activity_count routes them to the right bucket so the
+    # default skip list can exclude them (they're fundamentally
+    # unforecastable from web research — Twitter post counts aren't
+    # publicly indexed in real time).
+    if _ACTIVITY_COUNT_RE.search(q) or _ACTIVITY_COUNT_RANGE_RE.search(q):
+        return "activity_count"
+
     # Tech releases - AI models, product launches.
     if cat in ("tech", "technology", "ai") or _TECH_RELEASE_RE.search(q):
         return "tech_release"
@@ -398,11 +409,11 @@ def classify_archetype(
 
     # Generic numeric patterns (fall through if nothing more specific
     # matched). price_threshold for $X price markets that aren't
-    # crypto/stocks/macro; activity_count for "post X-Y tweets" etc.
+    # crypto/stocks/macro. activity_count is checked earlier (before
+    # tech_release) so the Polymarket category="tech" tag on tweet
+    # markets can't shadow it.
     if _PRICE_THRESHOLD_RE.search(q):
         return "price_threshold"
-    if _ACTIVITY_COUNT_RE.search(q) or _ACTIVITY_COUNT_RANGE_RE.search(q):
-        return "activity_count"
 
     # Politics catch-all that isn't election/policy/geopolitics.
     if cat == "politics":
