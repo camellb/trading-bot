@@ -184,8 +184,8 @@ function LicenseGateScreen({
           </button>
         </form>
         <p className="license-gate-help">
-          Your license key was emailed to you after purchase. Lost it?
-          Email <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
+          Your license key was emailed to you after purchase.<br />
+          Lost it? Email <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
         </p>
       </div>
     </div>
