@@ -895,11 +895,37 @@ class PMExecutor:
         # SUM(COALESCE(current_value_usd, cost_usd)) for bot-tracked
         # opens. That's a strictly worse but never-wrong floor.
         locked_capital = open_cost
+        # When the data-api returns Polymarket's authoritative
+        # cashPnl, we prefer it over local "MTM - cost basis" math
+        # because (a) Polymarket uses mid-price for currentValue and
+        # the bot's cost was recorded at execution price, (b)
+        # Polymarket folds trading fees into initialValue. Local math
+        # overstates unrealized by both deltas (saw +$1 vs Polymarket's
+        # own portfolio UI). Falls back to local when the data-api is
+        # unreachable.
+        # Two data-api numbers we pull from Polymarket and surface
+        # alongside our local computations:
+        #   data_api_unrealized: sum of cashPnl across currently-
+        #     held positions. Tracks the live mark-to-market gain on
+        #     positions the user still owns. Useful for the unrealized
+        #     tile but NOT what Polymarket's portfolio UI shows as
+        #     "All-Time P&L".
+        #   data_api_total_pnl: Polymarket's bookkeeping P&L across
+        #     the whole wallet lifetime (deposits, withdraws, fills,
+        #     redemptions). This IS the "All-Time P&L" number from
+        #     their portfolio UI. /api/summary prefers this for
+        #     `total_pnl` so the Dashboard headline matches the
+        #     Polymarket page to the cent.
+        data_api_unrealized: Optional[float] = None
+        data_api_total_pnl: Optional[float] = None
         if self.mode == "live":
             try:
                 from engine.user_config import get_user_polymarket_creds
                 from feeds.polymarket_wallet import (
-                    get_total_open_positions_value, get_poly_signer_info,
+                    get_total_open_positions_value,
+                    get_total_open_positions_cash_pnl,
+                    get_user_total_pnl,
+                    get_poly_signer_info,
                 )
                 creds = get_user_polymarket_creds(self.user_id)
                 pk = (creds or {}).get("private_key") if creds else None
@@ -910,6 +936,18 @@ class PMExecutor:
                         total_open_value = get_total_open_positions_value(funder)
                         if total_open_value is not None:
                             locked_capital = float(total_open_value)
+                        # Shares the single-flight cache with the
+                        # currentValue probe above; this call is
+                        # ~free once the first one populated.
+                        cash_pnl = get_total_open_positions_cash_pnl(funder)
+                        if cash_pnl is not None:
+                            data_api_unrealized = float(cash_pnl)
+                        # Separate endpoint + separate cache: this
+                        # is the All-Time P&L number from Polymarket's
+                        # portfolio UI.
+                        user_pnl = get_user_total_pnl(funder)
+                        if user_pnl is not None:
+                            data_api_total_pnl = float(user_pnl)
             except Exception as exc:
                 print(
                     f"[pm_executor] locked_capital probe failed for "
@@ -938,6 +976,15 @@ class PMExecutor:
             "skipped_total":   skipped_n,
             "win_rate":        (wins / settled_n) if settled_n else None,
             "realized_pnl":    realized,
+            # data_api_unrealized = sum of cashPnl from data-api
+            # /positions. Per-position live MTM gain.
+            "data_api_unrealized": data_api_unrealized,
+            # data_api_total_pnl = Polymarket's "All-Time P&L" from
+            # user-pnl-api/user-pnl. /api/summary prefers this for
+            # `total_pnl` so the headline matches their portfolio UI
+            # to the cent. None in simulation, or in live mode when
+            # the endpoint is unreachable.
+            "data_api_total_pnl": data_api_total_pnl,
             "ready":           True,
         }
 

@@ -550,6 +550,43 @@ def _acquire_singleton_lock_windows() -> Optional[object]:
     return handle
 
 
+def _probe_holder_responsive() -> bool:
+    """Return True iff the sidecar.port file points to a daemon that
+    answers an HTTP probe within 1.5 seconds.
+
+    Used by the singleton-lock acquire path to distinguish a HEALTHY
+    daemon (we should back off) from a WEDGED daemon (we should kill
+    and steal). Cheap and bounded: a single connect+GET with a
+    sub-2s deadline, no retries.
+
+    Fail-closed: any error (port file missing, port not listening,
+    connection refused, HTTP timeout) is treated as "holder is NOT
+    responsive" so the caller takes the steal path. We'd rather
+    occasionally kill a healthy-but-slow daemon than leave a wedged
+    one in place forever.
+    """
+    try:
+        port_path = _singleton_lock_path().parent / "sidecar.port"
+        try:
+            port_text = port_path.read_text().strip()
+        except (FileNotFoundError, OSError):
+            return False
+        if not port_text.isdigit():
+            return False
+        port = int(port_text)
+        import urllib.request
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/health",
+                timeout=1.5,
+            ) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 def _acquire_singleton_lock() -> Optional[object]:
     """Take an exclusive lock so a second sidecar can't start.
 
@@ -599,13 +636,28 @@ def _acquire_singleton_lock() -> Optional[object]:
         try:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            # Lock held - exit politely. The lock holder is the
-            # launchd-managed daemon sidecar (the bot proper); we are
-            # a duplicate spawn from the Tauri GUI's old behaviour or
-            # a manual `python main.py` invocation. We must NOT kill
-            # the daemon: it's the bot itself, doing 24/7 trading.
-            # Tauri reads `<app-data>/sidecar.port` to find the
-            # daemon's port - it doesn't need us.
+            # Lock held by another sidecar. Previously we exited
+            # politely on the assumption that the holder was a healthy
+            # launchd-managed daemon. In practice that assumption fails
+            # when the holder is wedged on a slow synchronous call
+            # (e.g. a Polymarket data-api HTTPS read that won't return
+            # for 30s+): kickstart fires SIGTERM, the holder ignores
+            # it because it's stuck in C-extension code, kickstart
+            # spawns us, we politely exit, kickstart respawns us,
+            # repeat until launchd hits ThrottleInterval and gives up.
+            # The user sees a daemon that never recovers.
+            #
+            # New policy: the newest sidecar always wins. If we can't
+            # get the lock:
+            #   1. Read the holder's PID.
+            #   2. Health-probe the holder's port (cheap, 1.5s budget).
+            #   3. If the holder responds: exit politely (the legit
+            #      already-running daemon path).
+            #   4. If the holder does NOT respond: SIGTERM + 2s grace
+            #      + SIGKILL the holder, then retry the lock.
+            # This guarantees that a fresh launchctl kickstart or a
+            # user-initiated relaunch always ends with exactly one
+            # working sidecar, even if the previous one wedged.
             stale_pid = None
             try:
                 f.seek(0)
@@ -614,16 +666,75 @@ def _acquire_singleton_lock() -> Optional[object]:
                     stale_pid = int(contents)
             except Exception:
                 pass
+
+            holder_alive = False
+            holder_responsive = False
+            if stale_pid:
+                try:
+                    os.kill(stale_pid, 0)
+                    holder_alive = True
+                except (ProcessLookupError, PermissionError):
+                    holder_alive = False
+                if holder_alive:
+                    holder_responsive = _probe_holder_responsive()
+
+            if holder_alive and holder_responsive:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+                print(
+                    f"[delfi] healthy daemon already running "
+                    f"(pid={stale_pid}, port-responding) - this "
+                    f"duplicate exiting cleanly.",
+                    flush=True,
+                )
+                os._exit(0)
+
+            # Holder is wedged (or gone). Kill it and steal the lock.
+            # SIGTERM first so any cleanup hooks the daemon registered
+            # get a chance to run (logger flush, position cache write).
+            if holder_alive and stale_pid:
+                print(
+                    f"[delfi] previous daemon (pid={stale_pid}) is "
+                    f"unresponsive - SIGTERM, 2s grace, SIGKILL if it "
+                    f"won't budge.",
+                    flush=True,
+                )
+                try:
+                    os.kill(stale_pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+                import time as _t
+                for _ in range(20):  # 2s in 100ms ticks
+                    try:
+                        os.kill(stale_pid, 0)
+                    except (ProcessLookupError, PermissionError):
+                        break
+                    _t.sleep(0.1)
+                else:
+                    try:
+                        os.kill(stale_pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                # Drain TIME_WAIT / give the kernel a moment to release
+                # the lock the dead process held. Without this the
+                # retry below sometimes still sees BlockingIOError.
+                _t.sleep(0.3)
+
             try:
                 f.close()
             except Exception:
                 pass
 
+            if retry:
+                return _try_acquire(retry=False)
+            # Retry also failed - bail rather than loop. Whoever holds
+            # the lock now is presumably racing us; let launchd respawn
+            # this process and try again.
             print(
-                f"[delfi] daemon sidecar already running "
-                f"(pid={stale_pid}) - this duplicate exiting cleanly. "
-                f"The daemon is owned by launchd; it auto-restarts on "
-                f"crash via KeepAlive=true.",
+                f"[delfi] could not steal singleton lock from "
+                f"pid={stale_pid} after one retry. Exiting.",
                 flush=True,
             )
             os._exit(0)

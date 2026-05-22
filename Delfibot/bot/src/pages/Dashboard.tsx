@@ -368,31 +368,36 @@ function DashHero({
     <section className="dash-hero">
       <div className="hero-balance">
         <div className="hero-balance-head">
-          <div className="hero-balance-label">Balance</div>
+          <div className="hero-balance-label">Total equity</div>
           <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
             {isSim ? "Simulation" : "Live"}
           </div>
         </div>
         <div className="hero-balance-row">
+          {/* Total equity is the headline. Largest number, leftmost
+              position. This is what a user with multiple devices is
+              checking — "how much wealth do I have on Polymarket?". */}
           <div className="hero-balance-cell">
             <div className="hero-balance-cell-value t-num">
               {loaded ? (
                 <>
                   <span className="hero-balance-cur">$</span>
-                  {bankroll.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  {totalEquity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </>
               ) : "-"}
             </div>
           </div>
           <div className="hero-delta-div" />
+          {/* Cash = spendable bankroll. Cash on hand the bot can
+              deploy on the next scan. */}
           <div className="hero-balance-cell">
-            <div className="hero-delta-label">Locked capital</div>
-            <div className="hero-delta-val t-num">{loaded ? fmtUsd(lockedCapital) : "-"}</div>
+            <div className="hero-delta-label">Cash</div>
+            <div className="hero-delta-val t-num">{loaded ? fmtUsd(bankroll) : "-"}</div>
           </div>
           <div className="hero-delta-div" />
           <div className="hero-balance-cell">
-            <div className="hero-delta-label">Total equity</div>
-            <div className="hero-delta-val t-num">{loaded ? fmtUsd(totalEquity) : "-"}</div>
+            <div className="hero-delta-label">Locked capital</div>
+            <div className="hero-delta-val t-num">{loaded ? fmtUsd(lockedCapital) : "-"}</div>
           </div>
         </div>
         <div className="hero-deltas">

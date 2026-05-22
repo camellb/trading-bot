@@ -242,7 +242,17 @@ _CLOB_BALANCE_TTL_SECONDS = 60.0
 # wallet holds, including manual trades the bot didn't open). 60s
 # TTL is enough that the Dashboard's 5s poll doesn't hammer the
 # data-api endpoint.
-_POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float]] = {}
+# Cached aggregates from data-api /positions. Tuple:
+#   (currentValue_sum, cashPnl_sum, fetched_at)
+# currentValue_sum drives "Locked capital" / equity (every position
+# the wallet holds, including manual trades).
+# cashPnl_sum drives unrealized P&L so the Dashboard's number
+# matches Polymarket's portfolio P&L to the cent (their accounting
+# uses mid-price + relayer fees, both bundled into cashPnl). Without
+# this the bot's local "currentValue - cost_usd" computation
+# overstates unrealized by the relayer-fee delta and the bid/ask
+# spread.
+_POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float, float]] = {}
 _POSITIONS_VALUE_TTL_SECONDS = 60.0
 # Single-flight lock for get_total_open_positions_value (defined later
 # next to its sibling _POLY_SIGNER_LOCK after the threading import).
@@ -917,6 +927,69 @@ def get_cached_total_funder_balance(
     return pusd + usdce
 
 
+def _refresh_positions_cache(funder_address: str) -> bool:
+    """Internal: fetch data-api /positions and refresh the per-funder
+    cache with both currentValue and cashPnl sums.
+
+    Returns True on success, False on any error. Callers read the
+    cache directly afterwards (or pre-existing stale entry on
+    failure). Single-flight via _POSITIONS_VALUE_LOCK.
+
+    Data-api endpoint:
+        https://data-api.polymarket.com/positions?user=<funder>
+    Returns a JSON array of position dicts. Each row carries:
+        title:        market question
+        outcome:      'Yes' | 'No' (or sport-specific labels)
+        size:         shares held
+        curPrice:     current mid / ask for the held side
+        currentValue: size * curPrice (USD value at current prices)
+        initialValue: size * entry price (incl. trading fees)
+        cashPnl:      currentValue - initialValue (signed)
+    Lost positions linger in the response with curPrice=0 (and
+    currentValue=0). Their cashPnl appears as a negative number
+    (= -initialValue), which IS the realized loss until the user
+    redeems the (zero-value) winning side to clear the row from
+    the wallet. We sum cashPnl across the whole list so losers
+    pull the total down correctly.
+    """
+    import requests as _r
+    resp = _r.get(
+        "https://data-api.polymarket.com/positions",
+        params={"user": funder_address},
+        timeout=8,
+    )
+    if resp.status_code != 200:
+        print(
+            f"[polymarket_wallet] data-api positions returned "
+            f"{resp.status_code} for {funder_address}",
+            file=sys.stderr,
+        )
+        return False
+    data = resp.json()
+    if not isinstance(data, list):
+        return False
+    total_value = 0.0
+    total_pnl = 0.0
+    for row in data:
+        try:
+            v = float(row.get("currentValue") or 0.0)
+            if v > 0:
+                total_value += v
+        except (TypeError, ValueError):
+            pass
+        try:
+            # cashPnl can be negative (losing positions); include
+            # in the sum without a sign filter.
+            p = float(row.get("cashPnl") or 0.0)
+            total_pnl += p
+        except (TypeError, ValueError):
+            pass
+    _POSITIONS_VALUE_CACHE[funder_address.lower()] = (
+        float(total_value), float(total_pnl), time.monotonic(),
+    )
+    return True
+
+
 def get_total_open_positions_value(
     funder_address: Optional[str],
 ) -> Optional[float]:
@@ -933,26 +1006,13 @@ def get_total_open_positions_value(
     cost_usd via the COALESCE chain in pm_executor.get_portfolio_stats).
     Cached per funder for 60s so the Dashboard's 5s /api/summary poll
     doesn't hammer Polymarket's data-api.
-
-    Data-api endpoint:
-        https://data-api.polymarket.com/positions?user=<funder>
-    Returns a JSON array of position dicts. Each row carries:
-        title:        market question
-        outcome:      'Yes' | 'No' (or sport-specific labels)
-        size:         shares held
-        curPrice:     current ask / mid for the held side
-        currentValue: size * curPrice (USD value at current prices)
-        initialValue: size * entry price
-        cashPnl:      currentValue - initialValue
-    Lost positions linger in the response with curPrice=0 (and
-    currentValue=0), so summing across the whole list is safe.
     """
     if not funder_address:
         return None
     key = funder_address.lower()
     now = time.monotonic()
     cached = _POSITIONS_VALUE_CACHE.get(key)
-    if cached is not None and now - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
+    if cached is not None and now - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
         return cached[0]
     # Single-flight: /api/summary fires 7 endpoints in parallel. On
     # cold positions cache, without this lock each request would
@@ -968,36 +1028,11 @@ def get_total_open_positions_value(
         # Re-check the cache: another thread may have populated it
         # while we were waiting on the GIL between get and acquire.
         cached = _POSITIONS_VALUE_CACHE.get(key)
-        if cached is not None and time.monotonic() - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
+        if cached is not None and time.monotonic() - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
             return cached[0]
-        import requests as _r
-        resp = _r.get(
-            "https://data-api.polymarket.com/positions",
-            params={"user": funder_address},
-            timeout=8,
-        )
-        if resp.status_code != 200:
-            print(
-                f"[polymarket_wallet] data-api positions returned "
-                f"{resp.status_code} for {funder_address}",
-                file=sys.stderr,
-            )
-            # Serve stale cache if any. Do NOT cache the failure; next
-            # probe replaces this entry with fresh data.
-            return cached[0] if cached is not None else None
-        data = resp.json()
-        if not isinstance(data, list):
-            return cached[0] if cached is not None else None
-        total = 0.0
-        for row in data:
-            try:
-                v = float(row.get("currentValue") or 0.0)
-                if v > 0:
-                    total += v
-            except (TypeError, ValueError):
-                continue
-        _POSITIONS_VALUE_CACHE[key] = (float(total), now)
-        return float(total)
+        if _refresh_positions_cache(funder_address):
+            return _POSITIONS_VALUE_CACHE[key][0]
+        return cached[0] if cached is not None else None
     except Exception as exc:
         print(
             f"[polymarket_wallet] data-api positions fetch failed for "
@@ -1008,6 +1043,153 @@ def get_total_open_positions_value(
         # "Locked Capital" should keep showing the last sensible
         # number rather than flashing to $0 when data-api hiccups.
         return cached[0] if cached is not None else None
+    finally:
+        _POSITIONS_VALUE_LOCK.release()
+
+
+# Cache for Polymarket's All-Time P&L number. This is what their
+# portfolio UI shows as "All-Time Profit/Loss". Reconstructed from
+# their bookkeeping (positions, redeems, deposits, withdrawals).
+# Source: https://user-pnl-api.polymarket.com/user-pnl
+#                                  ?user_address=<funder>
+#                                  &interval=all&fidelity=1d
+# Returns a time series; the LAST point is the current All-Time P&L.
+# Cache 60s (same as positions sum) so the dashboard's 5s poll stays
+# cheap.
+_USER_PNL_CACHE: Dict[str, Tuple[float, float]] = {}
+_USER_PNL_TTL_SECONDS = 60.0
+_USER_PNL_LOCK = _threading.Lock()
+
+
+def get_user_total_pnl(funder_address: Optional[str]) -> Optional[float]:
+    """Fetch Polymarket's authoritative All-Time P&L for this wallet.
+
+    This is the number that appears on Polymarket's own portfolio UI
+    as "All-Time Profit/Loss" — derived from their own bookkeeping
+    (trade fills, redemptions, deposits, withdrawals). Local math
+    can't reconstruct it from the bot's pm_positions table alone
+    because the user may have manual trades, settled losers that
+    haven't been redeemed (so they don't appear in `realized_pnl`
+    yet), or trading fees that the bot's cost_usd didn't capture.
+
+    Returns the last value (USD, signed) on success, None on any
+    failure. Callers fall back to the bot's local realized +
+    unrealized computation.
+
+    Cached per funder for 60s + single-flight lock so the dashboard's
+    5s /api/summary poll doesn't hammer the endpoint.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    now = time.monotonic()
+    cached = _USER_PNL_CACHE.get(key)
+    if cached is not None and now - cached[1] < _USER_PNL_TTL_SECONDS:
+        return cached[0]
+    acquired = _USER_PNL_LOCK.acquire(blocking=False)
+    if not acquired:
+        return cached[0] if cached is not None else None
+    try:
+        cached = _USER_PNL_CACHE.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _USER_PNL_TTL_SECONDS:
+            return cached[0]
+        import requests as _r
+        # Tight (connect, read) timeout. user-pnl-api is on a
+        # different host than data-api and we've seen it spike
+        # well above 5s under load; the api_executor only has 8
+        # workers, so a single 8s hang here can starve every other
+        # /api/* read endpoint waiting for a worker slot.
+        resp = _r.get(
+            "https://user-pnl-api.polymarket.com/user-pnl",
+            params={
+                "user_address": funder_address,
+                "interval": "all",
+                "fidelity": "1d",
+            },
+            timeout=(2.5, 3.5),
+        )
+        if resp.status_code != 200:
+            print(
+                f"[polymarket_wallet] user-pnl returned {resp.status_code} "
+                f"for {funder_address}",
+                file=sys.stderr,
+            )
+            return cached[0] if cached is not None else None
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            return cached[0] if cached is not None else None
+        # Last point in the time series = current All-Time P&L.
+        last = data[-1]
+        if not isinstance(last, dict) or "p" not in last:
+            return cached[0] if cached is not None else None
+        value = float(last["p"])
+        _USER_PNL_CACHE[key] = (value, now)
+        return value
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] user-pnl fetch failed for "
+            f"{funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return cached[0] if cached is not None else None
+    finally:
+        _USER_PNL_LOCK.release()
+
+
+def get_total_open_positions_cash_pnl(
+    funder_address: Optional[str],
+) -> Optional[float]:
+    """Sum Polymarket's per-position cashPnl across every position
+    the wallet holds. This is the authoritative unrealized P&L
+    number — same formula Polymarket's own portfolio UI uses, so
+    the Dashboard's P&L matches the Polymarket portfolio page to
+    the cent.
+
+    Why prefer this over local `currentValue - cost_usd`:
+      1. Polymarket uses mid-price for currentValue; the bot's
+         cost_usd was recorded from execution price (taker side).
+         Local math overstates unrealized by the bid/ask spread.
+      2. Polymarket folds in trading fees on initialValue; local
+         cost_usd doesn't include them, so local unrealized is
+         additionally inflated by the fee delta.
+      3. Lost positions still in the wallet show cashPnl as the
+         realized loss; local math treats them as zero (currentValue=0
+         minus cost_usd) but that lands in unrealized rather than
+         realized until redemption. cashPnl puts them in the right
+         bucket.
+
+    Returns the signed sum (USD) on success, None on any failure
+    (network blip, parse error, no funder). Callers fall back to the
+    local computation.
+
+    Shares the 60s cache + single-flight lock with
+    get_total_open_positions_value so /api/summary makes ONE data-api
+    round-trip per minute regardless of how many fields read from it.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    now = time.monotonic()
+    cached = _POSITIONS_VALUE_CACHE.get(key)
+    if cached is not None and now - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
+        return cached[1]
+    acquired = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
+    if not acquired:
+        return cached[1] if cached is not None else None
+    try:
+        cached = _POSITIONS_VALUE_CACHE.get(key)
+        if cached is not None and time.monotonic() - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
+            return cached[1]
+        if _refresh_positions_cache(funder_address):
+            return _POSITIONS_VALUE_CACHE[key][1]
+        return cached[1] if cached is not None else None
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] data-api cashPnl fetch failed for "
+            f"{funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return cached[1] if cached is not None else None
     finally:
         _POSITIONS_VALUE_LOCK.release()
 
