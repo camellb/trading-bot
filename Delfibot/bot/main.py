@@ -1384,6 +1384,27 @@ async def main() -> None:
                 proc_health.record_job_ok("pm_balance_refresh")
                 return
             refresh_live_balance_cache(pk)
+            # Piggy-back the Polymarket P&L cache refresh on this
+            # same 60s tick so the dashboard's All-Time P&L stays
+            # current without ever doing the slow user-pnl-api
+            # fetch on the request path. /api/summary reads from
+            # the cache via cached_user_total_pnl(); if this job
+            # ever stops running the cache goes stale within 3x
+            # TTL (3 minutes) and the dashboard falls back to the
+            # local realized+unrealized total - never the wedge.
+            try:
+                from feeds.polymarket_wallet import (
+                    get_poly_signer_info, refresh_pnl_caches,
+                )
+                info = get_poly_signer_info(pk)
+                funder = (info or {}).get("funder")
+                if funder:
+                    refresh_pnl_caches(funder)
+            except Exception as exc:
+                # Swallow: pnl refresh is best-effort. The bankroll
+                # refresh above is what gates the OK/error counter.
+                print(f"[delfi] pnl cache refresh failed: {exc}",
+                      file=sys.stderr, flush=True)
             proc_health.record_job_ok("pm_balance_refresh")
         except Exception as exc:
             proc_health.record_job_error("pm_balance_refresh")

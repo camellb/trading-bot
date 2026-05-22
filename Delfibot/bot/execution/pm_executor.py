@@ -923,8 +923,8 @@ class PMExecutor:
                 from engine.user_config import get_user_polymarket_creds
                 from feeds.polymarket_wallet import (
                     get_total_open_positions_value,
-                    get_total_open_positions_cash_pnl,
-                    get_user_total_pnl,
+                    cached_total_open_positions_cash_pnl,
+                    cached_user_total_pnl,
                     get_poly_signer_info,
                 )
                 creds = get_user_polymarket_creds(self.user_id)
@@ -933,19 +933,21 @@ class PMExecutor:
                     info = get_poly_signer_info(pk)
                     funder = (info or {}).get("funder")
                     if funder:
+                        # currentValue is the cheap sub-second probe;
+                        # leaving it on the request path because it
+                        # rarely hangs and has its own non-blocking
+                        # lock + stale-cache fallback. The two
+                        # SLOW endpoints (cashPnl, user-pnl) are
+                        # cache-only here so they can never hold an
+                        # api_executor worker; the pm_pnl_refresh
+                        # scheduler job keeps both caches warm.
                         total_open_value = get_total_open_positions_value(funder)
                         if total_open_value is not None:
                             locked_capital = float(total_open_value)
-                        # Shares the single-flight cache with the
-                        # currentValue probe above; this call is
-                        # ~free once the first one populated.
-                        cash_pnl = get_total_open_positions_cash_pnl(funder)
+                        cash_pnl = cached_total_open_positions_cash_pnl(funder)
                         if cash_pnl is not None:
                             data_api_unrealized = float(cash_pnl)
-                        # Separate endpoint + separate cache: this
-                        # is the All-Time P&L number from Polymarket's
-                        # portfolio UI.
-                        user_pnl = get_user_total_pnl(funder)
+                        user_pnl = cached_user_total_pnl(funder)
                         if user_pnl is not None:
                             data_api_total_pnl = float(user_pnl)
             except Exception as exc:

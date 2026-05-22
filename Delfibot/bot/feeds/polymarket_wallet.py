@@ -1061,6 +1061,94 @@ _USER_PNL_TTL_SECONDS = 60.0
 _USER_PNL_LOCK = _threading.Lock()
 
 
+def cached_user_total_pnl(funder_address: Optional[str]) -> Optional[float]:
+    """Cache-only read: return the cached All-Time P&L if fresh,
+    else None. Never makes a network call.
+
+    Called from request handlers (pm_executor.get_portfolio_stats
+    → /api/summary) so a slow user-pnl-api response can never hold
+    an api_executor worker. The cache is kept warm by the
+    pm_pnl_refresh scheduler job, which calls get_user_total_pnl
+    (the network-fetching variant) every 60s.
+
+    On the first scheduler tick after a fresh daemon start, this
+    returns None and /api/summary falls back to the local
+    realized+unrealized total. Within ~60s the cache is hot and
+    subsequent /api/summary calls get the authoritative number.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    cached = _USER_PNL_CACHE.get(key)
+    if cached is None:
+        return None
+    value, fetched_at = cached
+    if time.monotonic() - fetched_at > _USER_PNL_TTL_SECONDS * 3:
+        # Stale beyond 3x TTL = the refresh job is failing or the
+        # endpoint has been unreachable for minutes. Stop returning
+        # the stale number so the dashboard falls back to the
+        # local computation rather than misleading the user with
+        # values from many minutes ago.
+        return None
+    return value
+
+
+def cached_total_open_positions_cash_pnl(
+    funder_address: Optional[str],
+) -> Optional[float]:
+    """Cache-only read counterpart to
+    get_total_open_positions_cash_pnl. Same staleness window
+    semantics as cached_user_total_pnl.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    cached = _POSITIONS_VALUE_CACHE.get(key)
+    if cached is None:
+        return None
+    if time.monotonic() - cached[2] > _POSITIONS_VALUE_TTL_SECONDS * 3:
+        return None
+    return cached[1]
+
+
+def refresh_pnl_caches(funder_address: Optional[str]) -> None:
+    """Background-only entry point. Called from the pm_pnl_refresh
+    scheduler job (every 60s) to keep both PnL caches warm. The
+    network IO happens here, OFF the request path, so a slow
+    Polymarket endpoint can never wedge a /api/* read.
+
+    Catches and logs any exception so a transient endpoint outage
+    doesn't poison the scheduler job (which would stop ALL future
+    refreshes).
+    """
+    if not funder_address:
+        return
+    try:
+        get_user_total_pnl(funder_address)
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] background user-pnl refresh failed "
+            f"for {funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+    try:
+        # _refresh_positions_cache populates BOTH currentValue and
+        # cashPnl in one fetch, so this also keeps the locked-capital
+        # cache warm without an extra round-trip.
+        acquired = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
+        if acquired:
+            try:
+                _refresh_positions_cache(funder_address)
+            finally:
+                _POSITIONS_VALUE_LOCK.release()
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] background positions refresh failed "
+            f"for {funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def get_user_total_pnl(funder_address: Optional[str]) -> Optional[float]:
     """Fetch Polymarket's authoritative All-Time P&L for this wallet.
 
