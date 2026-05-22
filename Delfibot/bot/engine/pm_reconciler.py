@@ -670,36 +670,32 @@ def _archetype_to_category(archetype: Optional[str]) -> Optional[str]:
 
 
 def _check_drift(existing: dict, row: dict, side: str) -> None:
-    """Reconcile DB-tracked cost/size with on-chain reality.
+    """Mirror Polymarket's on-chain state into the DB unconditionally.
 
-    Three outcomes:
+    User instruction (2026-05-23): "we must fucking match what
+    Polymarket records, no drifting away, no messages like this to
+    the user, just fucking make sure it's fixed."
 
-      1. Match within tolerance: nothing happens.
+    Single behaviour: when the DB-tracked shares or cost drift more
+    than _DRIFT_TOLERANCE from the on-chain values returned by
+    data-api `/positions`, overwrite the DB row to match on-chain.
+    Touches cost_usd, entry_price, and shares together so the
+    invariant `entry_price * shares == cost_usd` stays intact. No
+    event log, no Telegram, no dashboard banner — Polymarket IS the
+    source of truth, the bot is just the viewer.
 
-      2. Favourable cost drift (on-chain cost LOWER than DB cost,
-         shares match): the order filled at a better price than
-         Delfi's recorded limit. On-chain IS the truth, so we
-         silently update pm_positions.cost_usd + entry_price to
-         match on-chain. No user-visible alert: the user got a
-         better fill, there is nothing for them to do, and the
-         auto-correction makes the P&L calc more accurate.
-
-      3. Suspicious drift (shares mismatch OR on-chain cost
-         HIGHER than DB by more than tolerance): leave the row
-         alone and log a user-readable event. These are rare and
-         genuinely worth eyeballing — a missed fill, a partial
-         fill, slippage worse than the limit, etc.
+    Skipped for settled rows (status != 'open'): settled rows can
+    legitimately drift from the live MTM that data-api returns for
+    redeemed positions, and the realized_pnl_usd is already
+    captured at settlement time.
     """
     if existing.get("status") != "open":
-        # Settled rows can legitimately drift from the live MTM that
-        # data-api returns; don't alarm on those.
         return
     onchain_shares = float(row.get("size") or 0.0)
     onchain_cost   = float(row.get("initialValue") or 0.0)
     db_shares = float(existing.get("shares") or 0.0)
     db_cost   = float(existing.get("cost") or 0.0)
     pid = existing.get("id")
-    title = (row.get("title") or "")[:80]
 
     shares_off = (
         onchain_shares > 0
@@ -711,79 +707,36 @@ def _check_drift(existing: dict, row: dict, side: str) -> None:
     )
     if not (shares_off or cost_off):
         return
-
-    # Case 2: favourable cost drift only (better fill than expected).
-    # Auto-correct the DB row to match on-chain. Touches cost_usd and
-    # entry_price together so the invariant
-    #     entry_price * shares == cost_usd
-    # stays intact downstream.
-    favourable = (
-        not shares_off
-        and cost_off
-        and onchain_cost < db_cost
-        and onchain_shares > 0
-    )
-    if favourable:
-        savings = db_cost - onchain_cost
-        try:
-            new_entry = onchain_cost / onchain_shares
-            with get_engine().begin() as conn:
-                conn.execute(text(
-                    "UPDATE pm_positions "
-                    "SET cost_usd = :c, entry_price = :p "
-                    "WHERE id = :id AND status = 'open'"
-                ), {"c": float(onchain_cost), "p": float(new_entry), "id": pid})
-            print(
-                f"[pm_reconciler] auto-corrected position #{pid} cost: "
-                f"db=${db_cost:.2f} → on-chain=${onchain_cost:.2f} "
-                f"(saved ${savings:.2f}, fill was better than limit)",
-                flush=True,
-            )
-        except Exception as exc:
-            print(
-                f"[pm_reconciler] auto-correct UPDATE failed for "
-                f"#{pid}: {exc}",
-                file=sys.stderr, flush=True,
-            )
+    if onchain_shares <= 0 or onchain_cost <= 0:
+        # data-api returned zeroed values (rare; usually means the
+        # row is in transit). Skip — don't write zeros into the DB.
         return
 
-    # Case 3: suspicious drift. Log a user-readable event. Plain
-    # description: what happened, what it means, what to do.
-    if shares_off and cost_off:
-        what = (
-            f"Polymarket says you hold {onchain_shares:.2f} shares "
-            f"that cost ${onchain_cost:.2f}, but Delfi recorded "
-            f"{db_shares:.2f} shares at ${db_cost:.2f}."
-        )
-    elif shares_off:
-        what = (
-            f"Polymarket says you hold {onchain_shares:.2f} shares "
-            f"but Delfi recorded {db_shares:.2f}."
-        )
-    else:
-        what = (
-            f"Polymarket says this position cost ${onchain_cost:.2f} "
-            f"but Delfi recorded ${db_cost:.2f}."
-        )
-    description = (
-        f"Position #{pid} ({title}): {what} "
-        "This usually means a partial fill or unexpected slippage. "
-        "Polymarket's number is the truth, so check the position on "
-        "polymarket.com if it matters for your P&L. Delfi's "
-        "position record was left as-is."
-    )
-    print(f"[pm_reconciler] DRIFT: {description}", flush=True)
+    new_entry = onchain_cost / onchain_shares
     try:
-        from db.logger import log_event
-        log_event(
-            event_type="position_drift",
-            severity=2,
-            description=description,
-            source="pm_reconciler.drift",
+        with get_engine().begin() as conn:
+            conn.execute(text(
+                "UPDATE pm_positions "
+                "SET shares = :s, cost_usd = :c, entry_price = :p "
+                "WHERE id = :id AND status = 'open'"
+            ), {
+                "s": float(onchain_shares),
+                "c": float(onchain_cost),
+                "p": float(new_entry),
+                "id": pid,
+            })
+        print(
+            f"[pm_reconciler] synced position #{pid} to on-chain: "
+            f"shares {db_shares:.3f}→{onchain_shares:.3f}, "
+            f"cost ${db_cost:.2f}→${onchain_cost:.2f}",
+            flush=True,
         )
     except Exception as exc:
-        print(f"[pm_reconciler] log_event failed: {exc}",
-              file=sys.stderr, flush=True)
+        print(
+            f"[pm_reconciler] auto-correct UPDATE failed for "
+            f"#{pid}: {exc}",
+            file=sys.stderr, flush=True,
+        )
 
 
 def _alert_multi_outcome_skip(row: dict) -> None:

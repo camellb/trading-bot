@@ -395,6 +395,7 @@ export default function Positions() {
           ) : (
             <table className="table-simple">
               <colgroup>
+                <col style={{ width: "44px" }} />
                 <col style={{ width: "auto" }} />
                 <col style={{ width: "10%" }} />
                 <col style={{ width: "56px" }} />
@@ -409,6 +410,7 @@ export default function Positions() {
               </colgroup>
               <thead>
                 <tr>
+                  <th style={{ textAlign: "left" }}>#</th>
                   <SortableTh field="market"   sort={openSort}>Market</SortableTh>
                   <SortableTh field="category" sort={openSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={openSort}>Side</SortableTh>
@@ -453,6 +455,7 @@ export default function Positions() {
                         onClick={() => togglePos(p.id)}
                         style={{ cursor: "pointer" }}
                       >
+                        <td className="mono" style={{ color: "var(--vellum-40)" }}>{p.id}</td>
                         <td className="truncate" title={p.question}>{p.question}</td>
                         <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
@@ -481,7 +484,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={11} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={12} style={{ padding: "16px 20px 22px" }}>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -567,8 +570,12 @@ export default function Positions() {
             </div>
           ) : (
             <table className="table-simple">
+              <colgroup>
+                <col style={{ width: "44px" }} />
+              </colgroup>
               <thead>
                 <tr>
+                  <th style={{ textAlign: "left" }}>#</th>
                   <SortableTh field="market"   sort={closedSort}>Market</SortableTh>
                   <SortableTh field="category" sort={closedSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
@@ -627,6 +634,7 @@ export default function Positions() {
                   const dYesPct = cp != null ? Math.round(cp * 100) : null;
                   return (
                     <tr key={s.id} className="row-hover">
+                      <td className="mono" style={{ color: "var(--vellum-40)" }}>{s.id}</td>
                       <td>{s.question}</td>
                       <td>{category ?? "-"}</td>
                       <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
@@ -659,8 +667,12 @@ export default function Positions() {
             </div>
           ) : (
             <table className="table-simple">
+              <colgroup>
+                <col style={{ width: "44px" }} />
+              </colgroup>
               <thead>
                 <tr>
+                  <th style={{ textAlign: "left" }}>#</th>
                   <SortableTh field="market"    sort={skippedSort}>Market</SortableTh>
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
                   <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
@@ -697,6 +709,7 @@ export default function Positions() {
                         onClick={() => toggleEval(e.id)}
                         style={{ cursor: "pointer" }}
                       >
+                        <td className="mono" style={{ color: "var(--vellum-40)" }}>{e.id}</td>
                         <td>{e.question}</td>
                         <td>{e.category ?? "-"}</td>
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
@@ -733,7 +746,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={9} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {skipReason ? (
