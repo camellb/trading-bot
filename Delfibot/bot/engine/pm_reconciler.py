@@ -670,15 +670,25 @@ def _archetype_to_category(archetype: Optional[str]) -> Optional[str]:
 
 
 def _check_drift(existing: dict, row: dict, side: str) -> None:
-    """Warn the user when the DB and on-chain disagree on size or cost.
+    """Reconcile DB-tracked cost/size with on-chain reality.
 
-    The reconciler does not auto-overwrite existing rows (that would
-    destroy the audit trail) but it can detect when something is
-    definitely wrong and surface it. The dominant case is the
-    limit-vs-fill bug: pm_executor recorded `cost_usd = shares * limit
-    price`, but the order actually filled at a better price, so
-    on-chain cost < DB cost. The Solana 1AM ET position was the first
-    instance the user noticed ($3.85 DB vs $2.31 on-chain).
+    Three outcomes:
+
+      1. Match within tolerance: nothing happens.
+
+      2. Favourable cost drift (on-chain cost LOWER than DB cost,
+         shares match): the order filled at a better price than
+         Delfi's recorded limit. On-chain IS the truth, so we
+         silently update pm_positions.cost_usd + entry_price to
+         match on-chain. No user-visible alert: the user got a
+         better fill, there is nothing for them to do, and the
+         auto-correction makes the P&L calc more accurate.
+
+      3. Suspicious drift (shares mismatch OR on-chain cost
+         HIGHER than DB by more than tolerance): leave the row
+         alone and log a user-readable event. These are rare and
+         genuinely worth eyeballing — a missed fill, a partial
+         fill, slippage worse than the limit, etc.
     """
     if existing.get("status") != "open":
         # Settled rows can legitimately drift from the live MTM that
@@ -686,37 +696,89 @@ def _check_drift(existing: dict, row: dict, side: str) -> None:
         return
     onchain_shares = float(row.get("size") or 0.0)
     onchain_cost   = float(row.get("initialValue") or 0.0)
-    db_shares = existing.get("shares") or 0.0
-    db_cost   = existing.get("cost") or 0.0
+    db_shares = float(existing.get("shares") or 0.0)
+    db_cost   = float(existing.get("cost") or 0.0)
+    pid = existing.get("id")
+    title = (row.get("title") or "")[:80]
 
-    drifts = []
-    if onchain_shares > 0 and abs(db_shares - onchain_shares) / onchain_shares > _DRIFT_TOLERANCE:
-        drifts.append(f"shares: db={db_shares:.3f} on-chain={onchain_shares:.3f}")
-    if onchain_cost > 0 and abs(db_cost - onchain_cost) / onchain_cost > _DRIFT_TOLERANCE:
-        drifts.append(f"cost: db=${db_cost:.2f} on-chain=${onchain_cost:.2f}")
-    if not drifts:
+    shares_off = (
+        onchain_shares > 0
+        and abs(db_shares - onchain_shares) / onchain_shares > _DRIFT_TOLERANCE
+    )
+    cost_off = (
+        onchain_cost > 0
+        and abs(db_cost - onchain_cost) / onchain_cost > _DRIFT_TOLERANCE
+    )
+    if not (shares_off or cost_off):
         return
 
-    pid = existing.get("id")
-    title = (row.get("title") or "")[:60]
-    msg = (
-        f"pm_positions id={pid} ({title!r}) drift: "
-        + "; ".join(drifts)
+    # Case 2: favourable cost drift only (better fill than expected).
+    # Auto-correct the DB row to match on-chain. Touches cost_usd and
+    # entry_price together so the invariant
+    #     entry_price * shares == cost_usd
+    # stays intact downstream.
+    favourable = (
+        not shares_off
+        and cost_off
+        and onchain_cost < db_cost
+        and onchain_shares > 0
     )
-    print(f"[pm_reconciler] DRIFT WARNING: {msg}", flush=True)
+    if favourable:
+        savings = db_cost - onchain_cost
+        try:
+            new_entry = onchain_cost / onchain_shares
+            with get_engine().begin() as conn:
+                conn.execute(text(
+                    "UPDATE pm_positions "
+                    "SET cost_usd = :c, entry_price = :p "
+                    "WHERE id = :id AND status = 'open'"
+                ), {"c": float(onchain_cost), "p": float(new_entry), "id": pid})
+            print(
+                f"[pm_reconciler] auto-corrected position #{pid} cost: "
+                f"db=${db_cost:.2f} → on-chain=${onchain_cost:.2f} "
+                f"(saved ${savings:.2f}, fill was better than limit)",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[pm_reconciler] auto-correct UPDATE failed for "
+                f"#{pid}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+        return
+
+    # Case 3: suspicious drift. Log a user-readable event. Plain
+    # description: what happened, what it means, what to do.
+    if shares_off and cost_off:
+        what = (
+            f"Polymarket says you hold {onchain_shares:.2f} shares "
+            f"that cost ${onchain_cost:.2f}, but Delfi recorded "
+            f"{db_shares:.2f} shares at ${db_cost:.2f}."
+        )
+    elif shares_off:
+        what = (
+            f"Polymarket says you hold {onchain_shares:.2f} shares "
+            f"but Delfi recorded {db_shares:.2f}."
+        )
+    else:
+        what = (
+            f"Polymarket says this position cost ${onchain_cost:.2f} "
+            f"but Delfi recorded ${db_cost:.2f}."
+        )
+    description = (
+        f"Position #{pid} ({title}): {what} "
+        "This usually means a partial fill or unexpected slippage. "
+        "Polymarket's number is the truth, so check the position on "
+        "polymarket.com if it matters for your P&L. Delfi's "
+        "position record was left as-is."
+    )
+    print(f"[pm_reconciler] DRIFT: {description}", flush=True)
     try:
         from db.logger import log_event
         log_event(
             event_type="position_drift",
             severity=2,
-            description=(
-                "Polymarket position #" + str(pid) + " (" + title +
-                ") disagrees with on-chain state: " + "; ".join(drifts) +
-                ". Most likely the original fill landed at a better "
-                "price than the limit Delfi recorded. The DB row will "
-                "NOT be auto-overwritten; review and fix manually if "
-                "the difference matters for P&L."
-            ),
+            description=description,
             source="pm_reconciler.drift",
         )
     except Exception as exc:
