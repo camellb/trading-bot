@@ -43,9 +43,18 @@ export function LicenseGate({ children }: Props) {
 
   useEffect(() => {
     refresh();
+    // Periodic re-poll. The sidecar runs a daily revocation check
+    // against the licensing server; when it clears a revoked
+    // license, the UI needs to flip to the gate without requiring
+    // the user to relaunch. 60s is short enough to catch revocation
+    // quickly, long enough to stay quiet for happy-path users.
+    const id = setInterval(refresh, 60_000);
     const onChange = () => refresh();
     window.addEventListener("delfi:license-changed", onChange);
-    return () => window.removeEventListener("delfi:license-changed", onChange);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("delfi:license-changed", onChange);
+    };
   }, []);
 
   if (status === "loading") {
@@ -95,14 +104,18 @@ function LicenseGateScreen({
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
-    if (!key.trim()) {
+    // Strip ALL whitespace, not just trim. Email clients sometimes
+    // wrap the blob across multiple lines; the verifier's regex
+    // rejects anything that isn't strictly `<base64url>.<base64url>`.
+    const cleaned = key.replace(/\s+/g, "");
+    if (!cleaned) {
       setSubmitError("Paste your license key.");
       return;
     }
     setBusy(true);
     setSubmitError(null);
     try {
-      await api.activateLicense(key.trim());
+      await api.activateLicense(cleaned);
       onActivated();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
@@ -124,15 +137,21 @@ function LicenseGateScreen({
           <label htmlFor="lk" className="license-gate-label">
             License key
           </label>
-          <input
+          {/* Real licenses are <base64url>.<base64url> blobs ~220
+              chars long, which the email renders as a multi-line
+              <pre>. A single-line <input> looked like it wanted a
+              dashed short code and silently truncated/normalised
+              line breaks on paste. A textarea handles the whole
+              blob cleanly. */}
+          <textarea
             id="lk"
-            type="text"
             autoComplete="off"
             spellCheck={false}
-            placeholder="XXXX-YYYY-ZZZZ-WWWW"
+            placeholder="Paste the license blob from your email"
             value={key}
             onChange={(e) => setKey(e.target.value)}
             className="license-gate-input"
+            rows={4}
             autoFocus
           />
           {submitError && (

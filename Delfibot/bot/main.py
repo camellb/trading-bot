@@ -29,7 +29,77 @@ import faulthandler
 import os
 import signal
 import sys
+import traceback as _traceback
 from datetime import datetime, timedelta, timezone
+
+
+def _install_crash_log() -> None:
+    """Write unhandled exceptions to a per-user crash log file.
+
+    Anchored to the same dir Tauri uses (`%APPDATA%\\com.delfi.desktop\\`
+    on Windows, `~/Library/Application Support/com.delfi.desktop/` on
+    macOS, `~/.local/share/com.delfi.desktop/` on Linux). The dir is
+    created on demand.
+
+    Why this exists: Windows release builds run `delfi-sidecar.exe`
+    with `console=False` (PyInstaller spec) so anything written to
+    stderr goes nowhere. A bug that crashes the sidecar's event loop
+    leaves the user with a "Delfi could not start" splash and zero
+    diagnostic surface. With this hook, the user can attach
+    `crash.log` to a support email and we get a full traceback.
+
+    Format: each crash is a UTC timestamp + traceback + 2-line
+    separator. Append-only; no truncation. A multi-MB log over years
+    is fine - we'd rather have history than risk losing recent
+    crashes to a rotation race.
+
+    Best-effort: anything that goes wrong inside the hook is
+    swallowed silently (we're already crashing; don't crash harder).
+    """
+    import platform as _platform
+    from pathlib import Path as _Path
+
+    def _log_dir() -> _Path:
+        home = _Path.home()
+        sysname = _platform.system()
+        if sysname == "Windows":
+            base = _Path(os.environ.get("APPDATA") or (home / "AppData" / "Roaming"))
+            return base / "com.delfi.desktop"
+        if sysname == "Darwin":
+            return home / "Library" / "Application Support" / "com.delfi.desktop"
+        base = _Path(os.environ.get("XDG_DATA_HOME") or (home / ".local" / "share"))
+        return base / "com.delfi.desktop"
+
+    def _write_crash(text: str) -> None:
+        try:
+            d = _log_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            with (d / "crash.log").open("a", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
+
+    def _excepthook(exc_type, exc, tb):
+        try:
+            ts = datetime.now(timezone.utc).isoformat()
+            header = (
+                f"\n==== unhandled exception {ts} pid={os.getpid()} ====\n"
+            )
+            body = "".join(_traceback.format_exception(exc_type, exc, tb))
+            _write_crash(header + body)
+        except Exception:
+            pass
+        # Also keep the default behaviour (stderr) for dev mode.
+        try:
+            _traceback.print_exception(exc_type, exc, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+
+
+_install_crash_log()
+
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.executors.asyncio import AsyncIOExecutor
@@ -166,7 +236,11 @@ from engine.user_config import (
     ensure_default_user_config,
     get_anthropic_api_key,
     get_cryptopanic_key,
+    get_license_key,
+    get_license_meta,
     get_newsapi_key,
+    set_license_key,
+    set_license_meta,
 )
 from feeds.feed_health_monitor import monitor
 from feeds.news_feed import NewsFeed
@@ -328,7 +402,16 @@ def _kill_orphan_sidecars() -> None:
     This runs at every sidecar startup. The flock that follows handles
     the corner case of two launchd respawns racing (e.g. during install
     bootout/bootstrap). End state: at most one daemon alive at any time.
+
+    macOS only. The whole logic targets launchd-vs-non-launchd
+    distinction and uses pgrep / os.getpgid / os.getpgrp - none of
+    which exist or apply on Windows. The Win32 named mutex acquired
+    in `_acquire_singleton_lock_windows` is the equivalent
+    enforcement on Windows.
     """
+    import platform
+    if platform.system() != "Darwin":
+        return
     import subprocess
     my_pid = os.getpid()
     try:
@@ -378,22 +461,87 @@ def _kill_orphan_sidecars() -> None:
             pass
 
 
-def _acquire_singleton_lock() -> Optional[object]:
-    """Take an exclusive flock so a second sidecar can't start.
+def _acquire_singleton_lock_windows() -> Optional[object]:
+    """Windows singleton enforcement via a named kernel mutex.
 
-    The lock file lives in the app data directory next to the SQLite
-    DB. We keep the file descriptor open for the lifetime of the
-    process; the kernel releases the lock when the FD is closed (or
-    the process dies). If another sidecar already holds the lock, we
-    exit immediately rather than try to share a DB with an orphan.
+    Equivalent to the POSIX flock path below: a second sidecar that
+    tries to start while one is already running calls CreateMutex,
+    gets ERROR_ALREADY_EXISTS, and exits cleanly. The kernel releases
+    the mutex when the holding process exits (even on hard crash), so
+    no stale lock files to clean up.
 
-    Returns the file descriptor (None on failure to acquire). Caller
-    keeps the reference alive so the lock stays held.
+    Returns the mutex HANDLE on success (caller keeps the reference
+    alive so the mutex stays held). Returns None on Win32 API
+    failure. Calls os._exit(0) when another instance holds it.
     """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.argtypes = [
+            wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR,
+        ]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.GetLastError.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+    except Exception as exc:
+        print(f"[delfi] kernel32 binding failed: {exc}", flush=True)
+        return None
+
+    # No `Global\` prefix: per-session namespace is correct for a
+    # per-user desktop app. Multi-user terminal-services hosts get one
+    # sidecar per session, which is what we want anyway.
+    MUTEX_NAME = "com.delfi.desktop.sidecar.singleton"
+    ERROR_ALREADY_EXISTS = 183
+
+    handle = kernel32.CreateMutexW(None, True, MUTEX_NAME)
+    err = kernel32.GetLastError()
+
+    if not handle:
+        print(f"[delfi] CreateMutex returned NULL err={err}", flush=True)
+        return None
+
+    if err == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        print(
+            "[delfi] another sidecar already holds the singleton mutex - "
+            "this duplicate exiting cleanly.",
+            flush=True,
+        )
+        os._exit(0)
+
+    print(
+        f"[delfi] singleton mutex ACQUIRED pid={os.getpid()} "
+        f"name={MUTEX_NAME!r}",
+        flush=True,
+    )
+    return handle
+
+
+def _acquire_singleton_lock() -> Optional[object]:
+    """Take an exclusive lock so a second sidecar can't start.
+
+    On POSIX (macOS/Linux) uses fcntl flock against a file in the app
+    data dir; on Windows uses a named kernel mutex (see
+    `_acquire_singleton_lock_windows`). Both auto-release on process
+    exit so an orphan from a crash doesn't permanently block startup.
+
+    Returns the lock object (file handle or mutex handle) on success;
+    caller keeps the reference alive so the lock stays held. Returns
+    None if the lock primitive isn't available on this platform.
+    """
+    import platform
+    if platform.system() == "Windows":
+        return _acquire_singleton_lock_windows()
+
     try:
         import fcntl
     except ImportError:
-        return None  # Windows: no fcntl, skip the lock
+        return None  # exotic POSIX without fcntl - skip the lock
     try:
         # Canonical path INDEPENDENT of DELFI_DB_PATH. Without this,
         # the launchd daemon (env-DELFI_DB_PATH=com.delfi.desktop/) and
@@ -791,6 +939,109 @@ async def main() -> None:
     resolve_interval_min = int(getattr(config, "PM_RESOLVE_INTERVAL_MINUTES", 15))
     fast_resolve_sec = int(getattr(config, "PM_RESOLVE_FAST_INTERVAL_SECONDS", 60))
 
+    # ── License revocation poll ────────────────────────────────────────────
+    #
+    # See the docstring on `_run_license_revocation_check` further down.
+    # Async helper lives here so the scheduler hooks closure over it.
+    async def _license_revocation_check_async():
+        import base64
+        import json as _json
+        import os as _os
+        blob = get_license_key()
+        if not blob:
+            # No license activated yet (e.g. dev mode, owner bypass).
+            # Nothing to revoke; quiet no-op.
+            return
+        if blob.strip() == "DELFI-OWNER-LOCAL-2026":
+            # Maintainer bypass: never check.
+            return
+
+        # Pull the license id out of the signed payload locally. We
+        # don't need to re-verify the signature here - verify_license
+        # ran at boot and stamped license_meta.
+        try:
+            encoded_payload = blob.strip().split(".", 1)[0]
+            pad = (-len(encoded_payload)) % 4
+            raw = base64.urlsafe_b64decode(encoded_payload + ("=" * pad))
+            payload = _json.loads(raw)
+            license_id = payload.get("id")
+        except Exception as exc:
+            print(f"[delfi] revocation_check: payload decode failed: {exc}",
+                  file=sys.stderr, flush=True)
+            return
+        if not isinstance(license_id, str) or not license_id:
+            return
+
+        base_url = _os.environ.get(
+            "DELFI_LICENSE_CHECK_URL",
+            "https://delfibot.com/api/license/check",
+        )
+        url = f"{base_url}?id={license_id}"
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as sess:
+                async with sess.get(url) as r:
+                    if r.status != 200:
+                        # Soft-fail on any non-200. A 5xx or a Vercel
+                        # cold-start that timed out MUST NOT lock out
+                        # a paying customer; we retry tomorrow.
+                        print(f"[delfi] revocation_check: HTTP {r.status} - "
+                              "treating as inconclusive, will retry next cycle",
+                              flush=True)
+                        return
+                    body = await r.json()
+        except Exception as exc:
+            print(f"[delfi] revocation_check: network error: {exc} - "
+                  "treating as inconclusive, will retry next cycle",
+                  flush=True)
+            return
+
+        if not isinstance(body, dict):
+            return
+        if body.get("valid") is True:
+            # Stamp the meta with the latest validation timestamp so
+            # the user can see "checked X minutes ago" in Settings.
+            try:
+                meta = get_license_meta() or {}
+                from datetime import datetime as _dt, timezone as _tz
+                meta["last_validated_at"] = _dt.now(_tz.utc).isoformat()
+                meta["last_remote_check"] = "valid"
+                set_license_meta(meta)
+            except Exception:
+                pass
+            return
+
+        # Revoked. Three things to stop trading:
+        #   1. Clear the license blob so /api/bot/start refuses
+        #      future toggle-on attempts (license gate).
+        #   2. Stamp meta with revoked status so the React shell
+        #      surfaces a clear "license revoked" reason on the
+        #      LicenseGate.
+        #   3. Force bot_enabled=False so an already-running bot
+        #      stops opening new positions on the next scan. The
+        #      executor reads user_config.bot_enabled each cycle.
+        reason = body.get("revoke_reason") or "license revoked by issuer"
+        print(f"[delfi] revocation_check: LICENSE REVOKED - {reason}. "
+              "Clearing local license key and disabling bot.",
+              file=sys.stderr, flush=True)
+        try:
+            set_license_key(None)
+            set_license_meta({
+                "status": "revoked",
+                "reason": reason,
+                "revoked_at": body.get("revoked_at"),
+            })
+        except Exception as exc:
+            print(f"[delfi] revocation_check: failed to clear local "
+                  f"license: {exc}", file=sys.stderr, flush=True)
+        try:
+            from engine.user_config import update_user_config
+            update_user_config(bot_enabled=False)
+        except Exception as exc:
+            print(f"[delfi] revocation_check: failed to disable bot: {exc}",
+                  file=sys.stderr, flush=True)
+
     # Wall-clock ceiling for each scheduled job. APScheduler has
     # max_instances=1 per job, so if ONE call sticks forever (e.g.
     # pycares getaddrinfo wedge in a Wikipedia fetch, observed
@@ -886,6 +1137,36 @@ async def main() -> None:
             print(f"[delfi] resolve_skipped failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_license_revocation_check():
+        """Daily call to the licensing server to see if this license
+        has been revoked (refund, dispute, manual admin action).
+
+        The local Ed25519 verifier in engine/license.py is offline-
+        only and will keep validating a refunded customer's blob
+        forever. Without this check, a refund doesn't actually stop
+        trading until the next desktop release ships a different key.
+        With it, a refund triggers a /api/license/check call within
+        12h that clears the local license; the LicenseGate re-renders
+        on next /api/license/status poll and the bot stops opening
+        new positions.
+
+        Soft on errors: a network blip or a server-side outage MUST
+        NOT lock paying customers out. Only an explicit `revoked:
+        true` response clears the license.
+        """
+        try:
+            _submit_job(
+                _bounded(
+                    _license_revocation_check_async(),
+                    timeout_s=20,
+                    label="license_revocation_check",
+                ),
+                outer_timeout_s=30,
+            )
+        except Exception as exc:
+            print(f"[delfi] license_revocation_check failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     now_utc = datetime.now(timezone.utc)
     scheduler.add_job(
         _run_scan, IntervalTrigger(minutes=scan_interval_min),
@@ -927,6 +1208,17 @@ async def main() -> None:
         # First fire 2 minutes after boot — give the position resolver
         # priority on a fresh start, then catch up on skipped evals.
         next_run_time=now_utc + timedelta(minutes=2),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    scheduler.add_job(
+        _run_license_revocation_check, IntervalTrigger(hours=12),
+        id="license_revocation_check",
+        # First fire 90s after boot - long enough that a network blip
+        # at startup doesn't fight with macro-calendar / DDGS warmup,
+        # short enough that a refunded customer who relaunches stops
+        # trading within minutes rather than 12 hours.
+        next_run_time=now_utc + timedelta(seconds=90),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )

@@ -400,15 +400,11 @@ function AutostartPanel() {
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Auto-start at login</h2>
-        <span className="panel-meta">
-          {status?.supported === false ? "macOS only" : "macOS"}
-        </span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        When on, Delfi runs as a background daemon: it starts at every
-        login, survives the GUI window closing, and auto-restarts within
-        ~10s if it crashes. Trading continues 24/7. Turning it off stops
-        the daemon and requires you to launch Delfi manually next time.
+        When on, Delfi launches automatically every time you sign in to
+        your computer. Trading resumes without you having to open the app
+        manually. Turning it off means Delfi only runs when you open it.
       </p>
       <div className="notif-row">
         <div>
@@ -492,13 +488,17 @@ function LoginItemPanel() {
     }
   };
 
+  // Hide on platforms that don't support this distinct concept.
+  // macOS separates "launchd autostart" (headless daemon) from
+  // "Login Items" (open the window). Windows has only one concept,
+  // already covered by AutostartPanel via HKCU\Run.
+  if (status && status.supported === false) {
+    return null;
+  }
   return (
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Open Delfi window at login</h2>
-        <span className="panel-meta">
-          {status?.supported === false ? "macOS only" : "macOS"}
-        </span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Adds Delfi to your macOS Login Items so the dashboard window
@@ -806,6 +806,14 @@ function LaunchStatsPanel() {
 
   useEffect(() => { load(); }, []);
 
+  // Hide on platforms without launchd stats. macOS's launchctl `print`
+  // is the only thing surfacing these counters today; on Windows the
+  // respawn loop lives inside the Tauri shell and doesn't track them
+  // yet. Showing an empty "Stats are macOS-only" tile is worse than
+  // not showing the panel at all.
+  if (stats && stats.supported === false) {
+    return null;
+  }
   return (
     <div className="panel">
       <div className="panel-head">

@@ -19,6 +19,7 @@
       ]
     },
     "dialog:default",
-    "opener:default"
+    "opener:default",
+    "updater:default"
   ]
 }

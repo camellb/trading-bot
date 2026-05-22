@@ -35,7 +35,9 @@ use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::async_runtime;
+use tauri::menu::{Menu, MenuItem};
 use tauri::path::BaseDirectory;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -51,6 +53,11 @@ struct ApiState {
     /// release we drop it without killing. `Mutex<Option<...>>`
     /// because `CommandChild::kill` consumes self.
     child: Mutex<Option<CommandChild>>,
+    /// True once the user has asked the app to quit. The non-macOS
+    /// respawn loop checks this before kicking off a new sidecar so
+    /// we don't race a "respawn" against the imminent process exit
+    /// and leave an orphan Python process behind.
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Serialize)]
@@ -62,10 +69,20 @@ struct ApiPort {
 #[tauri::command]
 fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
     let guard = state.port.lock().unwrap();
-    match *guard {
+    let result = match *guard {
         Some(p) => ApiPort { port: p, ready: true },
         None => ApiPort { port: 0, ready: false },
+    };
+    // Sparse log: a single line on every poll would spam, so only log
+    // the transition to ready (the React side polls every ~250ms until
+    // it succeeds).
+    if result.ready {
+        static LOGGED_READY: std::sync::Once = std::sync::Once::new();
+        LOGGED_READY.call_once(|| {
+            dlog(&format!("ipc: get_api_port returning ready port={}", result.port));
+        });
     }
+    result
 }
 
 /// User-initiated restart of the launchd-supervised daemon.
@@ -86,13 +103,35 @@ fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
 /// daemon supervisor wired up yet.
 #[tauri::command]
 async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
-    if !cfg!(target_os = "macos") {
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: kill the sidecar; the respawn loop in setup() picks
+        // up the Terminated event and spawns a fresh one. The user
+        // sees the BootScreen briefly during the ~12s cold-start
+        // window, then the dashboard reconnects automatically via
+        // `refresh_api_port`.
+        let _ = app;
+        let result = tokio::task::spawn_blocking(|| {
+            std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/IM", "delfi-sidecar.exe"])
+                .output()
+                .map_err(|e| format!("taskkill failed: {e}"))
+        })
+        .await
+        .map_err(|e| format!("restart task panicked: {e}"))?;
+        result?;
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = app;
         return Err(
-            "Restart from the GUI is currently macOS-only. \
-             On other platforms, quit and re-launch Delfi manually."
+            "Restart from the GUI is not implemented on Linux yet."
                 .into(),
         );
     }
+    #[allow(unreachable_code)]
+    {
     // Read the port file BEFORE we kill anything, so we can target
     // the actual port-holder by lsof. This handles the case where
     // a Tauri-spawned orphan from a prior session is the one
@@ -161,6 +200,7 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("restart task panicked: {e}"))?
+    } // end of unreachable_code wrapper
 }
 
 /// Re-resolve the daemon's listening port and update ApiState.
@@ -210,6 +250,7 @@ fn spawn_sidecar(
     port: u16,
     db_path: &PathBuf,
     ready_tx: oneshot::Sender<u16>,
+    terminated_tx: oneshot::Sender<()>,
 ) -> Result<CommandChild, String> {
     let shell = app.shell();
 
@@ -260,6 +301,7 @@ fn spawn_sidecar(
     // console output.
     async_runtime::spawn(async move {
         let mut ready_tx = Some(ready_tx);
+        let mut terminated_tx = Some(terminated_tx);
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line_bytes) => {
@@ -286,10 +328,21 @@ fn spawn_sidecar(
                         "[sidecar] terminated (code={:?}, signal={:?})",
                         payload.code, payload.signal
                     );
+                    // Signal the lifecycle loop so it can respawn
+                    // (on non-macOS-release) or just clean up.
+                    if let Some(tx) = terminated_tx.take() {
+                        let _ = tx.send(());
+                    }
                     break;
                 }
                 _ => {}
             }
+        }
+        // Defensive: if the event stream ended without a Terminated
+        // event (rare; usually means the IPC channel was dropped),
+        // still wake the lifecycle loop so it doesn't hang forever.
+        if let Some(tx) = terminated_tx.take() {
+            let _ = tx.send(());
         }
     });
 
@@ -329,8 +382,48 @@ async fn read_existing_sidecar_port(app: &tauri::AppHandle) -> Option<u16> {
     }
 }
 
+/// Diagnostic logger. Release builds run with windows_subsystem="windows"
+/// so println! goes nowhere; we still need to be able to see how far
+/// startup got when the GUI hangs on the boot splash. Writes to
+/// %TEMP%\delfi-shell.log (one line per call), best-effort.
+fn dlog(msg: &str) {
+    if let Ok(tmp) = std::env::var("TEMP") {
+        let path = std::path::Path::new(&tmp).join("delfi-shell.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true).append(true).open(&path)
+        {
+            use std::io::Write;
+            let _ = writeln!(f, "[{}] pid={} {}",
+                chrono_or_secs(), std::process::id(), msg);
+        }
+    }
+}
+
+/// Trivial timestamp without dragging in chrono. Seconds since UNIX epoch.
+fn chrono_or_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 fn main() {
+    dlog("==== main() entry ====");
     tauri::Builder::default()
+        // Single-instance MUST be the first plugin registered. The
+        // plugin's init runs synchronously inside Builder::build and
+        // is what detects "another delfi is already running" — if it
+        // fires after other plugins have set up state, we waste work
+        // initialising things in a process that's about to exit.
+        // The callback runs in the FIRST (surviving) instance when
+        // someone double-clicks the shortcut: we surface its window
+        // instead of letting a duplicate spawn.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            dlog("single-instance callback fired (another delfi tried to start)");
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -343,6 +436,7 @@ fn main() {
         .manage(ApiState {
             port: Mutex::new(None),
             child: Mutex::new(None),
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_api_port,
@@ -382,6 +476,76 @@ fn main() {
             }
         })
         .setup(|app| {
+            dlog("setup() entry");
+            // System tray icon. Sits in the Windows notification area
+            // (the up-arrow "hidden icons" tray) and the macOS menu bar.
+            // Left-click brings the main window forward; right-click
+            // opens a menu with Show / Quit. The X button on the window
+            // already hides the window (see .on_window_event below) so
+            // the tray is the user's path back to it. Without this, an
+            // accidental X click on Windows means re-launching Delfi
+            // from the Start menu — which is fine for the bot (sidecar
+            // keeps running) but kills the GUI's "always-available"
+            // promise.
+            //
+            // "Quit" through the tray menu is intentional full shutdown:
+            // app.exit(0) triggers our RunEvent::Exit handler, which
+            // kills the sidecar on Windows/Linux (no launchd to
+            // supervise it). On macOS the sidecar is launchd-managed so
+            // Quit only takes down the GUI.
+            let show_item = MenuItem::with_id(
+                app, "tray_show", "Show Delfi", true, None::<&str>,
+            )?;
+            let quit_item = MenuItem::with_id(
+                app, "tray_quit", "Quit Delfi", true, None::<&str>,
+            )?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            dlog("tray: building");
+            let tray_icon = app.default_window_icon().cloned();
+            if tray_icon.is_none() {
+                dlog("tray: WARN no default_window_icon; skipping tray setup");
+            }
+            if let Some(icon) = tray_icon {
+            let _tray = TrayIconBuilder::with_id("delfi-tray")
+                .icon(icon)
+                .tooltip("Delfi")
+                .menu(&tray_menu)
+                // Left-click on the tray icon shows the window. The
+                // default Tauri behaviour does nothing, which feels
+                // broken next to apps like Discord / Spotify that all
+                // pop the window on left-click.
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "tray_show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "tray_quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+            dlog("tray: built");
+            } // end if let Some(icon)
+
             // Two paths to a running sidecar:
             //
             //   1. Daemon already running (production: launchd
@@ -398,24 +562,57 @@ fn main() {
             //      registered uses path 1.
             let app_handle = app.handle().clone();
             async_runtime::spawn(async move {
-                // Path 1: probe for an already-running daemon for up
-                // to 30s. PyInstaller cold-start of the bundled
-                // 160MB sidecar takes ~8-15s on first run (tempdir
-                // decompress + Python interpreter init). 6s wasn't
-                // enough and we'd fall through to the spawn fallback
-                // even when the launchd daemon was 2 seconds away
-                // from binding.
-                for _ in 0..60 {
+                dlog("async: sidecar lookup started");
+                // Path 1: probe for an already-running daemon.
+                //
+                // The probe budget depends on the platform:
+                //
+                //   macOS:  launchd manages the sidecar as a 24/7
+                //           daemon. PyInstaller cold-start can take
+                //           ~8-15s, and after a `bash install.sh`
+                //           rebuild the daemon goes through a brief
+                //           bootout/bootstrap cycle. 30s is the safe
+                //           floor here.
+                //
+                //   Windows/Linux:  no separate daemon supervisor.
+                //           Either there's a sidecar from a previous
+                //           same-session launch (port file present
+                //           AND the port is live), or there isn't and
+                //           the GUI must spawn one. A single 1.5s TCP
+                //           probe is enough; longer is just dead time
+                //           on the boot screen. A stale port file
+                //           from a previous run that we used to keep
+                //           probing for 60 iterations × 1.5s = 90s
+                //           was the headline "loads forever" symptom.
+                let probe_iterations: u32 =
+                    if cfg!(target_os = "macos") { 60 } else { 1 };
+                let mut probed_dead = false;
+                for _ in 0..probe_iterations {
                     if let Some(p) = read_existing_sidecar_port(&app_handle).await {
                         let state = app_handle.state::<ApiState>();
                         *state.port.lock().unwrap() = Some(p);
+                        dlog(&format!("async: attached to existing daemon port={p}"));
                         println!(
                             "[delfi] connected to running daemon on \
                              127.0.0.1:{p}"
                         );
                         return;
                     }
+                    probed_dead = true;
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                if probed_dead && !cfg!(target_os = "macos") {
+                    // Best-effort: remove the stale port file so a
+                    // future launch doesn't pay the same probe cost
+                    // for a port nobody's listening on.
+                    if let Ok(dir) = app_handle.path()
+                        .resolve("", BaseDirectory::AppData) {
+                        let pf = dir.join("sidecar.port");
+                        if pf.exists() {
+                            dlog(&format!("async: removing stale port file {:?}", pf));
+                            let _ = std::fs::remove_file(&pf);
+                        }
+                    }
                 }
 
                 // Path 2: depends on build mode.
@@ -434,58 +631,142 @@ fn main() {
                 // `python main.py` with no LaunchAgent supervision,
                 // so the GUI itself is the only path to a running
                 // sidecar.
-                if cfg!(debug_assertions) {
-                    println!(
-                        "[delfi] no daemon found via port file - falling \
-                         back to spawning a sidecar from the GUI (dev mode)"
-                    );
-                    let port = portpicker::pick_unused_port().unwrap_or(0);
-                    let db_path = resolve_db_path(&app_handle);
-                    let (ready_tx, ready_rx) = oneshot::channel::<u16>();
-                    let child = match spawn_sidecar(
-                        &app_handle, port, &db_path, ready_tx,
-                    ) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("[delfi] sidecar spawn failed: {e}");
-                            return;
-                        }
-                    };
-                    {
-                        let state = app_handle.state::<ApiState>();
-                        *state.child.lock().unwrap() = Some(child);
-                    }
-                    let app_handle_for_poll = app_handle.clone();
-                    let port_file_watcher = async move {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            if let Some(p) = read_existing_sidecar_port(&app_handle_for_poll).await {
-                                return p;
+                //
+                // NON-MACOS RELEASE: also spawn from the GUI. The
+                // launchd LaunchAgent only exists on macOS; on Windows
+                // and Linux there is no separate daemon supervisor, so
+                // the GUI is the sidecar's parent. The "competing with
+                // launchd" failure mode that the macOS release branch
+                // avoids cannot happen here.
+                if cfg!(debug_assertions) || !cfg!(target_os = "macos") {
+                    // Lifecycle loop. Spawn the sidecar, wait for it
+                    // to report ready, then watch for termination.
+                    // On termination (sidecar crashed or was killed),
+                    // respawn with a small backoff - unless the app
+                    // is shutting down, in which case exit cleanly.
+                    //
+                    // macOS-release deliberately does NOT use this
+                    // loop: launchd's KeepAlive=true is the canonical
+                    // respawn supervisor there. Running both would
+                    // race.
+                    let mut backoff_secs: u64 = 0;
+                    loop {
+                        {
+                            let state = app_handle.state::<ApiState>();
+                            if state.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+                                dlog("async: shutting_down set, exiting respawn loop");
+                                break;
                             }
                         }
-                    };
-                    let timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
-                    tokio::select! {
-                        res = ready_rx => {
-                            if let Ok(bound_port) = res {
+                        if backoff_secs > 0 {
+                            dlog(&format!("async: backoff {backoff_secs}s before respawn"));
+                            tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+                        }
+
+                        dlog("async: spawning sidecar");
+                        let port = portpicker::pick_unused_port().unwrap_or(0);
+                        let db_path = resolve_db_path(&app_handle);
+                        let (ready_tx, ready_rx) = oneshot::channel::<u16>();
+                        let (terminated_tx, terminated_rx) = oneshot::channel::<()>();
+                        let child = match spawn_sidecar(
+                            &app_handle, port, &db_path, ready_tx, terminated_tx,
+                        ) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                dlog(&format!("async: spawn_sidecar FAILED: {e}"));
+                                eprintln!("[delfi] sidecar spawn failed: {e}");
+                                backoff_secs = (backoff_secs + 2).min(30);
+                                continue;
+                            }
+                        };
+                        dlog("async: spawn_sidecar OK, waiting for ready");
+                        {
+                            let state = app_handle.state::<ApiState>();
+                            *state.child.lock().unwrap() = Some(child);
+                        }
+
+                        let app_handle_for_poll = app_handle.clone();
+                        let port_file_watcher = async move {
+                            loop {
+                                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                if let Some(p) = read_existing_sidecar_port(&app_handle_for_poll).await {
+                                    return p;
+                                }
+                            }
+                        };
+                        let ready_timeout = tokio::time::sleep(std::time::Duration::from_secs(120));
+                        let mut ready_ok = false;
+                        tokio::select! {
+                            res = ready_rx => {
+                                if let Ok(bound_port) = res {
+                                    let state = app_handle.state::<ApiState>();
+                                    *state.port.lock().unwrap() = Some(bound_port);
+                                    dlog(&format!("async: READY via stdout, port={bound_port}"));
+                                    println!("[delfi] spawned sidecar ready on 127.0.0.1:{bound_port}");
+                                    ready_ok = true;
+                                } else {
+                                    dlog("async: ready_rx channel dropped before READY line");
+                                    eprintln!("[delfi] sidecar ready channel dropped before READY line");
+                                }
+                            }
+                            bound_port = port_file_watcher => {
                                 let state = app_handle.state::<ApiState>();
                                 *state.port.lock().unwrap() = Some(bound_port);
-                                println!("[delfi] spawned sidecar ready on 127.0.0.1:{bound_port}");
-                            } else {
-                                eprintln!("[delfi] sidecar ready channel dropped before READY line");
+                                dlog(&format!("async: READY via port file, port={bound_port}"));
+                                println!(
+                                    "[delfi] daemon came online on 127.0.0.1:{bound_port}"
+                                );
+                                ready_ok = true;
+                            }
+                            _ = ready_timeout => {
+                                dlog("async: TIMEOUT 120s no ready signal");
+                                eprintln!("[delfi] sidecar did not become ready within 120s");
                             }
                         }
-                        bound_port = port_file_watcher => {
+
+                        if !ready_ok {
+                            // The sidecar process is alive but never
+                            // reported ready. Kill it before looping
+                            // so we don't pile up zombie processes
+                            // (the singleton mutex would also block
+                            // future spawns).
                             let state = app_handle.state::<ApiState>();
-                            *state.port.lock().unwrap() = Some(bound_port);
-                            println!(
-                                "[delfi] daemon came online after probe window - \
-                                 connected on 127.0.0.1:{bound_port}"
-                            );
+                            if let Some(c) = state.child.lock().unwrap().take() {
+                                let _ = c.kill();
+                            }
+                            *state.port.lock().unwrap() = None;
+                            backoff_secs = (backoff_secs + 2).min(30);
+                            continue;
                         }
-                        _ = timeout => {
-                            eprintln!("[delfi] sidecar did not become ready within 120s");
+
+                        // Reset backoff once we've had a successful
+                        // start. Crash-loops use exponential backoff;
+                        // a stable-then-crash gets a quick respawn.
+                        backoff_secs = 0;
+
+                        // Block until the sidecar terminates. The
+                        // CommandEvent handler in spawn_sidecar fires
+                        // terminated_tx when it sees Terminated (or
+                        // when the IPC channel closes).
+                        let _ = terminated_rx.await;
+                        dlog("async: sidecar terminated");
+
+                        let state = app_handle.state::<ApiState>();
+                        *state.port.lock().unwrap() = None;
+                        // child slot will be replaced on next spawn.
+                        // Drop the dead handle without calling kill
+                        // (it's already dead).
+                        let _ = state.child.lock().unwrap().take();
+
+                        if state.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+                            dlog("async: shutting_down set after terminate, exiting respawn loop");
+                            break;
                         }
+
+                        // Brief backoff so a tight crash loop doesn't
+                        // spin a sidecar 100x/sec. 2s gives the user
+                        // time to read whatever the BootScreen shows.
+                        backoff_secs = 2;
                     }
                 } else {
                     // Release: kickstart launchd's LaunchAgent in case
@@ -569,6 +850,7 @@ fn main() {
             // there's no path back to the UI short of relaunching.
             // We re-show + focus the main window so the dock icon
             // behaves like every other macOS app.
+            #[cfg(target_os = "macos")]
             if let RunEvent::Reopen { .. } = event {
                 if let Some(win) = app_handle.get_webview_window("main") {
                     let _ = win.show();
@@ -577,7 +859,16 @@ fn main() {
             }
 
             if let RunEvent::Exit = event {
-                if cfg!(debug_assertions) {
+                // Signal the respawn loop that we're shutting down so
+                // it doesn't race a new spawn against this teardown.
+                {
+                    let state = app_handle.state::<ApiState>();
+                    state.shutting_down.store(true, std::sync::atomic::Ordering::Release);
+                }
+                if cfg!(debug_assertions) || !cfg!(target_os = "macos") {
+                    // Dev mode, or any non-macOS release: the GUI is
+                    // the sidecar's parent so kill it on exit, else
+                    // we leak a Python process every relaunch.
                     let state = app_handle.state::<ApiState>();
                     // Bind the lock guard to a local so it drops before
                     // `state` does (otherwise the borrow checker sees
@@ -587,9 +878,22 @@ fn main() {
                     if let Some(child) = child_slot.take() {
                         let _ = child.kill();
                     }
+                    // Windows safety net: even if state.child is None
+                    // (the GUI attached to a sidecar from a previous
+                    // session and never owned a CommandChild handle),
+                    // taskkill any lingering delfi-sidecar.exe. The
+                    // singleton mutex guarantees there's at most one,
+                    // and PyInstaller's bootloader + child are both
+                    // named delfi-sidecar.exe so /T sweeps the tree.
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/F", "/T", "/IM", "delfi-sidecar.exe"])
+                            .output();
+                    }
                 } else {
-                    // Release: drop the handle without killing. This
-                    // detaches the child from our process; launchd
+                    // macOS release: drop the handle without killing.
+                    // This detaches the child from our process; launchd
                     // takes over as the supervising parent.
                     let state = app_handle.state::<ApiState>();
                     let mut child_slot = state.child.lock().unwrap();

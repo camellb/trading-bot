@@ -125,7 +125,16 @@ export default function Onboarding({ creds, onComplete }: Props) {
           />
         )}
         {step === "done" && (
-          <DoneStep onFinish={onComplete} />
+          <DoneStep onFinish={async () => {
+            // Mark the wizard finished server-side. is_onboarded gates
+            // on this timestamp, not on mode/starting_cash (which have
+            // DB server defaults and would otherwise auto-skip every
+            // fresh install past the wizard). Let errors propagate to
+            // the DoneStep so the user sees a real message instead of
+            // a button that silently does nothing.
+            await api.updateConfig({ tour_completed_at: new Date().toISOString() });
+            onComplete();
+          }} />
         )}
       </div>
     </div>
@@ -363,7 +372,21 @@ function PolymarketStep({
   );
 }
 
-function DoneStep({ onFinish }: { onFinish: () => void }) {
+function DoneStep({ onFinish }: { onFinish: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onFinish();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <>
       <div className="ob-eyebrow">All set</div>
@@ -380,10 +403,11 @@ function DoneStep({ onFinish }: { onFinish: () => void }) {
         <ChecklistItem ok>Capital set</ChecklistItem>
         <ChecklistItem>Polymarket key + wallet (for live mode)</ChecklistItem>
       </div>
+      {error && <div className="form-error">{error}</div>}
       <div className="ob-actions">
         <span />
-        <button className="ob-next" onClick={onFinish}>
-          Open the dashboard <span aria-hidden>→</span>
+        <button className="ob-next" onClick={handleClick} disabled={busy}>
+          {busy ? "Saving..." : "Open the dashboard"} <span aria-hidden>→</span>
         </button>
       </div>
     </>

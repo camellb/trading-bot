@@ -61,3 +61,7 @@ Delfibot/bot/data/macro_calendar.json
 # Throwaway analysis scratch files
 tmp_*.md
 tmp_*.py
+
+# Windows build artifacts
+Delfibot/bot/.pyinstaller-dist/
+Delfibot/bot/build/

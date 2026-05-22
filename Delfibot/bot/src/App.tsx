@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
@@ -44,6 +44,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [connected, setConnected] = useState<boolean>(false);
   const [modeBusy, setModeBusy] = useState(false);
+  // Synchronous re-entrance guard. `modeBusy` (useState) is batched, so a
+  // hardware double-click that fires two MouseEvents within ~50ms can have
+  // both handlers read modeBusy=false before React flushes the setState.
+  // The ref updates immediately, closing that window.
+  const toggleInFlight = useRef(false);
   // Track the last-known autostart status so the connection-error
   // banner can distinguish "daemon is down because the user turned
   // off auto-start" from "daemon is down for an unexpected reason".
@@ -127,19 +132,38 @@ export default function App() {
   // Bot on/off. Calls /api/bot/start (sets bot_enabled=true; validates
   // creds for the current mode) or /api/bot/stop (sets bot_enabled=false).
   const toggleBotEnabled = async () => {
-    if (modeBusy) return;
+    // Synchronous guard first - catches hardware/stutter double-clicks
+    // that fire two MouseEvents before React can flush setModeBusy(true).
+    if (toggleInFlight.current) return;
+    toggleInFlight.current = true;
+    if (modeBusy) {
+      toggleInFlight.current = false;
+      return;
+    }
     setModeBusy(true);
+    // Snapshot the action target at click time, not on every closure
+    // re-read, so a re-render mid-call can't change which branch
+    // executes.
+    const wasEnabled = state?.bot_enabled;
     try {
-      if (state?.bot_enabled) {
+      if (wasEnabled) {
         await api.stop();
       } else {
         await api.start();
       }
       await refresh();
+      // Cooldown. After refresh() the button instantly re-renders to
+      // the opposite-action label (Start <-> Pause). A second click can
+      // land on the new button within ~200ms - the audit log used to
+      // show start+stop pairs every time. Hold the busy state for an
+      // extra beat so the follow-up click (whether intentional or from
+      // a misbehaving mouse) is swallowed.
+      await new Promise((r) => setTimeout(r, 800));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setModeBusy(false);
+      toggleInFlight.current = false;
     }
   };
 

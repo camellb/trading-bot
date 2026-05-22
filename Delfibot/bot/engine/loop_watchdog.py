@@ -249,12 +249,21 @@ class LoopHeartbeat:
         a strong signal that something has wedged in the request
         path and the listener will start dropping new connections
         soon. Hard signal to SIGKILL — launchd respawns in <10s.
+
+        Windows: returns 0 because `/usr/sbin/netstat` doesn't exist
+        and the equivalent `netstat -an -p TCP` output format is
+        different enough that a separate parser is needed. The other
+        watchdog signals (loop silence, self-probe) still fire on
+        Windows, so we lose this one secondary indicator only.
         """
         try:
             port = self._api_port_getter() if self._api_port_getter else None
         except Exception:
             return 0
         if not port or port <= 0:
+            return 0
+        import platform
+        if platform.system() != "Darwin":
             return 0
         import subprocess
         try:
@@ -295,6 +304,9 @@ class LoopHeartbeat:
         except Exception:
             return 0
         if not port or port <= 0:
+            return 0
+        import platform
+        if platform.system() != "Darwin":
             return 0
         import subprocess
         try:
@@ -343,34 +355,60 @@ class LoopHeartbeat:
         if not port or port <= 0:
             return False
 
+        import platform
         import subprocess
-        # Hard-coded curl path: avoids $PATH lookup overhead and
-        # surprise if /usr/local/bin/curl shadows the system one.
-        # Macs always have /usr/bin/curl; Linux has it too.
-        cmd = [
-            "/usr/bin/curl", "-sS",
-            "--max-time", str(int(self._self_probe_timeout_s)),
-            "-o", "/dev/null",
-            "-w", "%{http_code}",
-            f"http://127.0.0.1:{port}/api/health",
-        ]
+        if platform.system() == "Darwin":
+            # Hard-coded curl path: avoids $PATH lookup overhead and
+            # surprise if /usr/local/bin/curl shadows the system one.
+            cmd = [
+                "/usr/bin/curl", "-sS",
+                "--max-time", str(int(self._self_probe_timeout_s)),
+                "-o", "/dev/null",
+                "-w", "%{http_code}",
+                f"http://127.0.0.1:{port}/api/health",
+            ]
+            try:
+                r = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    # +2s envelope on top of curl's own --max-time so the
+                    # subprocess.run timeout fires only if curl itself is
+                    # hung (extremely rare). curl's timeout is what we
+                    # want to detect a wedge.
+                    timeout=int(self._self_probe_timeout_s) + 2,
+                )
+            except subprocess.TimeoutExpired:
+                return False
+            except Exception:
+                return False
+            if r.returncode != 0:
+                return False
+            return r.stdout.strip() == b"200"
+
+        # Windows / Linux: in-process TCP connect. The out-of-process
+        # curl path above exists to bypass a macOS-specific
+        # kqueue+pycares fast-path that let in-process loopback succeed
+        # while the external listener was wedged. That bug pattern
+        # doesn't happen on Windows (IOCP doesn't fast-path loopback
+        # the same way), so an in-thread `socket.create_connection`
+        # gives the same "external client view" property. We don't
+        # need a full HTTP exchange - if the accept loop is dead, the
+        # connect itself fails.
+        #
+        # `sys.executable` for a PyInstaller onefile points at this
+        # same bundled binary, NOT a Python interpreter, so a
+        # subprocess approach is not available here without bundling
+        # a probe helper.
+        import socket as _socket
         try:
-            r = subprocess.run(
-                cmd,
-                capture_output=True,
-                # +2s envelope on top of curl's own --max-time so the
-                # subprocess.run timeout fires only if curl itself is
-                # hung (extremely rare). curl's timeout is what we
-                # want to detect a wedge.
-                timeout=int(self._self_probe_timeout_s) + 2,
+            s = _socket.create_connection(
+                ("127.0.0.1", int(port)),
+                timeout=float(self._self_probe_timeout_s),
             )
-        except subprocess.TimeoutExpired:
-            return False
+            s.close()
+            return True
         except Exception:
             return False
-        if r.returncode != 0:
-            return False
-        return r.stdout.strip() == b"200"
 
     def _warn(self, silence: float) -> None:
         """Slow-but-not-dead: dump tracebacks WITHOUT killing.
@@ -419,7 +457,16 @@ class LoopHeartbeat:
             faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
         except Exception:
             pass
-        os.kill(os.getpid(), signal.SIGKILL)
+        # Hard-kill self. On POSIX use SIGKILL so the kernel cleans up
+        # the process group; on Windows SIGKILL doesn't exist, fall
+        # back to os._exit. Either way we want NO atexit / cleanup
+        # handlers running: the watchdog only fires when the loop is
+        # already wedged, so any cleanup that calls into the loop
+        # would deadlock.
+        if hasattr(signal, "SIGKILL"):
+            os.kill(os.getpid(), signal.SIGKILL)
+        else:
+            os._exit(1)
 
     def start(self) -> None:
         if self._thread is not None:

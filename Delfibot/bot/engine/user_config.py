@@ -145,6 +145,15 @@ class UserConfig:
     wallet_address:        Optional[str]   = None
     bot_enabled:           bool            = False
 
+    # Set the moment the user clicks "Done" on the last step of the
+    # Onboarding wizard. Used by `is_onboarded` to decide whether to
+    # show the wizard on launch. Note: mode + starting_cash both have
+    # DB server defaults ('simulation' / 1000.0), so checking those
+    # for "has the user been through onboarding" returns True the
+    # instant the row is inserted - it's not a real signal. This
+    # field is the explicit one.
+    tour_completed_at:     Optional[str]   = None    # ISO 8601 string
+
     # v1 is offshore Polymarket only. The `venue` field is kept as a
     # constant so any legacy code that reads it (`getattr(cfg, "venue",
     # "polymarket")`) continues to resolve. The other polymarket_* and
@@ -172,7 +181,12 @@ class UserConfig:
 
     @property
     def is_onboarded(self) -> bool:
-        return self.mode is not None and self.starting_cash is not None
+        # `tour_completed_at` is set explicitly by the React Onboarding
+        # wizard on the final "Done" step. mode + starting_cash both
+        # have DB server defaults so checking them returns True the
+        # instant the row exists; the wizard never shows. Gate on the
+        # explicit completion timestamp instead.
+        return self.tour_completed_at is not None
 
     @property
     def can_trade_live(self) -> bool:
@@ -342,6 +356,7 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "min_days_to_resolution",
     "max_days_to_resolution",
     "archetype_skip_market_price_bands",
+    "tour_completed_at",
 })
 
 
@@ -562,6 +577,14 @@ def cast_value(key: str, raw) -> Union[int, float, tuple, dict, None, str, bool]
             return None
         s = str(raw).strip()
         return s or None
+    if key == "tour_completed_at":
+        # ISO 8601 string written by the React Onboarding wizard's
+        # final step. None / empty string clears the flag (and resurfaces
+        # the wizard on the next launch).
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s or None
     if key == "bot_enabled":
         if isinstance(raw, bool):
             return raw
@@ -643,7 +666,11 @@ def validate_user_config_value(key: str, value) -> None:
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
-    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id"):
+    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id",
+               "tour_completed_at"):
+        # tour_completed_at: opaque ISO-8601 string written once by the
+        # Onboarding wizard's final step. No bounds check; the caster
+        # already normalised None/empty to None.
         return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
@@ -1011,7 +1038,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       bot_enabled, archetype_stake_multipliers, "
                 "       notification_prefs, telegram_chat_id, "
                 "       min_days_to_resolution, max_days_to_resolution, "
-                "       archetype_skip_market_price_bands "
+                "       archetype_skip_market_price_bands, "
+                "       tour_completed_at "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -1036,6 +1064,7 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             min_days_to_resolution        = (int(row[16]) if row[16] is not None else None),
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
             archetype_skip_market_price_bands = _decode_archetype_skip_market_price_bands(row[18]),
+            tour_completed_at             = (str(row[19]) if row[19] is not None else None),
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)

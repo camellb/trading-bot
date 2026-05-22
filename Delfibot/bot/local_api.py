@@ -1177,6 +1177,13 @@ class LocalAPI:
             return _err(f"license check failed: {reason}", 403)
 
         cfg = await self._offload(get_user_config)
+        # Idempotent. A rapid double-click in the GUI used to fire
+        # start then stop within the same second (the second click
+        # landed on the just-re-rendered "Pause" button). Returning
+        # success without re-writing the row also avoids a spurious
+        # audit log entry on every redundant call.
+        if cfg.bot_enabled:
+            return _ok({"bot_enabled": True, "mode": cfg.mode})
         if (await self._offload(get_anthropic_api_key)) is None:
             return _err("LLM API key is not set", 400)
         if cfg.mode == "live":
@@ -1200,6 +1207,10 @@ class LocalAPI:
         UserConfig.ready_to_trade). Existing positions still settle.
         """
         _log_bot_toggle_request("stop", req)
+        # Idempotent. Mirrors _bot_start: a redundant stop is a no-op.
+        cfg = get_user_config()
+        if not cfg.bot_enabled:
+            return _ok({"bot_enabled": False, "mode": cfg.mode})
         try:
             cfg = update_user_config(bot_enabled=False)
         except ValueError as exc:
@@ -1956,9 +1967,17 @@ class LocalAPI:
     # so toggling OFF stops the bot. bootstrap+kickstart starts
     # a fresh daemon immediately.
     #
-    # Other platforms (Linux, Windows): we report supported=false.
-    # Windows would need a Startup-folder shortcut or a Task
-    # Scheduler entry; not wired yet.
+    # Windows uses a HKCU\\Run registry value pointing at the installed
+    # delfi.exe (the Tauri GUI). At user login Windows reads the Run key
+    # and launches every value listed; our GUI starts, sees no existing
+    # daemon via the port-file probe, and spawns the sidecar itself
+    # (release-mode fallback - see src-tauri/src/main.rs).
+    #
+    # Linux: still unwired. systemd --user units would be the right path
+    # but distros vary enough that we'd need per-distro logic.
+
+    _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    _WIN_RUN_VALUE_NAME = "Delfi"
 
     def _autostart_paths(self) -> tuple[str, str]:
         """Return (plist path, launchctl service id) for the current user."""
@@ -1970,17 +1989,140 @@ class LocalAPI:
         service_id = f"gui/{uid}/com.delfi.bot"
         return plist, service_id
 
+    def _windows_gui_exe_path(self) -> Optional[str]:
+        """Resolve the absolute path to the installed delfi.exe (Tauri GUI).
+
+        In production (PyInstaller bundle inside the Tauri installer)
+        the GUI binary lives in the same directory as the sidecar
+        binary. `sys.executable` for a PyInstaller onefile is the
+        sidecar's own path, so the GUI is its sibling.
+
+        Returns None when the sidecar is running outside the installed
+        bundle (dev mode `python main.py`, or some weird location), in
+        which case Windows autostart should report unsupported.
+        """
+        import os
+        import sys
+        try:
+            sidecar_dir = os.path.dirname(os.path.abspath(sys.executable))
+        except Exception:
+            return None
+        gui_path = os.path.join(sidecar_dir, "delfi.exe")
+        return gui_path if os.path.isfile(gui_path) else None
+
+    def _autostart_status_windows(self) -> dict:
+        """Probe the HKCU\\Run registry value for our autostart entry."""
+        try:
+            import winreg
+        except ImportError:
+            return {
+                "supported": False,
+                "enabled":   False,
+                "reason":    "winreg is not available on this Python build.",
+            }
+        gui = self._windows_gui_exe_path()
+        if gui is None:
+            # Dev mode or broken install - the toggle would point at
+            # a path that doesn't exist, so refuse to claim support.
+            return {
+                "supported": False,
+                "enabled":   False,
+                "reason":    "Autostart needs the installed Delfi bundle "
+                             "(could not find delfi.exe).",
+            }
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                self._WIN_RUN_KEY,
+                0,
+                winreg.KEY_READ,
+            ) as key:
+                try:
+                    value, _ = winreg.QueryValueEx(
+                        key, self._WIN_RUN_VALUE_NAME,
+                    )
+                    return {
+                        "supported": True,
+                        "enabled":   bool(value),
+                        "reason":    None,
+                    }
+                except FileNotFoundError:
+                    return {
+                        "supported": True,
+                        "enabled":   False,
+                        "reason":    None,
+                    }
+        except OSError as exc:
+            return {
+                "supported": True,
+                "enabled":   False,
+                "reason":    f"registry probe failed: {exc}",
+            }
+
+    def _put_autostart_windows(self, target: bool) -> tuple[bool, Optional[str]]:
+        """Set or clear the HKCU\\Run value. Returns (ok, error)."""
+        try:
+            import winreg
+        except ImportError:
+            return False, "winreg is not available on this Python build."
+
+        if target:
+            gui = self._windows_gui_exe_path()
+            if gui is None:
+                return False, (
+                    "could not find delfi.exe next to the sidecar - "
+                    "autostart requires the installed Delfi bundle."
+                )
+            # Wrap in quotes so paths with spaces (Program Files) work
+            # when Windows shells out to the value at login.
+            value = f'"{gui}"'
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    self._WIN_RUN_KEY,
+                    0,
+                    winreg.KEY_SET_VALUE,
+                ) as key:
+                    winreg.SetValueEx(
+                        key, self._WIN_RUN_VALUE_NAME, 0,
+                        winreg.REG_SZ, value,
+                    )
+            except OSError as exc:
+                return False, f"registry write failed: {exc}"
+            return True, None
+
+        # target = False: delete the value. Idempotent: missing value
+        # means we're already in the target state.
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                self._WIN_RUN_KEY,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as key:
+                try:
+                    winreg.DeleteValue(key, self._WIN_RUN_VALUE_NAME)
+                except FileNotFoundError:
+                    pass
+        except OSError as exc:
+            return False, f"registry delete failed: {exc}"
+        return True, None
+
     async def _autostart_status(self) -> dict:
         """Probe the LaunchAgent state. Caller decides what to do with it."""
         import os
         import platform
         import subprocess
 
-        if platform.system() != "Darwin":
+        sysname = platform.system()
+        if sysname == "Windows":
+            return self._autostart_status_windows()
+        if sysname != "Darwin":
             return {
                 "supported": False,
                 "enabled":   False,
-                "reason":    "Auto-start at login is currently macOS-only.",
+                "reason":    "Auto-start at login on this OS is not "
+                             "implemented yet.",
             }
 
         plist, service_id = self._autostart_paths()
@@ -2029,9 +2171,17 @@ class LocalAPI:
             return _err("body must include 'enabled' (boolean)", 400)
         target = bool(payload["enabled"])
 
-        if platform.system() != "Darwin":
+        sysname = platform.system()
+        if sysname == "Windows":
+            ok, err = self._put_autostart_windows(target)
+            if not ok:
+                return _err(err or "autostart toggle failed", 500)
+            # Registry writes are synchronous - no reconcile loop needed,
+            # the next status read will reflect the change immediately.
+            return _ok(self._autostart_status_windows())
+        if sysname != "Darwin":
             return _err(
-                "Auto-start at login is currently macOS-only.",
+                "Auto-start at login on this OS is not implemented yet.",
                 400,
             )
 
@@ -2138,8 +2288,35 @@ class LocalAPI:
         import platform
         import subprocess
 
-        if platform.system() != "Darwin":
-            return _err("Restart is currently macOS-only.", 400)
+        sysname = platform.system()
+        if sysname == "Windows":
+            # Same trick as macOS: detach a child that pauses briefly,
+            # then taskkills US. By the time taskkill fires we've
+            # already returned this HTTP response. The Tauri shell's
+            # respawn loop picks up the Terminated event and starts a
+            # fresh sidecar.
+            #
+            # `start /B "" cmd /c "...timeout & taskkill..."` spawns a
+            # detached cmd.exe that survives our death. The empty ""
+            # is the window title (required positional arg of start).
+            try:
+                subprocess.Popen(
+                    ["cmd", "/c",
+                     'start /B "" cmd /c '
+                     '"timeout /t 1 /nobreak > nul & '
+                     'taskkill /F /T /IM delfi-sidecar.exe"'],
+                    creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                                  | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                return _err(f"failed to spawn restart: {exc}", 500)
+            return _ok({"ok": True, "detail": "Restart signal sent. Delfi "
+                        "will be back online in a few seconds."})
+
+        if sysname != "Darwin":
+            return _err("Restart is not implemented on this OS yet.", 400)
 
         _, service_id = self._autostart_paths()
 
@@ -2200,15 +2377,23 @@ class LocalAPI:
 
         # Path mirrors the LaunchAgent plist's StandardOutPath /
         # StandardErrorPath (~/Library/Logs/Delfi/sidecar.{log,err}).
-        # On non-macOS platforms we don't currently have a daemon
-        # log file; fall back to a single-line "not available" so the
-        # UI can render something instead of erroring.
-        home = os.path.expanduser("~")
-        log_dir = os.path.join(home, "Library", "Logs", "Delfi")
-        path = os.path.join(
-            log_dir,
-            "sidecar.log" if stream == "stdout" else "sidecar.err",
-        )
+        # On Windows we don't redirect sidecar stdout to a file yet, but
+        # the Tauri shell writes a small diagnostic log to %TEMP% that
+        # captures startup-phase events (port resolution, respawns,
+        # tray init). It's not a full sidecar log but it covers the
+        # "Delfi won't start" support case.
+        import platform
+        sysname = platform.system()
+        if sysname == "Windows":
+            tmp = os.environ.get("TEMP") or os.environ.get("TMP") or ""
+            path = os.path.join(tmp, "delfi-shell.log") if tmp else ""
+        else:
+            home = os.path.expanduser("~")
+            log_dir = os.path.join(home, "Library", "Logs", "Delfi")
+            path = os.path.join(
+                log_dir,
+                "sidecar.log" if stream == "stdout" else "sidecar.err",
+            )
         if not os.path.isfile(path):
             return _ok({
                 "stream": stream,
