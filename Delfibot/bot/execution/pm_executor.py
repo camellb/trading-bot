@@ -614,29 +614,71 @@ class PMExecutor:
             self._user_config.mode == "live"
             and self._view_mode_override is None
         ):
+            # Live mode: starting_cash is the user's TOTAL committed
+            # capital on Polymarket, i.e. cash + cost basis of all
+            # open positions = equity at cost basis. This is the
+            # right reference for every risk gate:
+            #
+            #   - exposure_cap = starting_cash * (1 - reserve_pct).
+            #     If we used current cash instead, the cap would
+            #     shrink every time we opened a position (cash goes
+            #     down → cap goes down → previously-fine exposure
+            #     suddenly exceeds the cap → bot refuses to open
+            #     anything new → user sees "exposure $19 >= cap $9"
+            #     even though they configured a much higher tolerance.
+            #     Real bug seen with bankroll $10, open_cost $19,
+            #     90% cap that was supposed to allow $27 deployment.
+            #   - drawdown / daily-loss / weekly-loss limits also
+            #     use this as the denominator so a trade-open
+            #     doesn't artificially inflate the drawdown reading.
+            #
+            # Wallet probe (cache-only) + DB open_cost. Both read
+            # from in-process caches populated by background jobs
+            # so this is essentially free.
+            wallet_balance = 0.0
             try:
                 from engine.user_config import get_user_polymarket_creds
                 from feeds.polymarket_wallet import get_cached_poly_signer_info
                 creds = get_user_polymarket_creds(self.user_id)
                 pk = (creds or {}).get("private_key") if creds else None
                 if pk:
-                    # Read from the in-process cache only - never
-                    # touch the lock here. The background probe
-                    # populates the cache; get_bankroll's fallback
-                    # mirror also populates _LIVE_BANKROLL_FALLBACK.
                     info = get_cached_poly_signer_info(pk)
                     if info and isinstance(info.get("balance"), (int, float)):
-                        return float(info["balance"])
+                        wallet_balance = float(info["balance"])
+                if wallet_balance <= 0.0:
+                    wallet_balance = float(
+                        _LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0)
+                    )
             except Exception as exc:
                 print(
-                    f"[pm_executor] live starting_cash cache read failed: "
+                    f"[pm_executor] live starting_cash wallet probe failed: "
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
-            # Cache miss in live mode: use the last-known live
-            # bankroll if any, else 0. Returning the configured $1000
-            # would produce fake equity numbers everywhere downstream.
-            return float(_LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0))
+                wallet_balance = float(
+                    _LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0)
+                )
+
+            open_cost_basis = 0.0
+            try:
+                with get_engine().begin() as conn:
+                    row = conn.execute(text(
+                        "SELECT COALESCE(SUM(cost_usd), 0) "
+                        "FROM pm_positions "
+                        "WHERE user_id = :uid "
+                        "  AND mode = 'live' "
+                        "  AND status = 'open'"
+                    ), {"uid": self.user_id}).fetchone()
+                    if row and row[0] is not None:
+                        open_cost_basis = float(row[0])
+            except Exception as exc:
+                print(
+                    f"[pm_executor] live starting_cash open_cost probe "
+                    f"failed: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+
+            return wallet_balance + open_cost_basis
         return configured
 
     def get_bankroll(self) -> float:

@@ -683,6 +683,64 @@ class PMAnalyst:
                 "skip_reason": "insufficient_bankroll",
             }
 
+        # Risk circuit breaker pre-flight. If a circuit breaker is
+        # active (gross exposure cap reached, drawdown halt, daily /
+        # weekly loss limit, streak cooldown), HALT THE WHOLE SCAN
+        # rather than evaluating each market only to skip every one
+        # downstream. Previously the risk verdict ran per-market
+        # inside _maybe_trade_for_user, AFTER the research fetch and
+        # LLM evaluation had already burned tokens on a trade that
+        # the sizer was about to refuse anyway. With ~20 markets
+        # per scan, that's 20 wasted LLM calls every five minutes
+        # while the breaker stays active. User instruction
+        # 2026-05-23: "we should never SKIP because of the circuit
+        # breaker. If we have no money to play or we have too much
+        # exposure the bot should just stop evaluating."
+        risk_halted_uids: list[tuple[str, str]] = []
+        for _uid, _bk, _dep in bankroll_summaries:
+            try:
+                ucfg = get_user_config(_uid)
+                ex = PMExecutor(_uid)
+                if not ex.ready:
+                    continue
+                v = evaluate_risk(
+                    user_config=ucfg, bankroll=_bk,
+                    starting_cash=ex.get_starting_cash(),
+                    mode=ex.mode, user_id=_uid,
+                )
+                if v.halted:
+                    risk_halted_uids.append((_uid, v.halt_reason or "risk halted"))
+            except Exception as exc:
+                # Fail-open: let the scan run if we can't determine
+                # risk state. The per-user risk check inside the
+                # trade phase remains as a backstop.
+                print(
+                    f"[pm_analyst] risk pre-flight failed for {_uid}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+        # If EVERY bot-enabled user is risk-halted, skip the scan.
+        # In multi-user fan-out we'd just exclude the halted users
+        # and proceed for the rest; in single-user local-first
+        # mode this is equivalent to halting outright.
+        active_uids = {u for u, _, _ in bankroll_summaries}
+        halted_uids = {u for u, _ in risk_halted_uids}
+        if active_uids and halted_uids >= active_uids:
+            _reasons = " | ".join(
+                f"{u}: {r}" for u, r in risk_halted_uids
+            )
+            print(
+                f"[pm_analyst] scan halted: risk circuit breakers "
+                f"active. {_reasons}",
+                flush=True,
+            )
+            return {
+                "fetched": 0, "analyzed": 0, "opened": 0,
+                "no_trade": 0, "skipped": 0,
+                "skip_reason": "risk_halted",
+                "risk_reasons": dict(risk_halted_uids),
+            }
+
         # Scan is going to run: reset the pause-announce flag so the
         # next active→paused transition re-broadcasts.
         _reset_bankroll_pause_announcement()
