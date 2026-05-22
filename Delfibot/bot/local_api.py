@@ -438,6 +438,14 @@ class LocalAPI:
         app.router.add_get("/api/state",       self._state)
         app.router.add_get("/api/config",      self._get_config)
         app.router.add_put("/api/config",      self._put_config)
+        # Settings backup / restore. Lets the user export their
+        # current preferences as a JSON file and re-import on a new
+        # machine. Does NOT include credentials, positions history,
+        # or learning state - just user_config values. Custody
+        # boundary: the Polymarket private key stays per-machine; a
+        # restore on a new machine still requires re-entering keys.
+        app.router.add_get("/api/config/export",  self._export_config)
+        app.router.add_post("/api/config/import", self._import_config)
         app.router.add_get("/api/credentials", self._get_credentials)
         app.router.add_put("/api/credentials", self._put_credentials)
         app.router.add_get("/api/positions",   self._get_positions)
@@ -819,6 +827,166 @@ class LocalAPI:
             self._notify_mode_switch_async(prior_mode, new_mode)
 
         return _ok(_config_to_dict(cfg))
+
+    # ── Settings export / import ─────────────────────────────────────────
+    #
+    # Lets the user back up their preferences as a portable JSON file and
+    # restore them on a new machine, or share a strategy as a one-click
+    # bootstrap.
+    #
+    # What's IN the export:
+    #   - user_config fields (mode, base_stake_pct, max_stake_pct toggles,
+    #     archetype skip list, archetype stake multipliers, risk limits,
+    #     notification prefs).
+    #
+    # What's deliberately OUT:
+    #   - polymarket_private_key, anthropic/gemini/newsapi keys, telegram
+    #     bot token, license_key. These live in the per-machine keychain
+    #     fallback (data/secrets.json) and stay there — exporting them
+    #     would mean key material in plaintext JSON traveling between
+    #     machines, which violates the local-first custody invariant.
+    #   - wallet_address. Derived from the private key on each machine;
+    #     re-derives automatically when the user enters their key on
+    #     the new machine.
+    #   - positions history, learning state, calibration data. Too big
+    #     for a settings file and machine-specific (trades opened on
+    #     machine A can't be re-opened on machine B).
+    #   - is_onboarded, tour_completed_at. UI state, not preferences.
+
+    # Fields stripped from the user_config dict before import (machine-
+    # local UI state + immutables). Also stripped on export so the file
+    # doesn't carry meaningless values across machines.
+    _EXPORT_STRIP = frozenset({
+        "user_id", "created_at", "updated_at",
+        "wallet_address",            # derived from key, per-machine
+        "is_onboarded",              # machine-local UI state
+        "tour_completed_at",         # machine-local UI state
+        "ready_to_trade",            # derived; computed at runtime
+        "can_trade_live",            # derived; computed at runtime
+        "bot_enabled",               # session-level toggle, not a preference
+    })
+    _EXPORT_VERSION = 1
+
+    async def _export_config(self, _req: web.Request) -> web.Response:
+        """Return a JSON blob the React shell can save as a file.
+
+        Frontend triggers download via a Blob URL; the filename is
+        suggested via the Content-Disposition header so users get
+        `delfi-settings-YYYYMMDD.json` by default.
+        """
+        cfg = await self._offload(get_user_config)
+        cfg_dict = _config_to_dict(cfg) if cfg else {}
+        for k in self._EXPORT_STRIP:
+            cfg_dict.pop(k, None)
+        from datetime import datetime, timezone
+        payload = {
+            "version":     self._EXPORT_VERSION,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "kind":        "delfi-settings",
+            "notes":       (
+                "Preferences only. Does NOT include API keys, wallet "
+                "private keys, positions history, or learning state. "
+                "After importing on a new machine you still need to "
+                "enter your Polymarket private key + LLM API key "
+                "before live trading can start."
+            ),
+            "user_config": cfg_dict,
+        }
+        import json as _json
+        # Pretty-print so the file is human-readable. Users sharing a
+        # strategy via Discord/Slack will diff these by eye.
+        body = _json.dumps(payload, indent=2, sort_keys=True, default=str)
+        from datetime import date as _date
+        fname = f"delfi-settings-{_date.today().isoformat()}.json"
+        return web.Response(
+            body=body.encode("utf-8"),
+            content_type="application/json",
+            headers={
+                "Content-Disposition": f'attachment; filename="{fname}"',
+            },
+        )
+
+    async def _import_config(self, req: web.Request) -> web.Response:
+        """Accept a JSON blob from the export endpoint and apply it.
+
+        Validation:
+          - Top-level shape: {version, user_config: {...}}.
+          - Version must equal self._EXPORT_VERSION (we'd add an
+            upgrade path here if the schema ever changes).
+          - Every user_config key is run through
+            validated_update_payload before write — same path /api/config
+            PUT uses — so a hand-edited file can't sneak in an
+            out-of-bounds risk limit or an unknown field.
+
+        Stripped on the way in (mirrors export strip-list): never
+        clobber wallet_address / is_onboarded / *_ready flags from a
+        file. Those are machine-local.
+        """
+        try:
+            payload = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(payload, dict):
+            return _err("body must be a JSON object", 400)
+        if payload.get("kind") not in (None, "delfi-settings"):
+            return _err(
+                "wrong file kind. expected a Delfi settings export.", 400
+            )
+        version = payload.get("version")
+        if version not in (None, self._EXPORT_VERSION):
+            return _err(
+                f"unsupported settings version: {version}. "
+                f"this build expects v{self._EXPORT_VERSION}.", 400
+            )
+        cfg_in = payload.get("user_config")
+        if not isinstance(cfg_in, dict):
+            return _err("missing user_config object", 400)
+        # Strip machine-local fields up front (mirror of the export
+        # strip-list: wallet_address, is_onboarded, *_ready flags
+        # etc.). Done BEFORE per-field validation so the import never
+        # tries to write derived/read-only fields even if a hand-
+        # edited file includes them.
+        candidates = {
+            k: v for k, v in cfg_in.items()
+            if k not in self._EXPORT_STRIP
+        }
+        # Per-field validation. Skip unknowns and out-of-range
+        # values rather than rejecting the whole file. Rationale:
+        #   - Forward compat: an older app loading a newer export
+        #     should apply what it understands instead of failing.
+        #   - Backward compat: a newer app loading an older export
+        #     (missing fields) keeps the new defaults.
+        #   - Read-only/immutable fields (e.g. `venue`) are not in
+        #     the validator's allowlist; previously they'd 400 the
+        #     whole import. Now they're quietly dropped.
+        # Anything actually dangerous (out-of-bounds risk limit,
+        # mode-without-creds) still fires the cross-field check at
+        # the end and surfaces a clear error.
+        changes: dict = {}
+        skipped: list[str] = []
+        for key, raw in candidates.items():
+            try:
+                changes.update(validated_update_payload({key: raw}))
+            except ValueError as exc:
+                skipped.append(f"{key} ({exc})")
+        if not changes:
+            cfg = await self._offload(get_user_config)
+            return _ok({
+                "applied": 0,
+                "skipped": skipped,
+                "user_config": _config_to_dict(cfg),
+            })
+        try:
+            cfg = await self._offload(lambda: update_user_config(**changes))
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        except Exception as exc:
+            return _err(f"import failed: {exc}", 500)
+        return _ok({
+            "applied":     len(changes),
+            "skipped":     skipped,
+            "user_config": _config_to_dict(cfg),
+        })
 
     def _notify_mode_switch_async(self, prior_mode: str, new_mode: str) -> None:
         """Fire a Telegram message about a SIMULATION ↔ LIVE flip.

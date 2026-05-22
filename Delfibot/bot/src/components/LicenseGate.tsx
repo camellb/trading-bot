@@ -70,10 +70,28 @@ export function LicenseGate({ children }: Props) {
   // Either the status fetch errored, or the sidecar reports
   // !valid. In both cases we show the gate; the difference is the
   // copy.
-  const reason =
-    status === "error"
-      ? errorMsg ?? "could not reach the local engine"
-      : status.reason ?? "license is not active";
+  //
+  // Connection-class errors are silenced: while the daemon is
+  // booting on first launch there's no useful information to
+  // surface, and a raw "/api/license/status: timed out" reads as a
+  // developer error. The activate-status page silently retries via
+  // setInterval; once the daemon responds, this component flips
+  // out of the gate entirely.
+  const isConnError = (() => {
+    if (status !== "error") return false;
+    const raw = (errorMsg ?? "").toLowerCase();
+    return (
+      raw.includes("timed out")
+      || raw.includes("could not connect")
+      || raw.includes("connection refused")
+      || raw.includes("load failed")
+    );
+  })();
+  const reason = isConnError
+    ? ""
+    : status === "error"
+      ? (errorMsg ?? "Could not reach the local engine.")
+      : (status.reason ?? "Your license is not active yet.");
   const hasKey = status !== "error" && status.has_key;
 
   return (
@@ -132,7 +150,7 @@ function LicenseGateScreen({
         <p className="license-gate-eyebrow">
           {hasKey ? "Re-activate your license" : "Activate to continue"}
         </p>
-        <p className="license-gate-reason">{reason}</p>
+        {reason ? <p className="license-gate-reason">{reason}</p> : null}
         <form className="license-gate-form" onSubmit={submit}>
           <label htmlFor="lk" className="license-gate-label">
             License key
@@ -147,7 +165,7 @@ function LicenseGateScreen({
             id="lk"
             autoComplete="off"
             spellCheck={false}
-            placeholder="Paste the license blob from your email"
+            placeholder="Paste your license key"
             value={key}
             onChange={(e) => setKey(e.target.value)}
             className="license-gate-input"

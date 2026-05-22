@@ -890,6 +890,26 @@ export const api = {
       body: JSON.stringify({ dest_path }),
     }),
 
+  // Settings backup / restore. Preferences only — credentials,
+  // positions, and learning state are explicitly excluded so the
+  // file is safe to share (no key material) and small enough to
+  // bootstrap a new machine in one click.
+  //
+  // exportSettings returns the raw JSON body so the UI can wrap it
+  // in a Blob + saveDialog rather than relying on the
+  // Content-Disposition header (which Tauri's webview honors
+  // inconsistently). importSettings POSTs a parsed object and
+  // returns the count of fields that were applied.
+  exportSettings: () => request<unknown>("/api/config/export"),
+  importSettings: (settings: Record<string, unknown>) =>
+    request<{
+      applied: number;
+      user_config: Record<string, unknown>;
+    }>("/api/config/import", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    }),
+
   // Daemon supervision stats from launchctl print.
   launchStats: () => request<LaunchStats>("/api/system/launch-stats"),
 

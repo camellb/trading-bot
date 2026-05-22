@@ -765,28 +765,41 @@ class PMExecutor:
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')) AS settled_n, "
-                    # open_cost = mark-to-market value of open positions
-                    # when the refresher has populated current_value_usd,
-                    # otherwise cost basis. Single number that
-                    # Dashboard's "Locked Capital" tile + WIN/LOSS /
-                    # new_position Telegram blocks all read so surfaces
-                    # agree. polymarket_runner.evaluate_open_positions
-                    # writes current_value_usd = shares * outcomePrices
-                    # for the held side every 60s.
+                    # open_cost_mtm = mark-to-market value of open
+                    # positions when the refresher has populated
+                    # current_value_usd, otherwise cost basis. Drives
+                    # the user-facing "Locked Capital" tile +
+                    # WIN/LOSS / new_position Telegram blocks so the
+                    # surfaces all agree.
+                    # polymarket_runner.evaluate_open_positions writes
+                    # current_value_usd = shares * outcomePrices for
+                    # the held side every 60s.
                     "  COALESCE("
                     "    SUM(COALESCE(current_value_usd, cost_usd)) "
                     "      FILTER (WHERE status = 'open'),"
                     "    0"
-                    "  ) AS open_cost, "
+                    "  ) AS open_cost_mtm, "
+                    # open_cost_basis = pure cost basis (purchase
+                    # price). Subtracted from MTM to compute unrealized
+                    # P&L. MUST be a separate aggregate from
+                    # open_cost_mtm above; if both are the COALESCE
+                    # form, unrealized_pnl computes to 0 by
+                    # construction and the Dashboard P&L tile + Total
+                    # equity delta never move with the market.
+                    "  COALESCE("
+                    "    SUM(cost_usd) FILTER (WHERE status = 'open'),"
+                    "    0"
+                    "  ) AS open_cost_basis, "
                     "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')), 0) AS realized, "
                     "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early') AND realized_pnl_usd > 0) AS wins "
                     "FROM pm_positions WHERE user_id = :uid AND mode = :m"
                 ), {"uid": self.user_id, "m": self.mode}).fetchone()
-                open_n    = int(row[0] or 0)
-                settled_n = int(row[1] or 0)
-                open_cost = float(row[2] or 0)
-                realized  = float(row[3] or 0)
-                wins      = int(row[4] or 0)
+                open_n         = int(row[0] or 0)
+                settled_n      = int(row[1] or 0)
+                open_cost      = float(row[2] or 0)   # MTM (legacy name)
+                open_cost_basis = float(row[3] or 0)  # cost basis
+                realized       = float(row[4] or 0)
+                wins           = int(row[5] or 0)
 
                 # Skipped evaluations live in market_evaluations, not
                 # pm_positions (a skip never opens a position). Mode
@@ -808,7 +821,7 @@ class PMExecutor:
             print(f"[pm_executor] get_portfolio_stats({self.user_id}) failed: {exc}",
                   file=sys.stderr)
             open_n = settled_n = wins = skipped_n = 0
-            open_cost = realized = 0.0
+            open_cost = open_cost_basis = realized = 0.0
         # SINGLE source of truth for bankroll + equity, used by every
         # downstream surface (Dashboard /api/summary, settlement
         # Telegram messages via polymarket_runner, learning-cycle
@@ -914,7 +927,12 @@ class PMExecutor:
             "locked_capital":  locked_capital,  # data-api sum in live, DB sum in sim
             "open_positions":  open_n,
             "open_cost":       locked_capital,  # alias; kept for legacy callers
-            "bot_open_cost":   open_cost,       # bot-tracked only (for P&L analysis)
+            # bot_open_cost = pure cost basis of bot-tracked opens.
+            # /api/summary subtracts it from open_cost (MTM) to get
+            # unrealized_pnl, so this must be cost, not MTM. Was
+            # silently MTM before because both fields used the same
+            # COALESCE(current_value_usd, cost_usd) aggregate.
+            "bot_open_cost":   open_cost_basis,
             "settled_total":   settled_n,
             "settled_wins":    wins,
             "skipped_total":   skipped_n,

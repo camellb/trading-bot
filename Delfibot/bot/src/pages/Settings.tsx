@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -260,6 +260,7 @@ function DiagnosticsPanel() {
     <>
       <HelpPanel />
       <RestartPanel />
+      <SettingsExportPanel />
       <DbBackupPanel />
       <LogsPanel />
       <LaunchStatsPanel />
@@ -769,6 +770,153 @@ function LogsPanel() {
 
 /** Export a consistent snapshot of the SQLite DB to a user-chosen
  *  path via SQLite VACUUM INTO. Refuses to overwrite the live DB. */
+/**
+ * Export / import the user's preferences as a portable JSON file.
+ *
+ * Use cases:
+ *   1. Bootstrap a new machine in one click — export on old, import
+ *      on new. Faster than re-clicking through every risk slider and
+ *      archetype multiplier.
+ *   2. Share a strategy. A user can export their tuned config and
+ *      a friend can import the same multipliers + skip list + risk
+ *      brakes verbatim.
+ *
+ * What does NOT travel in the file:
+ *   - Polymarket private key, LLM API keys, license key, Telegram
+ *     bot token. Custody stays per-machine.
+ *   - Position history, learning state, calibration data. Too
+ *     machine-specific; would lie about win rate on the new device.
+ *   - wallet_address. Derived from the key on each machine.
+ *
+ * Backend strips these on export AND on import, so a hand-edited
+ * file can't sneak credentials past the import.
+ */
+function SettingsExportPanel() {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // We deliberately don't use Tauri's fs plugin here. dbBackup
+  // already takes that path because SQLite needs an absolute file
+  // path to VACUUM INTO. For settings export the payload is small,
+  // and a Blob + anchor.download click works inside Tauri's webview
+  // without requiring an extra capability + plugin install. Same
+  // story for import: a hidden <input type="file"> is enough.
+  const exportSettings = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const settings = await api.exportSettings();
+      const json = JSON.stringify(settings, null, 2);
+      const today = new Date().toISOString().slice(0, 10);
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `delfi-settings-${today}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Revoke after a tick so the download has time to start. 1s
+      // is plenty; the browser only needs the URL alive until it
+      // commits the bytes to disk.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMsg({ kind: "ok", text: `Saved delfi-settings-${today}.json to your Downloads folder.` });
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onImportFile = async (file: File) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const raw = await file.text();
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error("File is not valid JSON.");
+      }
+      const r = await api.importSettings(parsed);
+      setMsg({
+        kind: "ok",
+        text: (
+          `Imported ${r.applied} setting${r.applied === 1 ? "" : "s"}. `
+          + `Reload Delfi to see the new values applied.`
+        ),
+      });
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const triggerImport = () => {
+    setMsg(null);
+    fileInputRef.current?.click();
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Settings backup</h2>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Save your risk limits, archetype multipliers, skip list, and
+        notification prefs to a portable JSON file. Use it to bootstrap
+        another machine, share a strategy with another Delfi user, or
+        roll back after experimenting. API keys, wallet keys, and
+        trade history are never included.
+      </p>
+      <div className="form-actions" style={{ gap: 12 }}>
+        <button
+          type="button"
+          className="btn small"
+          onClick={exportSettings}
+          disabled={busy}
+        >
+          Export settings...
+        </button>
+        <button
+          type="button"
+          className="btn small ghost"
+          onClick={triggerImport}
+          disabled={busy}
+        >
+          Import settings...
+        </button>
+        {/* Hidden file picker driven by the Import button. type=file
+            with a JSON-only accept lets the OS native picker handle
+            the path UX. We grab the selected File on change, hand it
+            to onImportFile, then clear .value so picking the same
+            file twice still triggers a change event. */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) void onImportFile(f);
+          }}
+        />
+      </div>
+      {msg && (
+        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
+           style={{ marginTop: 12 }}>
+          {msg.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function DbBackupPanel() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
