@@ -4,18 +4,23 @@ import { api, BotState, Credentials } from "./api";
 /**
  * First-launch onboarding wizard.
  *
- * Shown when /api/state reports is_onboarded === false. Walks the user
- * through the things Delfi needs:
- *   1. Welcome
- *   2. LLM API key (required)
- *   3. Bankroll + simulation default (required)
- *   4. Polymarket key + wallet (optional, only for live mode)
- *   5. Done
+ * Shown when /api/state reports is_onboarded === false. Two screens
+ * plus a confirmation:
+ *   1. Welcome / mode overview (intro, no step number)
+ *   2. Connect Polymarket (optional, only step)
+ *   3. All set (confirmation + open dashboard)
+ *
+ * Starting capital and the LLM key are NOT collected here. The DB
+ * defaults the bankroll to $1,000 (editable later in Settings >
+ * Risk) and the forecaster runs against whichever LLM key the user
+ * sets in Settings > Connections. Keeping the wizard short improves
+ * first-launch conversion: simulation is fully usable straight out
+ * of the wizard, no inputs required.
  */
 
-type Step = "welcome" | "llm" | "bankroll" | "polymarket" | "done";
+type Step = "welcome" | "polymarket" | "done";
 
-const ORDER: Step[] = ["welcome", "llm", "bankroll", "polymarket", "done"];
+const ORDER: Step[] = ["welcome", "polymarket", "done"];
 
 interface Props {
   state: BotState | null;
@@ -25,8 +30,6 @@ interface Props {
 
 export default function Onboarding({ creds, onComplete }: Props) {
   const [step, setStep] = useState<Step>("welcome");
-  const [llmKey, setLlmKey] = useState("");
-  const [bankroll, setBankroll] = useState("1000");
   const [polymarketKey, setPolymarketKey] = useState("");
   const [wallet, setWallet] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,32 +38,6 @@ export default function Onboarding({ creds, onComplete }: Props) {
   const idx = ORDER.indexOf(step);
   const next = () => setStep(ORDER[Math.min(ORDER.length - 1, idx + 1)]);
   const back = () => setStep(ORDER[Math.max(0, idx - 1)]);
-
-  const saveLlmKey = async () => {
-    if (!llmKey.trim()) { next(); return; }
-    setBusy(true); setError(null);
-    try {
-      await api.saveCredentials({ llm_api_key: llmKey.trim() });
-      setLlmKey("");
-      next();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally { setBusy(false); }
-  };
-
-  const saveBankroll = async () => {
-    setBusy(true); setError(null);
-    try {
-      const n = Number(bankroll);
-      if (!Number.isFinite(n) || n < 10 || n > 100_000) {
-        throw new Error("Capital must be between $10 and $100,000.");
-      }
-      await api.updateConfig({ starting_cash: n, mode: "simulation" });
-      next();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally { setBusy(false); }
-  };
 
   const savePolymarket = async () => {
     if (!polymarketKey.trim() && !wallet.trim()) { next(); return; }
@@ -80,10 +57,11 @@ export default function Onboarding({ creds, onComplete }: Props) {
   return (
     <div className="ob-shell">
       <div className="ob-progress">
-        {/* Progress dots cover the 3 form steps (llm / bankroll /
-            polymarket). Welcome is an intro, not a step; "done" is
-            the completion screen. Mismatching this with the
-            "STEP 1/2/3 of 3" eyebrows reads as a counting bug. */}
+        {/* Single step (Polymarket) is the only progress dot. The
+            Welcome screen is an intro, not a step; Done is the
+            completion screen. Keeping the dot here so the user
+            still sees a sense of "where am I" on Polymarket
+            without overcounting. */}
         {ORDER.slice(1, -1).map((s) => {
           const sIdx = ORDER.indexOf(s);
           return (
@@ -99,21 +77,6 @@ export default function Onboarding({ creds, onComplete }: Props) {
         {step === "welcome" && (
           <WelcomeStep onNext={next} />
         )}
-        {step === "llm" && (
-          <LlmKeyStep
-            value={llmKey} onChange={setLlmKey}
-            hasStored={(creds?.has_llm_key ?? creds?.has_anthropic_key) ?? false}
-            busy={busy} error={error}
-            onBack={back} onSave={saveLlmKey} onSkip={next}
-          />
-        )}
-        {step === "bankroll" && (
-          <BankrollStep
-            value={bankroll} onChange={setBankroll}
-            busy={busy} error={error}
-            onBack={back} onSave={saveBankroll}
-          />
-        )}
         {step === "polymarket" && (
           <PolymarketStep
             keyValue={polymarketKey} walletValue={wallet}
@@ -125,16 +88,18 @@ export default function Onboarding({ creds, onComplete }: Props) {
           />
         )}
         {step === "done" && (
-          <DoneStep onFinish={async () => {
-            // Mark the wizard finished server-side. is_onboarded gates
-            // on this timestamp, not on mode/starting_cash (which have
-            // DB server defaults and would otherwise auto-skip every
-            // fresh install past the wizard). Let errors propagate to
-            // the DoneStep so the user sees a real message instead of
-            // a button that silently does nothing.
-            await api.updateConfig({ tour_completed_at: new Date().toISOString() });
-            onComplete();
-          }} />
+          <DoneStep
+            hasPolymarket={creds?.has_polymarket_key ?? false}
+            onFinish={async () => {
+              // Mark the wizard finished server-side. is_onboarded
+              // gates on this timestamp, not on mode/starting_cash
+              // (which have DB server defaults: mode=simulation,
+              // starting_cash=1000.0). Let errors propagate to the
+              // DoneStep so the user sees a real message instead of
+              // a button that silently does nothing.
+              await api.updateConfig({ tour_completed_at: new Date().toISOString() });
+              onComplete();
+            }} />
         )}
       </div>
     </div>
@@ -147,27 +112,27 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
   return (
     <>
       <div className="ob-eyebrow">Welcome</div>
-      <h1 className="ob-title">Delfi watches Polymarket so you don&apos;t have to.</h1>
+      <h1 className="ob-title">An autonomous forecaster for Polymarket.</h1>
       <p className="ob-sub">
-        Delfi backs the side the market itself favours on every tradable
-        contract, and steps aside whenever its own forecast disagrees with
-        the price. It runs entirely on your machine.
+        Delfi reads every tradable market, runs its own forecast, and
+        only places a trade when the numbers line up. It runs entirely
+        on your machine. Your keys and funds never leave it.
       </p>
       <div className="ob-callouts">
         <div className="ob-callout">
           <div className="ob-callout-eyebrow">SIMULATION MODE</div>
           <div className="ob-callout-title">Default. Risk-free.</div>
           <div className="ob-callout-body">
-            Delfi trades against synthetic capital. Same forecasts, same
-            sizing, same risk caps. Use this until you trust the numbers.
+            Delfi trades with paper money. Same forecasts, same sizing,
+            same risk limits as live. Run it until you trust the numbers.
           </div>
         </div>
         <div className="ob-callout gold">
           <div className="ob-callout-eyebrow">LIVE MODE</div>
           <div className="ob-callout-title">Real money on Polymarket.</div>
           <div className="ob-callout-body">
-            Requires your Polymarket private key and a wallet address. You
-            can switch to live whenever you&apos;re ready.
+            Connect your Polymarket wallet when you&apos;re ready. You can
+            switch over any time.
           </div>
         </div>
       </div>
@@ -175,130 +140,6 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
         <span />
         <button className="ob-next" onClick={onNext}>
           Get started <span aria-hidden>→</span>
-        </button>
-      </div>
-    </>
-  );
-}
-
-function LlmKeyStep({
-  value, onChange, hasStored, busy, error, onBack, onSave, onSkip,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  hasStored: boolean;
-  busy: boolean;
-  error: string | null;
-  onBack: () => void;
-  onSave: () => void;
-  onSkip: () => void;
-}) {
-  return (
-    <>
-      <div className="ob-eyebrow">STEP 1 of 3 · Required</div>
-      <h1 className="ob-title">LLM API key</h1>
-      <p className="ob-sub">
-        Delfi&apos;s forecaster reads each Polymarket market through an LLM
-        and returns a probability. Bring your own key so you control the
-        spend and the rate limits. Stored in your OS keychain, never on disk.
-      </p>
-      <div className="ob-form">
-        <div className="ob-field">
-          <label>API key</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasStored ? "(stored, paste a new one to replace)" : "Paste your LLM API key"}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            autoFocus
-          />
-          <div className="ob-hint">
-            Bring your own key from any major LLM provider. You can add
-            a backup LLM and optional news feeds later in Settings →
-            Connections.
-          </div>
-        </div>
-        {error && <div className="form-error">{error}</div>}
-      </div>
-      <div className="ob-actions">
-        <button className="ob-back" onClick={onBack} disabled={busy}>← Back</button>
-        <div className="ob-actions-right">
-          {hasStored && (
-            <button className="ob-skip" onClick={onSkip} disabled={busy}>
-              Keep stored key
-            </button>
-          )}
-          <button
-            className="ob-next"
-            onClick={onSave}
-            disabled={busy || (!value.trim() && !hasStored)}
-          >
-            {busy ? "Saving..." : "Continue"} <span aria-hidden>→</span>
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function BankrollStep({
-  value, onChange, busy, error, onBack, onSave,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  busy: boolean;
-  error: string | null;
-  onBack: () => void;
-  onSave: () => void;
-}) {
-  const presets = [500, 1000, 5000, 10000];
-  const n = Number(value);
-  const valid = Number.isFinite(n) && n >= 10 && n <= 100_000;
-  return (
-    <>
-      <div className="ob-eyebrow">STEP 2 of 3 · Required</div>
-      <h1 className="ob-title">Starting capital</h1>
-      <p className="ob-sub">
-        How much capital should Delfi treat as 100%? Stake size and
-        circuit breakers are computed against this number. In simulation
-        mode this is the synthetic balance; in live mode it is your seeded
-        capital.
-      </p>
-      <div className="ob-form">
-        <div className="ob-field">
-          <label>Capital (USD)</label>
-          <input
-            type="number"
-            min={10}
-            max={100_000}
-            step="1"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            autoFocus
-          />
-          <div className="ob-presets">
-            {presets.map((p) => (
-              <button
-                key={p}
-                type="button"
-                className={`ob-preset ${Number(value) === p ? "on" : ""}`}
-                onClick={() => onChange(String(p))}
-              >
-                ${p.toLocaleString()}
-              </button>
-            ))}
-          </div>
-          <div className="ob-hint">
-            Minimum $10. You can change this any time from Settings.
-          </div>
-        </div>
-        {error && <div className="form-error">{error}</div>}
-      </div>
-      <div className="ob-actions">
-        <button className="ob-back" onClick={onBack} disabled={busy}>← Back</button>
-        <button className="ob-next" onClick={onSave} disabled={busy || !valid}>
-          {busy ? "Saving..." : "Continue"} <span aria-hidden>→</span>
         </button>
       </div>
     </>
@@ -323,12 +164,13 @@ function PolymarketStep({
 }) {
   return (
     <>
-      <div className="ob-eyebrow">STEP 3 of 3 · Optional</div>
-      <h1 className="ob-title">Polymarket credentials</h1>
+      <div className="ob-eyebrow">FINAL STEP · OPTIONAL</div>
+      <h1 className="ob-title">Connect Polymarket</h1>
       <p className="ob-sub">
-        Only needed for live trading. You can skip this and run in
-        simulation mode forever, or come back later when you&apos;re ready.
-        Stored in your OS keychain, never on disk.
+        Only needed for live trading. Skip it and run in Simulation as
+        long as you like, or come back when you&apos;re ready. Your
+        credentials are stored in your system keychain, never written
+        to disk.
       </p>
       <div className="ob-form">
         <div className="ob-field">
@@ -352,8 +194,8 @@ function PolymarketStep({
           />
         </div>
         <div className="ob-hint">
-          Your private key never leaves this machine. Delfi signs
-          Polymarket trades locally and sends only the signed transaction.
+          Your private key never leaves this machine. Delfi signs every
+          Polymarket trade locally and sends only the signed transaction.
         </div>
         {error && <div className="form-error">{error}</div>}
       </div>
@@ -372,7 +214,13 @@ function PolymarketStep({
   );
 }
 
-function DoneStep({ onFinish }: { onFinish: () => Promise<void> | void }) {
+function DoneStep({
+  hasPolymarket,
+  onFinish,
+}: {
+  hasPolymarket: boolean;
+  onFinish: () => Promise<void> | void;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const handleClick = async () => {
@@ -392,16 +240,17 @@ function DoneStep({ onFinish }: { onFinish: () => Promise<void> | void }) {
       <div className="ob-eyebrow">All set</div>
       <h1 className="ob-title">Delfi is ready.</h1>
       <p className="ob-sub">
-        Simulation mode is live. Delfi will scan Polymarket every five
-        minutes, evaluate fresh markets, and open simulated positions when
-        its forecast agrees with the market favourite. Watch the
-        Dashboard for the first activity, expect the first trades within
-        ten to twenty minutes.
+        Simulation is live with a $1,000 paper bankroll. Delfi scans
+        Polymarket every five minutes, forecasts each new market, and
+        opens a position whenever the numbers line up. Watch the
+        dashboard. Your first trades usually land within ten to twenty
+        minutes.
       </p>
       <div className="ob-checklist">
-        <ChecklistItem ok>LLM API key stored</ChecklistItem>
-        <ChecklistItem ok>Capital set</ChecklistItem>
-        <ChecklistItem>Polymarket key + wallet (for live mode)</ChecklistItem>
+        <ChecklistItem ok>Forecasting connected</ChecklistItem>
+        <ChecklistItem ok={hasPolymarket}>
+          Polymarket wallet (for live mode)
+        </ChecklistItem>
       </div>
       {error && <div className="form-error">{error}</div>}
       <div className="ob-actions">
