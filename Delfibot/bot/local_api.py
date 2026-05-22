@@ -1698,18 +1698,26 @@ class LocalAPI:
             unrealized_pnl = float(data_api_unreal)
         else:
             unrealized_pnl = open_cost_mtm - open_cost_basis
-        # Total P&L source-of-truth order:
-        #   1. data_api_total_pnl: Polymarket's own All-Time P&L
-        #      from user-pnl-api. THIS is the number their portfolio
-        #      UI shows. Includes manual trades, fees, redemption
-        #      timing — everything the local computation misses.
-        #   2. Fallback: realized + unrealized from bot's books.
-        # Without #1, the Dashboard P&L reads ~$1 higher than the
-        # Polymarket portfolio tile on the same wallet because the
-        # bot doesn't track manual trades or trading fees.
+        # Total P&L source-of-truth:
+        #   - Live mode: Polymarket's user-pnl-api number, always.
+        #     If the cache is cold (first few seconds after a daemon
+        #     restart, before _prewarm_poly_caches completes the
+        #     network round-trip), return None instead of a local
+        #     realized+unrealized fallback that would drift $1-3 from
+        #     Polymarket. The dashboard renders the missing value as
+        #     "—" until the cache warms — strictly better than showing
+        #     a confidently-wrong number for a few seconds. User
+        #     instruction (2026-05-23): "we must fucking match what
+        #     Polymarket records, no drifting away."
+        #   - Sim mode: no Polymarket source, so total_pnl IS the
+        #     local realized+unrealized total. That's the only
+        #     correct answer in sim, not a fallback.
         data_api_total = stats.get("data_api_total_pnl")
+        is_live = (stats.get("mode") == "live")
         if data_api_total is not None:
             total_pnl = float(data_api_total)
+        elif is_live:
+            total_pnl = None
         else:
             total_pnl = realized + unrealized_pnl
 
