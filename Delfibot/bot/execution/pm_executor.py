@@ -681,6 +681,63 @@ class PMExecutor:
             return wallet_balance + open_cost_basis
         return configured
 
+    def get_equity(self) -> float:
+        """
+        Current total wealth in USD = cash + current MTM value of open
+        positions. Used by the risk manager's drawdown calc so the
+        formula `1 - (equity / starting)` reflects ACTUAL loss
+        (realised + unrealised), not deployment.
+
+        LIVE mode: pulls from Polymarket's data-api positions cache
+        (every position the wallet holds at currentValue). Cache is
+        warmed by the pm_balance_refresh scheduler job; if cold, falls
+        back to bankroll + cost basis of bot-tracked opens.
+
+        SIM mode: returns bankroll + SUM(cost_usd) of open bot
+        positions. There's no per-position MTM in sim (we don't
+        compute synthetic mid-prices), so cost-basis equity is the
+        right approximation. Drawdown still rises correctly on
+        settled losses because they flow through bankroll via the
+        sim-mode formula.
+        """
+        bankroll = self.get_bankroll()
+        try:
+            with get_engine().begin() as conn:
+                row = conn.execute(text(
+                    "SELECT COALESCE(SUM(cost_usd), 0) "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = :m "
+                    "  AND status = 'open'"
+                ), {"uid": self.user_id, "m": self.mode}).fetchone()
+                open_cost_basis = float(row[0] or 0)
+        except Exception:
+            open_cost_basis = 0.0
+
+        if self.mode == "live":
+            try:
+                from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import (
+                    get_total_open_positions_value, get_cached_poly_signer_info,
+                )
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    info = get_cached_poly_signer_info(pk)
+                    funder = (info or {}).get("funder") if info else None
+                    if funder:
+                        mtm = get_total_open_positions_value(funder)
+                        if mtm is not None:
+                            return float(bankroll) + float(mtm)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] get_equity MTM probe failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+        # Fallback (always for sim, on data-api miss for live): cost
+        # basis. Strictly worse but never wrong.
+        return float(bankroll) + open_cost_basis
+
     def get_bankroll(self) -> float:
         """
         Current bankroll in USD for this user in their current mode.

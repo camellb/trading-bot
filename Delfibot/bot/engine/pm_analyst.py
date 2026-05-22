@@ -355,10 +355,19 @@ class PMAnalyst:
 
         bankroll = executor.get_bankroll()
         starting_cash = executor.get_starting_cash()
+        # Current MTM equity for the drawdown calc. Live mode pulls
+        # this from Polymarket's data-api (cash + sum of currentValue
+        # across every position the wallet holds). Sim mode returns
+        # cost-basis equity; risk_manager falls back to bankroll +
+        # open_cost if this raises.
+        try:
+            equity = executor.get_equity()
+        except Exception:
+            equity = None
         verdict = evaluate_risk(
             user_config=user_config, bankroll=bankroll,
             starting_cash=starting_cash, mode=executor.mode,
-            user_id=user_id,
+            user_id=user_id, equity=equity,
         )
         if verdict.halted:
             # Record the risk-halt skip so the user can see why the bot
@@ -703,10 +712,15 @@ class PMAnalyst:
                 ex = PMExecutor(_uid)
                 if not ex.ready:
                     continue
+                try:
+                    _equity = ex.get_equity()
+                except Exception:
+                    _equity = None
                 v = evaluate_risk(
                     user_config=ucfg, bankroll=_bk,
                     starting_cash=ex.get_starting_cash(),
                     mode=ex.mode, user_id=_uid,
+                    equity=_equity,
                 )
                 if v.halted:
                     risk_halted_uids.append((_uid, v.halt_reason or "risk halted"))

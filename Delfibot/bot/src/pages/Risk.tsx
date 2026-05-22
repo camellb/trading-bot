@@ -207,21 +207,19 @@ function ExitPolicyPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Exit policy</h2>
-        <span className="panel-meta">take-profit / stop-loss / time-decay</span>
+        <h2 className="panel-title">Auto-close positions</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Close open positions early when one of three triggers fires:
-        take-profit when the unrealized return climbs above your
-        threshold, stop-loss when it falls below (with a time gate that
-        prevents cutting losses in the last few minutes), or time-decay
-        when a position has been open for a long time without moving.
+        Decide when Delfi should close a position early instead of
+        waiting for the market to settle. You can lock in winners,
+        cut losers, or clear positions that have gone nowhere for a
+        long time.
       </p>
       <form onSubmit={save}>
         <div style={{ marginBottom: 18 }}>
           <ToggleRow
-            label="Exit policy enabled"
-            description="Master switch. When off, Delfi never closes positions early; it waits for natural Polymarket settlement on every trade."
+            label="Allow Delfi to close positions early"
+            description="Master switch. When off, every trade is held until Polymarket settles it naturally."
             checked={form.exit_policy_enabled}
             onChange={(v) => setForm({ ...form, exit_policy_enabled: v })}
           />
@@ -230,8 +228,8 @@ function ExitPolicyPanel({
         <div className="form-divider" style={{ opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
           <div style={{ marginBottom: 12 }}>
             <ToggleRow
-              label="Take-profit"
-              description="Close when unrealized return rises to or above this threshold. Locks in winners. Computed against the current sell bid, not the midpoint."
+              label="Lock in winners"
+              description="Sell when a position has gained enough to be worth securing now rather than waiting for full settlement."
               checked={form.take_profit_enabled}
               onChange={(v) => setForm({ ...form, take_profit_enabled: v })}
               disabled={disabled}
@@ -239,11 +237,11 @@ function ExitPolicyPanel({
           </div>
           <div className="risk-grid risk-grid-2">
             <PercentField
-              label="Take-profit threshold" step="1"
+              label="Target gain to lock in" step="1"
               fractionRange={BOUNDS.take_profit_threshold_pct}
               fractionValue={form.take_profit_threshold_pct}
               onChangeFraction={(v) => setForm({ ...form, take_profit_threshold_pct: v })}
-              note="Default +50%."
+              note="Default 50%. Delfi sells as soon as the position is up this much from its purchase price."
             />
           </div>
         </div>
@@ -251,8 +249,8 @@ function ExitPolicyPanel({
         <div className="form-divider" style={{ marginTop: 18, opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
           <div style={{ marginBottom: 12 }}>
             <ToggleRow
-              label="Stop-loss"
-              description="Close when unrealized return falls to or below this threshold. Caps the loss on positions where the market has moved against the bot."
+              label="Cut losers"
+              description="Sell when a position is down enough that holding through to settlement is unlikely to recover."
               checked={form.stop_loss_enabled}
               onChange={(v) => setForm({ ...form, stop_loss_enabled: v })}
               disabled={disabled}
@@ -260,18 +258,18 @@ function ExitPolicyPanel({
           </div>
           <div className="risk-grid risk-grid-2">
             <PercentField
-              label="Stop-loss threshold (loss %)" step="1"
+              label="Loss tolerated before cutting" step="1"
               fractionRange={BOUNDS.stop_loss_threshold_pct}
               fractionValue={form.stop_loss_threshold_pct}
               onChangeFraction={(v) => setForm({ ...form, stop_loss_threshold_pct: v })}
-              note="Default 30% loss. Stored as a positive number; sign is implied."
+              note="Default 30%. Delfi sells as soon as a position is down this much."
             />
             <PercentField
-              label="Min time remaining (of original duration)" step="1"
+              label="Don't cut in the final stretch" step="1"
               fractionRange={BOUNDS.stop_loss_min_time_remaining_pct}
               fractionValue={form.stop_loss_min_time_remaining_pct}
               onChangeFraction={(v) => setForm({ ...form, stop_loss_min_time_remaining_pct: v })}
-              note="Skip stop-loss when less than this fraction of the original time-to-resolution remains. Default 20%."
+              note="Skip cutting losses once less than this share of the original time-to-settlement remains. Default 20%."
             />
           </div>
         </div>
@@ -279,8 +277,8 @@ function ExitPolicyPanel({
         <div className="form-divider" style={{ marginTop: 18, opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
           <div style={{ marginBottom: 12 }}>
             <ToggleRow
-              label="Time-decay exit"
-              description="Close stale positions that have been open for a long time and are still inside a flat-return band. Off by default — only worth turning on when capital recycling matters more than waiting for resolution."
+              label="Close stale positions"
+              description="Clear positions that have been open for a long time without moving much, so the capital can be redeployed."
               checked={form.time_decay_enabled}
               onChange={(v) => setForm({ ...form, time_decay_enabled: v })}
               disabled={disabled}
@@ -288,17 +286,17 @@ function ExitPolicyPanel({
           </div>
           <div className="risk-grid risk-grid-2">
             <NumField
-              label="Max hours open" step="1"
+              label="Close after this many hours open" step="1"
               range={BOUNDS.time_decay_max_hours}
               value={form.time_decay_max_hours}
               onChange={(v) => setForm({ ...form, time_decay_max_hours: v })}
             />
             <PercentField
-              label="Flat band (±%)" step="1"
+              label="Only if the move is smaller than" step="1"
               fractionRange={BOUNDS.time_decay_flat_band_pct}
               fractionValue={form.time_decay_flat_band_pct}
               onChangeFraction={(v) => setForm({ ...form, time_decay_flat_band_pct: v })}
-              note="Only triggers when unrealized return is inside this band. Default ±10%."
+              note="Default 10%. A stale position only closes if it's stayed within this much of its purchase price the whole time."
             />
           </div>
         </div>
@@ -307,7 +305,7 @@ function ExitPolicyPanel({
           <h3 className="panel-subtitle" style={{ marginBottom: 8 }}>Safety floor</h3>
           <div className="risk-grid risk-grid-2">
             <NumField
-              label="Skip exits when market resolves in (minutes)" step="1"
+              label="Don't close in the final minutes" step="1"
               range={BOUNDS.exit_min_time_to_resolution_minutes}
               value={form.exit_min_time_to_resolution_minutes}
               onChange={(v) => setForm({ ...form, exit_min_time_to_resolution_minutes: v })}
@@ -482,35 +480,35 @@ function ResolutionWindowPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Time to resolution</h2>
-        <span className="panel-meta">days, 0 = no limit</span>
+        <h2 className="panel-title">Market timeframe</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Filter markets by how soon they resolve. Set a minimum to avoid
-        markets settling within the next day or two; set a maximum to
-        avoid long-dated markets where capital sits tied up. Either side
-        at 0 means no constraint on that side.
+        Choose how soon or how far out a market should settle for
+        Delfi to consider it. Set 0 on either side to leave that end
+        open.
       </p>
       <form onSubmit={save}>
         <div className="risk-grid risk-grid-2">
           <NumField
-            label="Minimum days to resolution"
+            label="Earliest settlement (days from now)"
             step="1"
             range={RESOLUTION_BOUNDS}
             value={minDays}
             onChange={setMinDays}
+            note="Skip markets settling sooner than this. 0 = no minimum."
           />
           <NumField
-            label="Maximum days to resolution"
+            label="Latest settlement (days from now)"
             step="1"
             range={RESOLUTION_BOUNDS}
             value={maxDays}
             onChange={setMaxDays}
+            note="Skip markets settling later than this. 0 = no maximum."
           />
         </div>
         <div className="form-actions" style={{ marginTop: 18 }}>
           <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save resolution window"}
+            {busy ? "Saving..." : "Save changes"}
           </button>
           {msg && (
             <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
@@ -615,69 +613,71 @@ function RiskPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Sizing and limits</h2>
-        <span className="panel-meta">% of capital</span>
+        <h2 className="panel-title">Bet sizing and risk limits</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Stake = capital × base stake × archetype multiplier, capped at
-        max stake. Loss limits halt new trades when the threshold is
-        crossed.
+        Control how much Delfi puts on each trade and when it should
+        pause to protect your bankroll. All percentages are of your
+        total bankroll.
       </p>
       <form onSubmit={saveRisk}>
         <div className="risk-grid risk-grid-3">
           <PercentField
-            label="Base stake" step="0.1"
+            label="Bet size" step="0.1"
             fractionRange={BOUNDS.base_stake_pct}
             fractionValue={risk.base_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
-            note="Stake per trade. Polymarket minimum is $1 / 5 shares."
+            note="How much of your bankroll Delfi risks on each trade, before category adjustments."
           />
           <PercentField
-            label="Max stake" step="0.1"
+            label="Maximum bet size" step="0.1"
             fractionRange={BOUNDS.max_stake_pct}
             fractionValue={risk.max_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
             note={
               risk.max_stake_pct_enabled
-                ? "Hard cap ON. Trades above this are skipped."
-                : "Hard cap OFF. Sizer may bump above this to hit the $1 / 5-share floor."
+                ? "Strict: bets larger than this are skipped."
+                : "Soft: Delfi may go slightly above to meet Polymarket's $1 minimum."
             }
           />
           <PercentField
-            label="Dry powder reserve" step="1"
+            label="Reserve cash" step="1"
             fractionRange={BOUNDS.dry_powder_reserve_pct}
             fractionValue={risk.dry_powder_reserve_pct}
             onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
-            note="Held back for fees and exit slippage."
+            note="Kept aside as a cushion. Delfi will never deploy more than (bankroll minus this)."
           />
           <PercentField
             label="Daily loss limit" step="1"
             fractionRange={BOUNDS.daily_loss_limit_pct}
             fractionValue={risk.daily_loss_limit_pct}
             onChangeFraction={(v) => setRisk({ ...risk, daily_loss_limit_pct: v })}
+            note="Pause new trades for the rest of the day when losses exceed this share of bankroll."
           />
           <PercentField
             label="Weekly loss limit" step="1"
             fractionRange={BOUNDS.weekly_loss_limit_pct}
             fractionValue={risk.weekly_loss_limit_pct}
             onChangeFraction={(v) => setRisk({ ...risk, weekly_loss_limit_pct: v })}
+            note="Pause new trades for the rest of the week when losses exceed this share of bankroll."
           />
           <PercentField
-            label="Drawdown halt" step="1"
+            label="Stop the bot at" step="1"
             fractionRange={BOUNDS.drawdown_halt_pct}
             fractionValue={risk.drawdown_halt_pct}
             onChangeFraction={(v) => setRisk({ ...risk, drawdown_halt_pct: v })}
+            note="Halt all activity when total wealth falls this far below your starting bankroll. Set to 100% to disable."
           />
           <NumField
-            label="Streak cooldown (losses)" step="1"
+            label="Cool-off after losses in a row" step="1"
             range={BOUNDS.streak_cooldown_losses}
             value={risk.streak_cooldown_losses}
             onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
           />
           <div className="risk-grid-full">
             <ToggleRow
-              label="Enforce max stake as a hard cap"
-              description="Off: sizer bumps to Polymarket's $1 / 5-share floor when needed. On: trades above max stake are skipped."
+              label="Enforce maximum bet size strictly"
+              description="On: any bet that would exceed your maximum is skipped. Off: Delfi may bump small bets up to Polymarket's $1 minimum even if that goes slightly above your max."
               checked={risk.max_stake_pct_enabled}
               onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
             />
@@ -685,7 +685,7 @@ function RiskPanel({
         </div>
         <div className="form-actions" style={{ marginTop: 18 }}>
           <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save risk and sizing"}
+            {busy ? "Saving..." : "Save changes"}
           </button>
           {msg && (
             <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
@@ -699,13 +699,14 @@ function RiskPanel({
 }
 
 function NumField({
-  label, step, range, value, onChange,
+  label, step, range, value, onChange, note,
 }: {
   label: string;
   step: string;
   range: readonly [number, number];
   value: string;
   onChange: (v: string) => void;
+  note?: string;
 }) {
   return (
     <div className="form-field">
@@ -718,7 +719,11 @@ function NumField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
-      <span className="form-hint">Range: {range[0]} - {range[1]}</span>
+      {note ? (
+        <span className="form-hint">{note}</span>
+      ) : (
+        <span className="form-hint">Range: {range[0]} - {range[1]}</span>
+      )}
     </div>
   );
 }

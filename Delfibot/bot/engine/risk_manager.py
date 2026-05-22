@@ -52,6 +52,7 @@ def evaluate(
     starting_cash:  float,
     mode:           str,
     user_id:        str,
+    equity:         Optional[float] = None,
 ) -> RiskVerdict:
     """
     Apply the user's circuit breakers and return a verdict. Reads settled
@@ -59,6 +60,13 @@ def evaluate(
     this user_id + mode. Failures fall through to a permissive verdict and
     log, so a DB hiccup doesn't lock the bot out (the sizer still respects
     max_stake_pct).
+
+    `equity` is current total wealth = cash + position MTM. Required for
+    the drawdown calc to compare ACTUAL losses (realised + unrealised)
+    against starting capital. When omitted, falls back to
+    `bankroll + open_cost` which is cost-basis equity — close enough for
+    sim mode (where positions don't have live prices) and a safe floor
+    for live mode (assumes no unrealised gain, slightly conservative).
     """
     try:
         today_pnl = _pnl_since(user_id, mode, hours=24)
@@ -69,21 +77,26 @@ def evaluate(
         print(f"[risk_manager] stat load failed: {exc}", file=sys.stderr)
         return _permissive_verdict(user_config, bankroll)
 
-    # Drawdown halt. Metric matches what the dashboard's Risk Today
-    # panel displays: drop of current bankroll vs starting cash. The
-    # passed-in `bankroll` already nets out open_cost so unrealised
-    # losses count. The previous realised-only definition let a user
-    # tie up half their bankroll in losing open positions while the
-    # halt thought everything was fine because no settlement had
-    # recorded the loss yet.
+    # Drawdown halt. Compares current EQUITY (cash + position MTM) to
+    # starting capital. Without this, the formula (1 - bankroll/starting)
+    # treated every open position as a drawdown — opening a $19 position
+    # against $30 starting read as a 63% drawdown the moment the bet
+    # was placed, even with zero actual loss. Using equity, drawdown
+    # only rises when positions LOSE value (or realised P&L turns
+    # negative), which is what every user expects "drawdown" to mean.
+    effective_equity = (
+        float(equity) if equity is not None
+        else float(bankroll) + float(open_cost)
+    )
     if starting_cash > 0:
-        drawdown = max(0.0, 1.0 - (bankroll / starting_cash))
+        drawdown = max(0.0, 1.0 - (effective_equity / starting_cash))
         if drawdown >= user_config.drawdown_halt_pct:
             return RiskVerdict(
                 halt_reason=(
                     f"drawdown {drawdown*100:.1f}% >= halt threshold "
                     f"{user_config.drawdown_halt_pct*100:.0f}% "
-                    f"(bankroll ${bankroll:.2f} vs starting ${starting_cash:.2f})"
+                    f"(equity ${effective_equity:.2f} vs "
+                    f"starting ${starting_cash:.2f})"
                 ),
                 effective_bankroll=0.0,
                 stake_multiplier=0.0,
