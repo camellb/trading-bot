@@ -79,7 +79,7 @@ pm_positions = Table(
     Column("shares",        Float,   nullable=False),
     Column("entry_price",   Float,   nullable=False),
     Column("cost_usd",      Float,   nullable=False),
-    Column("claude_probability", Float, nullable=True),
+    Column("delfi_probability", Float, nullable=True),
     Column("ev_bps",        Float,   nullable=True),
     Column("confidence",    Float,   nullable=True),
     Column("mode",          String(10), nullable=False),
@@ -162,7 +162,7 @@ market_evaluations = Table(
     Column("question",         Text, nullable=False),
     Column("category",         Text, nullable=True),
     Column("market_price_yes", Float, nullable=False),
-    Column("claude_probability", Float, nullable=False),
+    Column("delfi_probability", Float, nullable=False),
     Column("confidence",       Float, nullable=True),
     Column("ev_bps",           Float, nullable=True),
     Column("recommendation",   Text, nullable=True),
@@ -309,7 +309,7 @@ markouts = Table(
     Column("hours_after", Integer, nullable=False),
     Column("price_yes_at_check", Float, nullable=False),
     Column("price_yes_at_eval", Float, nullable=False),
-    Column("claude_probability", Float, nullable=False),
+    Column("delfi_probability", Float, nullable=False),
     Column("direction_correct", Boolean, nullable=False),
 )
 
@@ -324,7 +324,7 @@ sentiment_scores = Table(
     Column("composite_label", Text),
     Column("confidence",      Float),
     Column("detail",          Text),
-    Column("claude_summary",  Text),
+    Column("delfi_summary",  Text),
 )
 
 
@@ -856,6 +856,37 @@ def create_all_tables() -> None:
         if "skip_reason" not in existing_eval_cols:
             conn.execute(sa_text(
                 "ALTER TABLE market_evaluations ADD COLUMN skip_reason TEXT"
+            ))
+
+        # ── claude_probability → delfi_probability rename (2026-05-23) ──
+        # User instruction: "all 'claude' must be changed to 'delfi',
+        # everywhere." The Python codebase now references
+        # `delfi_probability`; SQL queries against the old column name
+        # would fail on existing DBs. Rename in place. SQLite supports
+        # ALTER TABLE RENAME COLUMN since 3.25 (2018). Each rename is
+        # guarded by a PRAGMA check so re-running the migration is a
+        # no-op.
+        for _tbl in ("predictions", "market_evaluations", "pm_positions"):
+            _cols = {
+                r[1] for r in conn.execute(
+                    sa_text(f"PRAGMA table_info({_tbl})")
+                ).fetchall()
+            }
+            if "claude_probability" in _cols and "delfi_probability" not in _cols:
+                conn.execute(sa_text(
+                    f"ALTER TABLE {_tbl} RENAME COLUMN "
+                    f"claude_probability TO delfi_probability"
+                ))
+        # Same rename for claude_summary (lives on predictions only).
+        _pred_cols = {
+            r[1] for r in conn.execute(
+                sa_text("PRAGMA table_info(predictions)")
+            ).fetchall()
+        }
+        if "claude_summary" in _pred_cols and "delfi_summary" not in _pred_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE predictions RENAME COLUMN "
+                "claude_summary TO delfi_summary"
             ))
 
         # Seed the singleton row if absent. Local install always has

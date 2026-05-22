@@ -105,7 +105,7 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
       const m = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
       return m;
     }
-    case "dyes":     return (p.claude_probability as number | null) ?? null;
+    case "dyes":     return (p.delfi_probability as number | null) ?? null;
     case "dconf":    return (p.confidence as number | null) ?? null;
     case "opened": {
       const iso = p.created_at as string | null | undefined;
@@ -130,7 +130,7 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
     }
     case "entry":    return p.entry_price;
     case "myes":     return p.side === "YES" ? p.entry_price : 1 - p.entry_price;
-    case "dyes":     return (p.claude_probability as number | null) ?? null;
+    case "dyes":     return (p.delfi_probability as number | null) ?? null;
     case "pnl":      return (p.realized_pnl_usd as number | null) ?? null;
     case "settled": {
       const iso = p.settled_at as string | null | undefined;
@@ -197,7 +197,7 @@ function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
     case "market":   return e.question;
     case "category": return e.category ?? "";
     case "myes":     return e.market_price_yes ?? null;
-    case "dyes":     return e.claude_probability ?? null;
+    case "dyes":     return e.delfi_probability ?? null;
     case "dconf":    return e.confidence ?? null;
     case "evaluated": {
       const iso = e.evaluated_at;
@@ -515,8 +515,8 @@ export default function Positions() {
                               <div>
                                 <div className="kv-label">Delfi YES %</div>
                                 <div className="kv-val mono">{
-                                  p.claude_probability != null
-                                    ? `${Math.round(p.claude_probability * 100)}%`
+                                  p.delfi_probability != null
+                                    ? `${Math.round(p.delfi_probability * 100)}%`
                                     : "—"
                                 }</div>
                               </div>
@@ -630,7 +630,7 @@ export default function Positions() {
                   // we flip it to derive the implied YES probability.
                   const marketYes = s.side === "YES" ? s.entry_price : 1 - s.entry_price;
                   const mYesPct = Math.round(marketYes * 100);
-                  const cp = (s.claude_probability as number | null | undefined) ?? null;
+                  const cp = (s.delfi_probability as number | null | undefined) ?? null;
                   const dYesPct = cp != null ? Math.round(cp * 100) : null;
                   return (
                     <tr key={s.id} className="row-hover">
@@ -686,7 +686,7 @@ export default function Positions() {
               <tbody>
                 {skippedRows.map((e) => {
                   const isOpen = expandedEval.has(e.id);
-                  const dYesPct = e.claude_probability != null ? Math.round(e.claude_probability * 100) : null;
+                  const dYesPct = e.delfi_probability != null ? Math.round(e.delfi_probability * 100) : null;
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
                   const dConfPct = e.confidence != null ? Math.round(e.confidence * 100) : null;
                   const reasoning = (e.reasoning ?? "").trim();

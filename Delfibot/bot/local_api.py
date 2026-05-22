@@ -1787,13 +1787,13 @@ class LocalAPI:
         def _query() -> list:
             with get_engine().begin() as conn:
                 return conn.execute(text(
-                    "SELECT settled_at, claude_probability, side, "
+                    "SELECT settled_at, delfi_probability, side, "
                     "       CASE WHEN settlement_outcome = side THEN 1 ELSE 0 END "
                     "FROM pm_positions "
                     "WHERE user_id = :uid "
                     "  AND mode = :m "
                     "  AND settled_at IS NOT NULL "
-                    "  AND claude_probability IS NOT NULL "
+                    "  AND delfi_probability IS NOT NULL "
                     "  AND settlement_outcome IN ('YES', 'NO') "
                     "ORDER BY settled_at ASC"
                 ), {"uid": DEFAULT_USER_ID, "m": current_mode}).fetchall()
@@ -3109,7 +3109,7 @@ class LocalAPI:
                     "SELECT id, created_at, prediction_id, market_id, "
                     "       slug, question, category, market_archetype, "
                     "       side, shares, entry_price, cost_usd, "
-                    "       claude_probability, mode, status, "
+                    "       delfi_probability, mode, status, "
                     "       expected_resolution_at, settled_at, "
                     "       settlement_outcome, settlement_price, "
                     "       realized_pnl_usd, venue "
@@ -3147,7 +3147,7 @@ class LocalAPI:
                 r["shares"],
                 r["entry_price"],
                 r["cost_usd"],
-                r["claude_probability"],
+                r["delfi_probability"],
                 r["mode"],
                 r["status"],
                 iso_utc(r["expected_resolution_at"]),

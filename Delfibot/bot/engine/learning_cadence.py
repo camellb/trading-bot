@@ -248,7 +248,7 @@ def _load_settled_rows(user_id: Optional[str] = None) -> list[dict]:
 
     Used by proposers that need to run bootstrap CI checks. Returns the
     fields the bootstrap and CI helpers consume (cost, pnl, archetype,
-    side, entry_price, claude_probability) plus enough context to slice
+    side, entry_price, delfi_probability) plus enough context to slice
     the data into cells in any way a future proposer might need.
     """
     from db.engine import get_engine
@@ -259,7 +259,7 @@ def _load_settled_rows(user_id: Optional[str] = None) -> list[dict]:
         with eng.connect() as conn:
             rs = conn.execute(_sa_text(
                 "SELECT id, market_archetype, side, entry_price, "
-                "       claude_probability, cost_usd, realized_pnl_usd, "
+                "       delfi_probability, cost_usd, realized_pnl_usd, "
                 "       mode, status, settled_at "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND status='settled' "

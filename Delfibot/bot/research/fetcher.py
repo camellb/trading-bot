@@ -1690,7 +1690,7 @@ async def fetch_research(
                 detected_teams = claude_meta.get("teams") or []
                 detected_event_name = (claude_meta.get("event_name") or "").strip() or None
                 detected_event_qualifier = (claude_meta.get("event_qualifier") or "").strip() or None
-                bundle.sources.append("claude_keywords")
+                bundle.sources.append("delfi_keywords")
             else:
                 bundle.keywords = extract_keywords(question)
                 detected_category = None

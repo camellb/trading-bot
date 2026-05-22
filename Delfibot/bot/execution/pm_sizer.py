@@ -14,7 +14,7 @@ Side selection
     rounding).
 
 Gate (single, only skip path)
-    Delfi direction agreement: `claude_p` and `market_p_yes` must lie on
+    Delfi direction agreement: `delfi_p` and `market_p_yes` must lie on
     the same side of 0.50. If they don't, skip. That is the entire skip
     logic in V1.
 
@@ -106,7 +106,7 @@ class SizingDecision:
 
 
 def size_position(
-    claude_p:    float,
+    delfi_p:    float,
     confidence:  float,
     ask_yes:     float,
     ask_no:      float,
@@ -119,7 +119,7 @@ def size_position(
     agreement. Flat archetype-multiplied sizing. Returns a SizingDecision
     whose `skip_reason` is None iff the bet is taken.
     """
-    cp  = _clamp01(claude_p)
+    cp  = _clamp01(delfi_p)
     cf  = _clamp01(confidence)
     ay  = _clamp_price(ask_yes)
     an  = _clamp_price(ask_no)
@@ -144,7 +144,7 @@ def size_position(
         return _skip(
             cp, cf,
             f"Delfi disagrees with the market "
-            f"(claude_p={cp:.2f}, market_p_yes={market_p_yes:.2f})",
+            f"(delfi_p={cp:.2f}, market_p_yes={market_p_yes:.2f})",
             side=side, entry=entry, p_win=p_win,
         )
 

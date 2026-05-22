@@ -38,15 +38,15 @@ async def check_markouts() -> None:
         with get_engine().begin() as conn:
             evals = conn.execute(text(
                 "SELECT me.id, me.evaluated_at, me.market_id, "
-                "       me.market_price_yes, me.claude_probability "
+                "       me.market_price_yes, me.delfi_probability "
                 "FROM market_evaluations me "
                 "WHERE me.evaluated_at >= datetime('now', '-48 hours') "
                 "ORDER BY me.evaluated_at DESC"
             )).fetchall()
 
             for ev in evals:
-                eval_id, evaluated_at, market_id, price_yes, claude_p = ev
-                if evaluated_at is None or price_yes is None or claude_p is None:
+                eval_id, evaluated_at, market_id, price_yes, delfi_p = ev
+                if evaluated_at is None or price_yes is None or delfi_p is None:
                     continue
 
                 # SQLite returns DateTime columns as strings unless
@@ -91,7 +91,7 @@ async def check_markouts() -> None:
                             "market_id": market_id,
                             "hours_after": h,
                             "price_yes_at_eval": float(price_yes),
-                            "claude_probability": float(claude_p),
+                            "delfi_probability": float(delfi_p),
                         })
         return rows
 
@@ -132,14 +132,14 @@ async def check_markouts() -> None:
 
                 price_now = current_prices[mid]
                 price_at_eval = row["price_yes_at_eval"]
-                claude_p = row["claude_probability"]
+                delfi_p = row["delfi_probability"]
 
                 # Direction correct: did price move toward Claude's estimate?
                 # If Claude said p > market_price → YES underpriced → price going UP is correct.
                 # If Claude said p < market_price → NO underpriced → price going DOWN is correct.
-                if claude_p > price_at_eval:
+                if delfi_p > price_at_eval:
                     direction_correct = price_now > price_at_eval
-                elif claude_p < price_at_eval:
+                elif delfi_p < price_at_eval:
                     direction_correct = price_now < price_at_eval
                 else:
                     # Claude agreed with the market exactly - mark as correct
@@ -153,7 +153,7 @@ async def check_markouts() -> None:
                     "INSERT INTO markouts "
                     "(user_id, evaluation_id, market_id, hours_after, "
                     " price_yes_at_check, price_yes_at_eval, "
-                    " claude_probability, direction_correct) "
+                    " delfi_probability, direction_correct) "
                     "VALUES (:user_id, :eid, :mid, :h, :pc, :pe, :cp, :dc)"
                 ), {
                     "user_id": DEFAULT_USER_ID,
@@ -162,7 +162,7 @@ async def check_markouts() -> None:
                     "h":   row["hours_after"],
                     "pc":  price_now,
                     "pe":  price_at_eval,
-                    "cp":  claude_p,
+                    "cp":  delfi_p,
                     "dc":  direction_correct,
                 })
                 recorded += 1

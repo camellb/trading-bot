@@ -69,7 +69,7 @@ def _load_settled(db_path: str) -> list[dict]:
     con.row_factory = sqlite3.Row
     rs = con.execute(
         "SELECT id, market_archetype, side, entry_price, "
-        "       claude_probability, cost_usd, realized_pnl_usd, "
+        "       delfi_probability, cost_usd, realized_pnl_usd, "
         "       settled_at "
         "FROM pm_positions "
         "WHERE status='settled' AND mode='simulation' "

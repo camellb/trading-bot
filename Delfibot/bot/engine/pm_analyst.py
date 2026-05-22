@@ -431,7 +431,7 @@ class PMAnalyst:
             )
 
         decision = size_position(
-            claude_p    = evaluation.probability_yes,
+            delfi_p    = evaluation.probability_yes,
             confidence  = evaluation.confidence,
             ask_yes     = market.yes_price,
             ask_no      = market.no_price,
@@ -527,7 +527,7 @@ class PMAnalyst:
 
         pos_id = executor.open_position(
             market=market, decision=decision,
-            claude_probability=evaluation.probability_yes,
+            delfi_probability=evaluation.probability_yes,
             prediction_id=prediction_id,
             reasoning=evaluation.reasoning,
             category=evaluation.category,
@@ -1171,7 +1171,7 @@ def _log_market_evaluation(
             row = conn.execute(text(
                 "INSERT INTO market_evaluations ("
                 "  user_id, market_id, condition_id, slug, question, category, "
-                "  market_price_yes, claude_probability, confidence, "
+                "  market_price_yes, delfi_probability, confidence, "
                 "  ev_bps, recommendation, reasoning, reasoning_short, "
                 "  research_sources, prediction_id, market_archetype, event_slug, "
                 "  mode, skip_reason"

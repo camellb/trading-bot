@@ -564,7 +564,7 @@ def _fetch_settled_rows(user_id: str, mode: str,
                 "SELECT p.id, p.question, p.market_archetype, p.category, "
                 "       p.side, p.shares, p.entry_price, p.cost_usd, "
                 "       p.realized_pnl_usd, p.settlement_outcome, "
-                "       p.claude_probability, p.confidence, p.settled_at, "
+                "       p.delfi_probability, p.confidence, p.settled_at, "
                 "       p.reasoning AS pos_reasoning, "
                 "       e.reasoning AS eval_reasoning, "
                 "       p.status, p.close_reason, p.counterfactual_pnl_usd "
@@ -588,7 +588,7 @@ def _fetch_settled_rows(user_id: str, mode: str,
     out: list[dict] = []
     for r in raw:
         p_win = _chosen_side_probability(
-            claude_p=r[10], side=r[4],
+            delfi_p=r[10], side=r[4],
         )
         outcome_bit = _outcome_bit(side=r[4], settlement=r[9])
         brier = None
@@ -621,12 +621,12 @@ def _fetch_settled_rows(user_id: str, mode: str,
     return out
 
 
-def _chosen_side_probability(claude_p, side) -> Optional[float]:
-    """pm_positions stores claude_probability as p(YES). Convert to the
+def _chosen_side_probability(delfi_p, side) -> Optional[float]:
+    """pm_positions stores delfi_probability as p(YES). Convert to the
     probability we assigned to the side we actually bought."""
-    if claude_p is None or side is None:
+    if delfi_p is None or side is None:
         return None
-    p = float(claude_p)
+    p = float(delfi_p)
     s = str(side).upper()
     if s == "YES":
         return p

@@ -15,7 +15,7 @@ PM_LIVE_STARTING_CASH   = 200.0
 # ── Sizing ───────────────────────────────────────────────────────────────────
 # V1 doctrine (locked 2026-04-27, see memory/doctrine_back_the_forecast.md).
 # Side selection: the market favourite, period. Single skip gate: forecaster
-# direction agreement (claude_p and market_p_yes must lie on the same side
+# direction agreement (delfi_p and market_p_yes must lie on the same side
 # of 0.50). Sizing: flat - stake = bankroll * base_stake_pct *
 # archetype_multiplier, capped at max_stake_pct, with a $2 absolute floor.
 # No confidence softener, no min_p_win, no Kelly, no EV-as-primary-gate.

@@ -374,7 +374,7 @@ export interface PMPosition {
   created_at: string;
   settled_at: string | null;
   realized_pnl_usd: number | null;
-  claude_probability?: number | null;
+  delfi_probability?: number | null;
   market_archetype?: string | null;
   reasoning?: string | null;
   category?: string | null;
@@ -633,7 +633,7 @@ export interface MarketEvaluation {
   question: string;
   category: string | null;
   market_price_yes: number;
-  claude_probability: number;
+  delfi_probability: number;
   confidence: number | null;
   ev_bps: number | null;
   recommendation: string | null;

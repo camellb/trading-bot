@@ -1094,7 +1094,7 @@ class PMExecutor:
         self,
         market:        PolyMarket,
         decision:      SizingDecision,
-        claude_probability: float,
+        delfi_probability: float,
         prediction_id: Optional[int] = None,
         reasoning:     Optional[str] = None,
         category:      Optional[str] = None,
@@ -1116,11 +1116,11 @@ class PMExecutor:
         # override only affects read queries - it must never redirect a
         # real order to a different mode.
         if self.trading_mode == "live":
-            pos_id = self._open_live(market, decision, claude_probability,
+            pos_id = self._open_live(market, decision, delfi_probability,
                                       prediction_id, reasoning, category,
                                       market_archetype)
         else:
-            pos_id = self._open_simulation(market, decision, claude_probability,
+            pos_id = self._open_simulation(market, decision, delfi_probability,
                                         prediction_id, reasoning, category,
                                         market_archetype)
 
@@ -1134,7 +1134,7 @@ class PMExecutor:
             )
         return pos_id
 
-    def _open_simulation(self, market, decision, claude_p,
+    def _open_simulation(self, market, decision, delfi_p,
                      prediction_id, reasoning, category,
                      market_archetype=None) -> Optional[int]:
         if not self.ready:
@@ -1147,7 +1147,7 @@ class PMExecutor:
                     "INSERT INTO pm_positions ("
                     "  user_id, prediction_id, market_id, condition_id, slug, question, category, "
                     "  side, shares, entry_price, cost_usd, "
-                    "  claude_probability, ev_bps, confidence, "
+                    "  delfi_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug, "
                     "  market_archetype, venue, "
                     "  volume_24h_at_entry, liquidity_at_entry"
@@ -1173,7 +1173,7 @@ class PMExecutor:
                     "shares": decision.shares,
                     "ep":    decision.entry_price,
                     "cost":  decision.stake_usd,
-                    "cp":    claude_p,
+                    "cp":    delfi_p,
                     "ev_bps": decision.ev * 10_000.0,
                     "conf":  decision.confidence,
                     # Persist the best-guess resolution time, not the
@@ -1208,7 +1208,7 @@ class PMExecutor:
             print(f"[pm_executor] _open_simulation failed: {exc}", file=sys.stderr)
             return None
 
-    def _open_live(self, market: PolyMarket, decision: SizingDecision, claude_p: float,
+    def _open_live(self, market: PolyMarket, decision: SizingDecision, delfi_p: float,
                    prediction_id: Optional[int], reasoning: Optional[str],
                    category: Optional[str], market_archetype: Optional[str] = None
                    ) -> Optional[int]:
@@ -1252,7 +1252,7 @@ class PMExecutor:
                 file=sys.stderr,
             )
             return self._open_simulation(
-                market, decision, claude_p, prediction_id,
+                market, decision, delfi_p, prediction_id,
                 f"[v2 signer mismatch] {(reasoning or '')}".strip(),
                 category, market_archetype,
             )
@@ -1272,7 +1272,7 @@ class PMExecutor:
                 or "[killswitch on]"
             )
             return self._open_simulation(
-                market, decision, claude_p, prediction_id,
+                market, decision, delfi_p, prediction_id,
                 paper_reasoning, category, market_archetype,
             )
 
@@ -1560,7 +1560,7 @@ class PMExecutor:
             # the trade still lands in the dashboard with a clear marker.
             if is_signer_mismatch:
                 return self._open_simulation(
-                    market, decision, claude_p, prediction_id,
+                    market, decision, delfi_p, prediction_id,
                     f"[v2 signer mismatch] {(reasoning or '')}".strip(),
                     category, market_archetype,
                 )
@@ -1659,7 +1659,7 @@ class PMExecutor:
                     except Exception:
                         pass
                 return self._persist_live_position(
-                    market=market, decision=decision, claude_p=claude_p,
+                    market=market, decision=decision, delfi_p=delfi_p,
                     prediction_id=prediction_id,
                     reasoning=reasoning, category=category,
                     market_archetype=market_archetype,
@@ -1770,7 +1770,7 @@ class PMExecutor:
                     pass
 
         return self._persist_live_position(
-            market=market, decision=decision, claude_p=claude_p,
+            market=market, decision=decision, delfi_p=delfi_p,
             prediction_id=prediction_id,
             reasoning=reasoning, category=category,
             market_archetype=market_archetype,
@@ -1779,7 +1779,7 @@ class PMExecutor:
         )
 
     def _persist_live_position(
-        self, *, market: PolyMarket, decision: SizingDecision, claude_p: float,
+        self, *, market: PolyMarket, decision: SizingDecision, delfi_p: float,
         prediction_id: Optional[int], reasoning: Optional[str],
         category: Optional[str], market_archetype: Optional[str],
         clob_order_id: str, tx_hash: Optional[str],
@@ -1796,7 +1796,7 @@ class PMExecutor:
                     "INSERT INTO pm_positions ("
                     "  user_id, prediction_id, market_id, condition_id, slug, question, category, "
                     "  side, shares, entry_price, cost_usd, "
-                    "  claude_probability, ev_bps, confidence, "
+                    "  delfi_probability, ev_bps, confidence, "
                     "  mode, status, expected_resolution_at, reasoning, event_slug, "
                     "  market_archetype, venue, clob_order_id, tx_hash, "
                     "  volume_24h_at_entry, liquidity_at_entry"
@@ -1820,7 +1820,7 @@ class PMExecutor:
                     "shares":  decision.shares,
                     "ep":      decision.entry_price,
                     "cost":    decision.stake_usd,
-                    "cp":      claude_p,
+                    "cp":      delfi_p,
                     "ev_bps":  decision.ev * 10_000.0,
                     "conf":    decision.confidence,
                     "exp":     market.resolution_at_estimate,
@@ -2360,7 +2360,7 @@ class PMExecutor:
             with get_engine().begin() as conn:
                 rows = conn.execute(text(
                     "SELECT id, market_id, question, category, side, shares, "
-                    "       entry_price, cost_usd, claude_probability, "
+                    "       entry_price, cost_usd, delfi_probability, "
                     "       ev_bps, confidence, expected_resolution_at, "
                     "       created_at, prediction_id, reasoning, slug "
                     "FROM pm_positions "
@@ -2377,7 +2377,7 @@ class PMExecutor:
                         "shares":            float(r[5]),
                         "entry_price":       float(r[6]),
                         "cost_usd":          float(r[7]),
-                        "claude_probability": float(r[8]) if r[8] is not None else None,
+                        "delfi_probability": float(r[8]) if r[8] is not None else None,
                         "ev_bps":            float(r[9]) if r[9] is not None else None,
                         "confidence":        float(r[10]) if r[10] is not None else None,
                         # iso_utc anchors the SQLite-returned datetime

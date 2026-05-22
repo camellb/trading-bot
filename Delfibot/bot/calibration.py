@@ -32,9 +32,9 @@ from db.engine import get_engine
 # Bucket edges for reliability diagrams.
 #
 # V1 framing: bucket on Delfi's confidence in the BET's side, not on
-# raw claude_probability of YES. Under V1 the bot only enters trades
+# raw delfi_probability of YES. Under V1 the bot only enters trades
 # where Delfi agrees with the market favourite, so confidence-in-bet
-# = claude_probability when side='YES' and 1-claude_probability when
+# = delfi_probability when side='YES' and 1-delfi_probability when
 # side='NO'. That value is always >= 0.50 by direction-agreement.
 #
 # Five equal-width 10pp bins in [0.50, 1.00]. The last bin is closed
@@ -210,7 +210,7 @@ def get_report(
         "resolved":     <settled positions for this user>,
         "unresolved":   <open positions for this user>,
         "brier":        <float|null>,   # on chosen side
-        "mean_prob":    <float|null>,   # avg claude_probability at entry
+        "mean_prob":    <float|null>,   # avg delfi_probability at entry
         "mean_outcome": <float|null>,   # empirical win rate on entered
         "realized_pnl_usd": <float|null>,
         "bins":         [ {lo, hi, n, mean_pred, mean_actual}, ... ],
@@ -236,14 +236,14 @@ def get_report(
             "CASE WHEN settlement_outcome = side THEN 1.0 ELSE 0.0 END"
         )
         # Brier MUST be on the chosen-side probability, not P(YES).
-        # `claude_probability` stores P(YES). For a NO bet the probability
-        # we actually committed to is 1 - claude_probability. Without this
+        # `delfi_probability` stores P(YES). For a NO bet the probability
+        # we actually committed to is 1 - delfi_probability. Without this
         # flip, every NO bet contributed a wildly inflated squared error
         # (e.g. NO bet at p_yes=0.30 that won returned (0.30 - 1)^2 = 0.49
         # instead of the correct (0.70 - 1)^2 = 0.09).
         conf_expr = (
-            "CASE WHEN side = 'YES' THEN claude_probability "
-            "ELSE 1.0 - claude_probability END"
+            "CASE WHEN side = 'YES' THEN delfi_probability "
+            "ELSE 1.0 - delfi_probability END"
         )
         base_filters = ["user_id = :uid"]
         params: dict = {"uid": user_id}
@@ -263,7 +263,7 @@ def get_report(
 
         res_filters = list(base_filters) + [
             "settled_at IS NOT NULL",
-            "claude_probability IS NOT NULL",
+            "delfi_probability IS NOT NULL",
             "settlement_outcome IN ('YES', 'NO')",
         ]
         if since_days and since_days > 0:
@@ -273,7 +273,7 @@ def get_report(
         res_where = "WHERE " + " AND ".join(res_filters)
 
         total_filters = list(base_filters) + [
-            "claude_probability IS NOT NULL",
+            "delfi_probability IS NOT NULL",
         ]
         if since_days and since_days > 0:
             total_filters.append(
@@ -293,7 +293,7 @@ def get_report(
 
             agg = conn.execute(text(
                 f"SELECT "
-                f"  AVG(claude_probability)                        AS mean_prob, "
+                f"  AVG(delfi_probability)                        AS mean_prob, "
                 f"  AVG({outcome_expr})                            AS mean_outcome, "
                 f"  AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
                 f"  SUM(realized_pnl_usd)                          AS pnl "
@@ -339,7 +339,7 @@ def get_report(
                 f"SELECT category, "
                 f"       COUNT(*) AS n, "
                 f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
-                f"       AVG(claude_probability) AS mp, "
+                f"       AVG(delfi_probability) AS mp, "
                 f"       AVG({outcome_expr}) AS ma, "
                 f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
                 f"       COALESCE(SUM(cost_usd), 0) AS cost, "
@@ -369,7 +369,7 @@ def get_report(
                 f"SELECT market_archetype, "
                 f"       COUNT(*) AS n, "
                 f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
-                f"       AVG(claude_probability) AS mp, "
+                f"       AVG(delfi_probability) AS mp, "
                 f"       AVG({outcome_expr}) AS ma, "
                 f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
                 f"       COALESCE(SUM(cost_usd), 0) AS cost, "
@@ -412,7 +412,7 @@ def get_report(
                 h_row = conn.execute(text(
                     f"SELECT COUNT(*) AS n, "
                     f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
-                    f"       AVG(claude_probability) AS mp, "
+                    f"       AVG(delfi_probability) AS mp, "
                     f"       AVG({outcome_expr}) AS ma, "
                     f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
                     f"       COALESCE(SUM(cost_usd), 0) AS cost, "
@@ -466,7 +466,7 @@ def get_report(
                 b_row = conn.execute(text(
                     f"SELECT COUNT(*) AS n, "
                     f"       AVG(POWER(({conf_expr}) - ({outcome_expr}), 2)) AS brier, "
-                    f"       AVG(claude_probability) AS mp, "
+                    f"       AVG(delfi_probability) AS mp, "
                     f"       AVG({outcome_expr}) AS ma, "
                     f"       COALESCE(SUM(realized_pnl_usd), 0) AS pnl, "
                     f"       COALESCE(SUM(cost_usd), 0) AS cost, "

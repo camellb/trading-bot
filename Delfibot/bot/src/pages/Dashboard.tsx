@@ -510,7 +510,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
       {positions.map((p) => {
         const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
         const mYesPct = Math.round(marketYes * 100);
-        const cp = (p.claude_probability as number | null | undefined) ?? null;
+        const cp = (p.delfi_probability as number | null | undefined) ?? null;
         const cf = (p.confidence as number | null | undefined) ?? null;
         const dYesPct = cp != null ? Math.round(cp * 100) : null;
         const dConfPct = cf != null ? Math.round(cf * 100) : null;
@@ -610,7 +610,7 @@ function buildActivity(
   const fromOpen: ActivityItem[] = open.slice(0, 8).map((p) => {
     const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
     const mYesPct = Math.round(marketYes * 100);
-    const cp = (p.claude_probability as number | null | undefined) ?? null;
+    const cp = (p.delfi_probability as number | null | undefined) ?? null;
     const cf = (p.confidence as number | null | undefined) ?? null;
     const dYesPct = cp != null ? `${Math.round(cp * 100)}%` : "-";
     const dConfPct = cf != null ? `${Math.round(cf * 100)}%` : "-";
@@ -632,7 +632,7 @@ function buildActivity(
     })
     .slice(0, 8)
     .map((e) => {
-      const dYesPct = e.claude_probability != null ? `${Math.round(e.claude_probability * 100)}%` : "-";
+      const dYesPct = e.delfi_probability != null ? `${Math.round(e.delfi_probability * 100)}%` : "-";
       const mYesPct = e.market_price_yes != null ? `${Math.round(e.market_price_yes * 100)}%` : "-";
       const dConfPct = e.confidence != null ? `${Math.round(e.confidence * 100)}%` : "-";
       return {
@@ -789,7 +789,7 @@ function buildResolving(open: PMPosition[]): ResolutionItem[] {
     })
     .slice(0, 4)
     .map((p) => {
-      const cp = (p.claude_probability as number | null | undefined) ?? null;
+      const cp = (p.delfi_probability as number | null | undefined) ?? null;
       const cf = (p.confidence as number | null | undefined) ?? null;
       const pct = cp != null ? Math.round(cp * 100) : null;
       return {

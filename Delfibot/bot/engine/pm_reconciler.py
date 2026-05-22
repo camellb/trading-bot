@@ -486,14 +486,14 @@ def _import_position(*, user_id: str, row: dict, side: str,
     pred_id: Optional[int]   = None
     eval_category:           Optional[str]   = None
     eval_archetype:          Optional[str]   = None
-    eval_claude_probability: Optional[float] = None
+    eval_delfi_probability: Optional[float] = None
     eval_confidence:         Optional[float] = None
     eval_ev_bps:             Optional[float] = None
     eval_reasoning:          Optional[str]   = None
     with get_engine().connect() as conn:
         cur = conn.execute(text(
             "SELECT market_id, prediction_id, category, market_archetype, "
-            "       claude_probability, confidence, ev_bps, reasoning "
+            "       delfi_probability, confidence, ev_bps, reasoning "
             "FROM market_evaluations "
             "WHERE LOWER(condition_id) = :c "
             "ORDER BY id DESC LIMIT 1"
@@ -501,7 +501,7 @@ def _import_position(*, user_id: str, row: dict, side: str,
         hit = cur.fetchone()
         if hit:
             (market_id, pred_id, eval_category, eval_archetype,
-             eval_claude_probability, eval_confidence, eval_ev_bps,
+             eval_delfi_probability, eval_confidence, eval_ev_bps,
              eval_reasoning) = hit
     if not market_id:
         market_id = cond_id  # last-resort identifier
@@ -550,7 +550,7 @@ def _import_position(*, user_id: str, row: dict, side: str,
             "  user_id, prediction_id, market_id, condition_id, "
             "  slug, question, category, "
             "  side, shares, entry_price, cost_usd, "
-            "  claude_probability, ev_bps, confidence, "
+            "  delfi_probability, ev_bps, confidence, "
             "  mode, status, settled_at, settlement_outcome, "
             "  realized_pnl_usd, expected_resolution_at, "
             "  event_slug, market_archetype, venue, reasoning"
@@ -575,7 +575,7 @@ def _import_position(*, user_id: str, row: dict, side: str,
             "sz":          size,
             "px":          avg_price,
             "cost":        init_value if init_value > 0 else (size * avg_price),
-            "cp":          eval_claude_probability,
+            "cp":          eval_delfi_probability,
             "ev":          eval_ev_bps,
             "conf":        eval_confidence,
             "status":      status,

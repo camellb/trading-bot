@@ -296,21 +296,21 @@ class PolymarketEvaluator:
                 f"{market.id} — skipping. note={note[:160]!r}",
                 file=sys.stderr,
             )
-            # Force claude_p to land on the OPPOSITE side of 0.50 from
+            # Force delfi_p to land on the OPPOSITE side of 0.50 from
             # the market favourite so the sizer's direction-agreement
             # gate actually trips a SKIP.
             #
             # Earlier wiring set `probability_yes = market.yes_price`
             # on the (incorrect) theory that "match the market = no
             # signal = no trade". But the V1 gate is
-            # `(claude_p - 0.50) * (market_p - 0.50) < 0` —
+            # `(delfi_p - 0.50) * (market_p - 0.50) < 0` —
             # "DIFFERENT sides of 0.50". Equality satisfies "SAME
             # side", so the gate didn't fire and the position opened
             # anyway. Real example 2026-05-18: Arsenal -2.5 spread
             # at 0.495 paired with research about a different match
             # (Champions League semifinal vs Atletico, not Premier
             # League vs Burnley). Evaluator emitted same_event=no,
-            # set claude_p=0.495=market, sizer accepted the
+            # set delfi_p=0.495=market, sizer accepted the
             # direction match, bot opened a $2.52 NO position on a
             # market its own research didn't describe. User-reported
             # "It shows skipped but it's live on Polymarket".
