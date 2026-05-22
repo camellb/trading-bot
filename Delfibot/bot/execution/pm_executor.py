@@ -26,7 +26,7 @@ Live mode (Polymarket V2 CLOB):
 
 Bankroll model (per-user):
     bankroll = user_config.starting_cash
-             + Σ realized_pnl_usd (WHERE user_id AND status IN settled/invalid)
+             + Σ realized_pnl_usd (WHERE user_id AND status IN settled/invalid/closed_early)
              - Σ cost_usd         (WHERE user_id AND status = 'open')
     Refreshed from DB before every sizing decision so concurrent fills
     don't over-stake.
@@ -69,6 +69,61 @@ FILL_POLL_TIMEOUT_SECONDS = 30.0
 # Process-level cache so we don't reauth on every order. Keyed by the
 # wallet's lowercase 0x address since each user_config has exactly one.
 _CLOB_CLIENT_CACHE: dict = {}
+
+# Tracks (cache_key) for which we've already synced CLOB balance/allowance
+# under POLY_1271. Per Polymarket V2 docs
+# (https://docs.polymarket.com/trading/deposit-wallets), the CLOB caches a
+# user's balance + allowance state per signature_type. Before placing the
+# first POLY_1271 order from this process, we MUST call
+# update_balance_allowance(signature_type=3) — otherwise the CLOB has no
+# record of the deposit wallet's funds and rejects orders. Idempotent +
+# one-time per cache key keeps it cheap on every subsequent order.
+_BALANCE_ALLOWANCE_SYNCED: set = set()
+
+# Per-process flag: True once we've detected the V2 "signer mismatch"
+# rejection from Polymarket. Pre-2026-05-17 we kept seeing this rejection
+# because our py-clob-client-v2 was pinned to 1.0.0 (released 2026-04-17)
+# which predates the SDK's deposit-wallet (POLY_1271 / ERC-7739 wrapped
+# signature) support. 1.0.1 (2026-05-09) lands "feat: add deposit wallet
+# order support" (#39) — orders now correctly set signer=DepositWallet
+# and build the ERC-7739 wrapper. The mismatch state should never trip
+# anymore, but the gate stays as a safety belt: if the rejection comes
+# back (e.g. SDK regression or another V3-style migration), we fall back
+# to simulation and tell the user instead of hammering the CLOB.
+_V2_SIGNER_MISMATCH_DETECTED: bool = False
+_V2_SIGNER_MISMATCH_NOTIFIED: bool = False
+
+# Last-known live wallet bankroll per user_id. Populated on every
+# successful get_cached_total_funder_balance() call in get_bankroll;
+# read as a fallback when the wallet probe misses (cold cache + lock
+# contention). Without this, get_bankroll fell through to the SIM
+# formula (`starting + realized - open_cost`), which uses the
+# configured starting_cash ($1000 onboarding default) and produced
+# fake "Balance: $989" Dashboard tiles. User-reported 2026-05-20.
+# In-process only; the next successful probe (within ~5s of boot)
+# overwrites it with the true value.
+_LIVE_BANKROLL_FALLBACK: dict[str, float] = {}
+
+
+def _is_v2_signer_mismatch(exc_str: str) -> bool:
+    """Detect Polymarket's V2 'signer != api-key address' rejection so we
+    can shortcut subsequent orders + surface a clear user action."""
+    s = (exc_str or "").lower()
+    return (
+        "the order signer address has to be the address of the api key" in s
+        or "signer address has to be the address" in s
+    )
+
+
+def reset_v2_signer_mismatch_state() -> None:
+    """Called from local_api when credentials change. Lets the next live
+    order retry from a clean slate instead of staying gated forever.
+    Also clears the balance-allowance sync memo so the freshly-saved key
+    rebuilds CLOB state from scratch."""
+    global _V2_SIGNER_MISMATCH_DETECTED, _V2_SIGNER_MISMATCH_NOTIFIED
+    _V2_SIGNER_MISMATCH_DETECTED = False
+    _V2_SIGNER_MISMATCH_NOTIFIED = False
+    _BALANCE_ALLOWANCE_SYNCED.clear()
 
 
 def _live_killswitch_off() -> bool:
@@ -170,7 +225,277 @@ def _get_clob_client(wallet_address: str, private_key: str):
     client_kwargs["creds"] = creds
     client = ClobClient(**client_kwargs)
     _CLOB_CLIENT_CACHE[cache_key] = client
+
+    # Polymarket V2 docs (https://docs.polymarket.com/trading/deposit-wallets):
+    # "After funding the deposit wallet or approving contracts from it,
+    # update the CLOB balance cache using signature_type = 3."
+    # Without this call, the CLOB has no record of the deposit wallet's
+    # collateral and rejects POLY_1271 orders. One-time per cache_key
+    # per process — cheap on every subsequent order.
+    if sig_type == 3 and cache_key not in _BALANCE_ALLOWANCE_SYNCED:
+        try:
+            from py_clob_client_v2.clob_types import (  # type: ignore
+                BalanceAllowanceParams, AssetType,
+            )
+            from py_clob_client_v2.order_utils import SignatureTypeV2  # type: ignore
+            client.update_balance_allowance(
+                BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=SignatureTypeV2.POLY_1271,
+                )
+            )
+            _BALANCE_ALLOWANCE_SYNCED.add(cache_key)
+            print(
+                f"[pm_executor] synced CLOB balance-allowance under "
+                f"POLY_1271 for funder={funder}",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(
+                f"[pm_executor] update_balance_allowance failed (continuing): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
     return client
+
+
+def _extract_filled_size(final: dict, resp: dict) -> float:
+    """Pull the ACTUAL filled size in shares from a CLOB order response.
+
+    Polymarket V2 reports fills under several keys depending on the
+    code path that returned them. We check, in order:
+      * `size_matched`        — V2 standard (most common)
+      * `size_filled`         — older alias still emitted by some SDK builds
+      * `filled_size`         — alt-cased variant
+      * `made_amount`         — taker amount in collateral wei; converted
+                                later to shares via the entry price
+    The order is `(filled response) || (post-order response)` so a
+    partial-fill discovered post-poll wins over the initial accept.
+    """
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        for k in ("size_matched", "size_filled", "filled_size",
+                  "matched_size", "match_size"):
+            v = src.get(k)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return fv
+    # Fall back: scan a `fills` or `events` list if present.
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        fills = src.get("fills") or src.get("events") or []
+        if not isinstance(fills, list):
+            continue
+        total = 0.0
+        for f in fills:
+            if not isinstance(f, dict):
+                continue
+            for k in ("size", "matched_size", "fill_size"):
+                v = f.get(k)
+                if v is None:
+                    continue
+                try:
+                    total += float(v)
+                except (TypeError, ValueError):
+                    pass
+                break
+        if total > 0:
+            return total
+    return 0.0
+
+
+def _lookup_on_chain_position(
+    *, funder_address: Optional[str], condition_id: Optional[str],
+    side: str,
+) -> Optional[dict]:
+    """Probe Polymarket's data-api for a current position on (condition_id,
+    side) and return the matching row, or None if no such position
+    exists.
+
+    Used by _open_live to close the gap between order placement and
+    fill confirmation: if the CLOB poll says "no fill" but the
+    matcher already landed the trade on-chain, the position is in
+    data-api before the order endpoint catches up. Without this
+    fast-path, the bot would cancel the (already-filled) order, lose
+    the row, and rely on the 2-minute reconciler tick to backfill.
+    """
+    if not funder_address or not condition_id:
+        return None
+    target_cond = condition_id.lower()
+    # Map Delfi's binary YES/NO onto data-api's outcomeIndex 0/1 -
+    # same convention as the reconciler.
+    target_idx  = 0 if side.upper() == "YES" else 1
+    try:
+        import requests
+        r = requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={
+                "user": funder_address,
+                "sizeThreshold": "0.01",
+                "limit": "200",
+            },
+            headers={"User-Agent": "delfibot/1.0 _open_live"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        rows = r.json()
+    except Exception as exc:
+        print(f"[pm_executor] data-api position probe failed: "
+              f"{type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        cid = (row.get("conditionId") or "").lower()
+        idx = row.get("outcomeIndex")
+        size = float(row.get("size") or 0.0)
+        if cid == target_cond and idx == target_idx and size > 0:
+            return row
+    return None
+
+
+def _extract_filled_cost(
+    final: dict, resp: dict, filled_shares: float,
+    *, fallback_price: float, client=None, order_id: Optional[str] = None,
+) -> float:
+    """Pull the ACTUAL collateral spent for the filled shares.
+
+    Three sources of truth, tried in order:
+
+    1. The CLOB's per-trade records via `client.get_trades(id=order_id)`.
+       This is the on-chain truth - every match emits a Trade row with
+       its own (price, size). Sum price*size across all trades for the
+       order to get the volume-weighted USDC cost, which exactly
+       matches what hit the wallet. Marketable BUYs frequently fill
+       BELOW the limit price (price improvement), and the bot was
+       previously recording the limit as cost which produced ghost
+       P&L drift in pm_positions (Solana 1AM ET case: DB $3.85,
+       on-chain $2.31).
+
+    2. Inline `fills` array on the order response (some SDK builds
+       echo trades back inline). Same math.
+
+    3. Single-amount fields if the CLOB returned one. Less reliable -
+       some are maker shares, not USDC - but salvages any positive
+       value over the limit-price fallback.
+
+    4. Final fallback: `filled_shares * fallback_price`. Last resort
+       only. Logs a warning so we can spot the case in production;
+       the reconciler's drift detector will alert on the next tick
+       if this row's recorded cost diverges from on-chain.
+    """
+    # Source 1: client.get_trades() for the order. Most reliable.
+    # Prefer `usdcSize` (the actual USDC sent on-chain, INCLUDING
+    # taker fees) over `price * size` (which strips the fee). The
+    # difference is small per trade (~1-2%) but compounds across
+    # the position log and produces realized-P&L drift against
+    # Polymarket's own number - the source of the user-visible
+    # "Polymarket says X, Delfi says Y" complaint.
+    if client is not None and order_id:
+        try:
+            from py_clob_client_v2.clob_types import TradeParams  # type: ignore
+            trades = client.get_trades(TradeParams(id=str(order_id)))
+        except Exception as exc:
+            print(f"[pm_executor] get_trades({order_id}) failed: {exc}",
+                  file=sys.stderr)
+            trades = None
+        if isinstance(trades, list) and trades:
+            total = 0.0
+            for t in trades:
+                if not isinstance(t, dict):
+                    continue
+                # Prefer the actual USDC sent (with fees) if present.
+                usdc = t.get("usdcSize") or t.get("usdc_size")
+                if usdc is not None:
+                    try:
+                        u = float(usdc)
+                        if u > 0:
+                            total += u
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+                # Fallback: price * size if the trade row only has
+                # the per-share data (older SDK builds, or maker
+                # fills that don't carry a usdcSize).
+                try:
+                    p = float(t.get("price") or 0)
+                    s = float(t.get("size") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if p > 0 and s > 0:
+                    total += p * s
+            if total > 0:
+                return total
+
+    # Source 2: inline fills array on the order response. Same
+    # usdcSize-preference logic.
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        fills = src.get("fills") or src.get("trades") or src.get("events")
+        if not isinstance(fills, list):
+            continue
+        total = 0.0
+        for f in fills:
+            if not isinstance(f, dict):
+                continue
+            usdc = f.get("usdcSize") or f.get("usdc_size")
+            if usdc is not None:
+                try:
+                    u = float(usdc)
+                    if u > 0:
+                        total += u
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            try:
+                p = float(f.get("price") or 0)
+                s = float(f.get("size") or 0)
+            except (TypeError, ValueError):
+                continue
+            if p > 0 and s > 0:
+                total += p * s
+        if total > 0:
+            return total
+
+    # Source 3: single-amount fields on the order response.
+    for src in (final, resp):
+        if not isinstance(src, dict):
+            continue
+        for k in ("matched_amount", "made_amount", "filled_amount",
+                  "cost", "cost_usd", "taking_amount"):
+            v = src.get(k)
+            if v is None:
+                continue
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return fv
+
+    # Source 4: limit-price fallback. This is the bug path - it's the
+    # original limit, not the actual fill. Log so we can spot the case
+    # in production. The reconciler's drift detector will surface a
+    # warning if the limit/fill mismatch persists.
+    if filled_shares > 0:
+        print(
+            f"[pm_executor] WARN _extract_filled_cost falling back to "
+            f"limit price for order={order_id!r}; pm_positions.cost_usd "
+            f"may differ from on-chain truth. Drift detector will alert "
+            f"on the next reconciler tick.",
+            file=sys.stderr, flush=True,
+        )
+        return filled_shares * float(fallback_price)
+    return 0.0
 
 
 def _poll_order_filled(client, order_id: str) -> dict:
@@ -261,26 +586,128 @@ class PMExecutor:
         """
         This user's starting bankroll in USD. Returns 0.0 if the user hasn't
         finished onboarding - callers treat that as "no bankroll, don't trade".
+
+        Live override: when the user's CONFIGURED trading mode is 'live'
+        (not the view-mode override) AND a Polymarket private key is on
+        file, return the actual on-chain DepositWallet balance instead of
+        the static configured value. Without this the sizer was using
+        the simulation-default $1000 starting_cash on live mode and
+        building orders 100x larger than the wallet could fund —
+        Polymarket rejected with "not enough balance" because the
+        configured number didn't match real funds.
+
+        The wallet probe is cached for 5 min in polymarket_wallet, so this
+        is cheap even when called from every order. Falls back to the
+        configured starting_cash on any probe failure so the bot doesn't
+        block trading just because the RPC blipped.
         """
         if self._user_config.starting_cash is None:
             return 0.0
-        return float(self._user_config.starting_cash)
+        configured = float(self._user_config.starting_cash)
+        # LIVE mode: never return the configured starting_cash. That
+        # number is the SIM-mode default ($1000 typically), and
+        # treating it as real bankroll causes the sizer to build
+        # orders 100x bigger than the wallet can fund (Polymarket
+        # rejects). Use cached signer info (or the last-known live
+        # bankroll, or 0 as a safe floor) - never the SIM constant.
+        if (
+            self._user_config.mode == "live"
+            and self._view_mode_override is None
+        ):
+            try:
+                from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import get_cached_poly_signer_info
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    # Read from the in-process cache only - never
+                    # touch the lock here. The background probe
+                    # populates the cache; get_bankroll's fallback
+                    # mirror also populates _LIVE_BANKROLL_FALLBACK.
+                    info = get_cached_poly_signer_info(pk)
+                    if info and isinstance(info.get("balance"), (int, float)):
+                        return float(info["balance"])
+            except Exception as exc:
+                print(
+                    f"[pm_executor] live starting_cash cache read failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            # Cache miss in live mode: use the last-known live
+            # bankroll if any, else 0. Returning the configured $1000
+            # would produce fake equity numbers everywhere downstream.
+            return float(_LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0))
+        return configured
 
     def get_bankroll(self) -> float:
         """
-        Current available bankroll in USD for this user in their current mode:
+        Current bankroll in USD for this user in their current mode.
 
-            bankroll = starting_cash
-                     + Σ realized_pnl_usd   (user, settled/invalid)
-                     - Σ cost_usd           (user, open)
+        LIVE mode: the actual on-chain wallet total at the funder
+        (pUSD + USDC.e). Both are spendable — pUSD trades immediately
+        on V2 markets; USDC.e is auto-wrapped to pUSD within ~10
+        minutes by pm_activate_legacy. NO additional DB adjustment:
+        the wallet balance already reflects every settled bet and
+        every open position (open positions are CTF tokens paid for
+        with pUSD that has already left the wallet). Adding
+        realized_pnl on top would double-count.
 
-        Not gated on `self.ready` - reads must always surface the user's own
-        history. A user whose trading-mode config is incomplete (e.g. picked
-        'live' but hasn't wired Polymarket creds yet) should still see their
-        historical bankroll in either view. The `ready` flag only gates
-        writes (opening new positions); write-path callers in pm_analyst
-        already short-circuit upstream before calling this.
+        SIM mode: the bookkeeping formula
+            bankroll = starting_cash + Σ realized_pnl − Σ open_cost
+        because there's no real wallet to read from.
+
+        Background: the older "live + realized − open" formula caused
+        the WIN Telegram message to report ``Balance: $3.87`` after a
+        $4.60 bet returned $5.00. The live wallet was $3.47 (pre-
+        activation pUSD), the DB added $0.40 realized P&L on top, and
+        the math didn't add up (2026-05-18).
+
+        Not gated on `self.ready` — reads must always surface the
+        user's own history.
         """
+        # LIVE mode: read the wallet directly. No DB adjustment.
+        if (
+            self._user_config.mode == "live"
+            and self._view_mode_override is None
+        ):
+            try:
+                from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import (
+                    get_cached_total_funder_balance,
+                )
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    total = get_cached_total_funder_balance(pk)
+                    if total is not None:
+                        # Remember the last good probe so the next
+                        # cache-cold call can serve a real number.
+                        _LIVE_BANKROLL_FALLBACK[self.user_id] = float(total)
+                        return float(total)
+                    # Probe missed: fall back to the LAST observed live
+                    # balance instead of dropping through to the SIM
+                    # formula. The SIM formula uses the configured
+                    # starting_cash (typically $1000 from onboarding)
+                    # and produces a fake "Balance: $989" the second
+                    # the cache is cold - the bug user-reported
+                    # 2026-05-20 ("what the actual fuck happened here?").
+                    # 0.0 floor is intentional for first-boot: better
+                    # to show $0 than a $989 fabrication.
+                    last = _LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0)
+                    return float(last)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] live get_bankroll probe failed, "
+                    f"falling back to last-known live balance: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                last = _LIVE_BANKROLL_FALLBACK.get(self.user_id, 0.0)
+                return float(last)
+
+        # SIM mode only: DB-derived formula. Never reached in live
+        # mode - the live branch above always returns something
+        # (either a fresh probe, the last-known live balance, or 0).
         starting = self.get_starting_cash()
         try:
             with get_engine().begin() as conn:
@@ -288,7 +715,7 @@ class PMExecutor:
                     "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
                     "FROM pm_positions "
                     "WHERE user_id = :uid AND mode = :m "
-                    "  AND status IN ('settled', 'invalid')"
+                    "  AND status IN ('settled', 'invalid', 'closed_early')"
                 ), {"uid": self.user_id, "m": self.mode}).scalar() or 0.0
                 open_cost = conn.execute(text(
                     "SELECT COALESCE(SUM(cost_usd), 0) "
@@ -327,13 +754,32 @@ class PMExecutor:
                 # Switching modes shows a clean per-mode ledger; the
                 # other mode's data still exists in the DB, just not
                 # in the displayed view.
+                # `closed_early` rows count toward the ledger because
+                # the exit-policy SELL realized P&L, even though the
+                # underlying market hasn't reached natural resolution
+                # yet. They behave identically to a `settled` row for
+                # bankroll, equity, and win-rate purposes; the
+                # distinguishing field is `close_reason`, used by the
+                # review report to score exit quality separately.
                 row = conn.execute(text(
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid')) AS settled_n, "
-                    "  COALESCE(SUM(cost_usd) FILTER (WHERE status = 'open'), 0) AS open_cost, "
-                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid') AND realized_pnl_usd > 0) AS wins "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')) AS settled_n, "
+                    # open_cost = mark-to-market value of open positions
+                    # when the refresher has populated current_value_usd,
+                    # otherwise cost basis. Single number that
+                    # Dashboard's "Locked Capital" tile + WIN/LOSS /
+                    # new_position Telegram blocks all read so surfaces
+                    # agree. polymarket_runner.evaluate_open_positions
+                    # writes current_value_usd = shares * outcomePrices
+                    # for the held side every 60s.
+                    "  COALESCE("
+                    "    SUM(COALESCE(current_value_usd, cost_usd)) "
+                    "      FILTER (WHERE status = 'open'),"
+                    "    0"
+                    "  ) AS open_cost, "
+                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')), 0) AS realized, "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early') AND realized_pnl_usd > 0) AS wins "
                     "FROM pm_positions WHERE user_id = :uid AND mode = :m"
                 ), {"uid": self.user_id, "m": self.mode}).fetchone()
                 open_n    = int(row[0] or 0)
@@ -363,14 +809,112 @@ class PMExecutor:
                   file=sys.stderr)
             open_n = settled_n = wins = skipped_n = 0
             open_cost = realized = 0.0
-        bankroll = float(starting) + realized - open_cost
+        # SINGLE source of truth for bankroll + equity, used by every
+        # downstream surface (Dashboard /api/summary, settlement
+        # Telegram messages via polymarket_runner, learning-cycle
+        # bookkeeping).
+        #
+        # bankroll = wallet (real on-chain or DB formula) + pending
+        #            redemption payouts for live winners that have
+        #            settled but whose redeem+wrap chain hasn't yet
+        #            credited the wallet.
+        # equity   = bankroll + open_cost (cost basis of open positions).
+        #
+        # Why the pending-payout projection:
+        # The redeem+wrap chain typically completes within 30-60s of
+        # settle_position firing. During that window the real wallet
+        # probe still shows the pre-redeem balance, so a WIN
+        # notification would render "Balance: $X" where X doesn't yet
+        # include the just-won money. Users read this as "the win
+        # wasn't credited" even though it's already on its way. The
+        # projection closes that gap: we add the expected payout
+        # (cost_usd + realized_pnl_usd) for every settled winner whose
+        # `redeem_tx_hash` is still NULL, so the displayed Balance
+        # matches what the wallet will reach as soon as the in-flight
+        # relayer transactions mine. Once they mine, the wallet probe
+        # picks them up natively and the projection drops back to 0.
+        #
+        # Sim mode never needs this: get_bankroll() already counts
+        # realized P&L for settled rows via the DB formula. Losers and
+        # voided markets contribute 0 to the projection (their
+        # cost_usd + realized_pnl_usd = 0 for losers, = cost_usd for
+        # invalid refunds, so the formula is correct for both).
+        bankroll_wallet  = float(self.get_bankroll())
+        pending_payout   = 0.0
+        if self.mode == "live":
+            try:
+                with get_engine().begin() as conn:
+                    pending = conn.execute(text(
+                        "SELECT COALESCE(SUM("
+                        "  cost_usd + COALESCE(realized_pnl_usd, 0)"
+                        "), 0) "
+                        "FROM pm_positions "
+                        "WHERE user_id = :uid "
+                        "  AND mode = 'live' "
+                        "  AND status IN ('settled', 'invalid') "
+                        "  AND redeem_tx_hash IS NULL "
+                        "  AND ("
+                        "    side = settlement_outcome "  # winning binary
+                        "    OR status = 'invalid'"        # voided refund
+                        "  )"
+                    ), {"uid": self.user_id}).scalar() or 0.0
+                    pending_payout = float(pending)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] pending-payout probe failed for "
+                    f"{self.user_id}: {exc}",
+                    file=sys.stderr,
+                )
+
+        # Locked Capital (= equity contribution from open positions).
+        #
+        # In LIVE mode we ask Polymarket's own data-api for the sum of
+        # currentValue across EVERY position the wallet holds, including
+        # ones the user opened manually outside the bot. That's the same
+        # source Polymarket's "Portfolio" UI reads, so the Dashboard +
+        # Telegram numbers reconcile to the cent. The bot's P&L,
+        # win-rate, and position-count fields below stay scoped to
+        # pm_positions (bot-tracked rows) so manual trades don't pollute
+        # the bot's track record.
+        #
+        # On any failure (network, parse, non-2xx) we fall through to
+        # `open_cost` from the SQL above, which is already
+        # SUM(COALESCE(current_value_usd, cost_usd)) for bot-tracked
+        # opens. That's a strictly worse but never-wrong floor.
+        locked_capital = open_cost
+        if self.mode == "live":
+            try:
+                from engine.user_config import get_user_polymarket_creds
+                from feeds.polymarket_wallet import (
+                    get_total_open_positions_value, get_poly_signer_info,
+                )
+                creds = get_user_polymarket_creds(self.user_id)
+                pk = (creds or {}).get("private_key") if creds else None
+                if pk:
+                    info = get_poly_signer_info(pk)
+                    funder = (info or {}).get("funder")
+                    if funder:
+                        total_open_value = get_total_open_positions_value(funder)
+                        if total_open_value is not None:
+                            locked_capital = float(total_open_value)
+            except Exception as exc:
+                print(
+                    f"[pm_executor] locked_capital probe failed for "
+                    f"{self.user_id}: {exc}",
+                    file=sys.stderr,
+                )
+
+        bankroll = bankroll_wallet + pending_payout
+        equity   = bankroll + locked_capital
         return {
             "mode":            self.mode,
             "starting_cash":   starting,
             "bankroll":        bankroll,
-            "equity":          float(starting) + realized,  # excludes open exposure
+            "equity":          equity,
+            "locked_capital":  locked_capital,  # data-api sum in live, DB sum in sim
             "open_positions":  open_n,
-            "open_cost":       open_cost,
+            "open_cost":       locked_capital,  # alias; kept for legacy callers
+            "bot_open_cost":   open_cost,       # bot-tracked only (for P&L analysis)
             "settled_total":   settled_n,
             "settled_wins":    wins,
             "skipped_total":   skipped_n,
@@ -526,6 +1070,27 @@ class PMExecutor:
                   file=sys.stderr)
             return None
 
+        # ── V2 signer-mismatch short-circuit ────────────────────────────
+        # If we've already detected the Polymarket V2 "signer != api-key"
+        # rejection in this process, every subsequent order will fail the
+        # same way. Skip the API call + the Telegram noise; fall back to a
+        # simulation fill with a clear marker so the user sees what would
+        # have happened. The flag clears on credential change or restart.
+        global _V2_SIGNER_MISMATCH_DETECTED, _V2_SIGNER_MISMATCH_NOTIFIED
+        if _V2_SIGNER_MISMATCH_DETECTED:
+            print(
+                f"[pm_executor] _open_live: V2 signer mismatch was detected "
+                f"earlier this session; routing to simulation fill instead of "
+                f"posting. User must paste Trading API Keys from polymarket.com "
+                f"to clear this state.",
+                file=sys.stderr,
+            )
+            return self._open_simulation(
+                market, decision, claude_p, prediction_id,
+                f"[v2 signer mismatch] {(reasoning or '')}".strip(),
+                category, market_archetype,
+            )
+
         # ── Kill-switch fallback ────────────────────────────────────────
         if not _live_killswitch_off():
             print(
@@ -557,6 +1122,17 @@ class PMExecutor:
                 file=sys.stderr,
             )
             return None
+        # Derive the funder address once up front. POSITIONS live on the
+        # funder (the proxy contract for sig_type=1/2 accounts, the EOA
+        # for sig_type=0); we need this address to probe data-api below
+        # when the CLOB fill poll times out. Cached in
+        # get_poly_signer_info so repeated calls are cheap.
+        try:
+            from feeds.polymarket_wallet import get_poly_signer_info
+            _info = get_poly_signer_info(private_key)
+            funder_address: Optional[str] = (_info or {}).get("funder")
+        except Exception:
+            funder_address = None
         if not market.clob_token_ids:
             print(
                 f"[pm_executor] _open_live refused: market {market.id!r} has "
@@ -730,40 +1306,97 @@ class PMExecutor:
             # "order_error" notification category. The description
             # captures the market, side, size, and exact Polymarket
             # error so it's actionable from the Errors tab.
+            #
+            # Detect Polymarket's V2 "signer != api-key address" rejection.
+            # If we see it once we'll see it on EVERY order this session,
+            # so flip the process-level gate and emit a SINGLE actionable
+            # event for the user. Subsequent orders short-circuit to
+            # simulation fills at the top of _open_live, so we don't spam
+            # the Errors tab or Telegram.
+            err_msg = str(exc)[:600]
+            is_signer_mismatch = _is_v2_signer_mismatch(err_msg)
             try:
                 from db.logger import log_event
                 from feeds import telegram_messages as _tm
-                err_msg = str(exc)[:600]
                 question_short = (market.question or "")[:80]
-                description = (
-                    f"Order rejected on '{question_short}': "
-                    f"{decision.side} {size_shares:.2f}@${entry_price:.3f}. "
-                    f"{err_msg}"
-                )
-                # Rich Telegram-HTML matches the rest of the message
-                # spec (new_position / settled_win / settled_loss).
-                try:
-                    telegram_html = _tm.order_rejected(
-                        question=market.question or "(unknown market)",
-                        side=decision.side,
-                        stake_usd=decision.stake_usd,
-                        price=entry_price,
-                        error_text=err_msg,
-                        mode=self.trading_mode,
+                if is_signer_mismatch:
+                    _V2_SIGNER_MISMATCH_DETECTED = True
+                    description = (
+                        "Polymarket rejected the order because its CLOB has a "
+                        "different address authorised as the trading signer "
+                        "for this wallet. This usually happens when the "
+                        "account was created via the Polymarket web UI first "
+                        "(Magic.link session key) and the MetaMask key "
+                        "pasted into Delfi was never registered as a "
+                        "trading signer. "
+                        "FIX: go to polymarket.com -> Settings -> API Keys, "
+                        "generate Trading API Keys, and paste the api-key, "
+                        "secret, and passphrase into Delfi -> Settings -> "
+                        "Polymarket API Key. Until then live orders fall "
+                        "back to simulation fills so trading data keeps "
+                        "flowing."
                     )
-                except Exception:
                     telegram_html = None
-                log_event(
-                    event_type="order_error",
-                    severity=2,  # warning, not fatal
-                    description=description,
-                    source="pm_executor._open_live",
-                    telegram_html=telegram_html,
-                )
+                    try:
+                        telegram_html = _tm.order_rejected(
+                            question="Polymarket signer mismatch",
+                            side=decision.side,
+                            stake_usd=decision.stake_usd,
+                            price=entry_price,
+                            error_text=description,
+                            mode=self.trading_mode,
+                        )
+                    except Exception:
+                        telegram_html = None
+                    # Only one row + one Telegram per process - subsequent
+                    # short-circuited orders never hit this branch.
+                    if not _V2_SIGNER_MISMATCH_NOTIFIED:
+                        log_event(
+                            event_type="order_error",
+                            severity=3,  # higher severity, action required
+                            description=description,
+                            source="pm_executor._open_live",
+                            telegram_html=telegram_html,
+                        )
+                        _V2_SIGNER_MISMATCH_NOTIFIED = True
+                else:
+                    description = (
+                        f"Order rejected on '{question_short}': "
+                        f"{decision.side} {size_shares:.2f}@${entry_price:.3f}. "
+                        f"{err_msg}"
+                    )
+                    # Rich Telegram-HTML matches the rest of the message
+                    # spec (new_position / settled_win / settled_loss).
+                    try:
+                        telegram_html = _tm.order_rejected(
+                            question=market.question or "(unknown market)",
+                            side=decision.side,
+                            stake_usd=decision.stake_usd,
+                            price=entry_price,
+                            error_text=err_msg,
+                            mode=self.trading_mode,
+                        )
+                    except Exception:
+                        telegram_html = None
+                    log_event(
+                        event_type="order_error",
+                        severity=2,  # warning, not fatal
+                        description=description,
+                        source="pm_executor._open_live",
+                        telegram_html=telegram_html,
+                    )
             except Exception as log_exc:
                 print(
                     f"[pm_executor] could not log order_error event: {log_exc}",
                     file=sys.stderr,
+                )
+            # If this was the signer mismatch, fall back to simulation so
+            # the trade still lands in the dashboard with a clear marker.
+            if is_signer_mismatch:
+                return self._open_simulation(
+                    market, decision, claude_p, prediction_id,
+                    f"[v2 signer mismatch] {(reasoning or '')}".strip(),
+                    category, market_archetype,
                 )
             return None
         if not isinstance(resp, dict):
@@ -790,7 +1423,7 @@ class PMExecutor:
         except Exception:
             pass
 
-        # ── Wait for fill, then persist ─────────────────────────────────
+        # ── Wait for fill, then persist actual fill (NOT intent) ────────
         final = _poll_order_filled(client, str(order_id))
         final_status = (final.get("status") or "").upper()
         # `transactionHash` lands here once the on-chain match is mined.
@@ -802,18 +1435,173 @@ class PMExecutor:
             or resp.get("transactionHash")
         )
 
-        if final_status not in ("FILLED", "MATCHED"):
-            # Order placed but not (fully) filled within our timeout, OR
-            # rejected outright. Persist anyway with a status note so
-            # the operator can see it in the dashboard. The settler
-            # will pick up partial fills on its next sweep.
+        # Extract ACTUAL filled size from the CLOB response. The original
+        # `decision` carries the LIMIT-order intent (5 shares × ask),
+        # but the order may have partially filled or not filled at all
+        # (e.g. micro-window market closed before the order matched, or
+        # the limit price was below the live ask). Persisting the
+        # intent values produced "ghost positions" on the dashboard
+        # that don't exist on-chain (user-reported 2026-05-18:
+        # Delfi showed 3 open positions while Polymarket showed only 1).
+        filled_shares = _extract_filled_size(final, resp)
+        filled_cost   = _extract_filled_cost(
+            final, resp, filled_shares,
+            fallback_price=entry_price,
+            client=client, order_id=str(order_id),
+        )
+
+        if filled_shares <= 0:
+            # Zero fill PER THE CLOB POLL. But the CLOB matcher
+            # frequently lands the fill on-chain BEFORE its public
+            # poll endpoint reflects the match. The 2-minute
+            # reconciler safety net catches this eventually, but
+            # the analyst could re-open into the same market in the
+            # meantime. Synchronously check data-api/positions
+            # against this market's conditionId BEFORE cancelling -
+            # if the position is already on-chain, persist it from
+            # the on-chain truth and skip the cancel. Closes the
+            # 2-min reconciler gap to ~zero on this hot path.
+            on_chain = _lookup_on_chain_position(
+                funder_address=funder_address,
+                condition_id=getattr(market, "condition_id", None),
+                side=decision.side,
+            )
+            if on_chain is not None:
+                print(
+                    f"[pm_executor][live] zero-fill per poll but data-api "
+                    f"shows fill landed on-chain "
+                    f"(size={on_chain.get('size')}, "
+                    f"avg=${on_chain.get('avgPrice')}). Persisting from "
+                    f"on-chain truth instead of cancelling.",
+                    flush=True,
+                )
+                from dataclasses import replace as _replace
+                onchain_shares = float(on_chain.get("size") or 0.0)
+                onchain_avg    = float(on_chain.get("avgPrice") or 0.0)
+                try:
+                    decision = _replace(
+                        decision,
+                        shares=onchain_shares,
+                        stake_usd=onchain_shares * onchain_avg,
+                        entry_price=onchain_avg,
+                    )
+                except TypeError:
+                    try:
+                        decision.shares     = onchain_shares  # type: ignore[misc]
+                        decision.stake_usd  = onchain_shares * onchain_avg  # type: ignore[misc]
+                        decision.entry_price = onchain_avg  # type: ignore[misc]
+                    except Exception:
+                        pass
+                return self._persist_live_position(
+                    market=market, decision=decision, claude_p=claude_p,
+                    prediction_id=prediction_id,
+                    reasoning=reasoning, category=category,
+                    market_archetype=market_archetype,
+                    clob_order_id=str(order_id),
+                    tx_hash=None,
+                )
+
+            # Genuine zero-fill (or the CLOB really didn't match).
+            # Cancel the order if it's still on the book and do NOT
+            # persist a position row. The dashboard would otherwise
+            # show a fake "open position" with no on-chain counterpart.
+            try:
+                if final_status not in (
+                    "CANCELED", "CANCELLED", "REJECTED",
+                ):
+                    # py-clob-client-v2 has two cancel APIs:
+                    #   cancel_order(payload: OrderPayload) - takes an
+                    #     object with .orderID; raises
+                    #     "'str' object has no attribute 'orderID'"
+                    #     when passed a bare hash string.
+                    #   cancel_orders(order_hashes: list[str]) - takes
+                    #     a list of order-hash strings, which is what
+                    #     we have here.
+                    # Use the plural form. The earlier single-form call
+                    # was throwing on every zero-fill order, leaving
+                    # them live on Polymarket's order book forever.
+                    client.cancel_orders([str(order_id)])
+            except Exception as exc:
+                print(
+                    f"[pm_executor] _open_live: cancel of order "
+                    f"{order_id} failed: {exc}",
+                    file=sys.stderr,
+                )
+            try:
+                from db.logger import log_event
+                from feeds import telegram_messages as _tm
+                description = (
+                    f"Order placed but never filled on "
+                    f"'{(market.question or '')[:80]}': "
+                    f"{decision.side} {decision.shares:.2f}@"
+                    f"${entry_price:.3f}. Status: {final_status!r}. "
+                    f"Skipping the trade — no on-chain position created."
+                )
+                try:
+                    telegram_html = _tm.order_rejected(
+                        question=market.question or "(unknown market)",
+                        side=decision.side,
+                        stake_usd=decision.stake_usd,
+                        price=entry_price,
+                        error_text=(
+                            f"Order placed on Polymarket but no fill "
+                            f"within {FILL_POLL_TIMEOUT_SECONDS:.0f}s. "
+                            f"Likely no liquidity at the chosen price, "
+                            f"or the market closed before matching. "
+                            f"No position opened."
+                        ),
+                        mode=self.trading_mode,
+                    )
+                except Exception:
+                    telegram_html = None
+                log_event(
+                    event_type="order_rejected",
+                    severity=2,
+                    description=description,
+                    source="pm_executor._open_live",
+                    telegram_html=telegram_html,
+                )
+            except Exception as log_exc:
+                print(
+                    f"[pm_executor] could not log no-fill event: {log_exc}",
+                    file=sys.stderr,
+                )
+            return None
+
+        # Partial fill: scale the position row to reflect what actually
+        # landed on-chain. `decision` is the SizingDecision dataclass
+        # which is frozen — we can't mutate it — so swap to a copy with
+        # the actual numbers. Keep the original entry_price (it's the
+        # limit price, which equals the fill price for marketable BUYs
+        # on Polymarket V2 unless price-improved).
+        if filled_shares < decision.shares - 1e-9:
             print(
-                f"[pm_executor][live] order {order_id} ended in status "
-                f"{final_status!r} on '{market.question[:60]}'. Persisting "
-                f"the live attempt with the order id; manual reconciliation "
-                f"may be required.",
+                f"[pm_executor][live] partial fill on order {order_id}: "
+                f"intent {decision.shares:.2f} sh @ "
+                f"${entry_price:.3f} = ${decision.stake_usd:.2f}, "
+                f"actual {filled_shares:.2f} sh @ "
+                f"${filled_cost/filled_shares:.3f} = ${filled_cost:.2f}",
                 flush=True,
             )
+            try:
+                from dataclasses import replace as _replace
+                decision = _replace(
+                    decision,
+                    shares=filled_shares,
+                    stake_usd=filled_cost,
+                    entry_price=filled_cost / filled_shares,
+                )
+            except TypeError:
+                # `decision` isn't a dataclass or doesn't support replace;
+                # fall back to mutating attributes in-place.
+                try:
+                    decision.shares     = filled_shares  # type: ignore[misc]
+                    decision.stake_usd  = filled_cost  # type: ignore[misc]
+                    decision.entry_price = (
+                        filled_cost / filled_shares
+                    )  # type: ignore[misc]
+                except Exception:
+                    pass
 
         return self._persist_live_position(
             market=market, decision=decision, claude_p=claude_p,
@@ -886,6 +1674,338 @@ class PMExecutor:
             print(f"[pm_executor] _persist_live_position failed: {exc}",
                   file=sys.stderr)
             return None
+
+    # ── Close a position EARLY (exit policy) ────────────────────────────────
+    def close_position_early(
+        self,
+        position_id:  int,
+        reason:       str,                  # 'take_profit' | 'stop_loss' | 'time_decay'
+        details:      str,
+        current_bid:  float,                # the bid we expect to sell at
+        clob_token_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Close an open position before its natural Polymarket settlement,
+        because the user's exit policy (take-profit, stop-loss, or
+        time-decay) tripped. Mirrors settle_position's contract but
+        records the row with `status='closed_early'`, a non-null
+        `closed_at`, and a `close_reason` so dashboards and review
+        reports can distinguish a discretionary exit from a natural
+        resolution.
+
+        Simulation mode:
+            No order placed. The exit is recorded with realized P&L
+            computed against `current_bid` (`pnl = shares*bid - cost`).
+            This is the "what would have happened if we'd exited" path
+            and it must match the live path's accounting exactly so a
+            user comparing the two modes is comparing apples to apples.
+
+        Live mode:
+            Places a SELL CLOB order at `current_bid` for the held
+            outcome's clob_token_id, polls for fill, then UPDATEs the
+            row. Subject to the same kill-switch as _open_live - with
+            DELFI_LIVE_KILLSWITCH_OFF unset we record a paper close
+            instead of hitting the CLOB.
+
+        Returns True iff the row was updated (live: order placed AND
+        DB committed; simulation: DB committed). The natural-resolution
+        backfill in polymarket_runner is responsible for stamping
+        `counterfactual_pnl_usd` once the market itself settles - that
+        is NOT this method's job and never blocks the exit.
+        """
+        if reason not in ("take_profit", "stop_loss", "time_decay"):
+            print(f"[pm_executor] close_position_early: bad reason {reason!r}",
+                  file=sys.stderr)
+            return False
+        if current_bid is None or current_bid <= 0.0:
+            print(f"[pm_executor] close_position_early: invalid bid "
+                  f"{current_bid!r} for pos {position_id}", file=sys.stderr)
+            return False
+
+        try:
+            with get_engine().begin() as conn:
+                row = conn.execute(text(
+                    "SELECT side, shares, cost_usd, prediction_id, "
+                    "       mode, condition_id, question "
+                    "FROM pm_positions "
+                    "WHERE id = :pid AND user_id = :uid AND status = 'open'"
+                ), {"pid": position_id, "uid": self.user_id}).fetchone()
+                if row is None:
+                    print(f"[pm_executor] close_position_early: position "
+                          f"{position_id} not open for user {self.user_id}",
+                          file=sys.stderr)
+                    return False
+                side         = str(row[0])
+                shares       = float(row[1])
+                cost_usd     = float(row[2])
+                pred_id      = int(row[3]) if row[3] is not None else None
+                row_mode     = str(row[4]) if row[4] is not None else ""
+                condition_id = str(row[5]) if row[5] is not None else ""
+                question     = str(row[6] or "")
+        except Exception as exc:
+            print(f"[pm_executor] close_position_early read failed: {exc}",
+                  file=sys.stderr)
+            return False
+
+        # Live-CLOB SELL leg. Only runs for live-mode rows with the
+        # kill-switch off AND a non-empty token_id; otherwise we record
+        # a paper close so the dashboard accounting still moves.
+        clob_order_id: Optional[str] = None
+        tx_hash: Optional[str] = None
+        if (
+            row_mode == "live"
+            and _live_killswitch_off()
+            and clob_token_id
+        ):
+            try:
+                clob_order_id, tx_hash = self._place_close_order(
+                    token_id=clob_token_id,
+                    shares=shares,
+                    sell_price=float(current_bid),
+                )
+            except Exception as exc:
+                # Order placement failure is NOT silent - we surface it
+                # but we DO NOT update the row. The next exit-policy
+                # tick can retry. Returning False means the caller skips
+                # the Telegram notification.
+                print(f"[pm_executor] close_position_early SELL failed for "
+                      f"pos {position_id}: {exc}", file=sys.stderr)
+                try:
+                    from db.logger import log_event
+                    log_event(
+                        event_type="order_error",
+                        severity=2,
+                        description=(
+                            f"Early-exit SELL rejected on "
+                            f"'{question[:120]}': {str(exc)[:300]}"
+                        ),
+                        source="pm_executor.close_position_early",
+                    )
+                except Exception:
+                    pass
+                return False
+
+        proceeds = shares * float(current_bid)
+        pnl = proceeds - cost_usd
+
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(text(
+                    "UPDATE pm_positions SET "
+                    "  status                = 'closed_early', "
+                    "  closed_at             = CURRENT_TIMESTAMP, "
+                    "  settled_at            = CURRENT_TIMESTAMP, "
+                    "  close_reason          = :reason, "
+                    "  settlement_price      = :sp, "
+                    "  realized_pnl_usd      = :pnl, "
+                    "  close_clob_order_id   = :oid, "
+                    "  close_tx_hash         = :tx "
+                    "WHERE id = :pid"
+                ), {
+                    "reason": reason,
+                    "sp":     float(current_bid),
+                    "pnl":    float(pnl),
+                    "oid":    clob_order_id,
+                    "tx":     tx_hash,
+                    "pid":    position_id,
+                })
+        except Exception as exc:
+            print(f"[pm_executor] close_position_early UPDATE failed for "
+                  f"pos {position_id}: {exc}", file=sys.stderr)
+            return False
+
+        # Calibration ledger: an early exit is informative for
+        # learning. We resolve the prediction tentatively with the
+        # exit P&L. The natural-resolution backfill will later compute
+        # `counterfactual_pnl_usd` so the review report can ask "was
+        # this exit premature?". We don't try to mark the prediction
+        # right/wrong here because the market hasn't actually resolved
+        # yet - that's what `counterfactual_pnl_usd` is for.
+        # NOTE: we deliberately DO NOT feed calibration.resolve_prediction
+        # because that would lock the binary outcome at the exit
+        # moment and the eventual-natural-resolution outcome (which
+        # we may take a counterfactual loss against) would be ignored
+        # by Brier scoring. The prediction stays unresolved in
+        # calibration until polymarket_runner's natural-settlement
+        # path fires `counterfactual_pnl_usd` and we close the loop.
+        _ = pred_id  # explicitly unused for now
+
+        print(
+            f"[pm_executor][{row_mode}] closed-early pm_position {position_id}: "
+            f"{reason} @ ${current_bid:.3f} ({details}), pnl ${pnl:+.2f}",
+            flush=True,
+        )
+
+        # Emit a position_settled-style event so the dashboard and
+        # Telegram both pick it up. Win/loss styling decided by pnl
+        # sign rather than market-vs-side, because the market hasn't
+        # actually resolved - this is the EXIT P&L only.
+        try:
+            from db.logger import log_event
+            from feeds import telegram_messages as _tm
+            try:
+                # Mode-scoped stats — same pattern as the natural-settle
+                # path in polymarket_runner.
+                if row_mode == self.mode:
+                    stats = self.get_portfolio_stats()
+                else:
+                    other = PMExecutor(
+                        self.user_id, view_mode_override=row_mode,
+                    )
+                    stats = other.get_portfolio_stats()
+                bankroll_after = float(stats.get("bankroll", 0.0))
+                equity_after   = float(stats.get("equity",   bankroll_after))
+            except Exception:
+                bankroll_after = self.get_bankroll()
+                equity_after   = bankroll_after
+            roi = (pnl / cost_usd) if cost_usd > 0 else 0.0
+            common = dict(
+                question=question,
+                side=side,
+                reason=reason,
+                pnl=pnl,
+                roi=roi,
+                bankroll=bankroll_after,
+                equity=equity_after,
+                mode=row_mode or "simulation",
+                details=details,
+            )
+            if pnl >= 0:
+                telegram_html = _tm.early_exit_win(**common)
+            else:
+                telegram_html = _tm.early_exit_loss(**common)
+            log_event(
+                event_type="position_closed_early",
+                severity=20,
+                description=(
+                    f"Closed early ({reason}) on '{question[:120]}': "
+                    f"{details}, P&L ${pnl:+.2f}, "
+                    f"mode {row_mode or 'simulation'}, position={position_id}"
+                ),
+                source="pm_executor.close_position_early",
+                telegram_html=telegram_html,
+            )
+        except Exception as exc:
+            print(f"[pm_executor] close_position_early event log failed: "
+                  f"{exc}", file=sys.stderr)
+
+        return True
+
+    def _place_close_order(
+        self,
+        *,
+        token_id:   str,
+        shares:     float,
+        sell_price: float,
+    ) -> tuple[str, Optional[str]]:
+        """
+        Submit a CLOB SELL order for `shares` of the held outcome at
+        `sell_price`. Returns (order_id, tx_hash). Raises on any
+        rejection so the caller's UPDATE is skipped.
+
+        Mirrors `_open_live`'s order construction but with side=SELL
+        and reuses the same client cache + tick-size rounding.
+        """
+        creds = get_active_polymarket_creds(self._user_config)
+        wallet      = (creds.get("wallet_address") or "").strip()
+        private_key = (creds.get("private_key")    or "").strip()
+        if not wallet or not private_key:
+            raise RuntimeError("missing wallet/private_key on user_config")
+
+        client = _get_clob_client(wallet, private_key)
+        from py_clob_client_v2.clob_types import (   # type: ignore
+            OrderArgs, OrderType, PartialCreateOrderOptions,
+        )
+        try:
+            from py_clob_client_v2.order_builder.constants import SELL  # type: ignore
+            sell_side = SELL
+        except Exception:
+            sell_side = "SELL"
+        price = round(float(sell_price), 2)
+        size  = round(float(shares), 4)
+        args = OrderArgs(token_id=token_id, price=price, side=sell_side, size=size)
+        resp = client.create_and_post_order(
+            order_args=args,
+            options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+            order_type=OrderType.GTC,
+        )
+        if not isinstance(resp, dict):
+            raise RuntimeError(f"unexpected SELL response shape: {resp!r}")
+        order_id = resp.get("orderID") or resp.get("orderId") or resp.get("id")
+        if not order_id:
+            raise RuntimeError(f"SELL response missing order id: {resp!r}")
+        final = _poll_order_filled(client, str(order_id))
+        tx_hash = (
+            final.get("transactionHash")
+            or (final.get("transactionsHashes") or [None])[0]
+            or resp.get("transactionHash")
+        )
+        return str(order_id), (str(tx_hash) if tx_hash else None)
+
+    # ── Backfill counterfactual P&L on an already-closed-early row ──────────
+    def backfill_counterfactual_pnl(
+        self,
+        position_id:      int,
+        winning_outcome:  str,                # 'YES' | 'NO' | 'INVALID'
+        settlement_price: Optional[float] = None,
+    ) -> bool:
+        """
+        Once a market we'd already exited early reaches its natural
+        Polymarket resolution, write `counterfactual_pnl_usd` onto the
+        row so the review report can score whether the exit was wise.
+
+        `counterfactual_pnl_usd` = (the P&L we'd have realized if we'd
+        held to resolution) - (the P&L we actually got from the early
+        exit). Positive means the exit was premature (we left money on
+        the table); negative means the exit was wise (we dodged a loss).
+        Used by `engine/review_report.py` to summarise exit quality.
+
+        Idempotent: a second call on the same row updates the same
+        column with the same number. Safe to call from the resolve
+        sweep on every tick.
+        """
+        outcome = (winning_outcome or "").upper()
+        if outcome not in ("YES", "NO", "INVALID"):
+            return False
+        try:
+            with get_engine().begin() as conn:
+                row = conn.execute(text(
+                    "SELECT side, shares, cost_usd, realized_pnl_usd "
+                    "  FROM pm_positions "
+                    " WHERE id = :pid AND user_id = :uid "
+                    "   AND status = 'closed_early'"
+                ), {"pid": position_id, "uid": self.user_id}).fetchone()
+                if row is None:
+                    return False
+                side       = str(row[0])
+                shares     = float(row[1])
+                cost_usd   = float(row[2])
+                exit_pnl   = float(row[3] or 0.0)
+                if settlement_price is None:
+                    if outcome == "INVALID":
+                        settlement_price = 0.5
+                    else:
+                        settlement_price = 1.0 if side == outcome else 0.0
+                # What we would have made by holding to resolution.
+                hold_pnl = shares * float(settlement_price) - cost_usd
+                counterfactual = hold_pnl - exit_pnl
+                conn.execute(text(
+                    "UPDATE pm_positions "
+                    "   SET counterfactual_pnl_usd = :cf, "
+                    "       settlement_outcome    = :out, "
+                    "       settlement_price      = COALESCE(settlement_price, :sp) "
+                    " WHERE id = :pid"
+                ), {
+                    "cf":  float(counterfactual),
+                    "out": outcome,
+                    "sp":  float(settlement_price),
+                    "pid": position_id,
+                })
+            return True
+        except Exception as exc:
+            print(f"[pm_executor] backfill_counterfactual_pnl failed for "
+                  f"pos {position_id}: {exc}", file=sys.stderr)
+            return False
 
     # ── Settle a position ────────────────────────────────────────────────────
     def settle_position(
@@ -1000,6 +2120,28 @@ class PMExecutor:
                                 f"pos {position_id}: {result.error}",
                                 file=sys.stderr,
                             )
+                        # Force-refresh the cached wallet probe so the
+                        # WIN Telegram message (rendered right after
+                        # settle_position returns) shows a Balance that
+                        # already includes the just-credited payout.
+                        # Without this, the probe stays cached up to 60s
+                        # and the notification displays a pre-payout
+                        # balance, making users think the win wasn't
+                        # credited. Cheap: one extra Polygon RPC probe,
+                        # only on actual winners.
+                        if result.redeemed and private_key:
+                            try:
+                                from feeds.polymarket_wallet import (
+                                    refresh_live_balance_cache,
+                                )
+                                refresh_live_balance_cache(private_key)
+                            except Exception as exc:
+                                print(
+                                    f"[pm_executor] post-redeem cache "
+                                    f"refresh failed for pos "
+                                    f"{position_id}: {exc}",
+                                    file=sys.stderr,
+                                )
                 except Exception as exc:
                     # Never let a redeem-side problem mark settlement as
                     # failed - the DB is already correct, the on-chain

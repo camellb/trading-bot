@@ -118,6 +118,61 @@ export async function tauriRestartSidecar(): Promise<void> {
   await invoke("restart_sidecar");
 }
 
+/**
+ * Poll the Rust shell's `get_api_port` IPC until the sidecar reports
+ * a live port (ready=true) or the deadline expires.
+ *
+ * Use after `tauriRestartSidecar()` to wait for the new daemon to
+ * come back. Returns true if the daemon is live, false on timeout.
+ * The caller renders the timeout case to the user with a concrete
+ * next step ("quit and relaunch from /Applications").
+ *
+ * Why this exists instead of just awaiting `api.state()`: `port()`
+ * internally polls Rust IPC for up to 120 s before the actual HTTP
+ * call ever fires. A naive `while (deadline) { await api.state() }`
+ * loop is broken because one slow `api.state()` blows past the
+ * caller's deadline. Polling `get_api_port` directly keeps the loop
+ * tight: every iteration is bounded by `pollIntervalMs`.
+ */
+export async function waitForSidecar(timeoutMs = 30_000): Promise<boolean> {
+  if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
+    return false;
+  }
+  // CRITICAL: call refresh_api_port (not get_api_port). The cached
+  // port in ApiState is set once at app startup; if the daemon
+  // respawned on a new port (Restart button, launchd respawn,
+  // install rebuild), get_api_port returns the OLD port with
+  // ready=true and waitForSidecar reports a false-success. The
+  // page reloads, hits the dead old port, and the user sees the
+  // same "/api/state: timed out" banner that triggered Restart in
+  // the first place. This was the 2026-05-20 "restart button is
+  // fucking useless" incident.
+  //
+  // refresh_api_port re-reads <app-data>/sidecar.port AND
+  // TCP-probes the listed port before reporting ready. A success
+  // here means the new daemon is genuinely listening, not just
+  // that some old cached number exists.
+  const pollInterval = 500;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await invoke<{ port: number; ready: boolean }>(
+        "refresh_api_port",
+      );
+      if (res.ready && res.port > 0) {
+        cachedPort = res.port;
+        portPromise = null;
+        return true;
+      }
+    } catch {
+      // IPC failed (Rust shell wedged?) - keep polling, deadline
+      // catches us if it never comes back.
+    }
+    await new Promise((r) => setTimeout(r, pollInterval));
+  }
+  return false;
+}
+
 /** True if `err.message` looks like a daemon-not-reachable error
  *  rather than an application-level error. The page-level error
  *  banners use this to suppress the global connection error and let
@@ -128,7 +183,7 @@ export function isConnectionError(msg: string | null | undefined): boolean {
   return (
     m.includes("could not connect to delfi") ||
     m.includes("delfi took too long to start") ||
-    m.includes("the sidecar may be stuck")
+    m.includes(": timed out")
   );
 }
 
@@ -186,10 +241,7 @@ async function request<T>(
     // the UI can render directly.
     const isAbort = err instanceof DOMException && err.name === "AbortError";
     if (isAbort) {
-      throw new Error(
-        `${path}: timed out after ${Math.round(timeoutMs / 1000)}s. ` +
-          "The sidecar may be stuck - restart Delfi if this keeps happening.",
-      );
+      throw new Error(`${path}: timed out`);
     }
     // Connection refused. The most common cause is a daemon respawn
     // (launchd KeepAlive, autostart toggle, install rebuild) that
@@ -260,6 +312,13 @@ export interface BotState {
    *  mode toggle when the user is currently in simulation. Older
    *  sidecars don't surface it; the UI defaults missing to false. */
   live_creds_ready?: boolean;
+  /** Programmatic-pause reason, if any. Today the only value is
+   *  `"insufficient_bankroll"` - set when the scan gate halts the
+   *  Claude evaluation loop because the user has nothing to spend.
+   *  null when the bot is scanning normally. Other paused states
+   *  (manual /pause, bot_enabled=false, circuit breakers) are
+   *  reflected by existing fields and do NOT populate this. */
+  idle_reason?: string | null;
   uptime_s: number;
   started_at: string | null;
   error_count: number;
@@ -277,6 +336,28 @@ export interface Credentials {
   has_llm_backup_key?: boolean;
   has_newsapi_key?: boolean;
   has_cryptopanic_key?: boolean;
+}
+
+/** A raw row from the CLOB `/orders` endpoint, surfaced via
+ *  /api/open-orders. These are limit orders currently sitting on the
+ *  Polymarket book - placed by Delfi but not yet filled (or partially
+ *  filled). The Positions page renders these in a read-only sub-tab
+ *  so the user has a single place to see anything tying up capital
+ *  on the book; the reconciler cancels any with zero matched-size
+ *  older than 1 hour. */
+export interface ClobOpenOrder {
+  id?: string;
+  orderID?: string;
+  orderId?: string;
+  market?: string;          // conditionId hex
+  asset_id?: string;        // CTF position token id
+  outcome?: string;         // "Yes"/"No"/"Up"/"Down"/etc
+  side?: string;            // "BUY" / "SELL"
+  price?: number | string;
+  size?: number | string;
+  size_matched?: number | string;
+  created_at?: string | number;
+  expiration?: string | number | null;
 }
 
 export interface PMPosition {
@@ -302,6 +383,19 @@ export interface PMPosition {
   expected_resolution_at?: string | null;
   ev_bps?: number | null;
   confidence?: number | null;
+  // Live mark-to-market value of the position (shares * current_bid),
+  // written by the exit-policy job every 60s. NULL on rows whose
+  // market has gone illiquid or in the first 60s after open.
+  current_value_usd?: number | null;
+  // Exit-policy fields. NULL on natural settlements.
+  // `close_reason` is one of 'take_profit' | 'stop_loss' | 'time_decay'.
+  // `counterfactual_pnl_usd` is hold-PnL minus exit-PnL — positive
+  // means the exit was premature; negative means it dodged a loss.
+  closed_at?: string | null;
+  close_reason?: string | null;
+  close_clob_order_id?: string | null;
+  close_tx_hash?: string | null;
+  counterfactual_pnl_usd?: number | null;
   [k: string]: unknown;
 }
 
@@ -322,6 +416,10 @@ export interface PerformanceSummary {
   starting_cash: number | null;
   open_positions: number | null;
   open_cost: number | null;
+  /** Current MTM value of open positions.
+   *  In live mode: balance + position_value == equity (always).
+   *  In simulation: equals open_cost (no live prices). */
+  position_value: number | null;
   settled_total: number | null;
   settled_wins: number | null;
   /** Total skipped evaluations for this user (server-side aggregate
@@ -331,16 +429,13 @@ export interface PerformanceSummary {
   skipped_total: number | null;
   win_rate: number | null;
   realized_pnl: number | null;
-  /** Current market value of open positions (shares * live price).
-   *  In live mode: balance + position_value == equity (always).
-   *  In simulation: equals open_cost (no live prices). */
-  position_value: number | null;
-  /** Unrealized P&L on open positions (current market value - cost).
-   *  Only populated in live mode; null in simulation. */
-  unrealized_pnl: number | null;
-  /** Total P&L = realized_pnl + unrealized_pnl. Use this for the
-   *  headline P&L display so it matches Polymarket's portfolio view. */
-  total_pnl: number | null;
+  // Unrealized P&L on currently-open positions: data-api MTM minus
+  // DB cost basis. Total P&L = realized + unrealized; matches the
+  // semantics of Polymarket's "All-Time Profit/Loss" tile better
+  // than realized-only, which understates whenever positions are
+  // open at a gain.
+  unrealized_pnl?: number | null;
+  total_pnl?: number | null;
   roi: number | null;
   brier: number | null;
   resolved_predictions: number | null;
@@ -545,6 +640,12 @@ export interface MarketEvaluation {
   reasoning_short: string | null;
   reasoning: string | null;
   market_archetype: string | null;
+  // Polymarket slug + event slug (both already stored on
+  // market_evaluations by the analyst write-back). Used by the
+  // dashboard to render "View on Polymarket ->" links on skipped
+  // rows.
+  slug?: string | null;
+  event_slug?: string | null;
   mode?: string;
   // Settled outcome of the underlying market (back-filled by the
   // skipped-eval resolver). Values: "YES" / "NO" / "INVALID", or
@@ -552,6 +653,14 @@ export interface MarketEvaluation {
   // tab to render the counterfactual ("would Delfi have won
   // if it hadn't skipped?").
   settlement_outcome?: string | null;
+  // Explicit reason this market was skipped (sizer direction
+  // disagreement, archetype skip-list, research mismatch / force
+  // skip, risk halt, existing position, etc.). Surfaced as the
+  // headline of the "Why Delfi skipped" detail block so the user
+  // doesn't have to infer the reason from the LLM's prose. Null
+  // for non-SKIP rows and for legacy rows recorded before this
+  // field was added.
+  skip_reason?: string | null;
   [k: string]: unknown;
 }
 
@@ -639,6 +748,8 @@ export const api = {
   // Live data
   positions:     (limit = 100) =>
     request<{ positions: PMPosition[] }>(`/api/positions?limit=${limit}`),
+  openOrders:    () =>
+    request<{ orders: ClobOpenOrder[] }>("/api/open-orders"),
   events:        (limit = 200) =>
     request<{ events: EventLogRow[] }>(`/api/events?limit=${limit}`),
   evaluations:   (limit = 100) =>
@@ -659,6 +770,15 @@ export const api = {
     llm_backup_key?: string;
     newsapi_key?: string;
     cryptopanic_key?: string;
+    gemini_key?: string;
+    polymarket_api_key?: string;
+    polymarket_api_secret?: string;
+    polymarket_api_passphrase?: string;
+    /** Single-UUID Polymarket Relayer API key. Enables gasless
+     *  redemption of winning positions via the relayer's 2-header
+     *  auth scheme. Created at polymarket.com -> Settings ->
+     *  Relayer API keys. */
+    polymarket_relayer_api_key?: string;
   }) =>
     request<Credentials & { wrote: string[] }>("/api/credentials", {
       method: "PUT",

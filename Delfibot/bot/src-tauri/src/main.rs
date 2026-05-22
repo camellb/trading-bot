@@ -102,7 +102,10 @@ fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
 /// error string the UI renders; we don't have a Windows / Linux
 /// daemon supervisor wired up yet.
 #[tauri::command]
-async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
+async fn restart_sidecar(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ApiState>,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         // Windows: kill the sidecar; the respawn loop in setup() picks
@@ -111,6 +114,7 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
         // window, then the dashboard reconnects automatically via
         // `refresh_api_port`.
         let _ = app;
+        *state.port.lock().unwrap() = None;
         let result = tokio::task::spawn_blocking(|| {
             std::process::Command::new("taskkill")
                 .args(["/F", "/T", "/IM", "delfi-sidecar.exe"])
@@ -125,6 +129,7 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         let _ = app;
+        let _ = state;
         return Err(
             "Restart from the GUI is not implemented on Linux yet."
                 .into(),
@@ -140,43 +145,114 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
     // so the GUI keeps timing out forever (incident 2026-05-06).
     let port = read_existing_sidecar_port(&app).await;
 
-    // Use std::process::Command (not the Tauri shell plugin) so we
-    // don't have to widen capabilities/default.json's shell-execute
-    // allowlist beyond the sidecar binary. Wrapped in spawn_blocking
-    // because std::process::Command::output() is synchronous and we
-    // shouldn't block the Tauri runtime.
-    async_runtime::spawn_blocking(move || {
-        use std::process::Command;
+    // CRITICAL: clear the cached port. The user-visible bug from
+    // 2026-05-20: every Restart succeeded at the OS level (daemon
+    // killed + respawned on a fresh random port) but the JS
+    // `waitForSidecar` then called `get_api_port` which returned
+    // the OLD cached port with ready=true. waitForSidecar returned
+    // immediately, the page reloaded, and the reloaded page hit
+    // the dead old port and timed out again. The user saw the same
+    // "/api/state: timed out" banner that they clicked Restart to
+    // get rid of - the button was provably useless.
+    //
+    // By clearing the cache here, get_api_port returns ready=false
+    // until the new daemon's port-file write triggers a
+    // refresh_api_port call that re-resolves to the new port. The
+    // JS layer falls back to refresh_api_port when ready=false.
+    *state.port.lock().unwrap() = None;
 
-        // Step 1: kill whatever process is currently bound to the
-        // sidecar port. lsof -nP -iTCP:<port> -sTCP:LISTEN -t prints
-        // PID-only. We SIGKILL each one. Any failure here is
-        // non-fatal - kickstart still runs.
+    // Every shelled command gets a HARD wall-clock budget. Without
+    // it, `launchctl kickstart -k` can wedge for >60s when launchd
+    // is in a half-stuck state — the GUI showed "Restarting..." for
+    // over a minute with no way to recover (incident 2026-05-18).
+    // The helper spawns the child, polls for exit, and returns Err
+    // on timeout. The daemon will still come back via launchd's
+    // KeepAlive=true — we just don't make the user wait for it.
+    fn run_with_timeout(
+        program: &str,
+        args: &[&str],
+        timeout: std::time::Duration,
+    ) -> Result<std::process::Output, String> {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(program)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("failed to spawn {program}: {e}"))?;
+
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    return child.wait_with_output()
+                        .map_err(|e| format!("wait_with_output: {e}"));
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!(
+                            "{program} exceeded {}s budget",
+                            timeout.as_secs(),
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => return Err(format!("try_wait: {e}")),
+            }
+        }
+    }
+
+    async_runtime::spawn_blocking(move || -> Result<(), String> {
+        // Step 1 (best-effort): SIGKILL whatever owns the sidecar
+        // port. Targets the right pid even if launchd is desynced.
+        // Skipped if no port file - covered by Step 2's pkill.
         if let Some(p) = port {
-            if let Ok(out) = Command::new("/usr/sbin/lsof")
-                .args(["-nP", "-iTCP", "-sTCP:LISTEN", "-t",
-                       &format!("-iTCP:{p}")])
-                .output()
-            {
+            if let Ok(out) = run_with_timeout(
+                "/usr/sbin/lsof",
+                &["-nP", "-iTCP", "-sTCP:LISTEN", "-t",
+                  &format!("-iTCP:{p}")],
+                std::time::Duration::from_secs(5),
+            ) {
                 let pids = String::from_utf8_lossy(&out.stdout);
                 for line in pids.lines() {
                     let pid = line.trim();
                     if pid.is_empty() { continue; }
-                    let _ = Command::new("/bin/kill")
-                        .args(["-9", pid])
-                        .output();
+                    let _ = run_with_timeout(
+                        "/bin/kill", &["-9", pid],
+                        std::time::Duration::from_secs(3),
+                    );
                 }
             }
         }
 
-        // Step 2: ensure the LaunchAgent slot itself is fresh by
-        // running kickstart -k. This SIGTERMs the launchd-managed
-        // daemon (if any survived step 1) and starts a new one;
-        // KeepAlive then takes over for subsequent crashes.
-        let uid_out = Command::new("/usr/bin/id")
-            .arg("-u")
-            .output()
-            .map_err(|e| format!("failed to invoke id: {e}"))?;
+        // Step 2: BULLETPROOF KILL. SIGKILL every delfi-sidecar
+        // process by name. This is the primitive that makes Restart
+        // a 100%-effective recovery: regardless of whether the port
+        // file is missing/stale, whether launchd's tracked pid is
+        // right, or whether multiple orphans are alive (singleton
+        // race after install.sh's bootout/rsync/bootstrap dance),
+        // this clears the field. SIGKILL (not SIGTERM) so a hung
+        // signal handler can't keep a wedged daemon alive.
+        // KeepAlive=true respawns afterward.
+        let _ = run_with_timeout(
+            "/usr/bin/pkill",
+            &["-KILL", "-x", "delfi-sidecar"],
+            std::time::Duration::from_secs(5),
+        );
+
+        // Step 3: kickstart -k the LaunchAgent as the respawn
+        // trigger (belt-and-braces; KeepAlive=true would respawn
+        // anyway, but kickstart skips the ThrottleInterval for a
+        // snappier recovery). With Step 2 having killed everything,
+        // any non-zero exit here is non-fatal: the polling loop on
+        // the React side will surface "quit + relaunch manually" if
+        // no daemon comes back.
+        let uid_out = run_with_timeout(
+            "/usr/bin/id", &["-u"],
+            std::time::Duration::from_secs(3),
+        )?;
         if !uid_out.status.success() {
             return Err("id -u returned non-zero".into());
         }
@@ -185,21 +261,52 @@ async fn restart_sidecar(app: tauri::AppHandle) -> Result<(), String> {
             return Err(format!("unexpected uid from id -u: {uid:?}"));
         }
         let service = format!("gui/{uid}/com.delfi.bot");
-        let out = Command::new("/bin/launchctl")
-            .args(["kickstart", "-k", &service])
-            .output()
-            .map_err(|e| format!("failed to invoke launchctl: {e}"))?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
-                "launchctl kickstart returned non-zero: {}",
-                stderr.trim()
-            ));
+
+        match run_with_timeout(
+            "/bin/launchctl",
+            &["kickstart", "-k", &service],
+            std::time::Duration::from_secs(15),
+        ) {
+            Ok(out) if !out.status.success() => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                eprintln!(
+                    "[restart_sidecar] kickstart non-zero: {}; \
+                    relying on KeepAlive respawn",
+                    stderr.trim(),
+                );
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(e) => {
+                eprintln!("[restart_sidecar] {e}; \
+                    KeepAlive will respawn the daemon");
+                Ok(())
+            }
         }
-        Ok::<(), String>(())
     })
     .await
-    .map_err(|e| format!("restart task panicked: {e}"))?
+    .map_err(|e| format!("restart task panicked: {e}"))??;
+
+    // Block here until the respawned daemon has bound its new port
+    // AND we can TCP-connect to it. read_existing_sidecar_port has
+    // a 15s internal budget that polls + TCP-probes; on success we
+    // update the cached port so the JS layer's waitForSidecar
+    // immediately sees the new live port. On timeout we still
+    // return Ok - the caller's polling loop will keep retrying
+    // and surface a concrete "quit and reopen" message if it
+    // ultimately fails.
+    //
+    // This is the second half of the 2026-05-20 fix: clearing the
+    // cache at the top guarantees no stale reads during the
+    // kill+respawn window; populating it here guarantees the very
+    // first read after this function returns sees the new port.
+    if let Some(new_port) = read_existing_sidecar_port(&app).await {
+        *state.port.lock().unwrap() = Some(new_port);
+        println!("[restart_sidecar] new daemon up on port {new_port}");
+    } else {
+        eprintln!("[restart_sidecar] daemon did not bind a port within 15s; JS will keep polling");
+    }
+    Ok(())
     } // end of unreachable_code wrapper
 }
 
@@ -363,23 +470,42 @@ fn spawn_sidecar(
 async fn read_existing_sidecar_port(app: &tauri::AppHandle) -> Option<u16> {
     let dir = app.path().resolve("", BaseDirectory::AppData).ok()?;
     let port_file = dir.join("sidecar.port");
-    let contents = std::fs::read_to_string(&port_file).ok()?;
-    let port: u16 = contents.trim().parse().ok()?;
-    if port == 0 {
-        return None;
+    // Up to 30 attempts x 500ms = 15s budget. On a fresh launchd
+    // respawn (Restart Delfi button, kickstart -k, KeepAlive after
+    // crash), the PyInstaller bootloader takes 8-12s to finish
+    // unpacking + importing + binding the aiohttp socket. The prior
+    // 5s budget gave up before that, so the user saw "Delfi could not
+    // start" every time they hit Restart even though the daemon was
+    // booting normally.
+    //
+    // Each attempt does the FULL pipeline (read file -> parse -> TCP
+    // probe). The earlier version bailed on the first read/parse
+    // failure - when the daemon hadn't yet written the port file,
+    // the function returned None immediately and the GUI gave up.
+    // Now we retry the whole thing so transient "file missing" or
+    // "file empty" states are tolerated.
+    for attempt in 0..30u8 {
+        let port_opt = std::fs::read_to_string(&port_file)
+            .ok()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .filter(|&p| p != 0);
+        if let Some(port) = port_opt {
+            let addr = format!("127.0.0.1:{port}");
+            if let Ok(Ok(_)) = tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                tokio::net::TcpStream::connect(&addr),
+            )
+            .await
+            {
+                return Some(port);
+            }
+        }
+        if attempt == 29 {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    // TCP probe with a short timeout. A successful connect means
-    // the daemon is listening; we don't speak the API protocol here.
-    let addr = format!("127.0.0.1:{port}");
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(1500),
-        tokio::net::TcpStream::connect(&addr),
-    )
-    .await
-    {
-        Ok(Ok(_stream)) => Some(port),
-        _ => None,
-    }
+    None
 }
 
 /// Diagnostic logger. Release builds run with windows_subsystem="windows"
@@ -615,16 +741,16 @@ fn main() {
                     }
                 }
 
-                // Path 2: depends on build mode.
+                // Path 2: depends on build mode AND target OS.
                 //
-                // RELEASE: never spawn. Doing so creates a Tauri-owned
-                // sidecar that competes with the launchd-managed one.
-                // The Tauri spawn binds the port first; launchd's
-                // daemon hits the singleton lock and exits, launchd
-                // respawns it, hits the lock again, exits, and so on
-                // forever. The "Restart Delfi" button only kicks the
-                // launchd slot, leaving the Tauri orphan up - so to
-                // the user it looks like nothing happened. This was
+                // RELEASE on macOS: never spawn. Doing so creates a
+                // Tauri-owned sidecar that competes with the launchd-
+                // managed one. The Tauri spawn binds the port first;
+                // launchd's daemon hits the singleton lock and exits,
+                // launchd respawns it, hits the lock again, exits, and
+                // so on forever. The "Restart Delfi" button only kicks
+                // the launchd slot, leaving the Tauri orphan up - so
+                // to the user it looks like nothing happened. This was
                 // the 2026-05-06 incident.
                 //
                 // DEV: keep the spawn fallback. Dev mode runs
@@ -769,11 +895,14 @@ fn main() {
                         backoff_secs = 2;
                     }
                 } else {
-                    // Release: kickstart launchd's LaunchAgent in case
-                    // it has crashed and is mid-throttle, then keep
-                    // polling the port file for another 60s. If still
-                    // nothing, surface the error to the splash screen
-                    // and let the user click Restart.
+                    // macOS release path. Other OSes are handled by
+                    // the spawn branch above (which is also dev-mode).
+                    //
+                    // Kickstart launchd's LaunchAgent in case it has
+                    // crashed and is mid-throttle, then keep polling
+                    // the port file for another 60s. If still nothing,
+                    // surface the error to the splash screen and let
+                    // the user click Restart.
                     eprintln!(
                         "[delfi] no daemon after 30s probe - kickstarting \
                          launchd LaunchAgent and continuing to wait"

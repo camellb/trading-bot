@@ -20,18 +20,30 @@ import {
  */
 
 const BOUNDS = {
-  base_stake_pct:        [0.005, 0.05] as const,
-  max_stake_pct:         [0.01,  0.10] as const,
+  // Upper bounds widened 2026-05-18 so users at small live bankrolls
+  // can configure a stake-pct large enough to clear Polymarket's
+  // platform floors. Bot also gained a max_stake_pct_enabled toggle
+  // (default OFF) so the cap is opt-in rather than always-on.
+  base_stake_pct:        [0.005, 1.00] as const,
+  max_stake_pct:         [0.01,  1.00] as const,
   daily_loss_limit_pct:  [0.01,  1.00] as const,
   weekly_loss_limit_pct: [0.01,  1.00] as const,
   drawdown_halt_pct:     [0.01,  1.00] as const,
   streak_cooldown_losses:[2,     10]   as const,
   dry_powder_reserve_pct:[0.10,  0.40] as const,
+  // Exit policy — mirrors USER_CONFIG_BOUNDS in engine/user_config.py.
+  take_profit_threshold_pct:           [0.05, 5.00] as const,   // 5% - 500%
+  stop_loss_threshold_pct:             [0.05, 0.95] as const,   // 5% - 95% loss
+  stop_loss_min_time_remaining_pct:    [0.00, 0.95] as const,   // 0% - 95%
+  time_decay_max_hours:                [1,    720]  as const,   // 1h - 30d
+  time_decay_flat_band_pct:            [0.00, 1.00] as const,   // 0% - 100%
+  exit_min_time_to_resolution_minutes: [0,    1440] as const,   // 0 - 24h
 };
 
 type ConfigShape = {
   base_stake_pct?: number;
   max_stake_pct?: number;
+  max_stake_pct_enabled?: boolean;
   daily_loss_limit_pct?: number;
   weekly_loss_limit_pct?: number;
   drawdown_halt_pct?: number;
@@ -40,6 +52,17 @@ type ConfigShape = {
   starting_cash?: number | null;
   archetype_skip_list?: string[];
   archetype_stake_multipliers?: Record<string, number>;
+  // Exit policy
+  exit_policy_enabled?: boolean;
+  take_profit_enabled?: boolean;
+  take_profit_threshold_pct?: number;
+  stop_loss_enabled?: boolean;
+  stop_loss_threshold_pct?: number;
+  stop_loss_min_time_remaining_pct?: number;
+  time_decay_enabled?: boolean;
+  time_decay_max_hours?: number;
+  time_decay_flat_band_pct?: number;
+  exit_min_time_to_resolution_minutes?: number;
   [k: string]: unknown;
 };
 
@@ -60,8 +83,303 @@ export default function Risk({ config, onSaved }: Props) {
       </div>
 
       <RiskPanel config={config} onSaved={onSaved} />
+      <ExitPolicyPanel config={config} onSaved={onSaved} />
       <ResolutionWindowPanel config={config} onSaved={onSaved} />
       <ArchetypePanel onSaved={onSaved} />
+    </div>
+  );
+}
+
+// ── Exit policy: take-profit, stop-loss, time-decay ──────────────────────
+//
+// Per-position exit rules that fire BEFORE natural Polymarket
+// settlement. Master switch defaults OFF; each sub-rule has its own
+// toggle so the user can enable e.g. take-profit while leaving the
+// others alone. Thresholds defaulted to sensible starting points:
+// +50% TP, -30% SL, 72h time-decay flat band.
+//
+// All three rules share a universal safety floor
+// (`exit_min_time_to_resolution_minutes`) that holds any open
+// position when the market is within N minutes of natural settlement
+// — the spread + Polymarket fees eat the marginal value of selling
+// that close to resolution.
+
+function ExitPolicyPanel({
+  config,
+  onSaved,
+}: {
+  config: ConfigShape | null;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    exit_policy_enabled: false,
+    take_profit_enabled: true,
+    take_profit_threshold_pct: "",
+    stop_loss_enabled: true,
+    stop_loss_threshold_pct: "",
+    stop_loss_min_time_remaining_pct: "",
+    time_decay_enabled: false,
+    time_decay_max_hours: "",
+    time_decay_flat_band_pct: "",
+    exit_min_time_to_resolution_minutes: "",
+  });
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Same single-shot sync pattern as RiskPanel — avoid clobbering
+  // typed-but-unsaved values on every 5s App.tsx poll.
+  const syncedRef = useRef(false);
+  useEffect(() => {
+    if (!config) return;
+    if (syncedRef.current) return;
+    syncedRef.current = true;
+    setForm({
+      exit_policy_enabled: !!config.exit_policy_enabled,
+      take_profit_enabled: config.take_profit_enabled ?? true,
+      take_profit_threshold_pct: config.take_profit_threshold_pct != null
+        ? String(config.take_profit_threshold_pct) : "",
+      stop_loss_enabled: config.stop_loss_enabled ?? true,
+      stop_loss_threshold_pct: config.stop_loss_threshold_pct != null
+        ? String(config.stop_loss_threshold_pct) : "",
+      stop_loss_min_time_remaining_pct: config.stop_loss_min_time_remaining_pct != null
+        ? String(config.stop_loss_min_time_remaining_pct) : "",
+      time_decay_enabled: !!config.time_decay_enabled,
+      time_decay_max_hours: config.time_decay_max_hours != null
+        ? String(config.time_decay_max_hours) : "",
+      time_decay_flat_band_pct: config.time_decay_flat_band_pct != null
+        ? String(config.time_decay_flat_band_pct) : "",
+      exit_min_time_to_resolution_minutes: config.exit_min_time_to_resolution_minutes != null
+        ? String(config.exit_min_time_to_resolution_minutes) : "",
+    });
+  }, [config]);
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setMsg(null);
+    try {
+      const changes: Record<string, unknown> = {
+        exit_policy_enabled: form.exit_policy_enabled,
+        take_profit_enabled: form.take_profit_enabled,
+        stop_loss_enabled:   form.stop_loss_enabled,
+        time_decay_enabled:  form.time_decay_enabled,
+      };
+      const numericFloat = [
+        "take_profit_threshold_pct",
+        "stop_loss_threshold_pct",
+        "stop_loss_min_time_remaining_pct",
+        "time_decay_flat_band_pct",
+      ] as const;
+      for (const k of numericFloat) {
+        const raw = (form[k] as string).trim();
+        if (raw === "") continue;
+        const n = Number(raw);
+        if (!Number.isFinite(n)) throw new Error(`${k} must be a number.`);
+        const [lo, hi] = BOUNDS[k];
+        if (n < lo || n > hi) throw new Error(`${k} must be between ${lo} and ${hi}.`);
+        changes[k] = n;
+      }
+      const numericInt = [
+        "time_decay_max_hours",
+        "exit_min_time_to_resolution_minutes",
+      ] as const;
+      for (const k of numericInt) {
+        const raw = (form[k] as string).trim();
+        if (raw === "") continue;
+        const n = Number(raw);
+        if (!Number.isInteger(n)) throw new Error(`${k} must be a whole number.`);
+        const [lo, hi] = BOUNDS[k];
+        if (n < lo || n > hi) throw new Error(`${k} must be between ${lo} and ${hi}.`);
+        changes[k] = n;
+      }
+      await api.updateConfig(changes);
+      setMsg({ kind: "ok", text: "Exit policy saved." });
+      onSaved();
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disabled = !form.exit_policy_enabled;
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Exit policy</h2>
+        <span className="panel-meta">take-profit / stop-loss / time-decay</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Close open positions early when one of three triggers fires:
+        take-profit when the unrealized return climbs above your
+        threshold, stop-loss when it falls below (with a time gate that
+        prevents cutting losses in the last few minutes), or time-decay
+        when a position has been open for a long time without moving.
+      </p>
+      <form onSubmit={save}>
+        <div style={{ marginBottom: 18 }}>
+          <ToggleRow
+            label="Exit policy enabled"
+            description="Master switch. When off, Delfi never closes positions early; it waits for natural Polymarket settlement on every trade."
+            checked={form.exit_policy_enabled}
+            onChange={(v) => setForm({ ...form, exit_policy_enabled: v })}
+          />
+        </div>
+
+        <div className="form-divider" style={{ opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
+          <div style={{ marginBottom: 12 }}>
+            <ToggleRow
+              label="Take-profit"
+              description="Close when unrealized return rises to or above this threshold. Locks in winners. Computed against the current sell bid, not the midpoint."
+              checked={form.take_profit_enabled}
+              onChange={(v) => setForm({ ...form, take_profit_enabled: v })}
+              disabled={disabled}
+            />
+          </div>
+          <div className="risk-grid risk-grid-2">
+            <PercentField
+              label="Take-profit threshold" step="1"
+              fractionRange={BOUNDS.take_profit_threshold_pct}
+              fractionValue={form.take_profit_threshold_pct}
+              onChangeFraction={(v) => setForm({ ...form, take_profit_threshold_pct: v })}
+              note="Default +50%."
+            />
+          </div>
+        </div>
+
+        <div className="form-divider" style={{ marginTop: 18, opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
+          <div style={{ marginBottom: 12 }}>
+            <ToggleRow
+              label="Stop-loss"
+              description="Close when unrealized return falls to or below this threshold. Caps the loss on positions where the market has moved against the bot."
+              checked={form.stop_loss_enabled}
+              onChange={(v) => setForm({ ...form, stop_loss_enabled: v })}
+              disabled={disabled}
+            />
+          </div>
+          <div className="risk-grid risk-grid-2">
+            <PercentField
+              label="Stop-loss threshold (loss %)" step="1"
+              fractionRange={BOUNDS.stop_loss_threshold_pct}
+              fractionValue={form.stop_loss_threshold_pct}
+              onChangeFraction={(v) => setForm({ ...form, stop_loss_threshold_pct: v })}
+              note="Default 30% loss. Stored as a positive number; sign is implied."
+            />
+            <PercentField
+              label="Min time remaining (of original duration)" step="1"
+              fractionRange={BOUNDS.stop_loss_min_time_remaining_pct}
+              fractionValue={form.stop_loss_min_time_remaining_pct}
+              onChangeFraction={(v) => setForm({ ...form, stop_loss_min_time_remaining_pct: v })}
+              note="Skip stop-loss when less than this fraction of the original time-to-resolution remains. Default 20%."
+            />
+          </div>
+        </div>
+
+        <div className="form-divider" style={{ marginTop: 18, opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
+          <div style={{ marginBottom: 12 }}>
+            <ToggleRow
+              label="Time-decay exit"
+              description="Close stale positions that have been open for a long time and are still inside a flat-return band. Off by default — only worth turning on when capital recycling matters more than waiting for resolution."
+              checked={form.time_decay_enabled}
+              onChange={(v) => setForm({ ...form, time_decay_enabled: v })}
+              disabled={disabled}
+            />
+          </div>
+          <div className="risk-grid risk-grid-2">
+            <NumField
+              label="Max hours open" step="1"
+              range={BOUNDS.time_decay_max_hours}
+              value={form.time_decay_max_hours}
+              onChange={(v) => setForm({ ...form, time_decay_max_hours: v })}
+            />
+            <PercentField
+              label="Flat band (±%)" step="1"
+              fractionRange={BOUNDS.time_decay_flat_band_pct}
+              fractionValue={form.time_decay_flat_band_pct}
+              onChangeFraction={(v) => setForm({ ...form, time_decay_flat_band_pct: v })}
+              note="Only triggers when unrealized return is inside this band. Default ±10%."
+            />
+          </div>
+        </div>
+
+        <div className="form-divider" style={{ marginTop: 18, opacity: disabled ? 0.45 : 1, transition: "opacity 0.2s" }}>
+          <h3 className="panel-subtitle" style={{ marginBottom: 8 }}>Safety floor</h3>
+          <div className="risk-grid risk-grid-2">
+            <NumField
+              label="Skip exits when market resolves in (minutes)" step="1"
+              range={BOUNDS.exit_min_time_to_resolution_minutes}
+              value={form.exit_min_time_to_resolution_minutes}
+              onChange={(v) => setForm({ ...form, exit_min_time_to_resolution_minutes: v })}
+            />
+          </div>
+          <span className="form-hint">
+            Universal across all three rules. Within this window, Delfi
+            holds every position to natural resolution — the spread plus
+            Polymarket fees exceed the time-value gain of selling that
+            close to settlement.
+          </span>
+        </div>
+
+        <div className="form-actions" style={{ marginTop: 20 }}>
+          <button type="submit" className="btn small" disabled={busy}>
+            {busy ? "Saving..." : "Save exit policy"}
+          </button>
+          {msg && (
+            <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
+              {msg.text}
+            </span>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function ToggleRow({
+  label, description, checked, onChange, disabled,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        padding: "12px 14px",
+        border: "1px solid var(--border, #2a2a2a)",
+        borderRadius: 8,
+        background: "var(--surface-2, rgba(255,255,255,0.02))",
+      }}
+    >
+      <label style={{
+        display: "inline-flex",
+        alignItems: "center",
+        cursor: disabled ? "not-allowed" : "pointer",
+        gap: 10,
+      }}>
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span style={{ fontWeight: 600 }}>{label}</span>
+      </label>
+      <span
+        className="form-hint"
+        style={{
+          color: "var(--text-muted, #888)",
+          marginLeft: 26, // align with label text after checkbox
+        }}
+      >
+        {description}
+      </span>
     </div>
   );
 }
@@ -174,7 +492,7 @@ function ResolutionWindowPanel({
         at 0 means no constraint on that side.
       </p>
       <form onSubmit={save}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 480 }}>
+        <div className="risk-grid risk-grid-2">
           <NumField
             label="Minimum days to resolution"
             step="1"
@@ -217,6 +535,7 @@ function RiskPanel({
   const [risk, setRisk] = useState({
     base_stake_pct: "",
     max_stake_pct: "",
+    max_stake_pct_enabled: false,
     daily_loss_limit_pct: "",
     weekly_loss_limit_pct: "",
     drawdown_halt_pct: "",
@@ -240,6 +559,7 @@ function RiskPanel({
     setRisk({
       base_stake_pct:         config.base_stake_pct         != null ? String(config.base_stake_pct)         : "",
       max_stake_pct:          config.max_stake_pct          != null ? String(config.max_stake_pct)          : "",
+      max_stake_pct_enabled:  !!config.max_stake_pct_enabled,
       daily_loss_limit_pct:   config.daily_loss_limit_pct   != null ? String(config.daily_loss_limit_pct)   : "",
       weekly_loss_limit_pct:  config.weekly_loss_limit_pct  != null ? String(config.weekly_loss_limit_pct)  : "",
       drawdown_halt_pct:      config.drawdown_halt_pct      != null ? String(config.drawdown_halt_pct)      : "",
@@ -275,6 +595,9 @@ function RiskPanel({
         if (n < lo || n > hi) throw new Error(`Streak cooldown must be between ${lo} and ${hi}.`);
         changes.streak_cooldown_losses = n;
       }
+      // Always send the cap-toggle so the user can flip it without
+      // touching any numeric field.
+      changes.max_stake_pct_enabled = risk.max_stake_pct_enabled;
       if (Object.keys(changes).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
         return;
@@ -301,18 +624,31 @@ function RiskPanel({
         crossed.
       </p>
       <form onSubmit={saveRisk}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 720 }}>
+        <div className="risk-grid risk-grid-3">
           <PercentField
             label="Base stake" step="0.1"
             fractionRange={BOUNDS.base_stake_pct}
             fractionValue={risk.base_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
+            note="Stake per trade. Polymarket minimum is $1 / 5 shares."
           />
           <PercentField
             label="Max stake" step="0.1"
             fractionRange={BOUNDS.max_stake_pct}
             fractionValue={risk.max_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
+            note={
+              risk.max_stake_pct_enabled
+                ? "Hard cap ON. Trades above this are skipped."
+                : "Hard cap OFF. Sizer may bump above this to hit the $1 / 5-share floor."
+            }
+          />
+          <PercentField
+            label="Dry powder reserve" step="1"
+            fractionRange={BOUNDS.dry_powder_reserve_pct}
+            fractionValue={risk.dry_powder_reserve_pct}
+            onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
+            note="Held back for fees and exit slippage."
           />
           <PercentField
             label="Daily loss limit" step="1"
@@ -338,12 +674,14 @@ function RiskPanel({
             value={risk.streak_cooldown_losses}
             onChange={(v) => setRisk({ ...risk, streak_cooldown_losses: v })}
           />
-          <PercentField
-            label="Dry powder reserve" step="1"
-            fractionRange={BOUNDS.dry_powder_reserve_pct}
-            fractionValue={risk.dry_powder_reserve_pct}
-            onChangeFraction={(v) => setRisk({ ...risk, dry_powder_reserve_pct: v })}
-          />
+          <div className="risk-grid-full">
+            <ToggleRow
+              label="Enforce max stake as a hard cap"
+              description="Off: sizer bumps to Polymarket's $1 / 5-share floor when needed. On: trades above max stake are skipped."
+              checked={risk.max_stake_pct_enabled}
+              onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
+            />
+          </div>
         </div>
         <div className="form-actions" style={{ marginTop: 18 }}>
           <button type="submit" className="btn small" disabled={busy}>
@@ -402,13 +740,14 @@ function NumField({
  * units (so [0.005, 0.05] is 0.5%-5%); we multiply by 100 for display.
  */
 function PercentField({
-  label, step, fractionRange, fractionValue, onChangeFraction,
+  label, step, fractionRange, fractionValue, onChangeFraction, note,
 }: {
   label: string;
   step: string;
   fractionRange: readonly [number, number];
   fractionValue: string;
   onChangeFraction: (fractionStr: string) => void;
+  note?: string;
 }) {
   const percentValue = fractionValue === ""
     ? ""
@@ -423,7 +762,7 @@ function PercentField({
   return (
     <div className="form-field">
       <label>{label}</label>
-      <div style={{ position: "relative" }}>
+      <div style={{ position: "relative", maxWidth: 240 }}>
         <input
           type="number"
           step={step}
@@ -442,6 +781,9 @@ function PercentField({
             const fraction = Math.round(n / 100 * 1_000_000) / 1_000_000;
             onChangeFraction(String(fraction));
           }}
+          // paddingRight leaves room for the absolute-positioned "%"
+          // suffix inside the input. The native spinner buttons are
+          // hidden globally in styles.css so 28px is enough clearance.
           style={{ paddingRight: 28 }}
         />
         <span style={{
@@ -454,6 +796,11 @@ function PercentField({
         Range: {minPct % 1 === 0 ? minPct : minPct.toFixed(1)}% -
         {' '}{maxPct % 1 === 0 ? maxPct : maxPct.toFixed(1)}%
       </span>
+      {note && (
+        <span className="form-hint" style={{ display: "block" }}>
+          {note}
+        </span>
+      )}
     </div>
   );
 }
@@ -487,7 +834,7 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
         "cricket", "esports", "soccer", "sports_other",
       ]},
       { title: "Finance and markets", ids: [
-        "crypto", "stocks", "macro", "fx_commodities",
+        "crypto", "crypto_short", "stocks", "macro", "fx_commodities",
       ]},
       { title: "Politics and society", ids: [
         "election", "policy_event", "geopolitical_event",

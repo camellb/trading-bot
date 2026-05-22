@@ -127,6 +127,14 @@ class ResearchBundle:
     live_market_data: Optional[str] = None
     keywords:         list[str]     = field(default_factory=list)
     sources:          list[str]     = field(default_factory=list)
+    # Curated bundle text produced by the post-fetch relevance filter.
+    # When non-None, to_prompt_block() returns THIS instead of the raw
+    # concatenation of fetched sources. The curator drops off-event
+    # snippets (adjacent game in a series, prior tournament edition,
+    # adjacent tweet-count window, etc.) that would otherwise pollute
+    # the forecaster's context and trip same_event_verified=no.
+    curated_block:    Optional[str] = None
+    curation_status:  Optional[str] = None  # "match" | "partial" | "insufficient" | "skipped" | "failed"
 
     def to_prompt_block(self) -> str:
         """Format everything into a context block for the forecaster.
@@ -138,7 +146,15 @@ class ResearchBundle:
         that no longer applies under BYO-keys. The fetcher itself
         still caps per-source fetch volume; this method just stops
         re-truncating what we already collected.
+
+        When curated_block is set, return THAT instead. The curator
+        drops off-event snippets (adjacent game, prior edition,
+        adjacent micro-window) so the forecaster sees only on-event
+        evidence. Falls through to the raw assembly if curation was
+        skipped, failed, or returned nothing.
         """
+        if self.curated_block:
+            return self.curated_block
         parts: list[str] = []
         if self.live_market_data:
             parts.append(
@@ -458,11 +474,18 @@ _KW_EXTRACTION_PROMPT = (
     '{"search_terms": ["precise Wikipedia search terms, e.g. Anaheim Ducks (NHL) not just Ducks"],'
     ' "category": "sports|politics|crypto|economics|entertainment|science|other",'
     ' "sport": "nhl|nba|nfl|mlb|soccer|mma|tennis|other|null",'
-    ' "teams": ["full team names if a sports matchup, else empty"]}\n'
+    ' "teams": ["full team names if a sports matchup, else empty"],'
+    ' "event_name": "specific event/tournament/series name if present, e.g.'
+    " \"Italian Open ATP Rome\", \"NBA Finals\", \"NATO Summit\";"
+    ' empty string if none",'
+    ' "event_qualifier": "round/stage/phase if present, e.g. \"semifinal\",'
+    ' \"Game 7\", \"opening ceremony\", \"first vote\"; empty string if none"}\n'
     "Rules:\n"
     "- search_terms should be specific enough to find the RIGHT Wikipedia article\n"
     "- For sports: include league name, e.g. 'Anaheim Ducks NHL hockey' not 'Ducks'\n"
     "- For people: include their role, e.g. 'Joe Biden politician' not 'Biden'\n"
+    "- For tournaments: include the tournament's official name AND its host city,\n"
+    "  e.g. event_name='ATP Internazionali BNL d'Italia Rome' not 'Italian Open'\n"
     "- Max 3 search terms\n"
     "- Return ONLY the JSON object, no markdown"
 )
@@ -575,6 +598,146 @@ async def _extract_keywords_claude(question: str) -> Optional[dict]:
         print(f"[research] claude keyword extraction failed: {exc} - "
               f"raw[:200]={raw[:200]!r}", file=sys.stderr)
     return None
+
+
+# ── Post-fetch relevance curation ───────────────────────────────────────────
+#
+# The web search returns lots of off-event noise: adjacent games in a
+# series ("Thunder Game 1 box score" when the market is for Game 2),
+# adjacent micro-windows ("Elon Musk tweets May 8-15" when the market is
+# May 15-22), prior editions of recurring tournaments, etc. Even with
+# date-precise queries, DDG ranks pages by site authority + keyword
+# match, so adjacent-event pages sneak in.
+#
+# The curation pass asks Gemini Flash (cheap, fast) to rewrite the
+# bundle keeping ONLY snippets that describe the same event as the
+# market. Output goes into ResearchBundle.curated_block, which
+# to_prompt_block() then returns in place of the raw concatenation.
+#
+# Cost: ~5-10K tokens in, ~3-5K out per market. At Gemini 2.0 Flash
+# rates that's <$0.005/market. Worth it.
+_CURATION_SYSTEM = (
+    "You are curating a research bundle for a prediction market. "
+    "Keep ONLY snippets that describe the SAME EVENT the market is "
+    "asking about. Drop snippets about different editions, different "
+    "dates, different matchups, different price windows, different "
+    "bands of the same recurring market.\n"
+    "\n"
+    "Rules:\n"
+    "1. The original bundle is divided into named sections ('-- Web "
+    "search results --', '-- Detailed web research --', '-- Wikipedia "
+    "--', etc.). Preserve those section headers in your output.\n"
+    "2. Within each section, keep each snippet VERBATIM if it is "
+    "on-event. Drop it entirely if it is off-event. Do not summarize, "
+    "edit, or paraphrase.\n"
+    "3. KEEP general background sections (Wikipedia, Historical base "
+    "rate, Sports data) - they're contextual, rarely off-event.\n"
+    "4. KEEP the LIVE MARKET DATA section verbatim - it's always the "
+    "current state.\n"
+    "5. If a snippet is ambiguous (could be on-event, hard to tell), "
+    "KEEP it - the forecaster will judge.\n"
+    "6. After curation, append a single line:\n"
+    "   '-- Curation note --\\nMATCH' if at least 60% of original "
+    "evidence is on-event,\n"
+    "   '-- Curation note --\\nPARTIAL' if some on-event evidence "
+    "remains but most was dropped,\n"
+    "   '-- Curation note --\\nINSUFFICIENT' if no clearly on-event "
+    "evidence was found.\n"
+    "7. Output the curated bundle text only. No prose, no JSON, no "
+    "commentary outside the bundle."
+)
+
+
+async def _curate_bundle_for_event(
+    raw_block: str,
+    market_question: str,
+    event_slug: Optional[str],
+    resolution_date: Optional[datetime],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return (curated_block, status). On failure or skip, returns
+    (None, status) and the caller falls back to the raw bundle.
+
+    status: 'match' | 'partial' | 'insufficient' | 'skipped' | 'failed'
+    """
+    if not raw_block or len(raw_block.strip()) < 500:
+        return None, "skipped"
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        # No Gemini key - skip curation rather than fall back to Claude
+        # (which would double the per-market cost). The forecaster's
+        # own same_event_verified gate still protects downstream.
+        return None, "skipped"
+    res_date_str = (
+        resolution_date.strftime("%Y-%m-%d")
+        if resolution_date else "(unknown)"
+    )
+    user_prompt = (
+        f"MARKET QUESTION: {market_question}\n"
+        f"EVENT SLUG: {event_slug or '(none)'}\n"
+        f"RESOLUTION DATE: {res_date_str}\n"
+        f"\n"
+        f"--- ORIGINAL BUNDLE START ---\n"
+        f"{raw_block}\n"
+        f"--- ORIGINAL BUNDLE END ---\n"
+    )
+
+    global _gemini_client
+    if _gemini_client is None:
+        try:
+            from google import genai
+            _gemini_client = genai.Client(api_key=gemini_key)
+        except Exception as exc:
+            print(f"[research] curation: gemini client init failed: {exc}",
+                  file=sys.stderr)
+            return None, "failed"
+    client = _gemini_client
+
+    def _call():
+        return client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=[_CURATION_SYSTEM, user_prompt],
+            config={
+                # Up to ~10K tokens of curated bundle. Most fall well
+                # short; this just stops a runaway response from being
+                # truncated.
+                "max_output_tokens": 12000,
+                "temperature": 0.0,
+            },
+        ).text
+
+    loop = asyncio.get_running_loop()
+    try:
+        raw = await loop.run_in_executor(None, _call)
+    except Exception as exc:
+        print(f"[research] curation gemini call failed: {exc}",
+              file=sys.stderr)
+        return None, "failed"
+    if not raw:
+        return None, "failed"
+    curated = raw.strip()
+    # Extract the curation note. Tolerate either the prescribed format
+    # or a stray '-- Curation note --' header. Default to 'partial' so
+    # the bundle is still used.
+    status = "partial"
+    m = re.search(
+        r"--\s*Curation note\s*--\s*\n?\s*(MATCH|PARTIAL|INSUFFICIENT)",
+        curated,
+        re.IGNORECASE,
+    )
+    if m:
+        status = m.group(1).lower()
+    if status == "insufficient":
+        # No on-event evidence: return a minimal stub block so the
+        # forecaster sees the curation verdict and skips. The
+        # same_event_verified gate already handles this downstream.
+        stub = (
+            f"(post-fetch curation found NO on-event research for "
+            f"this market. The original bundle described different "
+            f"editions/dates/matchups. The forecaster should set "
+            f"same_event_verified=no.)"
+        )
+        return stub, "insufficient"
+    return curated, status
 
 
 # ── ESPN sports data ────────────────────────────────────────────────────────
@@ -838,9 +1001,34 @@ def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
         return []
 
 
-def _format_ddg_results(results: list[dict], max_snippet: int = 300) -> list[str]:
+def _format_ddg_results(
+    results: list[dict],
+    max_snippet: int = 300,
+    category: Optional[str] = None,
+) -> list[str]:
+    """Format DDG snippets for the prompt.
+
+    Behaviour upgraded so the LLM sees source-quality signals
+    explicitly rather than treating every snippet as equally
+    trustworthy:
+
+      - Snippets from domains in _SKIP_DOMAINS (social, content
+        farms) are DROPPED outright. Better no snippet than a
+        templated "best NFL picks 2025" SEO page.
+      - Snippets from the category's priority list are tagged
+        [tier-A: domain]. The forecaster's system prompt instructs
+        the model to weight Tier-A more heavily.
+      - Everything else is tagged [tier-B: domain] so the model
+        knows it's reading a less-authoritative source.
+      - Tier-A is sorted to the top of the returned list.
+    """
+    cat = (category or "other").lower()
+    cat_domains = _CATEGORY_PRIORITY_DOMAINS.get(cat, set())
+    all_priority = cat_domains | _ALL_PRIORITY_DOMAINS
+
     seen_titles: set[str] = set()
-    out: list[str] = []
+    tier_a: list[str] = []
+    tier_b: list[str] = []
     for r in results:
         title = (r.get("title") or "").strip()
         body = (r.get("body") or "").strip()
@@ -848,82 +1036,200 @@ def _format_ddg_results(results: list[dict], max_snippet: int = 300) -> list[str
         if not title or title.lower() in seen_titles:
             continue
         seen_titles.add(title.lower())
-        source = href.split("/")[2] if href.count("/") >= 2 else ""
+        try:
+            domain = href.split("/")[2].lower() if href.count("/") >= 2 else ""
+        except (IndexError, AttributeError):
+            domain = ""
+
+        # Drop social + content-farm domains entirely.
+        if domain and any(skip in domain for skip in _SKIP_DOMAINS):
+            continue
+
         title = _scrub_prediction_market_echoes(title)
         body = _scrub_prediction_market_echoes(body)
-        if body:
-            tag = f" [{source}]" if source else ""
-            out.append(f"{title}: {body[:max_snippet]}{tag}")
-        else:
-            out.append(title)
-    return out
+
+        is_priority = bool(domain) and any(prio in domain for prio in all_priority)
+        tier_label = "tier-A" if is_priority else "tier-B"
+        tag = f" [{tier_label}: {domain}]" if domain else ""
+
+        snippet = f"{title}: {body[:max_snippet]}{tag}" if body else f"{title}{tag}"
+        (tier_a if is_priority else tier_b).append(snippet)
+
+    return tier_a + tier_b
 
 
 # ── Category-specific search strategies ────────────────────────────────────
+_MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+# Slugs like nba-sas-okc-2026-05-20 carry the EXACT game date. Without
+# this, queries pin only to "May 2026" and DDG happily returns adjacent
+# games in the same series (Game 1 vs Game 2). Extracting the YYYY-MM-DD
+# from the slug lets us add day-precise queries that anchor on the
+# specific game.
+_SLUG_DATE_RE = re.compile(r"(?P<y>20\d{2})[-_/](?P<m>\d{1,2})[-_/](?P<d>\d{1,2})")
+
+
+def _extract_slug_date(slug: Optional[str]) -> Optional[datetime]:
+    """Extract a YYYY-MM-DD date from a Polymarket event slug.
+
+    Returns None if no date pattern is present (which is fine: many
+    slugs are stable event names without dates).
+    """
+    if not slug:
+        return None
+    m = _SLUG_DATE_RE.search(slug)
+    if not m:
+        return None
+    try:
+        return datetime(
+            year=int(m.group("y")),
+            month=int(m.group("m")),
+            day=int(m.group("d")),
+            tzinfo=timezone.utc,
+        )
+    except (ValueError, TypeError):
+        return None
+
+
 def _build_search_queries(
     question: str,
     keywords: list[str],
     category: Optional[str],
     sport: Optional[str],
     teams: list[str],
+    event_name: Optional[str] = None,
+    event_qualifier: Optional[str] = None,
+    resolution_date: Optional[datetime] = None,
+    event_slug: Optional[str] = None,
 ) -> list[str]:
     """
-    Build targeted search queries based on market category.
-    Different categories need fundamentally different information.
+    Build targeted search queries based on market category and event context.
+
+    Pinning to the event date is the single highest-leverage thing this
+    function does. An earlier version hardcoded "2025" then briefly
+    used just the current year — both lost to evergreen queries like
+    "head to head record" that surface 18-month-old SEO content. By
+    splicing the market's MONTH+YEAR (and, when present, the event
+    name + round) into every category template, DDG ranks the
+    correct edition first.
+
+    `event_name` should be the official tournament/event name (e.g.
+    "Italian Open ATP Rome"); `event_qualifier` is the round/stage
+    (e.g. "semifinal", "Game 7"); `resolution_date` is when the
+    market actually settles.
     """
+    now = datetime.now(timezone.utc)
+    res_dt = resolution_date or now
+    year = res_dt.year
+    month = _MONTH_NAMES[res_dt.month - 1]
+    # Compact date-pin string used in every category template. Reads
+    # naturally in queries: "Sinner vs Ruud Italian Open semifinal May 2026".
+    parts = []
+    if event_name:
+        parts.append(event_name.strip())
+    if event_qualifier:
+        parts.append(event_qualifier.strip())
+    parts.append(f"{month} {year}")
+    event_tag = " ".join(p for p in parts if p)
+
     queries = [question]
     cat = (category or "other").lower()
 
     if cat == "sports" or sport:
         sport_name = sport or ""
+        # Day-precise tag when the slug has the exact game date. Without
+        # this, DDG returns adjacent games in the same series (Game 1
+        # when the market is Game 2, etc). Two formats because different
+        # sportsbook/news sites use different conventions.
+        slug_dt = _extract_slug_date(event_slug)
+        day_tag_iso = slug_dt.strftime("%Y-%m-%d") if slug_dt else None
+        day_tag_natural = (
+            slug_dt.strftime(f"{_MONTH_NAMES[slug_dt.month - 1]} %d %Y")
+            if slug_dt else None
+        )
         if teams:
             team_str = " vs ".join(teams[:2])
-            queries.append(f"{team_str} odds prediction {sport_name} 2025")
-            queries.append(f"{team_str} recent form stats {sport_name}")
-            queries.append(f"{team_str} head to head record")
+            # Generic edition+month queries (still useful for sites
+            # whose pages list the whole series).
+            queries.append(f"{team_str} {event_tag} preview")
+            queries.append(f"{team_str} {event_tag} odds prediction {sport_name}")
+            queries.append(f"{team_str} head to head {sport_name} {year}")
+            # Day-precise queries when slug carries the date. These
+            # are what fixes the Thunder Game 1 vs Game 2 case: DDG
+            # ranks pages mentioning the exact date much higher than
+            # the generic month-pinned ones.
+            if day_tag_natural:
+                queries.append(f"{team_str} {day_tag_natural} {sport_name} preview")
+                queries.append(f"{team_str} {day_tag_natural} box score result")
+                queries.append(f"{team_str} {day_tag_iso}")
         elif keywords:
-            queries.append(f"{' '.join(keywords[:2])} odds prediction today")
-            queries.append(f"{' '.join(keywords[:2])} stats form 2025")
+            queries.append(f"{' '.join(keywords[:2])} {event_tag} preview")
+            queries.append(f"{' '.join(keywords[:2])} {event_tag} odds")
+            if day_tag_natural:
+                queries.append(f"{' '.join(keywords[:2])} {day_tag_natural}")
 
     elif cat == "politics":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest polls 2025")
-            queries.append(f"{' '.join(keywords[:3])} political analysis forecast")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} latest polls")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} forecast analysis")
 
     elif cat in ("geopolitics", "economics"):
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest developments 2025")
-            queries.append(f"{' '.join(keywords[:3])} expert analysis outlook")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} latest developments")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} expert analysis")
 
     elif cat == "crypto":
         if keywords:
-            queries.append(f"{' '.join(keywords[:2])} price prediction analysis 2025")
-            queries.append(f"{' '.join(keywords[:2])} on-chain metrics sentiment")
+            queries.append(f"{' '.join(keywords[:2])} price action {event_tag}")
+            queries.append(f"{' '.join(keywords[:2])} on-chain metrics {month} {year}")
 
     elif cat == "entertainment":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} ratings predictions odds")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} predictions")
 
     elif cat == "science":
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest research results 2025")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} results")
 
     else:
         if keywords:
-            queries.append(f"{' '.join(keywords[:3])} latest news 2025")
+            queries.append(f"{' '.join(keywords[:3])} {event_tag} news")
 
-    # Deduplicate while preserving order.
+    # Deduplicate while preserving order. Also collapse internal
+    # double-spaces produced when event_name / event_qualifier were
+    # empty.
     seen: set[str] = set()
     unique: list[str] = []
     for q in queries:
+        q = re.sub(r"\s+", " ", q).strip()
         if q.lower() not in seen:
             seen.add(q.lower())
             unique.append(q)
     return unique
 
 
-_SKIP_DOMAINS = {"youtube.com", "twitter.com", "x.com", "reddit.com",
-                 "facebook.com", "instagram.com", "tiktok.com"}
+_SKIP_DOMAINS = {
+    # Social media — too noisy, often opinion not fact
+    "youtube.com", "twitter.com", "x.com", "reddit.com",
+    "facebook.com", "instagram.com", "tiktok.com", "threads.net",
+    # Content farms / SEO traps — known to surface stale or templated
+    # "predictions" pages that recycle last year's results. Demoted
+    # to skip rather than priority-other so they never poison the
+    # snippet list.
+    "pickswise.com", "sportsline.com", "winnersandwhiners.com",
+    "sportsbookwire.com", "actionnetwork.com",
+    "vegasinsider.com", "covers.com",
+    "askbettors.com", "bettingexpert.com", "oddstrader.com",
+    # AI-generated / aggregator slop domains
+    "betmgm.com", "draftkings.com", "fanduel.com",  # books push their own lines
+    "yardbarker.com", "fadeawayworld.net", "essentiallysports.com",
+    "sportskeeda.com", "givemesport.com", "sports.ndtv.com",
+    "tribuna.com", "thesportsrush.com",
+}
 
 # Domains that DDG may surface but we refuse to trafilatura-scrape full pages
 # from. Distinct from _SKIP_DOMAINS: DDG snippets from these domains still
@@ -960,24 +1266,65 @@ _SCRAPE_BLOCKLIST = {
 
 _CATEGORY_PRIORITY_DOMAINS: dict[str, set[str]] = {
     "sports": {
-        "sofascore.com", "flashscore.com", "espn.com", "sportsreference.com",
-        "stevegtennis.com", "tennistonic.com", "oddsportal.com",
-        "tennisstats.com", "covers.com", "the-odds-api.com",
-        "transfermarkt.com", "whoscored.com", "basketball-reference.com",
-        "baseball-reference.com", "hockey-reference.com", "fbref.com",
+        # League-official / data-authoritative
+        "atptour.com", "wtatennis.com", "tennis.com",
+        "espn.com", "nba.com", "nfl.com", "mlb.com", "nhl.com",
+        "ufc.com", "fifa.com", "uefa.com", "premierleague.com",
+        # Reference / stats sites
+        "sofascore.com", "flashscore.com", "sportsreference.com",
+        "basketball-reference.com", "baseball-reference.com",
+        "hockey-reference.com", "fbref.com", "tennis-data.co.uk",
+        "tennisexplorer.com", "stevegtennis.com", "tennisstats.com",
+        "transfermarkt.com", "whoscored.com",
+        # Major news desks (sport sections)
+        "reuters.com", "apnews.com", "bbc.com",
+        "theguardian.com", "nytimes.com",
+        # Odds (independent expert signal, NOT prediction markets)
+        "oddsportal.com", "the-odds-api.com",
     },
     "politics": {
+        # Forecasters / aggregators
         "realclearpolitics.com", "fivethirtyeight.com", "natesilver.net",
-        "polymarket.com", "metaculus.com", "predictit.org",
-        "bbc.com", "reuters.com", "apnews.com", "politico.com",
+        "goodjudgment.com",
+        # Major news desks
+        "reuters.com", "apnews.com", "bbc.com", "politico.com",
+        "nytimes.com", "washingtonpost.com", "ft.com", "wsj.com",
+        "economist.com", "theguardian.com",
+        # Official
+        "fec.gov", "congress.gov", "whitehouse.gov", "supremecourt.gov",
     },
     "geopolitics": {
         "reuters.com", "apnews.com", "bbc.com", "aljazeera.com",
-        "foreignaffairs.com", "cfr.org", "crisisgroup.org",
+        "ft.com", "wsj.com", "nytimes.com", "economist.com",
+        "foreignaffairs.com", "cfr.org", "crisisgroup.org", "rand.org",
+        "csis.org", "brookings.edu", "atlanticcouncil.org",
+    },
+    "economics": {
+        "reuters.com", "ft.com", "wsj.com", "bloomberg.com",
+        "economist.com", "imf.org", "worldbank.org",
+        "federalreserve.gov", "ecb.europa.eu", "bls.gov",
+        "tradingeconomics.com",
     },
     "crypto": {
-        "coindesk.com", "theblock.co", "messari.io",
+        "coindesk.com", "theblock.co", "messari.io", "decrypt.co",
         "glassnode.com", "defillama.com", "cryptoquant.com",
+        "santiment.net", "kaiko.com", "bloomberg.com", "reuters.com",
+    },
+    "entertainment": {
+        "variety.com", "hollywoodreporter.com", "deadline.com",
+        "reuters.com", "apnews.com", "bbc.com", "nytimes.com",
+        "rottentomatoes.com", "imdb.com", "boxofficemojo.com",
+    },
+    "science": {
+        "nature.com", "science.org", "thelancet.com", "nejm.org",
+        "arxiv.org", "biorxiv.org", "reuters.com", "apnews.com",
+        "bbc.com", "scientificamerican.com", "nasa.gov", "noaa.gov",
+    },
+    "other": {
+        # Generic high-trust newsrooms for uncategorised markets
+        "reuters.com", "apnews.com", "bbc.com", "nytimes.com",
+        "theguardian.com", "ft.com", "wsj.com", "bloomberg.com",
+        "washingtonpost.com", "economist.com",
     },
 }
 _ALL_PRIORITY_DOMAINS = frozenset().union(*_CATEGORY_PRIORITY_DOMAINS.values())
@@ -1023,12 +1370,20 @@ async def _fetch_web_search_raw(
     category: Optional[str] = None,
     sport: Optional[str] = None,
     teams: list[str] | None = None,
+    event_name: Optional[str] = None,
+    event_qualifier: Optional[str] = None,
+    resolution_date: Optional[datetime] = None,
+    event_slug: Optional[str] = None,
 ) -> list[dict]:
     if not _DDGS_AVAILABLE:
         return []
 
     queries = _build_search_queries(
         question, keywords or [], category, sport, teams or [],
+        event_name=event_name,
+        event_qualifier=event_qualifier,
+        resolution_date=resolution_date,
+        event_slug=event_slug,
     )
 
     loop = asyncio.get_running_loop()
@@ -1067,20 +1422,51 @@ async def _fetch_web_search_raw(
 
 
 
-def _extract_text_from_html(html: str, max_chars: int = 8000) -> str:
-    """Extract main content from HTML using trafilatura, with regex fallback."""
+def _extract_text_and_date(
+    html: str, max_chars: int = 8000,
+) -> tuple[str, Optional[str]]:
+    """Extract main content + publish date from HTML.
+
+    Returns (text, iso_date_str). The publish date is parsed from
+    metadata tags trafilatura already inspects:
+      <meta property="article:published_time" ...>
+      <meta name="pubdate" ...>
+      JSON-LD <script type="application/ld+json">
+      <time datetime="..."> elements
+    Falls back to None when nothing publishable is found.
+
+    Surfacing the publish date inline (e.g. "[reuters.com | 2026-05-17]")
+    lets the forecaster reason about freshness without us having to
+    train a "is this stale?" check separately. The user pays for tokens
+    so an extra 12 chars per page is fine.
+    """
     if _TRAFILATURA_AVAILABLE:
-        extracted = trafilatura.extract(html, include_comments=False,
-                                        include_tables=True, favor_recall=True)
-        if extracted and len(extracted) > 80:
-            return extracted[:max_chars]
-    # Regex fallback
+        try:
+            doc = trafilatura.bare_extraction(
+                html, with_metadata=True,
+                include_comments=False, include_tables=True,
+                favor_recall=True,
+            )
+        except Exception:
+            doc = None
+        if doc is not None:
+            text = (getattr(doc, "text", None) or "").strip()
+            date = (getattr(doc, "date", None) or "").strip() or None
+            if text and len(text) > 80:
+                return text[:max_chars], date
+    # Regex fallback (no date when we can't parse properly).
     t = re.sub(r'<(script|style|nav|footer|header)[^>]*>.*?</\1>', ' ',
                html, flags=re.DOTALL | re.IGNORECASE)
     t = re.sub(r'<[^>]+>', ' ', t)
     t = re.sub(r'&[#\w]+;', ' ', t)
     t = re.sub(r'\s+', ' ', t).strip()
-    return t[:max_chars]
+    return t[:max_chars], None
+
+
+# Backwards-compat shim — older callers expect just the text.
+def _extract_text_from_html(html: str, max_chars: int = 8000) -> str:
+    text, _ = _extract_text_and_date(html, max_chars)
+    return text
 
 
 # Polymarket pages leak the crowd's price into the research bundle - both as
@@ -1192,7 +1578,7 @@ async def _fetch_page_text(
         print(f"[research] page fetch failed {url[:80]}: {exc}", file=sys.stderr)
         return None
 
-    text = _extract_text_from_html(html, max_chars)
+    text, pub_date = _extract_text_and_date(html, max_chars)
     if len(text) < 100:
         return None
 
@@ -1204,7 +1590,12 @@ async def _fetch_page_text(
     # Every page goes through the echo scrub - even third-party news and
     # aggregator sites may embed "Polymarket has this at 65%" widgets.
     text = _scrub_prediction_market_echoes(text)
-    return f"[{domain}]\n{text}"
+    # Surface the publish date inline so the forecaster can reason
+    # about evidence freshness without separate signals. A page from
+    # 2024 about a 2026 market should be discounted; the LLM can only
+    # see that if we tell it.
+    header = f"[{domain} | {pub_date}]" if pub_date else f"[{domain} | undated]"
+    return f"{header}\n{text}"
 
 
 async def _fetch_top_pages(
@@ -1237,23 +1628,52 @@ async def fetch_research(
     category:            Optional[str] = None,
     max_wiki_kws:        int           = 4,
     days_to_resolution:  Optional[float] = None,
+    resolution_date:     Optional[datetime] = None,
+    event_slug:          Optional[str] = None,
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
     path - network errors are swallowed and the bundle degrades gracefully.
+
+    `resolution_date` is the market's actual settlement timestamp. When
+    provided, DDG queries get pinned to its month+year so search results
+    surface the SPECIFIC edition of an event (e.g. "Italian Open 2026
+    semifinal" not last year's QF). Falls back to today() when not given -
+    same behaviour as before this argument existed.
+
+    `event_slug` is the parent-event identifier from Polymarket gamma (e.g.
+    "nba-sas-okc-2026-05-20"). For markets where the question alone lacks
+    the opponent/date (Polymarket bundles sub-markets like "Spread: Thunder
+    (-5.5)" under an event slug that carries the matchup + date), passing
+    the slug lets the keyword extractor see the full context and avoids
+    research about the wrong game.
     """
     bundle = ResearchBundle(question=question)
 
+    # Enrich the question with the parent-event slug when present. The
+    # raw slug ("nba-sas-okc-2026-05-20") is intelligible to the LLM
+    # keyword extractor, which parses out the league, opponents, and
+    # date. This is the difference between "Thunder" matching the next
+    # Thunder game on the schedule (often wrong) vs the SPECIFIC
+    # game the market is asking about.
+    extractor_question = question
+    if event_slug:
+        extractor_question = f"{question} [event: {event_slug}]"
+
     # 0. Gemini-powered keyword extraction (domain-aware, replaces regex).
-    gemini_meta = await _extract_keywords_gemini(question)
+    detected_event_name: Optional[str] = None
+    detected_event_qualifier: Optional[str] = None
+    gemini_meta = await _extract_keywords_gemini(extractor_question)
     if gemini_meta:
         bundle.keywords = (gemini_meta.get("search_terms") or [])[:4]
         detected_category = gemini_meta.get("category")
         detected_sport = gemini_meta.get("sport")
         detected_teams = gemini_meta.get("teams") or []
+        detected_event_name = (gemini_meta.get("event_name") or "").strip() or None
+        detected_event_qualifier = (gemini_meta.get("event_qualifier") or "").strip() or None
         bundle.sources.append("gemini_keywords")
     else:
-        sports_meta = _detect_sports_matchup(question)
+        sports_meta = _detect_sports_matchup(extractor_question)
         if sports_meta:
             bundle.keywords = sports_meta["search_terms"][:4]
             detected_category = "sports"
@@ -1262,12 +1682,14 @@ async def fetch_research(
             bundle.sources.append("sports_heuristic")
         else:
             # Try Claude for keyword extraction before falling back to regex
-            claude_meta = await _extract_keywords_claude(question)
+            claude_meta = await _extract_keywords_claude(extractor_question)
             if claude_meta:
                 bundle.keywords = (claude_meta.get("search_terms") or [])[:4]
                 detected_category = claude_meta.get("category")
                 detected_sport = claude_meta.get("sport")
                 detected_teams = claude_meta.get("teams") or []
+                detected_event_name = (claude_meta.get("event_name") or "").strip() or None
+                detected_event_qualifier = (claude_meta.get("event_qualifier") or "").strip() or None
                 bundle.sources.append("claude_keywords")
             else:
                 bundle.keywords = extract_keywords(question)
@@ -1288,6 +1710,14 @@ async def fetch_research(
             question, keywords=bundle.keywords or None,
             category=detected_category, sport=detected_sport,
             teams=detected_teams,
+            event_name=detected_event_name,
+            event_qualifier=detected_event_qualifier,
+            resolution_date=resolution_date,
+            # Pass the slug so the query builder can extract the exact
+            # game date and add day-precise queries. Without this, DDG
+            # returns adjacent games in the same series (Thunder Game 1
+            # when the market is Game 2).
+            event_slug=event_slug,
         )
     )
 
@@ -1338,7 +1768,9 @@ async def fetch_research(
             web_raw = []
 
         if web_raw:
-            bundle.web_search = _format_ddg_results(web_raw, max_snippet=300)[:15]
+            bundle.web_search = _format_ddg_results(
+                web_raw, max_snippet=300, category=detected_category,
+            )[:15]
             bundle.sources.append(f"ddg_web:{len(bundle.web_search)}")
 
         page_task = asyncio.create_task(
@@ -1408,7 +1840,84 @@ async def fetch_research(
     if bundle.base_rate_note:
         bundle.sources.append("base_rate")
 
+    # Post-fetch relevance curation. Reads the assembled bundle, drops
+    # off-event snippets via a Gemini Flash pass, stores the result in
+    # bundle.curated_block (which to_prompt_block() then returns in
+    # place of the raw concatenation). The curator is hard-bounded by
+    # a short timeout because some bundles are huge and we don't want
+    # to slow the scan loop.
+    try:
+        raw_block = ResearchBundle.to_prompt_block.__wrapped__(bundle) \
+            if hasattr(ResearchBundle.to_prompt_block, "__wrapped__") \
+            else _assemble_raw_block(bundle)
+    except Exception:
+        raw_block = ""
+    if raw_block and len(raw_block.strip()) >= 500:
+        try:
+            curated, status = await asyncio.wait_for(
+                _curate_bundle_for_event(
+                    raw_block, question, event_slug, resolution_date,
+                ),
+                timeout=20.0,
+            )
+            if curated:
+                bundle.curated_block = curated
+                bundle.curation_status = status
+                bundle.sources.append(f"curated:{status}")
+            elif status:
+                bundle.curation_status = status
+                bundle.sources.append(f"curation:{status}")
+        except asyncio.TimeoutError:
+            print("[research] curation timed out - falling back to raw bundle",
+                  file=sys.stderr)
+            bundle.curation_status = "failed"
+            bundle.sources.append("curation:failed")
+        except Exception as exc:
+            print(f"[research] curation raised: {exc}", file=sys.stderr)
+            bundle.curation_status = "failed"
+            bundle.sources.append("curation:failed")
+
     return bundle
+
+
+def _assemble_raw_block(b: "ResearchBundle") -> str:
+    """Build the unfiltered prompt block without consulting
+    curated_block. Used by the curator (which must see the raw bundle,
+    not its own potentially-stale output) without recursing through
+    to_prompt_block."""
+    parts: list[str] = []
+    if b.live_market_data:
+        parts.append(
+            f"-- LIVE MARKET DATA (REAL-TIME) --\n{b.live_market_data.strip()}"
+        )
+    if b.web_pages:
+        parts.append("-- Detailed web research --\n" + "\n\n".join(b.web_pages))
+    if b.web_search:
+        parts.append(
+            "-- Web search results (current) --\n"
+            + "\n".join(f"• {s}" for s in b.web_search)
+        )
+    if b.crypto_prices and not b.live_market_data:
+        parts.append(f"-- Spot price (CoinGecko) --\n{b.crypto_prices.strip()}")
+    if b.sports_context:
+        parts.append(f"-- Sports data --\n{b.sports_context.strip()}")
+    if b.wikipedia:
+        parts.append(f"-- Wikipedia --\n{b.wikipedia.strip()}")
+    if b.news_snippets:
+        parts.append(
+            "-- Recent headlines (RSS) --\n"
+            + "\n".join(f"• {h}" for h in b.news_snippets)
+        )
+    if b.external_news:
+        parts.append(
+            "-- Recent headlines (NewsAPI) --\n"
+            + "\n".join(f"• {h}" for h in b.external_news)
+        )
+    if b.base_rate_note:
+        parts.append(f"-- Historical base rate --\n{b.base_rate_note}")
+    if not parts:
+        return ""
+    return "\n\n".join(parts)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────

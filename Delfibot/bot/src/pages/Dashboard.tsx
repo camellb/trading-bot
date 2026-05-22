@@ -82,7 +82,11 @@ function daysFromNow(iso: string | null | undefined): string {
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "-";
   const ms = t - Date.now();
-  if (ms <= 0) return "resolving";
+  // After endDate: Polymarket is in UMA settlement window (proposer
+  // submits resolution → 2-12h dispute window → market closes →
+  // funds released → bot's resolver settles the row). The position
+  // is just waiting on the oracle here, not actively trading.
+  if (ms <= 0) return "settling";
   const days = Math.round(ms / 86_400_000);
   if (days === 0) {
     const hours = Math.max(1, Math.round(ms / 3_600_000));
@@ -183,10 +187,15 @@ export default function Dashboard({ state, goto }: Props) {
   const mode = (state?.mode as "simulation" | "live") ?? "simulation";
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? 0;
-  // Use total P&L (realized + unrealized) when available so the number
-  // matches what Polymarket shows. Falls back to realized_pnl for
-  // simulation mode or older sidecar builds that don't include total_pnl.
-  const pnl = summary?.total_pnl ?? summary?.realized_pnl ?? 0;
+  // Headline P&L = realized + unrealized. Matches the semantics of
+  // Polymarket's "All-Time Profit/Loss" tile, which always includes
+  // the MTM gain/loss on currently-open positions. The summary
+  // endpoint computes this server-side from `open_cost - bot_open_cost`
+  // (= data-api MTM minus DB cost basis) + realized_pnl. Older
+  // sidecars without total_pnl fall back to realized-only.
+  const realizedOnly = summary?.realized_pnl ?? 0;
+  const totalPnl     = summary?.total_pnl ?? null;
+  const pnl    = totalPnl != null ? Number(totalPnl) : realizedOnly;
   const pnlPct = starting > 0 ? (pnl / starting) * 100 : 0;
   const winRate = summary?.win_rate ?? null;
   const closed = summary?.settled_total ?? 0;
@@ -229,6 +238,36 @@ export default function Dashboard({ state, goto }: Props) {
     <div className="dash">
       {error && !isConnectionError(error) && (
         <div className="error">{error}</div>
+      )}
+
+      {state?.idle_reason === "insufficient_bankroll" && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "10px 14px",
+            margin: "0 0 14px",
+            borderRadius: 8,
+            background: "rgba(120, 180, 220, 0.06)",
+            border: "1px solid rgba(120, 180, 220, 0.22)",
+            color: "var(--vellum-90, #e8e6e1)",
+            fontSize: 13,
+            lineHeight: 1.5,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            style={{ fontSize: 16, opacity: 0.8 }}
+          >
+            💤
+          </span>
+          <span>
+            Evaluator paused to save tokens. Available cash is below
+            the minimum for an order. The bot will resume automatically
+            when a position closes or you top up your wallet.
+          </span>
+        </div>
       )}
 
       <DashHero
@@ -677,14 +716,15 @@ function buildRisk(
   const dailyLoss = Math.max(0, -((summary?.realized_pnl ?? 0)));
   const dailyCap = Math.max(1, bankroll * (config.daily_loss_limit_pct ?? 0.10));
   const ddCapPct = (config.drawdown_halt_pct ?? 0.40) * 100;
-  // Gross exposure cap is a HARD limit, not a moving one. Computed
-  // off starting cash * (1 - dry_powder_reserve) so it doesn't shrink
-  // as positions accumulate. Matches the risk_manager check that
-  // halts new trades when open_cost crosses this cap.
-  const exposureCap = Math.max(
-    1,
-    starting * Math.max(0, 1 - (config.dry_powder_reserve_pct ?? 0.20)),
-  );
+  // Gross exposure is "how much of my money is currently at risk":
+  // open-position cost over total equity (bankroll + open_cost).
+  // At 100% every dollar is tied up in open positions. Falls back to
+  // bankroll+exposure if `summary.equity` is missing on older
+  // sidecars.
+  const totalEquity = summary?.equity != null
+    ? Number(summary.equity)
+    : bankroll + exposure;
+  const exposureCap = Math.max(1, totalEquity);
   return {
     dailyLoss: { used: Math.round(dailyLoss), cap: Math.round(dailyCap), label: "Daily loss cap" },
     drawdown:  { used: +ddPct.toFixed(1), cap: +ddCapPct.toFixed(0), label: "Drawdown" },

@@ -115,6 +115,35 @@ pm_positions = Table(
     # is deferred to a later commit.
     Column("volume_24h_at_entry", Float, nullable=True),
     Column("liquidity_at_entry",  Float, nullable=True),
+    # Current mark-to-market value of the position. Written by the
+    # exit-policy job in polymarket_runner.evaluate_open_positions
+    # every 60s: shares * current_bid (gamma outcomePrices midpoint
+    # for the held side). NULL on rows from before this migration,
+    # on positions whose market has gone closed/illiquid, and on the
+    # first 60s after open. Read by pm_executor.get_portfolio_stats
+    # via COALESCE(current_value_usd, cost_usd) so the Dashboard's
+    # "Locked Capital" tile matches Polymarket's "Portfolio" number
+    # instead of showing the cost basis.
+    Column("current_value_usd", Float, nullable=True),
+    # ── Early-exit tracking ─────────────────────────────────────────────
+    # Filled when the exit-policy engine closes a position before its
+    # natural settlement. `closed_at` is the timestamp of the SELL fill.
+    # `close_reason` is a short code: 'take_profit' | 'stop_loss' |
+    # 'time_decay'. `close_clob_order_id` is the Polymarket order id of
+    # the SELL; `close_tx_hash` is the Polygon tx hash once the match
+    # is mined. NULL on simulation rows and on every live position that
+    # closed via natural settlement.
+    Column("closed_at",              DateTime, nullable=True),
+    Column("close_reason",           Text,     nullable=True),
+    Column("close_clob_order_id",    Text,     nullable=True),
+    Column("close_tx_hash",          Text,     nullable=True),
+    # Counterfactual payout: when an early-exited position's market
+    # eventually resolves naturally, the resolver fills this in with
+    # what the position WOULD have paid out had we held to settlement
+    # (shares × settlement_price - cost_usd). Diff against
+    # realized_pnl_usd tells the Intelligence page whether the exit
+    # was profitable or premature. NULL until the market resolves.
+    Column("counterfactual_pnl_usd", Float,    nullable=True),
 )
 
 
@@ -165,6 +194,14 @@ market_evaluations = Table(
     # has to be back-filled from gamma rather than read from the
     # position-settler.
     Column("settlement_outcome", Text, nullable=True),
+    # Structural reason this evaluation was skipped. Captures the
+    # explicit decision-path message (sizer direction-disagreement,
+    # archetype skip-list, force_skip from research mismatch, risk-
+    # manager halt, max-concurrent cap, etc.) so the Positions
+    # "Skipped" tab can show users WHY the trade was passed on
+    # instead of leaving them to infer it from the LLM's prose.
+    # Null for non-SKIP rows.
+    Column("skip_reason", Text, nullable=True),
 )
 
 
@@ -360,6 +397,17 @@ user_config = Table(
            server_default=sa_text("0.02")),
     Column("max_stake_pct",          Float, nullable=False,
            server_default=sa_text("0.05")),
+    # Whether to ENFORCE max_stake_pct as a hard per-trade cap. OFF by
+    # default. At $1000+ bankrolls the cap protects against accidental
+    # over-staking (a buggy archetype multiplier could 10x the bet); at
+    # small bankrolls it makes trading impossible — Polymarket's $1-
+    # and-5-share platform floors mean the minimum legal trade is
+    # $2.50-$4.75, while a 5% cap on $8 bankroll is $0.40. With the
+    # cap off, the sizer bumps each live order to whatever Polymarket
+    # actually requires; users with bigger capital can switch it on
+    # for the cap. User instruction 2026-05-18.
+    Column("max_stake_pct_enabled",  Boolean, nullable=False,
+           server_default=sa_text("0")),
 
     # Circuit breakers.
     Column("daily_loss_limit_pct",   Float, nullable=False,
@@ -431,6 +479,35 @@ user_config = Table(
     Column("telegram_chat_id",  Text, nullable=True),
     Column("notification_prefs", JSON, nullable=False,
            server_default=sa_text("'{}'")),
+
+    # ── Exit policy (early close before natural settlement) ─────────────
+    # See engine/user_config.py UserConfig dataclass for field semantics.
+    # Master switch defaults OFF so existing users see no behavior change
+    # until they opt in via Settings → Risk → Exit policy.
+    Column("exit_policy_enabled", Boolean, nullable=False,
+           server_default=sa_text("0")),
+    Column("take_profit_enabled", Boolean, nullable=False,
+           server_default=sa_text("1")),
+    Column("take_profit_threshold_pct", Float, nullable=False,
+           server_default=sa_text("0.5")),
+    Column("stop_loss_enabled", Boolean, nullable=False,
+           server_default=sa_text("1")),
+    Column("stop_loss_threshold_pct", Float, nullable=False,
+           server_default=sa_text("0.3")),
+    Column("stop_loss_min_time_remaining_pct", Float, nullable=False,
+           server_default=sa_text("0.2")),
+    Column("time_decay_enabled", Boolean, nullable=False,
+           server_default=sa_text("0")),
+    # Defaults retuned 2026-05-18: 120h matches the bot's 7-day market
+    # horizon (was 72h), ±5% is the genuine flat band (was ±10%),
+    # 15min safety floor avoids the spread+fees pothole near
+    # settlement (was 5min). See UserConfig dataclass for rationale.
+    Column("time_decay_max_hours", Integer, nullable=False,
+           server_default=sa_text("120")),
+    Column("time_decay_flat_band_pct", Float, nullable=False,
+           server_default=sa_text("0.05")),
+    Column("exit_min_time_to_resolution_minutes", Integer, nullable=False,
+           server_default=sa_text("15")),
 
     # Onboarding.
     Column("tour_completed_at", DateTime, nullable=True),
@@ -646,6 +723,15 @@ def create_all_tables() -> None:
                 "ALTER TABLE user_config ADD COLUMN "
                 "archetype_skip_market_price_bands TEXT"
             ))
+        if "max_stake_pct_enabled" not in existing_user_config_cols:
+            # Default 0 (False): sizer bumps to platform minimum on small
+            # bankrolls instead of skipping. Existing users with a
+            # carefully-tuned max_stake_pct can flip this back on from
+            # the Risk page.
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "max_stake_pct_enabled INTEGER NOT NULL DEFAULT 0"
+            ))
 
         # ── pm_positions backfills ──────────────────────────────────────
         # Same PRAGMA-probe pattern as the user_config block above. Adds
@@ -670,6 +756,68 @@ def create_all_tables() -> None:
                 "ALTER TABLE pm_positions ADD COLUMN "
                 "liquidity_at_entry REAL"
             ))
+        if "current_value_usd" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN "
+                "current_value_usd REAL"
+            ))
+
+        # ── Early-exit columns (added 2026-05-18, exit-policy feature) ──
+        # See engine/user_config.py + db.models.pm_positions definition
+        # for field semantics. All NULL for legacy rows. The exit-policy
+        # engine writes closed_at/close_reason/close_clob_order_id/
+        # close_tx_hash on SELL fill; the resolver writes
+        # counterfactual_pnl_usd when an early-exited market eventually
+        # settles naturally.
+        for col, ddl in (
+            ("closed_at",              "DATETIME"),
+            ("close_reason",           "TEXT"),
+            ("close_clob_order_id",    "TEXT"),
+            ("close_tx_hash",          "TEXT"),
+            ("counterfactual_pnl_usd", "REAL"),
+        ):
+            if col not in existing_pm_positions_cols:
+                conn.execute(sa_text(
+                    f"ALTER TABLE pm_positions ADD COLUMN {col} {ddl}"
+                ))
+
+        # ── Exit-policy columns on user_config (same release) ───────────
+        # Idempotent re-probe (the earlier user_config probe was at the
+        # top of this function; we re-read here because that scope is
+        # gone). Defaults match engine/user_config.py UserConfig.
+        existing_user_config_cols = {
+            r[1] for r in conn.execute(
+                sa_text("PRAGMA table_info(user_config)")
+            ).fetchall()
+        }
+        for col, ddl in (
+            ("exit_policy_enabled",
+             "BOOLEAN NOT NULL DEFAULT 0"),
+            ("take_profit_enabled",
+             "BOOLEAN NOT NULL DEFAULT 1"),
+            ("take_profit_threshold_pct",
+             "REAL NOT NULL DEFAULT 0.5"),
+            ("stop_loss_enabled",
+             "BOOLEAN NOT NULL DEFAULT 1"),
+            ("stop_loss_threshold_pct",
+             "REAL NOT NULL DEFAULT 0.3"),
+            ("stop_loss_min_time_remaining_pct",
+             "REAL NOT NULL DEFAULT 0.2"),
+            ("time_decay_enabled",
+             "BOOLEAN NOT NULL DEFAULT 0"),
+            # See user_config Table() defs above for the 2026-05-18
+            # default retune. Keep these in sync.
+            ("time_decay_max_hours",
+             "INTEGER NOT NULL DEFAULT 120"),
+            ("time_decay_flat_band_pct",
+             "REAL NOT NULL DEFAULT 0.05"),
+            ("exit_min_time_to_resolution_minutes",
+             "INTEGER NOT NULL DEFAULT 15"),
+        ):
+            if col not in existing_user_config_cols:
+                conn.execute(sa_text(
+                    f"ALTER TABLE user_config ADD COLUMN {col} {ddl}"
+                ))
 
         # ── market_evaluations backfills ────────────────────────────────
         # Add the `mode` column so per-mode skipped counts and Dashboard
@@ -691,11 +839,23 @@ def create_all_tables() -> None:
         # Counterfactual outcomes for skipped evaluations. Filled in
         # asynchronously after the market resolves so the user can see
         # "would Delfi have won this trade if it hadn't skipped?" on
-        # the Intelligence page. Nullable, no default — only the
+        # the Intelligence page. Nullable, no default - only the
         # resolver writes here.
         if "settlement_outcome" not in existing_eval_cols:
             conn.execute(sa_text(
                 "ALTER TABLE market_evaluations ADD COLUMN settlement_outcome TEXT"
+            ))
+        # Explicit skip reason captured at decision time. Without this,
+        # the Positions Skipped tab can only show the LLM's analysis
+        # prose, which describes WHAT Delfi thinks of the market but
+        # not WHY the trade was skipped (direction disagreement,
+        # archetype skip-list, research mismatch, risk halt, etc.).
+        # Null on existing rows by design - we can't reconstruct the
+        # reason after the fact; the UI falls back to the prose when
+        # this is null.
+        if "skip_reason" not in existing_eval_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE market_evaluations ADD COLUMN skip_reason TEXT"
             ))
 
         # Seed the singleton row if absent. Local install always has

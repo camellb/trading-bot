@@ -90,6 +90,37 @@ bundled_pkgs = [
 
     # DuckDuckGo search.
     "ddgs",
+
+    # ccxt ships per-exchange JSON market metadata as package data
+    # (e.g. ccxt/async_support/okx.py loads markets from
+    # ccxt/abi/*.json and similar). Without collect_all, the bundle
+    # has the Python modules but NOT those JSON files, and every
+    # live_crypto OKX fetch fails inside PyInstaller with
+    # `FileNotFoundError(2, 'No such file or directory')`. That
+    # fail-silent kills the Bitcoin / Ethereum / Solana price
+    # injection into the forecaster's prompt and re-triggers the
+    # "research lacks current Bitcoin price" skip storms the
+    # 2026-05-16 doctrine rule explicitly bans. ccxt MUST be in
+    # this list.
+    "ccxt",
+
+    # Native secp256k1 ECDSA. eth_keys uses CoinCurveECCBackend for
+    # fast signing if importable; without it, signing falls back to
+    # a slower pure-Python backend. The fallback logs noisy "ECC
+    # backend not available" warnings on every Polymarket order. We
+    # actually want coincurve in the bundle for performance + log
+    # cleanliness.
+    "coincurve",
+
+    # Polymarket relayer SDKs - used by execution.pm_redeemer for
+    # gasless on-chain redemption of winning CTF positions. When the
+    # user has pasted Builder API Keys in Settings, the redeemer
+    # submits the redeem through Polymarket's relayer instead of
+    # broadcasting directly to a Polygon RPC. Polymarket pays the
+    # gas, so the user's wallet never needs MATIC. Both SDKs are
+    # pure-Python (no native deps).
+    "py_builder_relayer_client",
+    "py_builder_signing_sdk",
 ]
 
 datas = []
@@ -132,6 +163,19 @@ a = Analysis(
     # Tests, dev tooling, and Jupyter cruft that drift in via transitive
     # deps. Excluding them shrinks the bundle by tens of MB.
     excludes=[
+        # CRITICAL: aiodns + pycares pull in the c-ares C library
+        # which aiohttp auto-detects at import time and uses as its
+        # default async DNS resolver. c-ares runs ON the asyncio
+        # event loop and has wedged the daemon repeatedly when a
+        # single slow DNS lookup hits an internal mutex. By
+        # excluding them from the bundle the c library is not even
+        # present at runtime, so aiohttp falls back to
+        # ThreadedResolver unconditionally. ccxt (which transitively
+        # pulled aiodns in) works fine without it — aiodns is
+        # OPTIONAL for aiohttp.
+        "aiodns",
+        "pycares",
+        # Other dev/test/dead-weight modules.
         "tkinter",
         "matplotlib",
         "IPython",

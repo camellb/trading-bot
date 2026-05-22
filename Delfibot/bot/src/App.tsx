@@ -1,11 +1,12 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar } from "./api";
+import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar, waitForSidecar } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
 import Intelligence from "./pages/Intelligence";
 import Risk from "./pages/Risk";
 import Settings from "./pages/Settings";
+import Help from "./pages/Help";
 import Onboarding from "./Onboarding";
 import { UpdatePrompt } from "./components/UpdatePrompt";
 import { LicenseGate } from "./components/LicenseGate";
@@ -26,7 +27,8 @@ export type Page =
   | "performance"
   | "intelligence"
   | "risk"
-  | "settings";
+  | "settings"
+  | "help";
 
 export type SettingsTab =
   | "account"
@@ -167,9 +169,17 @@ export default function App() {
     }
   };
 
-  const goto = (p: Page, tab?: SettingsTab) => {
+  // Deep-link target for the Help page: when a "?" help-hint in
+  // Settings calls goto("help", undefined, "polymarket-key"), Help
+  // auto-opens that guide and scrolls to it. Cleared on navigation
+  // away and after Help consumes it.
+  const [helpAnchor, setHelpAnchor] = useState<string | null>(null);
+  const clearHelpAnchor = useCallback(() => setHelpAnchor(null), []);
+
+  const goto = (p: Page, tab?: SettingsTab, anchor?: string) => {
     setPage(p);
     if (p === "settings" && tab) setSettingsTab(tab);
+    setHelpAnchor(p === "help" ? (anchor ?? null) : null);
   };
 
   if (!connected) {
@@ -244,6 +254,16 @@ export default function App() {
             creds={creds}
             config={config}
             onSaved={refresh}
+            goto={goto}
+          />
+        )}
+        {page === "help" && (
+          <Help
+            creds={creds}
+            config={config}
+            goto={goto}
+            anchor={helpAnchor}
+            clearAnchor={clearHelpAnchor}
           />
         )}
       </main>
@@ -323,7 +343,19 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
     setRestartError(null);
     try {
       await tauriRestartSidecar();
-      setTimeout(() => window.location.reload(), 1500);
+      // Wait for the daemon to come back, then reload. If it doesn't
+      // come back within 30 s, surface a concrete next step instead
+      // of an infinite spinner.
+      const alive = await waitForSidecar(30_000);
+      if (alive) {
+        window.location.reload();
+      } else {
+        setRestartError(
+          "Daemon did not come back. Quit Delfi from the macOS menu " +
+          "bar and reopen from /Applications.",
+        );
+        setRestarting(false);
+      }
     } catch (e) {
       setRestartError(e instanceof Error ? e.message : String(e));
       setRestarting(false);
@@ -364,10 +396,20 @@ function BootScreen({ error }: { error: string | null }) {
     setRestartError(null);
     try {
       await tauriRestartSidecar();
-      // Force the app back into "Launching..." state. Reload picks
-      // up the fresh sidecar.port that the respawned daemon writes
-      // and the GUI re-runs its boot probe with no stale cache.
-      setTimeout(() => window.location.reload(), 1500);
+      // Wait for the daemon to come back, then reload so the GUI
+      // re-runs its boot probe with a clean cache. If the daemon
+      // doesn't come back within 30 s, surface a concrete next step
+      // instead of an infinite spinner.
+      const alive = await waitForSidecar(30_000);
+      if (alive) {
+        window.location.reload();
+      } else {
+        setRestartError(
+          "Daemon did not come back. Quit Delfi from the macOS menu " +
+          "bar and reopen from /Applications.",
+        );
+        setRestarting(false);
+      }
     } catch (e) {
       setRestartError(e instanceof Error ? e.message : String(e));
       setRestarting(false);
@@ -432,6 +474,7 @@ const NAV: NavItem[] = [
   { id: "performance",  label: "Performance",  icon: IconTrend() },
   { id: "intelligence", label: "Intelligence", icon: IconBolt() },
   { id: "risk",         label: "Risk controls", icon: IconShield() },
+  { id: "help",         label: "Help",          icon: IconHelp() },
   {
     id: "settings",
     label: "Settings",
@@ -747,6 +790,15 @@ function IconGear() {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.36.15.68.4.9.74" />
+    </svg>
+  );
+}
+function IconHelp() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.7" />
+      <line x1="12" y1="17" x2="12" y2="17.01" />
     </svg>
   );
 }

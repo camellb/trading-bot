@@ -186,7 +186,15 @@ def extract_resolution_estimate(raw: dict) -> Optional[datetime]:
     gst = _parse_iso(raw.get("gameStartTime"))
     if gst is not None:
         return gst + SPORTS_RESOLUTION_BUFFER
-    end = _parse_iso(raw.get("endDateIso") or raw.get("endDate"))
+    # PREFER `endDate` over `endDateIso`. `endDate` is the canonical
+    # ISO-8601 timestamp (e.g. "2026-05-18T04:00:00Z" — end-of-day ET
+    # on a "by May 17" market); `endDateIso` is the date portion only
+    # ("2026-05-18"), which when naively parsed lands at midnight UTC
+    # and shaves off the 4-5 hour ET offset. That mismatch is why the
+    # dashboard countdown was running 4h short of Polymarket's own
+    # page on US-Eastern-resolution markets. Fall back to endDateIso
+    # only when endDate is missing.
+    end = _parse_iso(raw.get("endDate") or raw.get("endDateIso"))
     events = raw.get("events") or []
     if isinstance(events, list) and events:
         evt_end = _parse_iso((events[0] or {}).get("endDate"))
@@ -204,7 +212,11 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
         outcomes = _parse_str_list(m.get("outcomes"))
         if len(prices) != 2 or len(outcomes) != 2:
             return None
-        end_iso = _parse_iso(m.get("endDateIso") or m.get("endDate"))
+        # Prefer the full ISO timestamp (`endDate`, e.g.
+        # "2026-05-18T04:00:00Z") over the date-only `endDateIso`
+        # which loses the ET offset and lands at midnight UTC. Without
+        # this, ET-resolved markets show a 4-hour-short countdown.
+        end_iso = _parse_iso(m.get("endDate") or m.get("endDateIso"))
         if end_iso is None:
             return None
         events = m.get("events") or []

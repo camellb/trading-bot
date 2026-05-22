@@ -615,7 +615,6 @@ button { font: inherit; }
   font-size: 15px;
   color: var(--vellum-60);
   margin: 0;
-  max-width: 70ch;
   line-height: 1.5;
 }
 
@@ -1865,12 +1864,56 @@ select {
   transition: border-color var(--dur-quick) var(--ease);
   width: 100%;
 }
+
+/* Numeric inputs (Capital, Risk thresholds, multipliers, etc.) hold
+   short values - typically 1 to 7 chars. The shared rule above sets
+   width:100% which made them sprawl across the full panel on wide
+   layouts (Settings -> Capital sat at ~1200px wide for a 4-digit
+   "1000"). Cap at 240px so the input matches the value, while
+   keeping text/password inputs full-width for credential pastes. */
+input[type="number"] { max-width: 240px; }
+
+/* Hide the native browser spinner ("inner-spin-button" arrows) on
+   number inputs. They overlap absolute-positioned suffixes like the
+   "%" symbol in Risk's PercentField, look inconsistent across
+   browsers, and are rarely the primary editing affordance users
+   reach for. Users edit numeric inputs by typing; if they need to
+   nudge by step they can use ArrowUp/ArrowDown which still works
+   on a "textfield"-styled number input. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
 input:focus, textarea:focus, select:focus { border-color: var(--teal); }
 textarea { resize: vertical; min-height: 80px; font-family: var(--font-mono); font-size: 13px; }
 input::placeholder, textarea::placeholder { color: var(--vellum-40); }
 
 .form-row { display: flex; flex-direction: column; gap: 20px; max-width: 640px; }
 .form-field { display: flex; flex-direction: column; }
+
+/* Dense input grid used on the Risk page so numeric/percent fields fill
+   the panel width instead of clumping in the left half. Auto-fit with a
+   220px minimum gracefully degrades from 3-col -> 2-col -> 1-col as the
+   panel narrows. The .risk-grid-full child opts out (spans every
+   column) so toggles/descriptions can sit full-bleed across the grid. */
+.risk-grid {
+  display: grid;
+  gap: 18px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-items: start;
+}
+.risk-grid-3 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.risk-grid-2 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.risk-grid-full { grid-column: 1 / -1; }
+@media (min-width: 1100px) {
+  .risk-grid-3 { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
+  .risk-grid-2 { grid-template-columns: repeat(2, minmax(240px, 1fr)); }
+}
 .form-field > label {
   display: block;
   font-family: var(--font-mono);
@@ -1880,6 +1923,60 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   color: var(--vellum-60);
   margin-bottom: 8px;
 }
+
+/* Wraps a credential field's <label> together with the inline
+   "Need help?" pill so they sit on the same baseline. Without this
+   the HelpHint would block-stack below the label. */
+.form-label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.form-label-row > label { margin-bottom: 0; }
+
+/* Small inline button next to a credential label. Renders as a "?"
+   chip with the words "Need help?" beside it; clicking deep-links
+   to the matching guide on the Help page. Styled as a tertiary
+   affordance, not a primary CTA. */
+.help-hint {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--font-body);
+  color: var(--vellum-60);
+  background: rgba(170, 210, 240, 0.06);
+  border: 1px solid rgba(170, 210, 240, 0.18);
+  transition: background var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease);
+}
+.help-hint > [aria-hidden="true"] {
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(170, 210, 240, 0.16);
+  color: rgb(170, 210, 240);
+}
+.help-hint:hover {
+  background: rgba(170, 210, 240, 0.12);
+  color: var(--vellum);
+}
+.help-hint:focus-visible {
+  outline: 2px solid rgba(170, 210, 240, 0.45);
+  outline-offset: 2px;
+}
+.help-hint-label { letter-spacing: 0.04em; }
+
 .form-hint { font-size: 12px; color: var(--vellum-40); margin-top: 6px; line-height: 1.4; }
 
 .form-notice,
@@ -2540,4 +2637,52 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   color: var(--vellum-60);
   background: transparent;
   border-style: dashed;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   WIDE-VIEWPORT RESPONSIVE POLISH (2026-05-19)
+   ════════════════════════════════════════════════════════════════
+
+   At window widths above ~1500px the page-wrap caps at --max-width
+   (1400px) but narrow content - single-column forms, reading-heavy
+   guide blocks - sat anchored to the left with a large empty gutter
+   to the right. The reported symptom on Risk, Settings, and Help was
+   "wide empty space / unbalanced columns" at 1600px+ windows.
+
+   Three rules address it without touching narrow / mid-width
+   layouts:
+
+     1. Forms (.form-row, intrinsic max-width 640px) center within
+        their panel above ~1100px. Panel headers stay left-aligned
+        which produces a subtle title-left, form-centered shape that
+        reads as balanced rather than half-empty.
+
+     2. The archetype grid promotes to 3 columns above ~1500px so
+        cards don't grow to half-screen width when there's room for
+        a denser layout.
+
+     3. A new .page-wrap.narrow modifier caps text-heavy pages
+        (Settings, Help) at 960px so long-line text doesn't sprawl
+        across 1400px and forms naturally sit in a comfortable
+        reading column. Below ~1000px viewports the max-width is
+        a no-op because the parent constraints (app-main padding +
+        sidebar width) already dominate, so this never regresses
+        the smaller-window layout.
+*/
+
+/* Forms stay left-anchored within their panel at every viewport
+   width. The earlier rule auto-centered them above 1100px to fill the
+   visual gap on wide screens, but that made the layout read as
+   "centered with whitespace" instead of "form on the left of a
+   sensible reading column". Pages that want a narrower container
+   already use .page-wrap.narrow (Settings + Help), which caps the
+   whole wrap at 960px so the form-row's 640px max-width naturally
+   fits with a modest gutter on the right. */
+
+@media (min-width: 1500px) {
+  .archetype-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.page-wrap.narrow {
+  max-width: 960px;
 }

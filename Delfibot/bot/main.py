@@ -134,17 +134,44 @@ import asyncio as _asyncio_module  # alias for the sync job wrappers below
 #    accept(). Accept queue fills, new SYNs get no SYN-ACK, GUI shows
 #    "timed out" indefinitely.
 #
-# Fix: patch BOTH the resolver module's DefaultResolver AND
-# aiohttp.connector's own copy. The connector module imports
-# DefaultResolver by reference at module load time
-# (`from .resolver import DefaultResolver`), so patching only
-# aiohttp.resolver.DefaultResolver is insufficient -- TCPConnector's
-# __init__ still sees AsyncResolver (as confirmed by the thread dump
-# showing pycares active after the previous one-sided patch).
+# Belt-and-suspenders defense:
+#
+#   1. Point AsyncResolver -> ThreadedResolver. Any code that
+#      explicitly does `aiohttp.resolver.AsyncResolver()` now gets
+#      a thread-pool resolver instead of c-ares.
+#   2. Pin DefaultResolver in BOTH the resolver module AND
+#      aiohttp.connector's own copy. The connector module imports
+#      DefaultResolver by reference at module load time
+#      (`from .resolver import DefaultResolver`), so patching only
+#      aiohttp.resolver.DefaultResolver is insufficient -- TCPConnector's
+#      __init__ still sees AsyncResolver (as confirmed by the thread dump
+#      showing pycares active after the previous one-sided patch).
+#
+# The PyInstaller spec also excludes aiodns + pycares from the
+# bundle entirely so the c-ares C library is not even present at
+# runtime. The combination guarantees DNS never runs on the
+# asyncio loop.
 import aiohttp.resolver as _aiohttp_resolver  # noqa: E402
 import aiohttp.connector as _aiohttp_connector  # noqa: E402
+_aiohttp_resolver.AsyncResolver = _aiohttp_resolver.ThreadedResolver
 _aiohttp_resolver.DefaultResolver = _aiohttp_resolver.ThreadedResolver
 _aiohttp_connector.DefaultResolver = _aiohttp_resolver.ThreadedResolver
+# Also nuke any module-level c-ares import sitting in sys.modules
+# from a prior import (defensive - should not exist in a fresh
+# Python, but guards against test/dev-mode reload). If aiodns
+# was imported, replace its Resolver with a wrapper that uses
+# socket-based resolution.
+import sys as _sys_for_dns_patch  # noqa: E402
+if "aiodns" in _sys_for_dns_patch.modules:
+    # aiodns being imported means c-ares is loaded. We can't
+    # cleanly unload it, but we can stop callers from using its
+    # resolver. The aiohttp patch above is the main protection;
+    # this is a log signal so we know if it ever happens.
+    print(
+        "[delfi] WARNING: aiodns imported before main.py monkey-patch - "
+        "PyInstaller spec excludes should have prevented this; check the bundle.",
+        flush=True,
+    )
 
 import concurrent.futures as _cf  # noqa: E402
 import threading as _threading    # noqa: E402
@@ -247,6 +274,7 @@ from feeds.news_feed import NewsFeed
 from feeds.macro_calendar import MacroCalendar
 from local_api import LocalAPI
 from polymarket_runner import (
+    evaluate_open_positions,
     resolve_positions,
     resolve_skipped_evaluations,
     scan_and_analyze,
@@ -788,19 +816,26 @@ async def main() -> None:
     _start_parent_death_watchdog_REMOVED()
 
     from concurrent.futures import ThreadPoolExecutor
+
+    # The GIL switch interval defaults to 5ms. With many threads doing
+    # sync work (SQLite, SSL handshakes, requests.get, etc.), the
+    # asyncio main loop can wait 50ms+ for the GIL on each turn - long
+    # enough that the kernel's listen-socket backlog fills up before
+    # accept() runs. Dropping to 1ms hands the GIL back to the main
+    # loop more aggressively. Trade-off: ~3-5% more context-switch
+    # overhead. Worth it to keep /api/* responsive under load.
+    sys.setswitchinterval(0.001)
+
     loop = asyncio.get_running_loop()
-    # 100 workers, not 20: the GUI loads 20+ panels simultaneously on
-    # mount and each panel hits at least one /api endpoint that goes
-    # through `_offload(...)`. With only 20 workers and a single slow
-    # call, the pool saturates, queued handlers block, the client
-    # gives up at its 30s ceiling, and we drown in CLOSE_WAIT
-    # leaks. 100 workers is generous - sync work is short in steady
-    # state (file reads, SQLite reads), and the threads are cheap
-    # (~16KB stack each). Verified 2026-05-06: a 27-request burst
-    # against the 20-worker pool wedged the daemon; the same burst
-    # at 100 workers absorbs cleanly.
+    # 32 workers, down from 100. Each worker that's actively running
+    # holds the GIL during its Python-level code. With 100 of them
+    # competing, the asyncio main loop starves of GIL ticks and
+    # accept() falls behind - the recurring wedge cause this user
+    # has hit for weeks. 32 is enough headroom for the GUI's
+    # ~20-panel mount burst plus a couple of slow handlers without
+    # creating excessive contention.
     loop.set_default_executor(ThreadPoolExecutor(
-        max_workers=100, thread_name_prefix="delfi"))
+        max_workers=32, thread_name_prefix="delfi"))
 
     # Arm the loop-wedge watchdog as soon as the loop is alive. If the
     # asyncio loop ever stops pumping for >120s (the 5-hour wedge of
@@ -816,8 +851,16 @@ async def main() -> None:
     # needs the bound port; we publish it via a mutable holder that
     # the LocalAPI section below populates after binding.
     _api_port_holder = {"port": 0}
+    # Tightened wedge-detection thresholds: self-probe every 20s
+    # (was 30s) and SIGKILL after 2 consecutive failures (was 3).
+    # Net effect: a wedged daemon is detected and respawned in
+    # ~40s instead of ~90s, so the dashboard sees the "stuck"
+    # banner for much less time. Per-probe budget kept at 5s.
     watchdog = LoopHeartbeat(
-        loop, api_port_getter=lambda: _api_port_holder["port"],
+        loop,
+        api_port_getter=lambda: _api_port_holder["port"],
+        self_probe_interval_s=20.0,
+        self_probe_max_failures=2,
     )
     watchdog.start()
 
@@ -873,6 +916,67 @@ async def main() -> None:
     # to the SQLite event_log table the dashboard reads, so the analyst
     # no longer needs an explicit notifier handle.
     analyst = PMAnalyst(news_feed=news_feed)
+
+    # ── Pre-warm signer cache in a BACKGROUND THREAD ───────────────────
+    # The prewarm makes a chain of CLOB SSL round-trips. When CLOB is
+    # unreachable (DNS wedge, transient outage, slow network) each
+    # call sits in an SSL read for up to 10s before raising. The
+    # original synchronous version blocked the daemon boot for up to
+    # 60s+ during a CLOB outage and the user saw the GUI sit on
+    # "Starting Delfi..." indefinitely while launchd kept respawning
+    # processes that never completed boot.
+    #
+    # Async prewarm: spawn a daemon thread, return immediately. The
+    # API server starts accepting connections right away. The first
+    # GUI poll arrives in 1-2s; if the cache isn't warm yet, the
+    # lock-free getters return None and downstream callers fall back
+    # to DB-derived bankroll. By the time the second poll arrives
+    # 5s later the prewarm has almost always landed, and even if
+    # CLOB is down forever the daemon stays responsive.
+    #
+    # The non-blocking lock on _POLY_SIGNER_LOCK guarantees only ONE
+    # probe runs at a time, so the prewarm thread doesn't race against
+    # the scheduled pm_balance_refresh job.
+    def _prewarm_poly_caches() -> None:
+        try:
+            from engine.user_config import get_user_polymarket_creds
+            from feeds.polymarket_wallet import (
+                refresh_live_balance_cache,
+                get_poly_signer_info,
+                get_total_open_positions_value,
+            )
+            _prewarm_creds = get_user_polymarket_creds()
+            _prewarm_pk = (_prewarm_creds or {}).get("private_key")
+            if _prewarm_pk:
+                print("[delfi] pre-warming Polymarket caches (bg)...",
+                      flush=True)
+                refresh_live_balance_cache(_prewarm_pk)
+                try:
+                    _info = get_poly_signer_info(_prewarm_pk)
+                    _funder = (_info or {}).get("funder")
+                    if _funder:
+                        get_total_open_positions_value(_funder)
+                except Exception as _exc2:
+                    print(f"[delfi] positions cache pre-warm failed: "
+                          f"{_exc2} - non-fatal",
+                          flush=True)
+                print("[delfi] Polymarket caches warm", flush=True)
+        except Exception as _exc:
+            print(f"[delfi] cache pre-warm failed: {_exc} - "
+                  "proceeding; background refresh will retry",
+                  flush=True)
+
+    try:
+        import threading as _t
+        _prewarm_thread = _t.Thread(
+            target=_prewarm_poly_caches,
+            name="poly-prewarm",
+            daemon=True,
+        )
+        _prewarm_thread.start()
+    except Exception as _exc:
+        print(f"[delfi] failed to spawn prewarm thread: {_exc}",
+              flush=True)
 
     # ── Local HTTP API ───────────────────────────────────────────────────────
     # Bind to 127.0.0.1 only. The Tauri webview is the only thing that
@@ -1116,6 +1220,141 @@ async def main() -> None:
             proc_health.record_job_error("markout_check")
             print(f"[delfi] markout failed: {exc}", file=sys.stderr, flush=True)
 
+    def _run_evaluate_exits():
+        """Tick the exit-policy decision engine across every open
+        position. Cheap when the policy is disabled (per-user) or no
+        positions are open. Runs at 60s cadence so a take-profit or
+        stop-loss reacts within a minute of the bid moving."""
+        try:
+            _submit_job(
+                _bounded(
+                    evaluate_open_positions(), timeout_s=60,
+                    label="evaluate_exits",
+                ),
+                outer_timeout_s=75,
+            )
+            proc_health.record_job_ok("pm_evaluate_exits")
+        except Exception as exc:
+            proc_health.record_job_error("pm_evaluate_exits")
+            print(f"[delfi] evaluate_exits failed: {exc}",
+                  file=sys.stderr, flush=True)
+
+    def _run_balance_refresh():
+        """Refresh the cached Polymarket live-balance every 60s.
+
+        Without this, /api/summary's live-balance overlay had to
+        call the wallet probe on every dashboard poll (every 5s).
+        A slow DNS or SSL response on that probe could block the
+        thread for 30s+ and - because the probe holds a process-
+        level lock - queue every subsequent /api/summary behind it.
+        The dashboard then showed "sidecar may be stuck" until the
+        loop watchdog SIGKILLed the daemon. Moving the refresh
+        into a scheduled job decouples user requests from network
+        latency: /api/summary always reads the cache instantly;
+        this job is the only path that touches the network. If
+        THIS job wedges, the cache just goes slightly stale - no
+        user-visible impact.
+
+        No-op in simulation mode (no live key). Failure swallowed
+        so a network blip doesn't cascade.
+        """
+        try:
+            from engine.user_config import (
+                get_user_config, get_user_polymarket_creds,
+            )
+            from feeds.polymarket_wallet import refresh_live_balance_cache
+            cfg = get_user_config()
+            if (cfg.mode or "").lower() != "live":
+                proc_health.record_job_ok("pm_balance_refresh")
+                return
+            creds = get_user_polymarket_creds()
+            pk = (creds or {}).get("private_key") if creds else None
+            if not pk:
+                proc_health.record_job_ok("pm_balance_refresh")
+                return
+            refresh_live_balance_cache(pk)
+            proc_health.record_job_ok("pm_balance_refresh")
+        except Exception as exc:
+            proc_health.record_job_error("pm_balance_refresh")
+            print(f"[delfi] balance refresh failed: {exc}",
+                  file=sys.stderr, flush=True)
+
+    def _run_activate_legacy_balance():
+        """Auto-swap any legacy USDC.e at the funder into pUSD so
+        the funds become tradeable Cash without a Polymarket-UI
+        click. Idempotent: when funder USDC.e is 0 the function
+        returns immediately after one cheap balanceOf eth_call.
+
+        Why this matters: a market that settled in V1 USDC.e pays
+        out USDC.e to the funder. Polymarket's V2 trading uses
+        pUSD only, so the user's UI shows "Confirm pending deposit"
+        until they manually click through. The user has explicitly
+        called this out as user-hostile - the bot should redeem
+        winnings AND make those winnings spendable for trading,
+        not just deposit them in a frozen tier.
+
+        Same RELAYER_API_KEY auth as the redeem sweeper, same
+        relayer-v2.polymarket.com/submit endpoint. The 2-call batch
+        (USDC.e.approve(wrapper) + wrapper.wrap) replicates exactly
+        what polymarket.com's "Confirm pending deposit" sends.
+        """
+        try:
+            from execution.pm_redeemer import activate_legacy_collateral_balance
+            activate_legacy_collateral_balance()
+            proc_health.record_job_ok("pm_activate_legacy")
+        except Exception as exc:
+            proc_health.record_job_error("pm_activate_legacy")
+            print(f"[delfi] legacy-balance activator failed: {exc}",
+                  file=sys.stderr, flush=True)
+
+    def _run_pm_reconcile():
+        """Pull on-chain Polymarket positions, import any missing ones.
+
+        Safety net for the executor's poll-timeout class of bug: when
+        `_open_live`'s fill poll times out before the CLOB matcher
+        broadcasts the fill, the order STILL fills on-chain but no
+        pm_positions row gets written. The user then sees fewer
+        positions in Delfi than on Polymarket. The reconciler walks
+        data-api/positions every 2 minutes, looks each entry up by
+        (condition_id, side), and INSERTs anything missing using the
+        on-chain truth. Conservative: only ADDS rows, never deletes
+        or modifies. Cheap when in sync (single HTTPS GET + a
+        SELECT-and-set diff).
+        """
+        try:
+            from engine.pm_reconciler import reconcile_positions
+            reconcile_positions()
+            proc_health.record_job_ok("pm_reconcile")
+        except Exception as exc:
+            proc_health.record_job_error("pm_reconcile")
+            print(f"[delfi] reconciler failed: {exc}",
+                  file=sys.stderr, flush=True)
+
+    def _run_redeem_sweeper():
+        """Retry on-chain redemption for live winners that never
+        completed their first redeem attempt.
+
+        settle_position only fires redeem_winning_position once per
+        position. If that one attempt fails (transient RPC 401, no
+        MATIC at the moment, Builder creds not yet pasted, daemon
+        crash mid-call) the row sits forever with redeem_tx_hash=NULL
+        and the on-chain CTF tokens never reach the user's pUSD
+        balance. The sweeper rescans on every tick so once the
+        blocker is removed (MATIC funded, Builder API keys pasted)
+        the backlog clears automatically.
+
+        Cheap when there's nothing stuck: a single indexed-by-status
+        SELECT that returns 0 rows.
+        """
+        try:
+            from execution.pm_redeemer import sweep_unredeemed_winners
+            sweep_unredeemed_winners(max_per_run=25)
+            proc_health.record_job_ok("pm_redeem_sweep")
+        except Exception as exc:
+            proc_health.record_job_error("pm_redeem_sweep")
+            print(f"[delfi] redeem sweeper failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_resolve_skipped():
         """Back-fill outcomes for skipped market_evaluations.
 
@@ -1203,11 +1442,106 @@ async def main() -> None:
         executor="threadpool",
     )
     scheduler.add_job(
+        _run_evaluate_exits, IntervalTrigger(seconds=60),
+        id="pm_evaluate_exits",
+        # First fire 90s after boot - give the position resolver and
+        # market scan a head start so we're never racing them on the
+        # first tick after a daemon restart.
+        next_run_time=now_utc + timedelta(seconds=90),
+        # coalesce=False mirrors `pm_resolve_fast` - missing a tick on
+        # a fast-moving market could push a take-profit far past the
+        # threshold. Correctness > cost on this cadence.
+        max_instances=1, coalesce=False,
+        executor="threadpool",
+        # misfire_grace_time=None: same reasoning as pm_activate_legacy
+        # and pm_redeem_sweep. This job ALSO writes per-position
+        # current_value_usd (mark-to-market) which feeds the Dashboard
+        # "Locked Capital" + "Total Equity" tiles and every settlement
+        # Telegram message. Default 1s grace caused most fires to be
+        # silently dropped under threadpool load, leaving market values
+        # NULL in the DB and the dashboard stuck on cost basis.
+        misfire_grace_time=None,
+    )
+    scheduler.add_job(
         _run_resolve_skipped, IntervalTrigger(minutes=15),
         id="pm_resolve_skipped",
         # First fire 2 minutes after boot — give the position resolver
         # priority on a fresh start, then catch up on skipped evals.
         next_run_time=now_utc + timedelta(minutes=2),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    scheduler.add_job(
+        _run_activate_legacy_balance, IntervalTrigger(minutes=10),
+        id="pm_activate_legacy",
+        # Fire 4 min after boot - one minute after the redeem sweeper,
+        # so freshly-redeemed USDC.e gets activated on the next 10-min
+        # tick (or this one, if the redeem already landed). Cheap when
+        # there's nothing to activate (single balanceOf eth_call).
+        next_run_time=now_utc + timedelta(minutes=4),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        # misfire_grace_time=None: ALWAYS run, no matter how late.
+        # APScheduler's default 1-second grace caused this job to be
+        # silently dropped for hours under load (analyst LLM calls
+        # held threadpool slots, every fire missed the 1s window and
+        # was discarded). Wrapping USDC.e to pUSD is a 'must
+        # eventually happen' job; we never want to drop a fire.
+        # coalesce=True means N missed fires still result in one run.
+        misfire_grace_time=None,
+    )
+    scheduler.add_job(
+        _run_redeem_sweeper, IntervalTrigger(minutes=10),
+        id="pm_redeem_sweep",
+        # First fire 3 minutes after boot - well after the position
+        # resolver and exit-policy jobs have had their first ticks,
+        # so a freshly-settled row from this boot is in the table by
+        # the time the sweeper looks. 10 minute cadence is fast
+        # enough that a stuck winner clears within ~5 minutes of the
+        # user funding MATIC or pasting Builder API keys, slow
+        # enough that it doesn't hammer Polygon RPC when the queue
+        # is empty.
+        next_run_time=now_utc + timedelta(minutes=3),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        # misfire_grace_time=None: same reasoning as pm_activate_legacy
+        # above. Redeeming a winner is a 'must eventually happen' job.
+        # The user's money is sitting at the CTF contract; we don't
+        # want APScheduler dropping fires just because the threadpool
+        # was busy with analyst LLM work.
+        misfire_grace_time=None,
+    )
+    scheduler.add_job(
+        _run_pm_reconcile, IntervalTrigger(minutes=2),
+        id="pm_reconcile",
+        # First fire 5s after boot. Earlier than balance-refresh on
+        # purpose: any in-flight order from a previous daemon
+        # incarnation (crash, restart, install.sh kill) might have
+        # filled while we were down. We want that backfilled BEFORE
+        # the dashboard's first /api/positions poll lands, so the
+        # user never sees a "missing position" flash. The 5s gives
+        # the aiohttp accept loop time to bind without competing
+        # for the threadpool.
+        next_run_time=now_utc + timedelta(seconds=5),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        # misfire_grace_time=None: missing a tick (e.g. busy threadpool)
+        # would mean a freshly-filled position sits invisible in Delfi
+        # for an extra 2 min and the analyst could double-open into
+        # the same market. Like pm_redeem_sweep, this is a
+        # 'must eventually happen' job.
+        misfire_grace_time=None,
+    )
+    scheduler.add_job(
+        _run_balance_refresh, IntervalTrigger(seconds=60),
+        id="pm_balance_refresh",
+        # First fire immediately (1s after boot) so the signer cache
+        # is populated before /api/summary's first poll. Without
+        # this the dashboard hits a cold cache and Balance shows $0
+        # (post-2026-05-20 fix) or, in the buggy version that fix
+        # replaced, the SIM default $1000. 60s cadence afterwards is
+        # fast enough that a fresh deposit shows up within a minute.
+        next_run_time=now_utc + timedelta(seconds=1),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )
@@ -1227,7 +1561,7 @@ async def main() -> None:
     print(
         f"[delfi] scheduler started -- scan {scan_interval_min}min, "
         f"resolve {resolve_interval_min}min (fast {fast_resolve_sec}s), "
-        f"markouts 1h",
+        f"exit-policy 60s, markouts 1h",
         flush=True,
     )
 
@@ -1275,7 +1609,98 @@ async def main() -> None:
     print("[delfi] bye", flush=True)
 
 
+def _install_log_file_tee() -> None:
+    """Mirror every print() to <app-data>/logs/sidecar.log.
+
+    On macOS the LaunchAgent plist captures stdout/stderr via
+    StandardOutPath. On Windows there's no equivalent: the GUI-spawned
+    sidecar has its stdout piped into the Tauri shell process, which
+    re-prints to its own stdout/stderr - but Windows GUI apps don't
+    show those anywhere. Without this tee, a Windows user has NO
+    way to read sidecar output for troubleshooting.
+
+    The tee writes to the file AND to the original stream (so Tauri's
+    capture still works on every platform). Failures writing to the
+    file are swallowed so a permission glitch can't take the daemon
+    down.
+    """
+    try:
+        # Import here, not at module top, because db.engine pulls in
+        # SQLAlchemy and we want the log file open BEFORE anything
+        # heavyweight has a chance to print.
+        from db.engine import app_data_dir
+        log_dir = app_data_dir() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # Rotate at boot: rename old sidecar.log to sidecar.log.prev
+        # so the user always has the previous session's full log
+        # available without the file growing unboundedly. Two files
+        # only (current + previous) keeps disk usage trivial.
+        log_path = log_dir / "sidecar.log"
+        prev_path = log_dir / "sidecar.log.prev"
+        if log_path.exists():
+            try:
+                if prev_path.exists():
+                    prev_path.unlink()
+                log_path.rename(prev_path)
+            except Exception:
+                pass
+        fh = open(log_path, "a", encoding="utf-8", buffering=1)
+    except Exception as exc:
+        # If we can't open the file, don't die - just print and
+        # carry on without the tee.
+        try:
+            print(f"[delfi] log file tee disabled: {exc}",
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        return
+
+    class _Tee:
+        def __init__(self, original, file):
+            self._original = original
+            self._file = file
+        def write(self, data):
+            try:
+                self._original.write(data)
+            except Exception:
+                pass
+            try:
+                self._file.write(data)
+            except Exception:
+                pass
+        def flush(self):
+            try:
+                self._original.flush()
+            except Exception:
+                pass
+            try:
+                self._file.flush()
+            except Exception:
+                pass
+        # Some libraries (e.g. faulthandler) check isatty() on the
+        # underlying stream. Delegate to original so they see a real
+        # answer.
+        def isatty(self):
+            try:
+                return bool(self._original.isatty())
+            except Exception:
+                return False
+        # fileno is needed by subprocess for inheriting stdio. Return
+        # the ORIGINAL fd so child processes write to the same console
+        # as before - the tee only captures Python-level writes.
+        def fileno(self):
+            return self._original.fileno()
+
+    sys.stdout = _Tee(sys.stdout, fh)
+    sys.stderr = _Tee(sys.stderr, fh)
+    try:
+        print(f"[delfi] log tee writing to {log_path}", flush=True)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _install_log_file_tee()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

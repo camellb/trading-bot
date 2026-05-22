@@ -131,6 +131,18 @@ _CRYPTO_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Micro time-window markers used by Polymarket's "Up or Down" sub-
+# markets: "8:35AM-8:40AM ET", "9:30-9:35 AM ET", "12:00 PM ET", etc.
+# Any market whose question text carries a minute-resolution HH:MM
+# slot (with or without AM/PM/ET) is decided by a single price tick;
+# crypto direction markets at that horizon are essentially efficient
+# coin flips. Detection is intentionally broad — false positives just
+# default-skip a market that wasn't tradeable anyway.
+_MICRO_WINDOW_RE = re.compile(
+    r"\b\d{1,2}:\d{2}\s*(?:am|pm)?",
+    re.IGNORECASE,
+)
+
 # Stocks / equities. Tickers + common phrasings.
 _STOCKS_RE = re.compile(
     r"\b(s&p\s*500|s\&p|nasdaq|dow jones|djia|russell\s*2000|"
@@ -320,6 +332,26 @@ def classify_archetype(
     # otherwise route to the generic bucket and lose the venue
     # signal the per-archetype multipliers depend on.
 
+    # Crypto micro-window markets — "Bitcoin Up or Down — May 18,
+    # 8:35AM-8:40AM ET", "ETH Up or Down 9:30-9:35", etc. Resolve on
+    # a single price tick comparison over a 5-30 minute window;
+    # nobody publishes per-window news so the forecaster has no
+    # information advantage. The LLM evaluator's same_event_verified
+    # check correctly rejects research about the adjacent already-
+    # resolved window — but that wastes an LLM call per market.
+    # Default-skipping at the archetype layer is cheaper AND cleaner
+    # in the dashboard (the skip reason becomes "archetype
+    # crypto_short on skip list" instead of a confusing LLM
+    # narrative about 5-minute windows). User instruction
+    # 2026-05-18: "this is an issue, why did it skip and why did it
+    # give this kind of weird reason?"
+    if (
+        ("up or down" in q.lower())
+        and _CRYPTO_RE.search(q)
+        and _MICRO_WINDOW_RE.search(q)
+    ):
+        return "crypto_short"
+
     # Crypto.
     if cat == "crypto" or _CRYPTO_RE.search(q):
         return "crypto"
@@ -400,6 +432,12 @@ ARCHETYPES: tuple[str, ...] = (
     "sports_other",
     # Finance / markets.
     "crypto",
+    # Short-window crypto direction markets (5-30 min "Up or Down"
+    # micro-markets). Distinct from long-horizon "Will BTC hit
+    # $80k by July" so the user can default-skip them without
+    # losing the longer-dated trades. Default skip-list now
+    # includes this label.
+    "crypto_short",
     "stocks",
     "macro",
     "fx_commodities",
@@ -419,9 +457,13 @@ ARCHETYPES: tuple[str, ...] = (
 )
 
 
-# Legacy-to-canonical mapping. Source of truth for migration 022 and for
-# any runtime collapse (e.g., /api/archetypes discovery). Keep in sync
-# with ops/supabase/migrations/022_archetype_consolidation.sql.
+# Legacy-to-canonical mapping. Used at runtime to collapse any
+# pre-V1 archetype labels lingering on historical pm_positions rows
+# (e.g. "tennis_qualifier" -> "tennis") so per-archetype analytics
+# never double-bucket the same sport. The historical SaaS-era
+# Postgres migration (`022_archetype_consolidation.sql`) rewrote
+# the labels in place; that file is gone post local-first pivot,
+# but git history has it if needed.
 LEGACY_ARCHETYPE_MAP: dict[str, str] = {
     "tennis_qualifier":  "tennis",
     "tennis_main_draw":  "tennis",

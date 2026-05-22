@@ -77,6 +77,17 @@ KEYRING_POLYMARKET_API_KEY        = "polymarket_api_key"
 KEYRING_POLYMARKET_API_SECRET     = "polymarket_api_secret"
 KEYRING_POLYMARKET_API_PASSPHRASE = "polymarket_api_passphrase"
 
+# ── Polymarket Relayer API Key ──────────────────────────────────────────────
+# A SEPARATE key class from the Builder API tuple above. The user creates
+# it on polymarket.com -> Settings -> Relayer API keys and pastes the
+# single UUID into Delfi. Auth is just 2 headers (RELAYER_API_KEY +
+# RELAYER_API_KEY_ADDRESS); no HMAC, no timestamp, no passphrase.
+#
+# That's enough for the Polymarket relayer at relayer-v2.polymarket.com
+# to accept gasless DepositWallet batch redemptions. Verified 2026-05-18
+# against position 317's real redeem (tx 0x10bb58d78f2c...).
+KEYRING_POLYMARKET_RELAYER_API_KEY = "polymarket_relayer_api_key"
+
 
 @dataclass
 class UserConfig:
@@ -86,6 +97,14 @@ class UserConfig:
     # confidence_override_threshold were removed when V1 shipped.
     base_stake_pct:         float = 0.02
     max_stake_pct:          float = 0.05
+    # When False (default), the sizer treats max_stake_pct as advisory
+    # only and BUMPS the per-trade stake up to Polymarket's platform
+    # minimum (max($1, 5 * ask)) when bankroll * base_stake_pct comes
+    # in below it. This is what lets small live accounts (<$50) keep
+    # trading despite Polymarket's $2.50-$4.75 per-order floor. When
+    # True, the cap is enforced and the sizer SKIPS markets it can't
+    # fund within bankroll * max_stake_pct. User instruction 2026-05-18.
+    max_stake_pct_enabled:  bool  = False
 
     # Circuit breakers.
     daily_loss_limit_pct:   float = 0.10
@@ -93,6 +112,50 @@ class UserConfig:
     drawdown_halt_pct:      float = 0.40
     streak_cooldown_losses: int   = 3
     dry_powder_reserve_pct: float = 0.20
+
+    # ── Exit policy (early close before natural settlement) ───────────────
+    # Master switch. When False, none of the take-profit / stop-loss /
+    # time-decay rules below are evaluated and positions only close on
+    # natural settlement. Default OFF so existing users see no behavior
+    # change until they opt in.
+    exit_policy_enabled: bool = False
+    # Take-profit: close the position when unrealized return >= threshold.
+    # Computed against the CURRENT BID (the price we could actually sell at),
+    # not the mid or last trade, so slippage doesn't trigger false exits.
+    take_profit_enabled:   bool  = True
+    take_profit_threshold_pct: float = 0.50   # +50% locks the win
+    # Stop-loss: close when unrealized return <= -threshold. Gated by the
+    # min-time-remaining rule below so a wick near resolution doesn't
+    # cut the position right before it would have recovered.
+    stop_loss_enabled:   bool  = True
+    stop_loss_threshold_pct: float = 0.30     # -30% caps the loss
+    # Don't trigger stop-loss if less than this fraction of the original
+    # time-to-resolution is still left. Protects against fast-moving
+    # markets in their last minutes; if you're 90% of the way to
+    # settlement at -30% you've already paid for the wait, hold to learn.
+    stop_loss_min_time_remaining_pct: float = 0.20
+    # Time-decay: close positions that have been open too long without
+    # moving — frees capital from stalled markets. Only fires when the
+    # unrealized return is inside the flat band (don't kick a winner out
+    # just because it's been open a while). Off by default since most
+    # users care more about TP/SL than capital velocity.
+    time_decay_enabled:    bool  = False
+    # 120h (5 days) tuned to the bot's PM_MAX_DAYS_TO_END=7 horizon.
+    # An earlier default of 72h was firing on multi-day markets that
+    # were not actually stalled — three days into a seven-day market
+    # is normal, not stale.
+    time_decay_max_hours:  int   = 120
+    # ±5% is the genuine "flat" band. ±10% (the prior default) caught
+    # small winners and small losers that still had direction;
+    # time-decay should only fire when the market truly hasn't moved.
+    time_decay_flat_band_pct: float = 0.05
+    # Universal safety: never exit if less than N minutes remain to the
+    # market's natural resolution. Polymarket spread + per-trade fees
+    # on a market this close to settlement reliably exceed the
+    # time-value gain of selling early. 15 min gives the position room
+    # to ride out final-minute noise (5 min was too tight; in practice
+    # spreads widen and liquidity thins inside that window).
+    exit_min_time_to_resolution_minutes: int = 15
 
     # Diagnostic-driven overrides.
     cost_assumption_override: Optional[float]   = None
@@ -209,8 +272,19 @@ class UserConfig:
 
 # ── Bounds / descriptions ───────────────────────────────────────────────────
 USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
-    "base_stake_pct":                (0.005, 0.05),
-    "max_stake_pct":                 (0.01, 0.10),
+    # base_stake_pct + max_stake_pct upper bounds widened 2026-05-18.
+    # Original bounds (0.05 / 0.10) were calibrated for $1000+ bankrolls
+    # where 5% of $1000 = $50 per trade comfortably clears Polymarket's
+    # $1-and-5-share minimums at any favourite price. At small live
+    # bankrolls (<$200) those bounds produced a per-trade cap below
+    # the exchange minimum, so the sizer skipped every market —
+    # user complaint 2026-05-18: "we have $8.47, why is the bot keep
+    # skipping all markets now?". Widening to 100% lets the user
+    # explicitly opt into "stake most of bankroll on one trade" when
+    # their capital is small. Risk is the user's call; this just
+    # removes the artificial floor on what they can configure.
+    "base_stake_pct":                (0.005, 1.00),
+    "max_stake_pct":                 (0.01,  1.00),
     "daily_loss_limit_pct":          (0.01, 1.00),
     "weekly_loss_limit_pct":         (0.01, 1.00),
     "drawdown_halt_pct":             (0.01, 1.00),
@@ -226,6 +300,16 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     # validator runs.
     "min_days_to_resolution":        (1, 30),
     "max_days_to_resolution":        (1, 30),
+    # Exit policy thresholds. Bools (exit_policy_enabled,
+    # take_profit_enabled, stop_loss_enabled, time_decay_enabled) are
+    # not in this dict — they're cast by _CASTERS and validated as
+    # plain bools, not range-bounded.
+    "take_profit_threshold_pct":        (0.05, 5.00),  # 5% to 500%
+    "stop_loss_threshold_pct":          (0.05, 0.95),  # 5% to 95% loss
+    "stop_loss_min_time_remaining_pct": (0.00, 0.95),  # 0% to 95%
+    "time_decay_max_hours":             (1, 720),      # 1h to 30d
+    "time_decay_flat_band_pct":         (0.00, 1.00),  # 0% to 100%
+    "exit_min_time_to_resolution_minutes": (0, 1440),  # 0 to 24h
 }
 
 # Band-shaped fields. Stored as JSON-encoded list of [lo, hi] float
@@ -279,6 +363,13 @@ ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)
 # either field we never overwrite their choice.
 V1_DEFAULT_ARCHETYPE_SKIP_LIST: Tuple[str, ...] = (
     "sports_other", "hockey", "cricket",
+    # Crypto micro-window markets ("Bitcoin Up or Down 8:35-8:40 AM
+    # ET"). 5-30 min direction calls settled on a single tick;
+    # un-researchable and intrinsically efficient. Default-skipped
+    # because every LLM evaluation produces either a coin-flip
+    # forecast (no edge) or a same-event-verified-no rejection
+    # (wasted tokens). User instruction 2026-05-18.
+    "crypto_short",
 )
 V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS: Dict[str, float] = {
     "basketball": 1.5,
@@ -315,6 +406,38 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Per-archetype stake multiplier applied to the flat base stake. "
         "1.0 = no adjustment, 2.0 = double-size, 0.5 = half-size. "
         "Clamped to [0.1, 10.0] per entry.",
+    "exit_policy_enabled":
+        "Master switch for early-exit logic. When off, positions only "
+        "close at natural market settlement.",
+    "take_profit_enabled":
+        "Close positions when unrealized return crosses the take-profit "
+        "threshold (computed against the current bid).",
+    "take_profit_threshold_pct":
+        "Unrealized return level at which a position is closed in profit. "
+        "0.50 = +50%, 1.00 = +100%. Computed against the bid, not the mid.",
+    "stop_loss_enabled":
+        "Close positions when unrealized return falls below the negative "
+        "stop-loss threshold. Gated by min-time-remaining.",
+    "stop_loss_threshold_pct":
+        "Unrealized loss level at which a position is closed. 0.30 = -30%.",
+    "stop_loss_min_time_remaining_pct":
+        "Skip stop-loss if less than this fraction of the original time-to-"
+        "resolution remains. Prevents cutting losses on a wick near "
+        "settlement that would have recovered.",
+    "time_decay_enabled":
+        "Close stalled positions that have been open beyond max_hours and "
+        "are still inside the flat band. Frees capital from markets going "
+        "nowhere.",
+    "time_decay_max_hours":
+        "Hours a position can remain open before time-decay considers it. "
+        "Only fires alongside the flat-band check.",
+    "time_decay_flat_band_pct":
+        "Unrealized return range (±) considered 'flat enough' for time-"
+        "decay to close. 0.10 = ±10%. Keeps decay from closing winners.",
+    "exit_min_time_to_resolution_minutes":
+        "Universal safety floor. Never exit if less than N minutes remain "
+        "until natural settlement — avoids spread + fee drag for tiny "
+        "time-value gain.",
 }
 
 
@@ -330,6 +453,19 @@ _CASTERS: dict[str, type] = {
     "starting_cash":                 float,
     "min_days_to_resolution":        int,
     "max_days_to_resolution":        int,
+    # Exit policy
+    "exit_policy_enabled":               bool,
+    "take_profit_enabled":               bool,
+    "take_profit_threshold_pct":         float,
+    "stop_loss_enabled":                 bool,
+    "stop_loss_threshold_pct":           float,
+    "stop_loss_min_time_remaining_pct":  float,
+    "time_decay_enabled":                bool,
+    "time_decay_max_hours":              int,
+    "time_decay_flat_band_pct":          float,
+    "exit_min_time_to_resolution_minutes": int,
+    # Stake-cap toggle (sizer)
+    "max_stake_pct_enabled":             bool,
 }
 
 # Persistable subset. Anything not here is silently dropped on update so
@@ -357,6 +493,19 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "max_days_to_resolution",
     "archetype_skip_market_price_bands",
     "tour_completed_at",
+    # Exit policy
+    "exit_policy_enabled",
+    "take_profit_enabled",
+    "take_profit_threshold_pct",
+    "stop_loss_enabled",
+    "stop_loss_threshold_pct",
+    "stop_loss_min_time_remaining_pct",
+    "time_decay_enabled",
+    "time_decay_max_hours",
+    "time_decay_flat_band_pct",
+    "exit_min_time_to_resolution_minutes",
+    # Stake-cap toggle (sizer)
+    "max_stake_pct_enabled",
 })
 
 
@@ -666,11 +815,27 @@ def validate_user_config_value(key: str, value) -> None:
         return
     if key in USER_CONFIG_NULLABLE_FIELDS and value is None:
         return
-    if key in ("mode", "wallet_address", "bot_enabled", "telegram_chat_id",
-               "tour_completed_at"):
-        # tour_completed_at: opaque ISO-8601 string written once by the
-        # Onboarding wizard's final step. No bounds check; the caster
-        # already normalised None/empty to None.
+    # Pure bool / string fields with no numeric bounds. The caster already
+    # confirmed the type; nothing else to validate. Without this list, the
+    # final "if key not in USER_CONFIG_BOUNDS" branch rejects every
+    # bool-toggle update with "unknown user_config field" even though the
+    # field is fully registered in _CASTERS and _PERSISTABLE_COLUMNS.
+    # tour_completed_at: opaque ISO-8601 string written once by the
+    # Onboarding wizard's final step. No bounds check; the caster
+    # already normalised None/empty to None.
+    if key in (
+        "mode", "wallet_address", "bot_enabled", "telegram_chat_id",
+        "tour_completed_at",
+        # Exit-policy toggles. Each pairs with a numeric threshold that
+        # IS bounded (take_profit_threshold_pct, etc.); only the bool
+        # switches need the no-bounds escape hatch.
+        "exit_policy_enabled",
+        "take_profit_enabled",
+        "stop_loss_enabled",
+        "time_decay_enabled",
+        # Stake-cap toggle. Pairs with the bounded max_stake_pct.
+        "max_stake_pct_enabled",
+    ):
         return
     if key not in USER_CONFIG_BOUNDS:
         raise ValueError(f"unknown user_config field: {key}")
@@ -1039,7 +1204,19 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       notification_prefs, telegram_chat_id, "
                 "       min_days_to_resolution, max_days_to_resolution, "
                 "       archetype_skip_market_price_bands, "
-                "       tour_completed_at "
+                "       tour_completed_at, "
+                # Exit policy (indices 20..29). Read them here so an
+                # UPDATE survives the round-trip - without these the
+                # write path persists correctly but the dataclass
+                # falls back to defaults on every read.
+                "       exit_policy_enabled, take_profit_enabled, "
+                "       take_profit_threshold_pct, stop_loss_enabled, "
+                "       stop_loss_threshold_pct, "
+                "       stop_loss_min_time_remaining_pct, "
+                "       time_decay_enabled, time_decay_max_hours, "
+                "       time_decay_flat_band_pct, "
+                "       exit_min_time_to_resolution_minutes, "
+                "       max_stake_pct_enabled "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -1065,6 +1242,19 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             max_days_to_resolution        = (int(row[17]) if row[17] is not None else None),
             archetype_skip_market_price_bands = _decode_archetype_skip_market_price_bands(row[18]),
             tour_completed_at             = (str(row[19]) if row[19] is not None else None),
+            # Exit policy. row[20..30] correspond to the dataclass
+            # defaults defined at the top of UserConfig.
+            exit_policy_enabled                 = bool(row[20]) if row[20] is not None else False,
+            take_profit_enabled                 = bool(row[21]) if row[21] is not None else True,
+            take_profit_threshold_pct           = float(row[22]) if row[22] is not None else 0.50,
+            stop_loss_enabled                   = bool(row[23]) if row[23] is not None else True,
+            stop_loss_threshold_pct             = float(row[24]) if row[24] is not None else 0.30,
+            stop_loss_min_time_remaining_pct    = float(row[25]) if row[25] is not None else 0.20,
+            time_decay_enabled                  = bool(row[26]) if row[26] is not None else False,
+            time_decay_max_hours                = int(row[27])   if row[27] is not None else 72,
+            time_decay_flat_band_pct            = float(row[28]) if row[28] is not None else 0.10,
+            exit_min_time_to_resolution_minutes = int(row[29])   if row[29] is not None else 5,
+            max_stake_pct_enabled               = bool(row[30]) if row[30] is not None else False,
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)
@@ -1508,6 +1698,26 @@ def set_polymarket_api_creds(
         _keyring_set(KEYRING_POLYMARKET_API_SECRET, api_secret)
     if api_passphrase is not None:
         _keyring_set(KEYRING_POLYMARKET_API_PASSPHRASE, api_passphrase)
+
+
+def get_polymarket_relayer_api_key() -> Optional[str]:
+    """The single-UUID Relayer API Key from polymarket.com Settings.
+    Powers gasless redemption via the relayer's simple 2-header auth
+    (RELAYER_API_KEY + RELAYER_API_KEY_ADDRESS). The address half is
+    derived from the user's private key at call time.
+    """
+    v = _keyring_get(KEYRING_POLYMARKET_RELAYER_API_KEY)
+    if v and v.strip():
+        return v.strip()
+    return None
+
+
+def set_polymarket_relayer_api_key(value: Optional[str]) -> None:
+    """Write or clear the Relayer API Key. Empty string clears it
+    so the user can disable gasless redeem if they want to fall back
+    to direct-RPC."""
+    _keyring_set(KEYRING_POLYMARKET_RELAYER_API_KEY, value)
+
 
 
 # ── License (offline Ed25519 hard gate) ────────────────────────────────────

@@ -11,6 +11,8 @@ import {
   LoginItemStatus,
   NotificationsConfig,
   TelegramConfig,
+  tauriRestartSidecar,
+  waitForSidecar,
 } from "../api";
 import {
   COMMON_TIMEZONES,
@@ -19,7 +21,29 @@ import {
   resolvedTz,
   setDisplayTz,
 } from "../lib/format";
-import type { SettingsTab } from "../App";
+import type { Page, SettingsTab } from "../App";
+import { HELP_ANCHORS } from "./Help";
+
+// Routing helper passed from App. `goto("help", undefined, anchor)`
+// switches to the Help page and auto-opens the matching guide.
+type Goto = (p: Page, tab?: SettingsTab, helpAnchor?: string) => void;
+
+/** Compact "?" affordance rendered inline with a credential label.
+ *  Clicking it routes to Help and opens the matching guide. */
+function HelpHint({ anchor, goto }: { anchor: string; goto: Goto }) {
+  return (
+    <button
+      type="button"
+      className="help-hint"
+      onClick={() => goto("help", undefined, anchor)}
+      aria-label="Open setup guide"
+      title="Need help? Open the setup guide."
+    >
+      <span aria-hidden="true">?</span>
+      <span className="help-hint-label">Need help?</span>
+    </button>
+  );
+}
 
 /**
  * Settings - SaaS-parity layout, with desktop additions:
@@ -49,6 +73,7 @@ interface Props {
   creds: Credentials | null;
   config: ConfigShape | null;
   onSaved: () => void;
+  goto: Goto;
 }
 
 const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
@@ -59,12 +84,12 @@ const TITLES: Record<SettingsTab, { h1: string; sub: string }> = {
   notifications: { h1: "Notifications",   sub: "" },
 };
 
-export default function Settings({ tab, creds, config, onSaved }: Props) {
+export default function Settings({ tab, creds, config, onSaved, goto }: Props) {
   // setTab is in Props for future use (eg deep-linking) but the sidebar owns
   // tab switching today; ignore it here without triggering noUnusedLocals.
   const t = TITLES[tab];
   return (
-    <div className="page-wrap">
+    <div className="page-wrap narrow">
       <div className="page-head">
         <div className="page-head-row">
           <div>
@@ -77,8 +102,8 @@ export default function Settings({ tab, creds, config, onSaved }: Props) {
       {tab === "account"       && <AccountPanel       config={config} onSaved={onSaved} />}
       {tab === "app"           && <AppPanel />}
       {tab === "diagnostics"   && <DiagnosticsPanel />}
-      {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} />}
-      {tab === "notifications" && <NotificationsPanel />}
+      {tab === "connections"   && <ConnectionsPanel   creds={creds}   onSaved={onSaved} goto={goto} />}
+      {tab === "notifications" && <NotificationsPanel goto={goto} />}
     </div>
   );
 }
@@ -541,11 +566,23 @@ function LoginItemPanel() {
 
 // ── Restart Delfi ───────────────────────────────────────────────────────
 
-/** One-click restart of the daemon. Sends SIGTERM via launchctl
- *  kickstart -k; launchd respawns within ThrottleInterval (10s). The
- *  api.ts retry-on-connection-error logic transparently re-resolves
- *  the new port, so the user typically sees a brief "Restarting..."
- *  spinner and then everything resumes. */
+/** One-click restart of the daemon.
+ *
+ *  Uses the Tauri-side `restart_sidecar` command, which runs in the
+ *  shell process (not the daemon) and is therefore reachable even
+ *  when the daemon's HTTP loop is wedged. The Rust command:
+ *    1. reads the port file
+ *    2. lsof's the actual pid listening on that port
+ *    3. SIGKILLs that pid (so it can't survive in a hung state)
+ *    4. runs `launchctl kickstart -k gui/<uid>/com.delfi.bot` as a
+ *       belt-and-braces respawn trigger
+ *  Step 3 is the bulletproof bit: it bypasses launchd's tracked-pid
+ *  state entirely. KeepAlive=true on the LaunchAgent respawns the
+ *  daemon regardless.
+ *
+ *  After triggering, we poll /api/state until the new daemon is
+ *  reachable (or 30s elapses). On timeout we tell the user to quit
+ *  + relaunch Delfi manually so they have a concrete next step. */
 function RestartPanel() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -555,9 +592,24 @@ function RestartPanel() {
     setBusy(true);
     setMsg(null);
     try {
-      const r = await api.restart();
-      setMsg({ kind: "ok", text: r.detail || "Restart signal sent." });
+      await tauriRestartSidecar();
       setConfirm(false);
+
+      // Poll Rust IPC directly for the new daemon's port. The Rust
+      // command returns as soon as it's fired the kill + kickstart;
+      // the daemon usually comes back in 5-10 s (launchd
+      // ThrottleInterval=10 s + PyInstaller cold-start).
+      const alive = await waitForSidecar(30_000);
+      if (alive) {
+        setMsg({ kind: "ok", text: "Delfi restarted." });
+      } else {
+        setMsg({
+          kind: "err",
+          text: "Daemon did not come back within 30 seconds. " +
+                "Quit Delfi from the macOS menu bar and reopen " +
+                "from /Applications.",
+        });
+      }
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -997,12 +1049,13 @@ function LicensePanel() {
 function ConnectionsPanel({
   creds,
   onSaved,
+  goto,
 }: {
   creds: Credentials | null;
   onSaved: () => void;
+  goto: Goto;
 }) {
   const [pmKey, setPmKey] = useState("");
-  const [wallet, setWallet] = useState("");
   const [llmKey, setLlmKey] = useState("");
   const [llmBackup, setLlmBackup] = useState("");
   const [newsapi, setNewsapi] = useState("");
@@ -1011,12 +1064,9 @@ function ConnectionsPanel({
   const [pmApiKey, setPmApiKey] = useState("");
   const [pmApiSecret, setPmApiSecret] = useState("");
   const [pmApiPass, setPmApiPass] = useState("");
+  const [pmRelayerKey, setPmRelayerKey] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (creds) setWallet(creds.wallet_address ?? "");
-  }, [creds]);
 
   // Older sidecars don't return `has_llm_key`; fall back to the legacy
   // `has_anthropic_key` so the "(stored)" placeholder is correct on
@@ -1029,6 +1079,7 @@ function ConnectionsPanel({
   const hasPmApiKey  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_key === true;
   const hasPmApiSec  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_secret === true;
   const hasPmApiPass = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_passphrase === true;
+  const hasPmRelayerKey = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_relayer_api_key === true;
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1037,7 +1088,6 @@ function ConnectionsPanel({
     try {
       const payload: Record<string, string> = {};
       if (pmKey.trim())       payload.polymarket_private_key = pmKey.trim();
-      if (wallet.trim())      payload.wallet_address = wallet.trim();
       if (llmKey.trim())      payload.llm_api_key = llmKey.trim();
       if (llmBackup.trim())   payload.llm_backup_key = llmBackup.trim();
       if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
@@ -1046,6 +1096,7 @@ function ConnectionsPanel({
       if (pmApiKey.trim())    payload.polymarket_api_key = pmApiKey.trim();
       if (pmApiSecret.trim()) payload.polymarket_api_secret = pmApiSecret.trim();
       if (pmApiPass.trim())   payload.polymarket_api_passphrase = pmApiPass.trim();
+      if (pmRelayerKey.trim()) payload.polymarket_relayer_api_key = pmRelayerKey.trim();
       if (Object.keys(payload).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
         return;
@@ -1060,6 +1111,7 @@ function ConnectionsPanel({
       setPmApiKey("");
       setPmApiSecret("");
       setPmApiPass("");
+      setPmRelayerKey("");
       setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
     } catch (err) {
@@ -1082,7 +1134,10 @@ function ConnectionsPanel({
       </p>
       <form className="form-row" onSubmit={save}>
         <div className="form-field">
-          <label>Polymarket private key</label>
+          <div className="form-label-row">
+            <label>Polymarket private key</label>
+            <HelpHint anchor={HELP_ANCHORS.polymarketKey} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1091,26 +1146,15 @@ function ConnectionsPanel({
             onChange={(e) => setPmKey(e.target.value)}
           />
           <p className="form-hint">
-            Signs Polymarket orders for live trading. Required only when you
-            switch Delfi to Live mode.
-          </p>
-        </div>
-        <div className="form-field">
-          <label>Wallet address</label>
-          <input
-            type="text"
-            autoComplete="off"
-            placeholder="0x..."
-            value={wallet}
-            onChange={(e) => setWallet(e.target.value)}
-          />
-          <p className="form-hint">
-            The public 0x address paired with the private key above.
+            Signs Polymarket orders in live mode. The wallet address auto-derives from this key.
           </p>
         </div>
 
         <div className="form-field">
-          <label>LLM API key</label>
+          <div className="form-label-row">
+            <label>LLM API key</label>
+            <HelpHint anchor={HELP_ANCHORS.llm} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1119,32 +1163,49 @@ function ConnectionsPanel({
             onChange={(e) => setLlmKey(e.target.value)}
           />
           <p className="form-hint">
-            The model that reads each Polymarket market and produces
-            Delfi&apos;s forecast. Without this, Delfi can&apos;t decide
-            whether to trade. Bring your own key from any major LLM
-            provider.
+            The forecaster that reads each market.
           </p>
         </div>
 
         <div className="form-field">
-          <label>Backup LLM API key (optional)</label>
+          <div className="form-label-row">
+            <label>Backup LLM API key</label>
+            <HelpHint anchor={HELP_ANCHORS.llmBackup} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
-            placeholder={hasLlmBackup ? "(stored)" : "sk-..."}
+            placeholder={hasLlmBackup ? "(stored)" : "Paste a second LLM API key"}
             value={llmBackup}
             onChange={(e) => setLlmBackup(e.target.value)}
           />
           <p className="form-hint">
-            A second LLM Delfi falls back to if the primary is rate-limited
-            or returns an error. Useful at higher trading volume or as a
-            hedge against provider outages. Stored now; failover wiring lands
-            with multi-provider support.
+            Used when the primary LLM errors or rate-limits.
           </p>
         </div>
 
         <div className="form-field">
-          <label>NewsAPI key (optional)</label>
+          <div className="form-label-row">
+            <label>Search LLM API key</label>
+            <HelpHint anchor={HELP_ANCHORS.searchLlm} goto={goto} />
+          </div>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasGemini ? "(stored)" : "Paste a Search LLM API key"}
+            value={gemini}
+            onChange={(e) => setGemini(e.target.value)}
+          />
+          <p className="form-hint">
+            Used for keyword extraction and headline filtering. Cheap models recommended.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <div className="form-label-row">
+            <label>NewsAPI key</label>
+            <HelpHint anchor={HELP_ANCHORS.newsapi} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1153,15 +1214,15 @@ function ConnectionsPanel({
             onChange={(e) => setNewsapi(e.target.value)}
           />
           <p className="form-hint">
-            Pulls breaking news headlines around event-resolution windows.
-            Adds context to forecasts on geopolitical, economic, and
-            current-event markets. Free tier at newsapi.org. Without it
-            Delfi falls back to RSS feeds and may miss late-breaking context.
+            Headlines for geopolitical, economic, and current-event markets.
           </p>
         </div>
 
         <div className="form-field">
-          <label>CryptoPanic key (optional)</label>
+          <div className="form-label-row">
+            <label>CryptoPanic key</label>
+            <HelpHint anchor={HELP_ANCHORS.cryptopanic} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"
@@ -1170,10 +1231,24 @@ function ConnectionsPanel({
             onChange={(e) => setCryptopanic(e.target.value)}
           />
           <p className="form-hint">
-            Pulls crypto-specific news (tokens, regulators, exchange events)
-            into Delfi&apos;s research feed. Useful for Polymarket&apos;s
-            crypto-themed markets (BTC threshold, ETH ETF, exchange events).
-            Free at cryptopanic.com.
+            Crypto-specific news for Polymarket crypto markets.
+          </p>
+        </div>
+
+        <div className="form-field">
+          <div className="form-label-row">
+            <label>Polymarket Relayer API key</label>
+            <HelpHint anchor={HELP_ANCHORS.polymarketRelayer} goto={goto} />
+          </div>
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder={hasPmRelayerKey ? "(stored)" : "019d9954-..."}
+            value={pmRelayerKey}
+            onChange={(e) => setPmRelayerKey(e.target.value)}
+          />
+          <p className="form-hint">
+            Enables auto-redeem of winning positions.
           </p>
         </div>
 
@@ -1278,7 +1353,7 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   },
 };
 
-function NotificationsPanel() {
+function NotificationsPanel({ goto }: { goto: Goto }) {
   const [notif, setNotif] = useState<NotificationsConfig | null>(null);
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [prefSavingKey, setPrefSavingKey] = useState<string | null>(null);
@@ -1333,7 +1408,7 @@ function NotificationsPanel() {
 
   return (
     <>
-      <TelegramConnectorPanel />
+      <TelegramConnectorPanel goto={goto} />
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">What Delfi will surface</h2>
@@ -1394,7 +1469,7 @@ function NotificationsPanel() {
  * `bot_token_configured: boolean`, never the token itself. Disconnect
  * wipes both.
  */
-function TelegramConnectorPanel() {
+function TelegramConnectorPanel({ goto }: { goto: Goto }) {
   const [tg, setTg] = useState<TelegramConfig | null>(null);
   const [token, setToken] = useState("");
   const [chat, setChat] = useState("");
@@ -1492,28 +1567,12 @@ function TelegramConnectorPanel() {
           {isConnected ? "Connected" : "Not connected"}
         </span>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Push trades, settlements, and risk events to your phone.
-        Create a bot via{" "}
-        <a
-          href="https://t.me/BotFather"
-          onClick={(e) => { e.preventDefault(); void openUrl("https://t.me/BotFather"); }}
-        >
-          @BotFather
-        </a>{" "}
-        to get a token, then send any message to your bot so it has a
-        chat id. Find your chat id via{" "}
-        <a
-          href="https://t.me/userinfobot"
-          onClick={(e) => { e.preventDefault(); void openUrl("https://t.me/userinfobot"); }}
-        >
-          @userinfobot
-        </a>.
-      </p>
-
       <form className="form-row" onSubmit={save}>
         <div className="form-field">
-          <label>Bot token</label>
+          <div className="form-label-row">
+            <label>Bot token</label>
+            <HelpHint anchor={HELP_ANCHORS.telegram} goto={goto} />
+          </div>
           <input
             type="password"
             autoComplete="off"

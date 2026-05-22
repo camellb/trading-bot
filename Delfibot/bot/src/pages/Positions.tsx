@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { api, EventLogRow, isConnectionError, MarketEvaluation, PerformanceSummary, PMPosition } from "../api";
-import { formatDate, formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
+import { formatDateTime, daysFromNow as daysFromNowFmt, timeAgo } from "../lib/format";
 import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 
 // Tauri webviews swallow `target="_blank"` clicks by default - the link
@@ -34,17 +34,24 @@ type Filter = "all" | "open" | "closed" | "skipped" | "errors";
 
 // Local aliases that delegate to the central tz-aware formatters
 // (src/lib/format.ts). Kept as small wrappers so the rest of the
-// file reads the same as before.
-const fmt = formatDate;
+// file reads the same as before. Closed/Skipped/Errors columns now
+// show relative time (timeAgo) with the full ISO on hover; only
+// the long-form fmtDateTime is needed locally for the title text.
 const fmtDateTime = formatDateTime;
 function daysFromNow(iso: string | null | undefined): string {
   if (!iso) return "-";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "-";
-  if (t - Date.now() <= 0) return "resolving";
-  // The lib version returns "Xd Yh" / "Xh Ym"; this page likes a
-  // single-token form for the table. Fall through to that when we
-  // have a positive future delta.
+  // After the Polymarket trading window closes (the `endDate` we
+  // count down to), the market enters UMA's optimistic-oracle
+  // settlement: a proposer submits the resolution, a dispute
+  // window runs (typically 2-12 hours), then funds are released.
+  // The bot's resolver checks every 60s and settles the row
+  // automatically once Polymarket flips `closed: true`. Until
+  // then the position stays open and earns no extra P&L — it's
+  // just waiting on the oracle. "settling" reads clearer than
+  // "resolving"; the latter sounded instantaneous to users.
+  if (t - Date.now() <= 0) return "settling";
   return daysFromNowFmt(iso);
 }
 function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
@@ -61,6 +68,7 @@ function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
 // the formatted string, so "+10%" sorts after "+9%" not before it.
 
 type OpenSk    = "market" | "category" | "side" | "size"
+                | "avg"   | "now"      | "value" | "pnl"
                 | "myes"  | "dyes"     | "dconf" | "opened" | "closes";
 type ClosedSk  = "market" | "category" | "side" | "outcome"
                 | "entry" | "myes"     | "dyes"  | "pnl" | "settled";
@@ -73,6 +81,26 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
     case "category": return (p.category as string | null) ?? "";
     case "side":     return p.side;
     case "size":     return p.cost_usd;
+    case "avg":      return p.entry_price;
+    case "now": {
+      // Current mid-price for the held side. We derive it from the
+      // mark stored in current_value_usd whenever the exit-policy
+      // job has written one, else fall back to entry_price.
+      const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+        | number | null | undefined;
+      if (cv != null && p.shares > 0) return Number(cv) / p.shares;
+      return p.entry_price;
+    }
+    case "value": {
+      const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+        | number | null | undefined;
+      return cv != null ? Number(cv) : p.cost_usd;
+    }
+    case "pnl": {
+      const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+        | number | null | undefined;
+      return cv != null ? Number(cv) - p.cost_usd : 0;
+    }
     case "myes": {
       const m = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
       return m;
@@ -109,6 +137,59 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
       return iso ? new Date(iso).getTime() : null;
     }
   }
+}
+
+// Polymarket V2 returns raw internal error strings (order hashes,
+// 6-decimal USDC uints). Translate the patterns we know about into
+// something a non-developer can act on. Unknown errors fall through
+// to the original text so we don't accidentally hide useful info.
+function humanizePolymarketError(raw: string): string {
+  // 5-share minimum:
+  //   "order 0x... is invalid. Size (1.73) lower than the minimum: 5"
+  const sizeMin = raw.match(
+    /Size \(([\d.]+)\) lower than the minimum:\s*([\d.]+)/i
+  );
+  if (sizeMin) {
+    return (
+      `Order too small: ${sizeMin[1]} shares (Polymarket needs ` +
+      `${sizeMin[2]}). Wait for a cheaper market or raise the stake.`
+    );
+  }
+  // $1 notional minimum:
+  //   "invalid amount for a marketable BUY order ($0.17), min size: $1"
+  const usdMin = raw.match(
+    /marketable BUY order \(\$([\d.]+)\),\s*min size:\s*\$([\d.]+)/i
+  );
+  if (usdMin) {
+    return (
+      `Order $${usdMin[1]} is below Polymarket's $${usdMin[2]} ` +
+      `minimum. Raise the stake to clear the floor.`
+    );
+  }
+  // Insufficient balance — raw uints in 6-decimal USDC:
+  //   "balance: 8101422, order amount: 21684640"
+  const bal = raw.match(
+    /balance:\s*(\d+),\s*order amount:\s*(\d+)/i
+  );
+  if (bal) {
+    const have = (Number(bal[1]) / 1e6).toFixed(2);
+    const need = (Number(bal[2]) / 1e6).toFixed(2);
+    return (
+      `Not enough on Polymarket: order needed $${need}, wallet has ` +
+      `$${have}. Deposit more or lower the stake.`
+    );
+  }
+  // Signer mismatch (should never appear post-SDK-1.0.1 but kept as
+  // a safety belt — if Polymarket ever regresses the api-key
+  // binding, the message stays human):
+  if (/signer address has to be the address of the API KEY/i.test(raw)) {
+    return (
+      "Polymarket rejected the order signer. Try re-saving your " +
+      "Polymarket private key in Settings."
+    );
+  }
+  // Anything else: hand back the raw error. We don't pretend.
+  return raw;
 }
 
 function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
@@ -178,10 +259,14 @@ export default function Positions() {
   );
   const settled = useMemo(
     // `closed` is a stale status string no code path emits today;
-    // pm_executor.py only writes open / settled / invalid. The earlier
-    // filter hid every INVALID resolution from the Closed pane. Match
-    // what the Performance and Dashboard pages already do.
-    () => positions.filter((p) => p.status === "settled" || p.status === "invalid"),
+    // pm_executor.py only writes open / settled / invalid / closed_early.
+    // Show natural settlements AND early-policy exits side-by-side under
+    // the Closed pane; the status badge in the table disambiguates.
+    () => positions.filter(
+      (p) => p.status === "settled"
+          || p.status === "invalid"
+          || p.status === "closed_early"
+    ),
     [positions],
   );
   const skipped = useMemo(
@@ -194,6 +279,30 @@ export default function Positions() {
     () => events.filter((e) => e.event_type === "order_error"),
     [events],
   );
+
+  // Lookup table: question text -> category. The event_log row
+  // doesn't carry a category column - it's just the executor's
+  // string description - so we resolve it on the client by matching
+  // each error's parsed question text against the positions +
+  // evaluations already loaded for this page. Bot-placed orders
+  // always have a matching evaluation, so this covers everything in
+  // practice. The lookup is normalised on whitespace so minor
+  // formatting differences (trailing periods, double spaces) don't
+  // miss the hit.
+  const questionToCategory = useMemo(() => {
+    const norm = (q: string) => q.trim().toLowerCase().replace(/\s+/g, " ");
+    const map = new Map<string, string>();
+    for (const p of positions) {
+      const cat = (p.category as string | null | undefined) ?? null;
+      if (p.question && cat) map.set(norm(p.question), cat);
+    }
+    for (const e of evals) {
+      if (e.question && e.category && !map.has(norm(e.question))) {
+        map.set(norm(e.question), e.category);
+      }
+    }
+    return map;
+  }, [positions, evals]);
 
   // Sort states. One per table so they're independent. Defaults
   // mirror "most recent first" or "biggest first" depending on
@@ -287,14 +396,15 @@ export default function Positions() {
             <table className="table-simple">
               <colgroup>
                 <col style={{ width: "auto" }} />
-                <col style={{ width: "12%" }} />
-                <col style={{ width: "60px" }} />
-                <col style={{ width: "70px" }} />
-                <col style={{ width: "70px" }} />
-                <col style={{ width: "70px" }} />
-                <col style={{ width: "70px" }} />
-                <col style={{ width: "80px" }} />
-                <col style={{ width: "80px" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "56px" }} />
+                <col style={{ width: "64px" }} />
+                <col style={{ width: "64px" }} />
+                <col style={{ width: "64px" }} />
+                <col style={{ width: "64px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
                 <col style={{ width: "28px" }} />
               </colgroup>
               <thead>
@@ -302,10 +412,11 @@ export default function Positions() {
                   <SortableTh field="market"   sort={openSort}>Market</SortableTh>
                   <SortableTh field="category" sort={openSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={openSort}>Side</SortableTh>
-                  <SortableTh field="size"     sort={openSort}>Size</SortableTh>
-                  <SortableTh field="myes"     sort={openSort}>M YES %</SortableTh>
-                  <SortableTh field="dyes"     sort={openSort}>D YES %</SortableTh>
-                  <SortableTh field="dconf"    sort={openSort}>D CONF</SortableTh>
+                  <SortableTh field="avg"      sort={openSort}>Avg</SortableTh>
+                  <SortableTh field="now"      sort={openSort}>Now</SortableTh>
+                  <SortableTh field="size"     sort={openSort}>Traded</SortableTh>
+                  <SortableTh field="value"    sort={openSort}>Value</SortableTh>
+                  <SortableTh field="pnl"      sort={openSort}>P&amp;L</SortableTh>
                   <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
                   <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
                   <th />
@@ -313,18 +424,28 @@ export default function Positions() {
               </thead>
               <tbody>
                 {openRows.map((p) => {
-                  const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
-                  const mYesPct = Math.round(marketYes * 100);
-                  const cp = (p.claude_probability as number | null | undefined) ?? null;
-                  const cf = (p.confidence as number | null | undefined) ?? null;
-                  const dYesPct = cp != null ? Math.round(cp * 100) : null;
-                  const dConfPct = cf != null ? Math.round(cf * 100) : null;
                   const isOpen = expandedPos.has(p.id);
                   const reasoning = ((p.reasoning as string | null | undefined) ?? "").trim();
                   const slug = p.slug as string | null | undefined;
                   const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
                   const closesAt = (p.expected_resolution_at as string | null | undefined) ?? null;
                   const category = (p.category as string | null | undefined) ?? null;
+                  // Current mark from the exit-policy job (60s
+                  // cadence). NULL in the first minute after open
+                  // and on illiquid markets - in those cases all the
+                  // "now/value/pnl" cells render an em-dash so the
+                  // user knows the row hasn't been marked yet.
+                  const cv  = (p as unknown as Record<string, unknown>).current_value_usd as
+                    | number | null | undefined;
+                  const haveMark = cv != null && p.shares > 0;
+                  const nowPx = haveMark ? (Number(cv) / p.shares) : null;
+                  const value = haveMark ? Number(cv) : null;
+                  const pnl   = haveMark ? (Number(cv) - p.cost_usd) : null;
+                  const pnlClass =
+                    pnl == null ? ""
+                    : pnl > 0 ? "cell-up"
+                    : pnl < 0 ? "cell-down"
+                    : "";
                   return (
                     <React.Fragment key={p.id}>
                       <tr
@@ -335,11 +456,19 @@ export default function Positions() {
                         <td className="truncate" title={p.question}>{p.question}</td>
                         <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
+                        <td className="mono">${p.entry_price.toFixed(3)}</td>
+                        <td className="mono">{nowPx != null ? `$${nowPx.toFixed(3)}` : "—"}</td>
                         <td className="mono">${p.cost_usd.toFixed(0)}</td>
-                        <td className="mono">{mYesPct}%</td>
-                        <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
-                        <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
-                        <td className="mono">{timeAgo(p.created_at)}</td>
+                        <td className="mono">{value != null ? `$${value.toFixed(2)}` : "—"}</td>
+                        <td className={`mono ${pnlClass}`}>{
+                          pnl == null ? "—"
+                          : pnl > 0 ? `+$${pnl.toFixed(2)}`
+                          : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
+                          : "$0.00"
+                        }</td>
+                        <td className="mono" title={p.created_at ? fmtDateTime(p.created_at) : ""}>
+                          {p.created_at ? timeAgo(p.created_at) : "—"}
+                        </td>
                         <td className="mono">{daysFromNow(closesAt)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>
                           <span style={{
@@ -352,7 +481,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={11} style={{ padding: "16px 20px 22px" }}>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -373,6 +502,28 @@ export default function Positions() {
                               <div>
                                 <div className="kv-label">Cost</div>
                                 <div className="kv-val mono">${p.cost_usd.toFixed(2)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Market YES %</div>
+                                <div className="kv-val mono">{
+                                  Math.round((p.side === "YES" ? p.entry_price : 1 - p.entry_price) * 100)
+                                }%</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Delfi YES %</div>
+                                <div className="kv-val mono">{
+                                  p.claude_probability != null
+                                    ? `${Math.round(p.claude_probability * 100)}%`
+                                    : "—"
+                                }</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Delfi confidence</div>
+                                <div className="kv-val mono">{
+                                  p.confidence != null
+                                    ? `${Math.round(p.confidence * 100)}%`
+                                    : "—"
+                                }</div>
                               </div>
                             </div>
                             <div className="pos-detail-reason">
@@ -435,15 +586,29 @@ export default function Positions() {
                   const outcome = s.settlement_outcome as string | null | undefined;
                   const settledAt = s.settled_at as string | null | undefined;
                   const status = (s.status as string | null | undefined) ?? "settled";
-                  // Three states. INVALID resolutions used to render
-                  // as "LOST" because outcome="INVALID" never matched
-                  // the side. They're refunds (pnl=0), not losses.
+                  // Four states now. INVALID resolutions (50/50 void)
+                  // render as VOID, not LOST. CLOSED_EARLY rows show
+                  // the exit reason as the outcome label and use the
+                  // P&L sign to colour-code the pill. Natural settlements
+                  // are decided by `settlement_outcome == side`.
                   const isInvalid = status === "invalid" || outcome === "INVALID";
-                  const won = !isInvalid && (outcome ? outcome === s.side : pnl > 0);
-                  const outcomeLabel = isInvalid ? "VOID" : (won ? "WON" : "LOST");
+                  const isClosedEarly = status === "closed_early";
+                  const won = !isInvalid && !isClosedEarly && (outcome ? outcome === s.side : pnl > 0);
+                  const closeReason = (s.close_reason as string | null | undefined) ?? null;
+                  const reasonLabel = closeReason === "take_profit" ? "TP"
+                                    : closeReason === "stop_loss"   ? "SL"
+                                    : closeReason === "time_decay"  ? "TIME"
+                                    : "EARLY";
+                  const outcomeLabel = isInvalid
+                    ? "VOID"
+                    : isClosedEarly
+                      ? `EXIT ${reasonLabel}`
+                      : (won ? "WON" : "LOST");
                   const outcomeClass = isInvalid
                     ? "pill pill-void"
-                    : (won ? "pill pill-won" : "pill pill-lost");
+                    : isClosedEarly
+                      ? (pnl >= 0 ? "pill pill-won" : "pill pill-lost")
+                      : (won ? "pill pill-won" : "pill pill-lost");
                   const pnlCellClass = pnl > 0
                     ? "cell-up"
                     : (pnl < 0 ? "cell-down" : "");
@@ -470,7 +635,9 @@ export default function Positions() {
                       <td className="mono">{mYesPct}%</td>
                       <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                       <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
-                      <td className="mono">{fmt(settledAt)}</td>
+                      <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
+                        {settledAt ? timeAgo(settledAt) : "-"}
+                      </td>
                     </tr>
                   );
                 })}
@@ -511,6 +678,18 @@ export default function Positions() {
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
                   const dConfPct = e.confidence != null ? Math.round(e.confidence * 100) : null;
                   const reasoning = (e.reasoning ?? "").trim();
+                  // Explicit decision-path reason ("Delfi disagrees with
+                  // the market", "Research does not match this event",
+                  // etc.). Shown as the HEADLINE; the LLM prose
+                  // (`reasoning`) renders underneath as supporting detail.
+                  // Legacy rows recorded before the skip_reason column
+                  // existed fall back to the prose alone.
+                  const skipReasonRaw = (e.skip_reason as string | null | undefined) ?? "";
+                  const skipReason = typeof skipReasonRaw === "string" ? skipReasonRaw.trim() : "";
+                  // Polymarket slug -> external link. Matches the open-row
+                  // pattern further up the file.
+                  const slug = e.slug as string | null | undefined;
+                  const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
                   return (
                     <React.Fragment key={e.id}>
                       <tr
@@ -523,7 +702,9 @@ export default function Positions() {
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
-                        <td className="mono">{fmt(e.evaluated_at)}</td>
+                        <td className="mono" title={e.evaluated_at ? fmtDateTime(e.evaluated_at) : ""}>
+                          {e.evaluated_at ? timeAgo(e.evaluated_at) : "-"}
+                        </td>
                         <td>
                           {(() => {
                             // RESULT pill: PENDING / YES / NO / VOID.
@@ -555,8 +736,58 @@ export default function Positions() {
                           <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
-                              {reasoning || "No reasoning recorded."}
+                              {skipReason ? (
+                                <>
+                                  <div
+                                    style={{
+                                      color: "var(--vellum-90)",
+                                      fontWeight: 500,
+                                      marginBottom: reasoning ? 12 : 0,
+                                      lineHeight: 1.45,
+                                    }}
+                                  >
+                                    {skipReason}
+                                  </div>
+                                  {reasoning && (
+                                    <div
+                                      style={{
+                                        color: "var(--vellum-60)",
+                                        fontSize: "0.92em",
+                                        lineHeight: 1.5,
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          fontSize: "0.75em",
+                                          letterSpacing: "0.08em",
+                                          textTransform: "uppercase",
+                                          color: "var(--vellum-40)",
+                                          marginBottom: 6,
+                                        }}
+                                      >
+                                        Delfi's analysis
+                                      </div>
+                                      {reasoning}
+                                    </div>
+                                  )}
+                                </>
+                              ) : (
+                                reasoning || "No reasoning recorded."
+                              )}
                             </div>
+                            {polyUrl && (
+                              <a
+                                className="pos-detail-link"
+                                href={polyUrl}
+                                onClick={(ev) => {
+                                  ev.preventDefault();
+                                  ev.stopPropagation();
+                                  openExternal(polyUrl);
+                                }}
+                              >
+                                View on Polymarket →
+                              </a>
+                            )}
                           </td>
                         </tr>
                       )}
@@ -582,12 +813,27 @@ export default function Positions() {
                 : "Loading..."}
             </div>
           ) : (
-            <table className="table-simple">
+            <table className="table-simple" style={{ tableLayout: "fixed", width: "100%" }}>
+              <colgroup>
+                {/* Market: takes a comfortable chunk; truncates long
+                    questions. Category: short tag. Side: pill
+                    width. Size: enough for "$1234" without
+                    wrapping. Reason: takes the rest, which is the
+                    column with real information density. When:
+                    short relative-time cell. */}
+                <col style={{ width: "26%" }} />
+                <col style={{ width: 96 }} />
+                <col style={{ width: 64 }} />
+                <col style={{ width: 80 }} />
+                <col />
+                <col style={{ width: 96 }} />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Market</th>
+                  <th>Category</th>
                   <th>Side</th>
-                  <th>Stake</th>
+                  <th>Size</th>
                   <th>Reason</th>
                   <th>When</th>
                 </tr>
@@ -612,21 +858,40 @@ export default function Positions() {
                   const polyErr = reasonRaw.match(
                     /error_message=\{'error':\s*'(.+?)'\}/
                   );
-                  const reason = polyErr?.[1] ?? reasonRaw;
+                  const reason = humanizePolymarketError(polyErr?.[1] ?? reasonRaw);
                   const sideClass =
                     side === "YES" ? "side-yes"
                     : side === "NO" ? "side-no"
                     : "";
+                  // Resolve category by matching the parsed question
+                  // text against the positions/evaluations map built
+                  // above. Falls through to "-" if no match (rare).
+                  const lookupKey = question.trim().toLowerCase().replace(/\s+/g, " ");
+                  const category = questionToCategory.get(lookupKey) ?? "-";
                   return (
                     <tr key={row.id}>
-                      <td>{question}</td>
+                      <td className="truncate" title={question}>{question}</td>
+                      <td className="truncate" title={category}>{category}</td>
                       <td className={`mono ${sideClass}`}>{side}</td>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
-                        {size && price ? `${size} @ $${price}` : "—"}
+                        {size && price
+                          ? `$${(Number(size) * Number(price)).toFixed(0)}`
+                          : "—"}
                       </td>
-                      <td style={{ color: "var(--vellum-60)" }}>{reason}</td>
-                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
-                        {fmt(row.timestamp)}
+                      <td
+                        style={{
+                          color: "var(--vellum-60)",
+                          whiteSpace: "normal",
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        {reason}
+                      </td>
+                      <td className="mono" style={{ whiteSpace: "nowrap" }}
+                          title={row.timestamp ? fmtDateTime(row.timestamp) : ""}>
+                        {row.timestamp ? timeAgo(row.timestamp) : "—"}
                       </td>
                     </tr>
                   );

@@ -36,8 +36,25 @@ from typing import Dict, Optional, Tuple
 import aiohttp
 
 
-# Public Polygon RPC - override via env for paid providers.
+# Public Polygon RPC fallbacks. Tried in order until one returns a
+# usable result. The legacy single-URL constant POLYGON_RPC_URL stays
+# as the FIRST entry for backward-compat with code/tests that reach
+# for one URL. New code should iterate POLYGON_RPC_URLS. Same set as
+# execution.pm_redeemer's _DEFAULT_RPC_URLS, kept independent to avoid
+# a cross-module import cycle (pm_redeemer imports this file).
 POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+_env_rpc_urls = os.environ.get("POLYGON_RPC_URLS")
+if _env_rpc_urls:
+    POLYGON_RPC_URLS = [u.strip() for u in _env_rpc_urls.split(",") if u.strip()]
+else:
+    POLYGON_RPC_URLS = [
+        POLYGON_RPC_URL,  # honor any single-URL env override at index 0
+        "https://polygon-bor-rpc.publicnode.com",
+        "https://1rpc.io/matic",
+        "https://polygon.drpc.org",
+        "https://polygon.llamarpc.com",
+        "https://rpc.ankr.com/polygon",
+    ]
 
 # USDC-equivalent collateral contracts on Polygon.
 #
@@ -169,6 +186,9 @@ def clear_cache() -> None:
     _CACHE.clear()
     _CLOB_BALANCE_CACHE.clear()
     _POLY_SIGNER_CACHE.clear()
+    # Also flush the CLOB client cache - a fresh credential rotation
+    # invalidates the api-key bound inside the cached client.
+    _CLOB_CLIENT_CACHE.clear()
 
 
 def invalidate_signer_cache(private_key: Optional[str]) -> None:
@@ -216,8 +236,48 @@ def invalidate_signer_cache(private_key: Optional[str]) -> None:
 _CLOB_BALANCE_CACHE: Dict[str, Tuple[float, float]] = {}
 _CLOB_BALANCE_TTL_SECONDS = 60.0
 
+# Cache for the data-api positions sum (per funder).
+# Used by pm_executor.get_portfolio_stats to compute Locked Capital
+# from the authoritative Polymarket source (= every position the
+# wallet holds, including manual trades the bot didn't open). 60s
+# TTL is enough that the Dashboard's 5s poll doesn't hammer the
+# data-api endpoint.
+_POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float]] = {}
+_POSITIONS_VALUE_TTL_SECONDS = 60.0
+# Single-flight lock for get_total_open_positions_value (defined later
+# next to its sibling _POLY_SIGNER_LOCK after the threading import).
+_POSITIONS_VALUE_LOCK = None  # type: ignore[assignment]
+
 _POLY_SIGNER_CACHE: Dict[str, Tuple[Optional[dict], float]] = {}
 _POLY_SIGNER_TTL_SECONDS = 300.0  # 5 minutes
+
+# Cache of fully-built CLOB clients keyed by (pk_hash, sig_type, funder,
+# manual). Polymarket's `create_or_derive_api_key` POST is the dominant
+# cost in `_build_clob_client` (one round-trip, sometimes 2 on
+# auto-derive retries), and on accounts where the auto-derive flow
+# returns HTTP 400 it stacks SSL reads that hold the GIL across many
+# concurrent /api/summary calls. Cache forever in-process; the client
+# is stateless other than its api-key bundle, which is itself stable
+# under a fixed (sig_type, funder). On rotation we clear the entry.
+_CLOB_CLIENT_CACHE: dict = {}
+
+# Serializes the full signer probe so concurrent /api/summary calls
+# do not all race past a cache miss and run the (expensive) probe in
+# parallel. The probe makes 4 separate /balance-allowance round-trips
+# plus one create_or_derive_api_key POST. Without this lock, the
+# first slow probe holds threadpool slots while the second through
+# N-th probes start fresh, multiplying the work and saturating the
+# Python GIL (every thread re-entering Python after its SSL read
+# contends for the GIL, the asyncio main loop starves, and
+# `accept()` on the listener socket falls behind - the user sees
+# "/api/state: timed out after 30s" until the loop watchdog
+# SIGKILLs the daemon).
+import threading as _threading
+_POLY_SIGNER_LOCK = _threading.Lock()
+# Same single-flight pattern for the data-api positions probe.
+# Without this, a 7-endpoint cold burst fires 7 parallel data-api
+# HTTPS calls with 8s timeout each, saturating the executor pool.
+_POSITIONS_VALUE_LOCK = _threading.Lock()
 
 
 # Process-level tracking of which (sig_type, funder) tuple we've
@@ -241,14 +301,34 @@ def _build_clob_client(
     client. Helpers in this module use it; pm_executor builds its
     own cached version for order placement.
 
+    MANUAL API CREDS SHORT-CIRCUIT
+        When the user has pasted Polymarket Trading API Keys via
+        Settings -> Polymarket API Key, we use them directly and skip
+        the SDK's `create_or_derive_api_key()` POST entirely. Without
+        this short-circuit, every probe would hit `/auth/api-key`,
+        and when the auto-derive path is broken (returns 400 "Could
+        not create api key" - typical post-V2-migration accounts
+        where the deposit-wallet signature doesn't match the auto-
+        derive's signer context), each retry blocks the GIL for the
+        full SSL round-trip. The GUI polls `/api/summary` every 5s
+        which triggers this probe; stacked probes saturate the
+        thread pool, the asyncio event loop can't service `accept()`,
+        and every HTTP endpoint times out. The user sees
+        "/api/state: timed out after 30s" until the loop watchdog
+        SIGKILLs the daemon. Honoring manual creds breaks the loop
+        at the source: no failing POST, no GIL contention, no wedge.
+
     `rotate_api_key=True` deletes the existing api-key (if any) and
     creates a fresh one under the current (sig_type, funder)
     context. Set this when the caller knows the api-key context
     changed (e.g. post-migration). The rotation runs at most once
     per process per (sig_type, funder) tuple — repeated calls with
-    the same tuple are no-ops.
+    the same tuple are no-ops. Skipped entirely when manual creds
+    are present (the user has already committed to a specific
+    api-key; rotation would invalidate it).
     """
     from py_clob_client_v2.client import ClobClient
+    from py_clob_client_v2.clob_types import ApiCreds  # type: ignore
     CLOB_HOST = "https://clob.polymarket.com"
     POLYGON_CHAIN_ID = 137
     seed_kwargs = dict(host=CLOB_HOST, chain_id=POLYGON_CHAIN_ID, key=private_key)
@@ -256,6 +336,42 @@ def _build_clob_client(
         seed_kwargs["signature_type"] = signature_type
         if funder:
             seed_kwargs["funder"] = funder
+
+    # MANUAL api-key short-circuit. Pull once per call; the underlying
+    # secrets store has its own in-process cache so this is cheap.
+    manual_creds = None
+    try:
+        from engine.user_config import get_polymarket_api_creds
+        manual_creds = get_polymarket_api_creds()
+    except Exception:
+        manual_creds = None
+
+    # Cache key: pk_hash + sig_type + funder + manual-vs-auto. We do NOT
+    # include rotate_api_key - the cache only stores clients built AFTER
+    # rotation (if any), so on a future call with rotate_api_key=True we
+    # bypass the cache and rebuild, then cache the new one. Rotation is
+    # one-shot per (sig_type, funder) tuple anyway via _API_KEY_ROTATED_CTX.
+    import hashlib
+    pk_hash = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    cache_tag = "m" if manual_creds else "a"
+    cache_key = (pk_hash, signature_type, (funder or "").lower(), cache_tag)
+    if not rotate_api_key:
+        cached = _CLOB_CLIENT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    if manual_creds:
+        creds = ApiCreds(
+            api_key=manual_creds["api_key"],
+            api_secret=manual_creds["api_secret"],
+            api_passphrase=manual_creds["api_passphrase"],
+        )
+        client_kwargs = dict(seed_kwargs)
+        client_kwargs["creds"] = creds
+        client = ClobClient(**client_kwargs)
+        _CLOB_CLIENT_CACHE[cache_key] = client
+        return client
+
     seed = ClobClient(**seed_kwargs)
 
     # Optional one-time api-key rotation. Gated by an in-process
@@ -295,7 +411,9 @@ def _build_clob_client(
     creds = seed.create_or_derive_api_key()
     client_kwargs = dict(seed_kwargs)
     client_kwargs["creds"] = creds
-    return ClobClient(**client_kwargs)
+    client = ClobClient(**client_kwargs)
+    _CLOB_CLIENT_CACHE[cache_key] = client
+    return client
 
 
 def _derive_poly_proxy(eoa: str) -> str:
@@ -407,142 +525,312 @@ def get_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
         if now - ts < _POLY_SIGNER_TTL_SECONDS:
             return info
 
-    try:
-        from py_clob_client_v2.clob_types import (
-            AssetType, BalanceAllowanceParams,
-        )
-        # Derive the EOA from the key first — used as the funder for
-        # proxy queries.
-        seed_client = _build_clob_client(private_key)
-        eoa = seed_client.get_address()
-    except Exception as exc:
-        print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
-              file=sys.stderr)
-        return None
-
-    # The funder we pass to the SDK is what ends up as the order's
-    # `maker` field. We try every known Polymarket account shape:
+    # Serialize the probe. The GUI polls /api/summary every 5 seconds
+    # and the dashboard fires 7 endpoints in parallel; without
+    # coordination, every burst spawned 7+ concurrent probes that
+    # contended for the GIL on every SSL read.
     #
-    #   sig=0 + EOA            classic MetaMask user
-    #   sig=1 + POLY_PROXY     legacy V1 Magic-account proxy
-    #   sig=2 + GNOSIS_SAFE    older Gnosis-Safe magic account
-    #   sig=1/2/3 + DEPOSIT_WALLET
-    #                          NEW V2 account (2026-04-28 cutover).
-    #                          Polymarket's UI prompts users to
-    #                          "upgrade to continue trading" on
-    #                          first V2 order; that migration
-    #                          deploys this contract. Which
-    #                          sig_type the CLOB expects for the
-    #                          DepositWallet isn't documented;
-    #                          probe sig=1, sig=2, and sig=3
-    #                          (POLY_1271, the EIP-1271 path used
-    #                          by smart-contract wallets).
-    poly_proxy     = _derive_poly_proxy(eoa)
-    poly_safe      = _derive_poly_safe(eoa)
-    deposit_wallet = _derive_deposit_wallet(eoa)
+    # Non-blocking acquire: if another thread is already probing,
+    # return INSTANTLY with whatever's cached (even stale, even None).
+    # The old `timeout=1.5s` blocked every waiter for 1.5s on cold
+    # cache; an /api/summary burst of 7 endpoints = 7 * 1.5s of
+    # serialized lock waits, which manifests as the user-visible
+    # "app times out" wedge of 2026-05-20. With non-blocking, the
+    # first request holds the lock and probes; subsequent requests
+    # return None / stale immediately. The first probe populates
+    # the cache; the next poll cycle hits warm cache for everyone.
+    acquired = _POLY_SIGNER_LOCK.acquire(blocking=False)
+    if not acquired:
+        cached = _POLY_SIGNER_CACHE.get(cache_key)
+        if cached is not None:
+            info, _ = cached
+            # Serve stale silently. The in-progress probe will
+            # refresh the cache shortly.
+            return info
+        # No cache yet AND another thread is probing. Returning None
+        # is the right answer - the caller (get_bankroll) falls back
+        # to _LIVE_BANKROLL_FALLBACK or 0.0 in live mode rather than
+        # blocking the caller waiting for a probe it doesn't own.
+        return None
+    try:
+        # Double-check: another waiter may have populated the cache
+        # while we were blocked on the lock.
+        cached = _POLY_SIGNER_CACHE.get(cache_key)
+        if cached is not None:
+            info, ts = cached
+            if time.monotonic() - ts < _POLY_SIGNER_TTL_SECONDS:
+                return info
 
-    # Order matters: a freshly-migrated user has $0 at the old proxy
-    # but the CLOB will report the right balance when probed at the
-    # DepositWallet. We probe DepositWallet+sig3 (POLY_1271) FIRST
-    # because:
-    #   - The DepositWallet is a SMART CONTRACT wallet (Solady CWIA).
-    #   - Polymarket accepts sig_type=1 for /balance-allowance
-    #     queries (the CLOB serves the post-migration balance
-    #     against any of its registered signature types).
-    #   - But orders MUST use sig_type=3 (POLY_1271, EIP-1271
-    #     contract signatures) when the maker is a smart-contract
-    #     wallet. Submitting a DepositWallet order under sig_type=1
-    #     gives "maker address not allowed".
-    #   - Confirmed empirically (2026-05-17): a user's working
-    #     manual Polymarket trade drew pUSD from their DepositWallet,
-    #     received CTF tokens at their DepositWallet, and was
-    #     processed by the V2 CTF Exchange — implying maker=DW
-    #     and sig=POLY_1271.
-    # If sig_type=3 returns nothing we fall back to other shapes.
-    probe_candidates = [
-        (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271, V2 default)"),
-        (1, deposit_wallet, "DepositWallet+sig1 (legacy fallback)"),
-        (2, deposit_wallet, "DepositWallet+sig2"),
-        (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
-        (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
-        (0, eoa,            "EOA+sig0"),
-    ]
-
-    chosen: Optional[dict] = None
-    for sig_type, funder, label in probe_candidates:
         try:
-            client = _build_clob_client(
-                private_key, signature_type=sig_type, funder=funder,
+            from py_clob_client_v2.clob_types import (
+                AssetType, BalanceAllowanceParams,
             )
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.COLLATERAL, signature_type=sig_type,
-            )
-            result = client.get_balance_allowance(params) or {}
-            raw = result.get("balance")
-            raw_allow = result.get("allowance")
-            if raw is None:
-                continue
+            # Derive the EOA from the key first - used as the funder
+            # for proxy queries.
+            seed_client = _build_clob_client(private_key)
+            eoa = seed_client.get_address()
+        except Exception as exc:
+            print(f"[polymarket_wallet] CLOB signer-info init failed: {exc}",
+                  file=sys.stderr)
+            # CLOB unreachable. Serve stale cache rather than returning
+            # None so the Dashboard keeps showing the last-known balance
+            # instead of flashing to fallback / $0. Do NOT overwrite the
+            # cache; next probe replaces it with fresh data.
+            stale = _POLY_SIGNER_CACHE.get(cache_key)
+            if stale is not None:
+                info, _ts = stale
+                if info is not None:
+                    return info
+            return None
+
+        # The funder we pass to the SDK is what ends up as the order's
+        # `maker` field. We try every known Polymarket account shape:
+        #
+        #   sig=0 + EOA            classic MetaMask user
+        #   sig=1 + POLY_PROXY     legacy V1 Magic-account proxy
+        #   sig=2 + GNOSIS_SAFE    older Gnosis-Safe magic account
+        #   sig=1/2/3 + DEPOSIT_WALLET
+        #                          NEW V2 account (2026-04-28 cutover).
+        #                          Polymarket's UI prompts users to
+        #                          "upgrade to continue trading" on
+        #                          first V2 order; that migration
+        #                          deploys this contract. Which
+        #                          sig_type the CLOB expects for the
+        #                          DepositWallet isn't documented;
+        #                          probe sig=1, sig=2, and sig=3
+        #                          (POLY_1271, the EIP-1271 path used
+        #                          by smart-contract wallets).
+        poly_proxy     = _derive_poly_proxy(eoa)
+        poly_safe      = _derive_poly_safe(eoa)
+        deposit_wallet = _derive_deposit_wallet(eoa)
+
+        # Order matters: a freshly-migrated user has $0 at the old
+        # proxy but the CLOB will report the right balance when probed
+        # at the DepositWallet. We probe DepositWallet+sig3 (POLY_1271)
+        # FIRST because:
+        #   - The DepositWallet is a SMART CONTRACT wallet (Solady CWIA).
+        #   - Polymarket accepts sig_type=1 for /balance-allowance
+        #     queries (the CLOB serves the post-migration balance
+        #     against any of its registered signature types).
+        #   - But orders MUST use sig_type=3 (POLY_1271, EIP-1271
+        #     contract signatures) when the maker is a smart-contract
+        #     wallet. Submitting a DepositWallet order under sig_type=1
+        #     gives "maker address not allowed".
+        #   - Confirmed empirically (2026-05-17): a user's working
+        #     manual Polymarket trade drew pUSD from their DepositWallet,
+        #     received CTF tokens at their DepositWallet, and was
+        #     processed by the V2 CTF Exchange — implying maker=DW
+        #     and sig=POLY_1271.
+        # If sig_type=3 returns nothing we fall back to other shapes.
+        probe_candidates = [
+            (3, deposit_wallet, "DepositWallet+sig3 (POLY_1271, V2 default)"),
+            (1, deposit_wallet, "DepositWallet+sig1 (legacy fallback)"),
+            (2, deposit_wallet, "DepositWallet+sig2"),
+            (1, poly_proxy,     "POLY_PROXY+sig1 (V1 legacy)"),
+            (2, poly_safe,      "POLY_GNOSIS_SAFE+sig2"),
+            (0, eoa,            "EOA+sig0"),
+        ]
+
+        chosen: Optional[dict] = None
+        # Track whether any probe returned a usable response (even
+        # balance=0). If every probe raises (CLOB unreachable, DNS
+        # wedge), we DO NOT want to cache the fake $0 default - that
+        # would persist for 5 minutes and show the user "Balance $0"
+        # while their wallet actually has money. Instead, fall back
+        # to stale cache after the loop.
+        any_probe_responded = False
+        for sig_type, funder, label in probe_candidates:
             try:
-                value = int(raw) / (10 ** _USDC_DECIMALS)
-                allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
-            except (TypeError, ValueError):
-                continue
-            print(
-                f"[polymarket_wallet] probe {label:32} sig={sig_type} "
-                f"funder={funder} → balance=${value:.4f}",
-                file=sys.stderr,
-            )
-            if value > 0:
-                chosen = {
-                    "signature_type": sig_type,
-                    "funder":         funder,
-                    "eoa":            eoa,
-                    "balance":        float(value),
-                    "allowance":      float(allowance),
-                }
+                client = _build_clob_client(
+                    private_key, signature_type=sig_type, funder=funder,
+                )
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL, signature_type=sig_type,
+                )
+                result = client.get_balance_allowance(params) or {}
+                # If we got here without raising, at least this probe
+                # got a response from the CLOB - balance may be 0 or
+                # positive, but the network and SDK both worked.
+                any_probe_responded = True
+                raw = result.get("balance")
+                raw_allow = result.get("allowance")
+                if raw is None:
+                    continue
+                try:
+                    value = int(raw) / (10 ** _USDC_DECIMALS)
+                    allowance = int(raw_allow) / (10 ** _USDC_DECIMALS) if raw_allow is not None else 0.0
+                except (TypeError, ValueError):
+                    continue
                 print(
-                    f"[polymarket_wallet] account shape: sig_type={sig_type} "
-                    f"funder={funder} ({label}) balance=${value:.4f} "
-                    f"allowance=${allowance:.4f}",
+                    f"[polymarket_wallet] probe {label:32} sig={sig_type} "
+                    f"funder={funder} → balance=${value:.4f}",
                     file=sys.stderr,
                 )
-                # Force an api-key rotation under THIS context. Once
-                # per process per (sig_type, funder). Fixes the
-                # "the order signer address has to be the address of
-                # the API KEY" rejection that happens when the
-                # api-key on file was created under an OLDER context
-                # (e.g. legacy POLY_PROXY pre-V2-migration).
-                try:
-                    _build_clob_client(
-                        private_key,
-                        signature_type=sig_type,
-                        funder=funder,
-                        rotate_api_key=True,
+                if value > 0:
+                    # Also probe legacy USDC.e at the funder. These are
+                    # the "pending deposit" funds returned by V1 markets
+                    # at settlement — not yet tradeable (V2 trades pUSD
+                    # only) but the auto-activator (pm_activate_legacy
+                    # in main.py) wraps them on a 10-min cadence, so for
+                    # bankroll-display purposes they should count as part
+                    # of the user's spendable balance. Without this, the
+                    # Telegram WIN message reports a "Balance" that omits
+                    # winnings still in USDC.e form — user sees
+                    # "Won +$5" and "Balance $3.47" and the math doesn't
+                    # add up.
+                    # USDC.e balance probe. Iterate through every
+                    # configured Polygon RPC and stop at the first
+                    # success. The earlier version hardcoded
+                    # POLYGON_RPC_URL (= POLYGON_RPC_URLS[0]) which
+                    # is polygon.llamarpc.com; DNS resolution for
+                    # that host has been failing on this network. On
+                    # failure the silent fallback to 0 caused the
+                    # Telegram "Balance" to omit any USDC.e at the
+                    # funder ("WIN +$1.67, Balance $9.99" while the
+                    # on-chain wallet was actually $14.99 with $5 of
+                    # the win sitting unwrapped as USDC.e). Same
+                    # iteration pattern as the earlier fixes in
+                    # pm_redeemer.resolve_collateral_for_position
+                    # and pm_redeemer.activate_legacy_collateral_balance.
+                    usdce_at_funder = 0.0
+                    try:
+                        import requests as _r
+                        # NB: _encode_balance_of_call already returns
+                        # the "0x" prefix (it returns
+                        # _BALANCE_OF_SELECTOR + padded, and the
+                        # selector is "0x70a08231"). Prepending another
+                        # "0x" produces "0x0x..." which every RPC
+                        # rejects as "invalid hex" — this is why the
+                        # probe has been quietly returning 0 USDC.e for
+                        # weeks regardless of which RPC we hit. Fix is
+                        # the single character below.
+                        _usdce_payload = {
+                            "jsonrpc": "2.0", "id": 1,
+                            "method": "eth_call",
+                            "params": [
+                                {"to": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+                                 "data": _encode_balance_of_call(funder)},
+                                "latest",
+                            ],
+                        }
+                        _usdce_errors: list[str] = []
+                        _usdce_ok = False
+                        for _rpc_url in POLYGON_RPC_URLS:
+                            try:
+                                _resp = _r.post(
+                                    _rpc_url, json=_usdce_payload,
+                                    timeout=10,
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "Accept": "application/json",
+                                    },
+                                )
+                                _body = _resp.json() if _resp is not None else {}
+                                _raw = (_body or {}).get("result")
+                                if not _raw:
+                                    # Include first 120 chars of the
+                                    # body so we can see whether the RPC
+                                    # is rate-limiting, returning an
+                                    # error, or just garbage.
+                                    _body_str = (
+                                        str(_body)[:120] if _body
+                                        else str(_resp.text)[:120]
+                                    )
+                                    _usdce_errors.append(
+                                        f"{_rpc_url} status={_resp.status_code} "
+                                        f"body={_body_str}"
+                                    )
+                                    continue
+                                usdce_at_funder = (
+                                    int(_raw, 16) / (10 ** _USDC_DECIMALS)
+                                )
+                                _usdce_ok = True
+                                break
+                            except Exception as _exc:
+                                _usdce_errors.append(
+                                    f"{_rpc_url}: {type(_exc).__name__}: "
+                                    f"{str(_exc)[:60]}"
+                                )
+                                continue
+                        if not _usdce_ok:
+                            print(
+                                f"[polymarket_wallet] usdce probe failed "
+                                f"on all RPCs: "
+                                f"{' | '.join(_usdce_errors[:3])}",
+                                file=sys.stderr,
+                            )
+                    except Exception as exc:
+                        print(
+                            f"[polymarket_wallet] usdce probe failed: {exc}",
+                            file=sys.stderr,
+                        )
+                    chosen = {
+                        "signature_type": sig_type,
+                        "funder":         funder,
+                        "eoa":            eoa,
+                        "balance":        float(value),
+                        "allowance":      float(allowance),
+                        "usdce_legacy":   float(usdce_at_funder),
+                    }
+                    print(
+                        f"[polymarket_wallet] account shape: sig_type={sig_type} "
+                        f"funder={funder} ({label}) balance=${value:.4f} "
+                        f"allowance=${allowance:.4f}",
+                        file=sys.stderr,
                     )
-                except Exception as exc:
-                    print(f"[polymarket_wallet] post-probe rotate failed: {exc}",
-                          file=sys.stderr)
-                break
-        except Exception as exc:
-            print(f"[polymarket_wallet] probe {label} failed: {exc}",
-                  file=sys.stderr)
-            continue
+                    # Force an api-key rotation under THIS context. Once
+                    # per process per (sig_type, funder). Fixes the
+                    # "the order signer address has to be the address of
+                    # the API KEY" rejection that happens when the
+                    # api-key on file was created under an OLDER context
+                    # (e.g. legacy POLY_PROXY pre-V2-migration).
+                    try:
+                        _build_clob_client(
+                            private_key,
+                            signature_type=sig_type,
+                            funder=funder,
+                            rotate_api_key=True,
+                        )
+                    except Exception as exc:
+                        print(f"[polymarket_wallet] post-probe rotate failed: {exc}",
+                              file=sys.stderr)
+                    break
+            except Exception as exc:
+                print(f"[polymarket_wallet] probe {label} failed: {exc}",
+                      file=sys.stderr)
+                continue
 
-    if chosen is None:
-        # Everything probed zero. Default to the V2 DepositWallet
-        # shape — that's the path Polymarket's UI now pushes every
-        # new user through. A fresh deposit will land there and the
-        # next probe catches it.
-        chosen = {
-            "signature_type": 1,
-            "funder":         deposit_wallet,
-            "eoa":            eoa,
-            "balance":        0.0,
-            "allowance":      0.0,
-        }
+        if chosen is None:
+            if not any_probe_responded:
+                # Every probe RAISED an exception (CLOB unreachable /
+                # DNS wedge / SSL timeout). The user's wallet might
+                # have money - we just couldn't read it. Serve stale
+                # cache if any; do NOT cache a zero default that
+                # would override real balance for 5 minutes after
+                # CLOB recovers.
+                stale = _POLY_SIGNER_CACHE.get(cache_key)
+                if stale is not None:
+                    info, _ts = stale
+                    if info is not None:
+                        return info
+                return None
+            # At least one probe got a response and they all said $0.
+            # Default to the V2 DepositWallet shape - that's the path
+            # Polymarket's UI now pushes every new user through. A
+            # fresh deposit will land there and the next probe catches
+            # it. Cache the default so subsequent reads don't re-probe.
+            chosen = {
+                "signature_type": 1,
+                "funder":         deposit_wallet,
+                "eoa":            eoa,
+                "balance":        0.0,
+                "allowance":      0.0,
+            }
 
-    _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
-    return chosen
+        _POLY_SIGNER_CACHE[cache_key] = (chosen, now)
+        return chosen
+    finally:
+        _POLY_SIGNER_LOCK.release()
 
 
 def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
@@ -553,3 +841,237 @@ def get_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
     """
     info = get_poly_signer_info(private_key)
     return float(info["balance"]) if info else None
+
+
+# ── Non-blocking helpers (for the request hot path) ─────────────────────────
+#
+# CRITICAL: these helpers NEVER acquire _POLY_SIGNER_LOCK and NEVER make a
+# network call. They serve from the in-process cache only. The hot path
+# (/api/summary, polled every 5s by the dashboard) goes through these so
+# a slow probe in a background thread cannot wedge user-facing requests.
+#
+# A separate scheduled job in main.py runs `get_poly_signer_info` every
+# 60s to keep the cache fresh. If that background job blocks (DNS
+# wedge, c-ares hang, anything), only the BACKGROUND cache update is
+# delayed — the dashboard keeps serving the last known good balance.
+#
+# Returns the cached value even if past the TTL. Stale cache > no
+# value; the cache only gets a "missing" answer on cold start before
+# the first background refresh completes. /api/summary's overlay
+# falls back to the DB-derived bankroll in that case.
+
+def get_cached_poly_signer_info(private_key: Optional[str]) -> Optional[dict]:
+    """Read the cached signer info without any blocking call.
+
+    Returns the last-known signer dict (signature_type, funder, eoa,
+    balance, allowance) or None if no probe has completed yet for
+    this key. NEVER touches the network and NEVER acquires the
+    probe lock. Safe to call from any request handler at any time.
+    """
+    if not private_key or not isinstance(private_key, str):
+        return None
+    import hashlib
+    cache_key = hashlib.sha256(private_key.encode("utf-8")).hexdigest()[:16]
+    cached = _POLY_SIGNER_CACHE.get(cache_key)
+    if cached is None:
+        return None
+    info, _ = cached
+    return info
+
+
+def get_cached_live_clob_balance(private_key: Optional[str]) -> Optional[float]:
+    """Non-blocking variant of get_live_clob_balance.
+
+    Returns the last-known wallet balance (USD float) without any
+    network call. None if no probe has populated the cache yet for
+    this key. Use this from request handlers; /api/summary's live
+    overlay reads it.
+
+    "Balance" here is the V2 tradeable pUSD only. For total wealth
+    including soon-to-be-activated USDC.e, use
+    get_cached_total_funder_balance() instead.
+    """
+    info = get_cached_poly_signer_info(private_key)
+    return float(info["balance"]) if info else None
+
+
+def get_cached_total_funder_balance(
+    private_key: Optional[str],
+) -> Optional[float]:
+    """Non-blocking total collateral balance at the funder.
+
+    pUSD (tradeable) + USDC.e legacy (auto-activated within ~10 min by
+    pm_activate_legacy). This is what should be reported as "bankroll"
+    or "Balance" to the user, because every dollar in either bucket is
+    spendable on the next trade once the activator's tick lands.
+
+    Returns None if no probe has populated the cache. Falls back to
+    just `balance` (pUSD) when the USDC.e field is missing — covers
+    caches written by older builds.
+    """
+    info = get_cached_poly_signer_info(private_key)
+    if not info:
+        return None
+    pusd  = float(info.get("balance") or 0.0)
+    usdce = float(info.get("usdce_legacy") or 0.0)
+    return pusd + usdce
+
+
+def get_total_open_positions_value(
+    funder_address: Optional[str],
+) -> Optional[float]:
+    """Sum currentValue of every open position the user holds on
+    Polymarket, INCLUDING positions opened manually outside the bot.
+
+    Authoritative source for the Dashboard's "Locked Capital" tile and
+    the equity number on every Telegram message. Bot-internal P&L /
+    win-rate counts still come from pm_positions filtered by user_id +
+    mode, so manual trades don't pollute the bot's track record.
+
+    Returns the sum in USD on success, or None on any failure (caller
+    falls through to the DB-tracked sum of current_value_usd, then to
+    cost_usd via the COALESCE chain in pm_executor.get_portfolio_stats).
+    Cached per funder for 60s so the Dashboard's 5s /api/summary poll
+    doesn't hammer Polymarket's data-api.
+
+    Data-api endpoint:
+        https://data-api.polymarket.com/positions?user=<funder>
+    Returns a JSON array of position dicts. Each row carries:
+        title:        market question
+        outcome:      'Yes' | 'No' (or sport-specific labels)
+        size:         shares held
+        curPrice:     current ask / mid for the held side
+        currentValue: size * curPrice (USD value at current prices)
+        initialValue: size * entry price
+        cashPnl:      currentValue - initialValue
+    Lost positions linger in the response with curPrice=0 (and
+    currentValue=0), so summing across the whole list is safe.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    now = time.monotonic()
+    cached = _POSITIONS_VALUE_CACHE.get(key)
+    if cached is not None and now - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
+        return cached[0]
+    # Single-flight: /api/summary fires 7 endpoints in parallel. On
+    # cold positions cache, without this lock each request would
+    # independently fire its own HTTPS to data-api with an 8s
+    # timeout, holding an executor worker the entire time.
+    # Non-blocking acquire: first request runs the probe;
+    # subsequent concurrent requests instantly get the stale cache
+    # (None on the very first probe, the fresh value once it lands).
+    acquired = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
+    if not acquired:
+        return cached[0] if cached is not None else None
+    try:
+        # Re-check the cache: another thread may have populated it
+        # while we were waiting on the GIL between get and acquire.
+        cached = _POSITIONS_VALUE_CACHE.get(key)
+        if cached is not None and time.monotonic() - cached[1] < _POSITIONS_VALUE_TTL_SECONDS:
+            return cached[0]
+        import requests as _r
+        resp = _r.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder_address},
+            timeout=8,
+        )
+        if resp.status_code != 200:
+            print(
+                f"[polymarket_wallet] data-api positions returned "
+                f"{resp.status_code} for {funder_address}",
+                file=sys.stderr,
+            )
+            # Serve stale cache if any. Do NOT cache the failure; next
+            # probe replaces this entry with fresh data.
+            return cached[0] if cached is not None else None
+        data = resp.json()
+        if not isinstance(data, list):
+            return cached[0] if cached is not None else None
+        total = 0.0
+        for row in data:
+            try:
+                v = float(row.get("currentValue") or 0.0)
+                if v > 0:
+                    total += v
+            except (TypeError, ValueError):
+                continue
+        _POSITIONS_VALUE_CACHE[key] = (float(total), now)
+        return float(total)
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] data-api positions fetch failed for "
+            f"{funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        # Network blip: serve stale cache if any. The Dashboard's
+        # "Locked Capital" should keep showing the last sensible
+        # number rather than flashing to $0 when data-api hiccups.
+        return cached[0] if cached is not None else None
+    finally:
+        _POSITIONS_VALUE_LOCK.release()
+
+
+def refresh_live_balance_cache(private_key: Optional[str]) -> bool:
+    """Force-refresh the cached wallet probe for this key.
+
+    Invalidates the existing cache entry and runs a fresh probe so the
+    very next ``get_cached_total_funder_balance`` read reflects current
+    on-chain state instead of a stale value from up to 5 minutes ago.
+
+    Call this immediately after an on-chain state change for the user's
+    funder:
+
+      * new position opened (cost spent from wallet)
+      * winning position redeemed (payout arrives as USDC.e or pUSD)
+      * USDC.e -> pUSD wrap completes
+      * deposit / withdrawal observed
+
+    Without the explicit invalidation, the previous implementation just
+    called ``get_poly_signer_info`` which served from cache when fresh,
+    making this function a no-op when it was called immediately after a
+    state change (exactly the case it exists for). That broke the
+    "Balance in WIN notification includes the just-won money" UX:
+    settle_position redeemed synchronously, then the next
+    ``get_portfolio_stats`` call read the stale cached wallet and the
+    Telegram message rendered a pre-payout balance.
+
+    Used by the scheduler's pm_balance_refresh job (main.py),
+    pm_analyst's post-open hook, and settle_position's post-redeem hook.
+    Returns True on success, False on probe failure / lock timeout.
+    """
+    if not private_key:
+        return False
+    # CRITICAL: do NOT pre-delete the existing cache entry. The
+    # earlier implementation called `_POLY_SIGNER_CACHE.pop()` here
+    # to force `get_poly_signer_info` to actually probe (it would
+    # otherwise serve the still-fresh cache). The problem: when the
+    # Polymarket CLOB is briefly unreachable (transient network or
+    # CLOB-side hiccup, observed 2026-05-20), the probe fails, the
+    # cache stays empty, and every /api/summary thereafter pays the
+    # full 8s+ probe-timeout cost. We want exactly the opposite -
+    # stale cache should keep serving instantly while the background
+    # job retries.
+    #
+    # Trick: temporarily set the cached timestamp to expired so
+    # get_poly_signer_info bypasses the freshness short-circuit and
+    # runs a probe. On probe success the cache is overwritten with
+    # the new value. On probe failure the old cache entry remains in
+    # the dict (probe never wrote anything), and downstream callers
+    # served via the lock-free `get_cached_poly_signer_info` see the
+    # last-known value rather than None.
+    try:
+        import hashlib
+        cache_key = hashlib.sha256(
+            private_key.encode("utf-8")
+        ).hexdigest()[:16]
+        cached = _POLY_SIGNER_CACHE.get(cache_key)
+        if cached is not None:
+            info, _ = cached
+            # Re-stamp with monotonic=0 so the TTL check fires but
+            # the value stays available if the probe fails.
+            _POLY_SIGNER_CACHE[cache_key] = (info, 0.0)
+    except Exception:
+        pass
+    info = get_poly_signer_info(private_key)
+    return info is not None

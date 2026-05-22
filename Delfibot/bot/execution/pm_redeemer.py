@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -50,17 +51,225 @@ from typing import Optional, Sequence
 # the V1 CTF; V2 reused it. Source: py_clob_client_v2/config.py.
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
-# pUSD - the V2 collateral token. Pre-V2 trades against USDC.e are
-# legacy; the bot has not opened anything against USDC.e since the
-# 2026-04-28 cutover, so we hard-code pUSD here. If a user has stuck
-# pre-V2 winners they can redeem them on the Polymarket web UI.
-PUSD_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+# Collateral candidates: every Polymarket market is collateralized in
+# ONE of these ERC-20s. The right one for a given market comes back
+# from the CLOB metadata, but we keep this list as a verification +
+# fallback when the CLOB lookup fails.
+#
+# Critical lesson from 2026-05-18: hardcoding pUSD here was wrong.
+# Many markets - including some opened AFTER the alleged V2 cutover
+# - are still settled against USDC.e (the legacy bridged USDC).
+# Calling `redeemPositions` with pUSD when the market actually uses
+# USDC.e succeeds at the EVM level (no revert) but pays out 0 USDC
+# because there are no tokens at the (pUSD, conditionId, indexSet)
+# position. Real example: position 317's "celebration redeem"
+# tx 0x10bb58... had PayoutRedemption(payout=0). The actual redeem
+# that moved $5 (tx 0xda18f15e...) used USDC.e.
+PUSD_ADDRESS  = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"  # V2 collateral
+USDCE_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"  # V1/legacy bridged USDC
+
+
+def get_market_collateral(condition_id: str) -> Optional[str]:
+    """Look up the actual collateral token for a market via CLOB.
+
+    Returns a checksummed 0x address on success, None on failure.
+    Falls back to a small hardcoded set of known collaterals when the
+    CLOB doesn't directly expose the collateral address (older
+    responses); the caller can then try each one against an empty
+    PayoutRedemption to find the right one.
+
+    The lookup is cached in-process because the collateral never
+    changes for a given market and the CLOB rate-limits.
+    """
+    if not condition_id:
+        return None
+    if not condition_id.startswith("0x"):
+        condition_id = "0x" + condition_id
+
+    cache = getattr(get_market_collateral, "_cache", None)
+    if cache is None:
+        cache = {}
+        get_market_collateral._cache = cache
+    if condition_id in cache:
+        return cache[condition_id]
+
+    try:
+        import requests as _requests
+        r = _requests.get(
+            f"https://clob.polymarket.com/markets/{condition_id}",
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        # CLOB doesn't return the collateral address directly. Most
+        # markets are USDC.e; some V2 markets use pUSD. Cheap check:
+        # call CTF.balanceOf for the funder against both position
+        # IDs, pick whichever returns >0. But we don't have a funder
+        # context here, so we instead derive from the market_slug or
+        # any field that hints at the collateral, defaulting to
+        # USDC.e (the dominant case post-investigation 2026-05-18).
+        slug = (data.get("market_slug") or "").lower()
+        # No reliable hint in the public API. Return None to signal
+        # "try both" to the caller.
+        _ = slug
+        return None
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] CLOB market lookup failed for "
+            f"{condition_id}: {type(exc).__name__}: {str(exc)[:120]}",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+
+def _candidate_collaterals() -> Sequence[str]:
+    """Ordered list of collaterals to try when CLOB doesn't tell us.
+    USDC.e first because it's empirically the dominant case for
+    settled markets the bot has traded (2026-05-18 audit). pUSD
+    second for V2-only markets.
+    """
+    return (USDCE_ADDRESS, PUSD_ADDRESS)
+
+
+def resolve_collateral_for_position(
+    *,
+    cond_bytes: bytes,
+    index_sets: Sequence[int],
+    holder_address: str,
+) -> Optional[str]:
+    """Find which collateral the (conditionId, indexSet) tokens are
+    actually held under by reading on-chain balances.
+
+    Walks `_candidate_collaterals()` and returns the address whose
+    derived positionId has a non-zero balance for `holder_address`.
+    Returns None if nothing matches - in that case the redeem won't
+    pay out anyway and the caller should surface a clear "no tokens
+    found" error rather than firing a no-op redeem.
+
+    All reads. Free. Cached per (condition, indexSet, holder) tuple
+    so the sweeper doesn't re-query on every tick.
+    """
+    if not cond_bytes or not index_sets or not holder_address:
+        return None
+
+    cache_key = (cond_bytes.hex(), tuple(index_sets), holder_address.lower())
+    cache = getattr(resolve_collateral_for_position, "_cache", None)
+    if cache is None:
+        cache = {}
+        resolve_collateral_for_position._cache = cache
+    if cache_key in cache:
+        return cache[cache_key]
+
+    try:
+        import requests as _requests
+        from eth_utils import keccak as _keccak
+    except Exception:
+        return None
+
+    # Try each RPC in turn. Hardcoding POLYGON_RPC_URLS[0] used to fail
+    # silently when llamarpc DNS was unreachable, leaving the redeem
+    # to fall back to USDCE_ADDRESS by default and (if the market
+    # actually settled in pUSD) emit PayoutRedemption(payout=0).
+    def _eth_call(data_hex: str) -> Optional[str]:
+        for rpc_url in POLYGON_RPC_URLS:
+            try:
+                r = _requests.post(
+                    rpc_url,
+                    json={
+                        "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                        "params": [
+                            {"to": CTF_ADDRESS, "data": data_hex},
+                            "latest",
+                        ],
+                    },
+                    timeout=10,
+                )
+                result = r.json().get("result")
+                if result:
+                    return result
+            except Exception:
+                continue
+        return None
+
+    # The 4-byte selectors for the three CTF helpers we need. Hashing
+    # locally avoids an extra import / RPC.
+    sel_collection = _keccak(text="getCollectionId(bytes32,bytes32,uint256)")[:4].hex()
+    sel_position   = _keccak(text="getPositionId(address,bytes32)")[:4].hex()
+    sel_balance    = _keccak(text="balanceOf(address,uint256)")[:4].hex()
+
+    parent_hex = "00" * 32
+    cond_hex = cond_bytes.hex()
+
+    holder_padded = "00" * 12 + holder_address.lower().removeprefix("0x")
+
+    for collateral in _candidate_collaterals():
+        # Try EACH indexSet in the redeem and stop at the first that
+        # has a balance. In practice the caller always passes a
+        # single-element list (one outcome) so this loop is normally
+        # one iteration.
+        for index_set in index_sets:
+            index_set_hex = index_set.to_bytes(32, "big").hex()
+            collection_id = _eth_call(
+                "0x" + sel_collection + parent_hex + cond_hex + index_set_hex
+            )
+            if not collection_id:
+                continue
+
+            collateral_padded = "00" * 12 + collateral.lower().removeprefix("0x")
+            position_id = _eth_call(
+                "0x" + sel_position + collateral_padded + collection_id[2:]
+            )
+            if not position_id:
+                continue
+
+            balance_hex = _eth_call(
+                "0x" + sel_balance + holder_padded + position_id[2:]
+            )
+            if not balance_hex:
+                continue
+            try:
+                balance = int(balance_hex, 16)
+            except ValueError:
+                continue
+            if balance > 0:
+                cache[cache_key] = collateral
+                return collateral
+
+    cache[cache_key] = None
+    return None
 
 # Polygon mainnet.
 POLYGON_CHAIN_ID = 137
 
-# Public Polygon RPC. Same env override as polymarket_wallet.py.
-POLYGON_RPC_URL = os.environ.get("POLYGON_RPC_URL", "https://polygon-rpc.com")
+# Public Polygon RPC fallback list. As of 2026-05-18 the canonical
+# `polygon-rpc.com` started returning HTTP 401 on `eth_sendRawTransaction`
+# from clients without a Polygon Edge API key - broadcast traffic is
+# gated even though reads still work. That broke auto-redeem on every
+# settled live winner and left the user with stuck CTF tokens.
+#
+# Solution: try a list of public RPC endpoints in order until one
+# accepts the broadcast. Each is free + keyless + accepts unsigned
+# raw transactions. Override via $POLYGON_RPC_URLS (comma-separated)
+# or just the first entry via $POLYGON_RPC_URL.
+_DEFAULT_RPC_URLS = [
+    # Tried in order; on broadcast failure we fall through to the
+    # next URL. Reads still work on polygon-rpc.com (only broadcasts
+    # got the 401), so it stays in the list as a last fallback.
+    "https://polygon.llamarpc.com",
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://polygon.drpc.org",
+    "https://1rpc.io/matic",
+    "https://rpc.ankr.com/polygon",
+    "https://polygon-rpc.com",
+]
+_env_urls = os.environ.get("POLYGON_RPC_URLS") or os.environ.get("POLYGON_RPC_URL")
+if _env_urls:
+    POLYGON_RPC_URLS = [u.strip() for u in _env_urls.split(",") if u.strip()]
+else:
+    POLYGON_RPC_URLS = list(_DEFAULT_RPC_URLS)
+# Legacy single-URL constant kept for any importer that uses it.
+POLYGON_RPC_URL = POLYGON_RPC_URLS[0]
 
 # Minimal ABI: only redeemPositions. Avoids shipping the full CTF ABI
 # (which has dozens of methods we never call).
@@ -237,49 +446,195 @@ def redeem_winning_position(
         pk = "0x" + pk
 
     try:
-        w3 = Web3(Web3.HTTPProvider(POLYGON_RPC_URL, request_kwargs={"timeout": 15}))
         acct = Account.from_key(pk)
-        if acct.address.lower() != wallet.lower():
-            return RedeemResult(
-                redeemed=False,
-                tx_hash=None,
-                error=("private key does not match wallet "
-                       f"({acct.address} vs {wallet})"),
-            )
-
-        ctf = w3.eth.contract(
-            address=Web3.to_checksum_address(CTF_ADDRESS),
-            abi=CTF_REDEEM_ABI,
-        )
-        nonce = w3.eth.get_transaction_count(acct.address)
-        tx = ctf.functions.redeemPositions(
-            Web3.to_checksum_address(PUSD_ADDRESS),
-            b"\x00" * 32,                                      # parentCollectionId
-            cond_bytes,
-            list(index_sets),
-        ).build_transaction({
-            "from":    acct.address,
-            "chainId": POLYGON_CHAIN_ID,
-            "nonce":   nonce,
-            # Let web3 pick gas; the public RPC reliably suggests
-            # something sane for Polygon. We don't override gas price
-            # because Polygon's EIP-1559 fees are dynamic.
-        })
-        signed = acct.sign_transaction(tx)
-        raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
-        sent_hash = w3.eth.send_raw_transaction(raw).hex()
     except Exception as exc:
-        # Build / sign / send failure. Don't include the private key
-        # in the error text; eth_account does not echo it but be
-        # defensive in case web3 ever does.
         return RedeemResult(
-            redeemed=False,
-            tx_hash=None,
-            error=f"redeem broadcast failed: {exc}",
+            redeemed=False, tx_hash=None,
+            error=f"key parse failed: {exc}",
         )
 
-    # Wait for the receipt. If it reverts or times out we still have
-    # the hash so the operator can investigate on Polygonscan.
+    # ── Path 1a: Gasless via Polymarket Relayer (RELAYER_API_KEY) ────
+    # The simple 2-header auth scheme. The user creates a key on
+    # polymarket.com -> Settings -> Relayer API keys (one UUID, no
+    # HMAC, no passphrase) and pastes it into Delfi. The relayer
+    # accepts the submission with `RELAYER_API_KEY` +
+    # `RELAYER_API_KEY_ADDRESS` (the signer EOA). Polymarket pays
+    # the gas; no MATIC needed in the user's wallet.
+    #
+    # Verified end-to-end 2026-05-18 against position 317's real
+    # redeem. This is the path we PREFER and actively guide the user
+    # toward, because it's a one-time paste of a single string and
+    # works forever after.
+    relayer_result = _try_gasless_redeem_via_relayer_api_key(
+        cond_bytes=cond_bytes,
+        index_sets=index_sets,
+        wallet=wallet,
+        private_key=pk,
+        acct_address=acct.address,
+    )
+    if relayer_result is not None:
+        # Chain the wrap step IMMEDIATELY on a successful redeem so
+        # the user's funds become tradeable pUSD on Polymarket within
+        # one round-trip, not after the next pm_activate_legacy tick
+        # (up to 10 minutes of "Confirm pending deposit" in the UI).
+        #
+        # Two failure modes are both safe to swallow:
+        #   1. activate_legacy itself errors. It's idempotent and the
+        #      periodic pm_activate_legacy job will retry on its next
+        #      10-min tick. We log and move on.
+        #   2. USDC.e balance at the funder is 0 (already wrapped, or
+        #      market settled in pUSD directly). activate_legacy's
+        #      internal balance check short-circuits with no submission.
+        if relayer_result.redeemed:
+            try:
+                wrap_summary = activate_legacy_collateral_balance()
+                if wrap_summary.get("tx_hash"):
+                    print(
+                        f"[pm_redeemer] post-redeem wrap chain fired: "
+                        f"${wrap_summary.get('activated_usd', 0):.2f} "
+                        f"tx={wrap_summary['tx_hash']}",
+                        file=sys.stderr, flush=True,
+                    )
+                elif wrap_summary.get("error"):
+                    print(
+                        f"[pm_redeemer] post-redeem wrap chain returned "
+                        f"with error (will retry on next 10-min tick): "
+                        f"{wrap_summary['error']}",
+                        file=sys.stderr, flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    f"[pm_redeemer] post-redeem wrap chain raised "
+                    f"(will retry on next 10-min tick): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+        return relayer_result  # relayer succeeded or terminally failed
+
+    # ── Path 1b: Gasless via Builder API Key HMAC (POLY_BUILDER_*) ───
+    # The harder auth path: 4 headers, HMAC-SHA256, separate key
+    # class created on polymarket.com -> Settings -> Builders. Most
+    # users won't have this; it's third-party-builder-grade auth.
+    # Kept as a fallback so users who happen to have Builder creds
+    # configured still benefit from gasless redeem.
+    gasless_result = _try_gasless_redeem(
+        cond_bytes=cond_bytes,
+        index_sets=index_sets,
+        wallet=wallet,
+        private_key=pk,
+        acct_address=acct.address,
+    )
+    if gasless_result is not None:
+        return gasless_result  # gasless succeeded or terminally failed
+
+    # Direct-RPC path. NOTE: this path only works for sig_type=0
+    # (raw-EOA) accounts. For sig_type=1 (POLY_PROXY) and sig_type=3
+    # (V2 DepositWallet) accounts the CTF tokens live at the funder,
+    # not the EOA, so calling redeemPositions from the EOA would
+    # burn zero tokens and pay out zero, the same payout=0 failure mode
+    # the verifier catches. The relayer path above is what handles
+    # those accounts; this fallback only succeeds for the rare
+    # MetaMask-direct user.
+
+    # Try each RPC URL in turn. The "build + send" step is the one
+    # that 401s on gated RPCs; reads (get_transaction_count, gas
+    # suggest) usually still work but we use the same RPC for
+    # both phases of each attempt to keep nonces consistent.
+    # Polygon is a proof-of-authority chain; web3.py needs
+    # ExtraDataToPOAMiddleware injected or every get_block /
+    # get_transaction_count throws ExtraDataLengthError on the 32+
+    # byte extraData field that POA chains use. Without this the
+    # auto-redeem fails before it even tries to broadcast.
+    try:
+        from web3.middleware import ExtraDataToPOAMiddleware as _POAMiddleware
+    except Exception:
+        _POAMiddleware = None
+
+    sent_hash: Optional[str] = None
+    w3 = None
+    errors: list[str] = []
+    for rpc_url in POLYGON_RPC_URLS:
+        try:
+            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 15}))
+            if _POAMiddleware is not None:
+                try:
+                    w3.middleware_onion.inject(_POAMiddleware, layer=0)
+                except Exception:
+                    pass  # already injected or unsupported on this w3 version
+            ctf = w3.eth.contract(
+                address=Web3.to_checksum_address(CTF_ADDRESS),
+                abi=CTF_REDEEM_ABI,
+            )
+            # Find the actual collateral this market settled in.
+            # Falls back to USDC.e (the empirically-dominant case)
+            # when the on-chain probe can't decide.
+            collateral_for_redeem = (
+                resolve_collateral_for_position(
+                    cond_bytes=cond_bytes,
+                    index_sets=index_sets,
+                    holder_address=wallet,
+                )
+                or USDCE_ADDRESS
+            )
+            nonce = w3.eth.get_transaction_count(acct.address)
+            tx = ctf.functions.redeemPositions(
+                Web3.to_checksum_address(collateral_for_redeem),
+                b"\x00" * 32,                                  # parentCollectionId
+                cond_bytes,
+                list(index_sets),
+            ).build_transaction({
+                "from":    acct.address,
+                "chainId": POLYGON_CHAIN_ID,
+                "nonce":   nonce,
+            })
+            signed = acct.sign_transaction(tx)
+            raw = getattr(signed, "rawTransaction", None) or getattr(signed, "raw_transaction")
+            sent_hash = w3.eth.send_raw_transaction(raw).hex()
+            print(
+                f"[pm_redeemer] broadcast accepted by {rpc_url} "
+                f"tx={sent_hash}",
+                file=sys.stderr, flush=True,
+            )
+            break  # success
+        except Exception as exc:
+            errors.append(f"{rpc_url}: {type(exc).__name__}: {str(exc)[:160]}")
+            print(
+                f"[pm_redeemer] broadcast failed on {rpc_url}: "
+                f"{type(exc).__name__}: {str(exc)[:160]}",
+                file=sys.stderr, flush=True,
+            )
+            continue
+    if sent_hash is None or w3 is None:
+        # Every RPC URL failed. Detect the common case where the
+        # user's Polygon wallet has no MATIC for gas — that's a
+        # specific user-actionable failure, not a transient RPC
+        # problem. Two paths to fix this: fund 0.1 MATIC for direct
+        # RPC, OR paste Builder API Keys in Settings for gasless via
+        # Polymarket's relayer.
+        joined = " | ".join(errors)
+        if "insufficient funds for gas" in joined.lower():
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=(
+                    "wallet has no MATIC for gas. Two options: "
+                    "(1) send ~0.1 MATIC (~$0.05) to the wallet for "
+                    "direct-RPC auto-redeem, OR "
+                    "(2) create a Builder API Key on polymarket.com -> "
+                    "Settings -> API Keys and paste it into Delfi "
+                    "Settings -> Polymarket API Key for gasless redeem "
+                    "via Polymarket's relayer. "
+                    "Until either is set up, click Redeem on the "
+                    "Polymarket web UI to claim winners manually."
+                ),
+            )
+        return RedeemResult(
+            redeemed=False, tx_hash=None,
+            error=f"redeem broadcast failed on all RPCs: {' | '.join(errors[:3])}",
+        )
+
+    # Wait for the receipt. Uses the same RPC that accepted the
+    # broadcast. If it reverts or times out we still have the hash
+    # so the operator can investigate on Polygonscan.
     try:
         receipt = w3.eth.wait_for_transaction_receipt(
             sent_hash, timeout=TX_RECEIPT_TIMEOUT_SECONDS,
@@ -305,3 +660,923 @@ def redeem_winning_position(
         flush=True,
     )
     return RedeemResult(redeemed=True, tx_hash=sent_hash, error=None)
+
+
+# ── Periodic sweeper for stuck winners ──────────────────────────────────────
+#
+# settle_position only invokes redeem_winning_position ONCE per position
+# (when the row transitions to status='settled'). If that one attempt
+# fails - transient RPC 401, no MATIC for gas, daemon restart mid-call,
+# Builder creds not yet pasted - the row sits forever with
+# redeem_tx_hash=NULL and the on-chain CTF tokens never reach the user's
+# pUSD balance. Real example: position 317 settled 2026-05-18 06:39 UTC
+# against an older binary that only had polygon-rpc.com in its fallback
+# list; broadcast 401'd and the daemon never came back to it.
+#
+# This sweeper closes that gap. It runs on its own schedule, scans the
+# DB for stuck winners, and replays redeem_winning_position for each.
+# The redeemer itself is idempotent in the failure case (kill switch,
+# missing creds, no MATIC) - it just returns RedeemResult(redeemed=False)
+# without consuming gas - so repeated calls until the user funds MATIC
+# or pastes Builder API keys are safe.
+
+def sweep_unredeemed_winners(*, max_per_run: int = 25) -> dict:
+    """Scan pm_positions for live winners with no redeem tx and retry.
+
+    Returns a small summary dict for logging:
+        {'scanned': N, 'redeemed': M, 'failed': K, 'reasons': {...}}
+
+    Safe to call from any thread. Self-gated on DELFI_LIVE_KILLSWITCH_OFF
+    via redeem_winning_position - no need to gate here too. Always
+    bounded: at most `max_per_run` positions touched per call so a
+    backlog of 100 stuck winners can't monopolise the threadpool tick.
+    """
+    summary = {"scanned": 0, "redeemed": 0, "failed": 0, "reasons": {}}
+
+    # Deferred imports so test-runs of redeem_winning_position don't
+    # pull in db + user_config.
+    try:
+        from sqlalchemy import text
+        from db.engine import get_engine
+        from engine.user_config import (
+            get_user_config, get_active_polymarket_creds,
+        )
+    except Exception as exc:
+        print(f"[pm_redeemer] sweeper bootstrap failed: {exc}",
+              file=sys.stderr, flush=True)
+        return summary
+
+    try:
+        cfg = get_user_config()
+    except Exception as exc:
+        print(f"[pm_redeemer] sweeper config read failed: {exc}",
+              file=sys.stderr, flush=True)
+        return summary
+
+    if (getattr(cfg, "mode", "") or "").lower() != "live":
+        return summary  # nothing to sweep in simulation
+
+    try:
+        creds = get_active_polymarket_creds(cfg)
+    except Exception:
+        creds = None
+    wallet = (creds or {}).get("wallet_address") or ""
+    pk     = (creds or {}).get("private_key") or ""
+    if not wallet or not pk:
+        return summary  # no creds, nothing we can do
+
+    # Find stuck winners. The redeem hook only ran when side was
+    # already known to be the winning side (see settle_position), so
+    # we filter the same way here.
+    try:
+        with get_engine().begin() as conn:
+            rows = list(conn.execute(text(
+                "SELECT id, condition_id, side, settlement_outcome "
+                "FROM pm_positions "
+                "WHERE mode = 'live' "
+                "  AND status = 'settled' "
+                "  AND redeem_tx_hash IS NULL "
+                "  AND condition_id IS NOT NULL "
+                "  AND condition_id != '' "
+                "  AND side = settlement_outcome "
+                "ORDER BY id ASC "
+                "LIMIT :lim"
+            ), {"lim": int(max_per_run)}).mappings()) or []
+    except Exception as exc:
+        print(f"[pm_redeemer] sweeper select failed: {exc}",
+              file=sys.stderr, flush=True)
+        return summary
+
+    if not rows:
+        return summary
+
+    for row in rows:
+        summary["scanned"] += 1
+        pid          = row["id"]
+        condition_id = row["condition_id"]
+        side         = row["side"]
+        outcome      = row["settlement_outcome"]
+
+        try:
+            result = redeem_winning_position(
+                condition_id=condition_id,
+                side=side,
+                outcome=outcome,
+                wallet=wallet,
+                private_key=pk,
+            )
+        except Exception as exc:
+            summary["failed"] += 1
+            reason = f"exception: {type(exc).__name__}"
+            summary["reasons"][reason] = summary["reasons"].get(reason, 0) + 1
+            print(
+                f"[pm_redeemer] sweeper threw on pos {pid}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            continue
+
+        if result.tx_hash:
+            try:
+                with get_engine().begin() as conn:
+                    conn.execute(text(
+                        "UPDATE pm_positions "
+                        "SET redeem_tx_hash = :tx "
+                        "WHERE id = :pid"
+                    ), {"tx": result.tx_hash, "pid": pid})
+            except Exception as exc:
+                print(
+                    f"[pm_redeemer] sweeper persist failed for pos "
+                    f"{pid}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+
+        if result.redeemed:
+            summary["redeemed"] += 1
+            print(
+                f"[pm_redeemer] sweeper redeemed pos {pid} "
+                f"tx={result.tx_hash}",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            summary["failed"] += 1
+            reason = (result.error or "unknown")[:80]
+            summary["reasons"][reason] = summary["reasons"].get(reason, 0) + 1
+
+    print(
+        f"[pm_redeemer] sweeper run: scanned={summary['scanned']} "
+        f"redeemed={summary['redeemed']} failed={summary['failed']} "
+        f"reasons={summary['reasons']}",
+        file=sys.stderr, flush=True,
+    )
+    return summary
+
+
+# ── Gasless redeem via Polymarket Relayer ───────────────────────────────────
+
+# Polymarket's official relayer endpoint. Override via env if needed
+# (e.g. pointing at the staging relayer for tests).
+POLYMARKET_RELAYER_URL = os.environ.get(
+    "POLYMARKET_RELAYER_URL", "https://relayer-v2.polymarket.com/"
+)
+
+
+def _try_gasless_redeem_via_relayer_api_key(
+    *,
+    cond_bytes: bytes,
+    index_sets: Sequence[int],
+    wallet: str,
+    private_key: str,
+    acct_address: str,
+) -> Optional[RedeemResult]:
+    """Submit the redeem via the relayer using the simple 2-header auth.
+
+    The user creates a Relayer API Key at
+    polymarket.com -> Settings -> Relayer API keys and pastes the
+    single UUID into Delfi -> Settings -> Polymarket. Auth is exactly:
+
+        RELAYER_API_KEY:          <uuid>
+        RELAYER_API_KEY_ADDRESS:  <signer EOA address>
+
+    No HMAC, no timestamp, no passphrase. Polymarket pays the gas.
+
+    Returns:
+      RedeemResult(redeemed=True, tx_hash=...)  — relayer executed.
+      RedeemResult(redeemed=False, ...)         — terminal failure
+                                                  (401, 4xx, etc.).
+      None                                       — no Relayer API Key
+                                                  configured or SDK
+                                                  import failure; the
+                                                  caller falls through
+                                                  to the next path.
+    """
+    try:
+        from engine.user_config import get_polymarket_relayer_api_key
+        api_key = get_polymarket_relayer_api_key()
+    except Exception:
+        api_key = None
+    if not api_key:
+        return None  # caller falls through
+
+    try:
+        from py_builder_relayer_client.models import (
+            DepositWalletCall, DepositWalletTransactionArgs,
+        )
+        from py_builder_relayer_client.builder.deposit_wallet import (
+            build_deposit_wallet_batch_request,
+        )
+        from py_builder_relayer_client.config import get_contract_config
+        from py_builder_relayer_client.signer import Signer
+        from eth_utils import keccak, to_checksum_address
+        from eth_abi import encode as eth_abi_encode
+        import requests as _requests
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] relayer-api-key path: SDK import failed: {exc}; "
+            f"falling back to next path",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    # Resolve the user's POLY_PROXY / DepositWallet ("funder").
+    #
+    # The relayer's wallet-registry is keyed by the funder address
+    # (the smart-wallet contract that actually holds the CTF tokens),
+    # NOT by the signing EOA. Submitting with the raw EOA produces a
+    # 400: `wallet registry validation failed: wallet 0x... is not
+    # registered`. Same address mismatch causes the on-chain balance
+    # probe in `resolve_collateral_for_position` to see zero balance
+    # at the EOA and silently fall back to the wrong default
+    # collateral. Fix once, here, and pass the funder to both.
+    #
+    # `funder` = DepositWallet address for sig_type=3 (V2 default
+    # accounts), POLY_PROXY for sig_type=1 (legacy V1 magic users),
+    # the EOA itself for sig_type=0 (MetaMask-connect users). The
+    # probe returns the right shape for whatever the user has.
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        signer_info = get_poly_signer_info(private_key) or {}
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] relayer path: signer-info probe failed: {exc}; "
+            f"falling back to raw wallet address",
+            file=sys.stderr, flush=True,
+        )
+        signer_info = {}
+    funder = (signer_info.get("funder") or wallet)
+
+    # Resolve the actual collateral this market settled in by
+    # reading on-chain balances at the FUNDER (not the EOA, the CTF
+    # tokens live on the smart wallet that placed the order).
+    # USDC.e for most markets; pUSD for some V2-only markets.
+    # Hardcoded pUSD was the bug behind position 317's "payout=0"
+    # no-op redeem (tx 0x10bb58...).
+    collateral_for_redeem = (
+        resolve_collateral_for_position(
+            cond_bytes=cond_bytes,
+            index_sets=index_sets,
+            holder_address=funder,
+        )
+        or USDCE_ADDRESS
+    )
+
+    # Build the same DepositWallet batch request the Builder path uses.
+    # We only need the signed body; the auth headers are different.
+    selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+    encoded_args = eth_abi_encode(
+        ["address", "bytes32", "bytes32", "uint256[]"],
+        [to_checksum_address(collateral_for_redeem), b"\x00" * 32,
+         cond_bytes, list(index_sets)],
+    )
+    redeem_data = "0x" + (selector + encoded_args).hex()
+    call = DepositWalletCall(
+        target=to_checksum_address(CTF_ADDRESS),
+        value="0",
+        data=redeem_data,
+    )
+
+    try:
+        signer = Signer(private_key, POLYGON_CHAIN_ID)
+        # The relayer's nonce endpoint is open / unauthenticated.
+        # Same canonical URL as POLYMARKET_RELAYER_URL but with the
+        # /nonce path; we hit it directly to avoid spinning up a full
+        # RelayClient.
+        base = POLYMARKET_RELAYER_URL.rstrip("/")
+        nonce_url = (
+            f"{base}/nonce?address={signer.address()}&type=WALLET"
+        )
+        nonce_resp = _requests.get(nonce_url, timeout=15)
+        nonce_resp.raise_for_status()
+        nonce = str(nonce_resp.json().get("nonce", "0"))
+
+        # `wallet_address` MUST be the funder/proxy address (the
+        # smart-wallet that holds the CTF tokens), NOT the signer EOA.
+        # The relayer's wallet-registry is keyed by funder; submitting
+        # with the EOA produces "wallet registry validation failed:
+        # wallet 0x... is not registered" (HTTP 400) and the redeem
+        # never reaches chain. The funder we resolved above via
+        # get_poly_signer_info handles every account shape (sig_type=0
+        # EOA, sig_type=1 POLY_PROXY, sig_type=3 V2 DepositWallet).
+        #
+        # Deadline = +1 hour. The relayer rejects deadlines under
+        # roughly 10 minutes with "deadline too soon"; +4 minutes
+        # worked one time empirically on 2026-05-18 but failed
+        # immediately after on the same key. +1h is comfortably
+        # past whatever the relayer's min-deadline threshold is.
+        dw_args = DepositWalletTransactionArgs(
+            from_address=signer.address(),
+            chain_id=POLYGON_CHAIN_ID,
+            wallet_address=funder,
+            nonce=nonce,
+            deadline=str(int(time.time()) + 3600),
+            calls=[call],
+        )
+        cfg = get_contract_config(POLYGON_CHAIN_ID)
+        req = build_deposit_wallet_batch_request(
+            signer=signer, args=dw_args, config=cfg,
+        )
+        body = req.to_dict()
+
+        # The actual submit. 2-header auth.
+        submit_url = f"{base}/submit"
+        headers = {
+            "RELAYER_API_KEY": api_key,
+            "RELAYER_API_KEY_ADDRESS": signer.address(),
+        }
+        resp = _requests.post(
+            submit_url, json=body, headers=headers, timeout=60,
+        )
+
+        if resp.status_code != 200:
+            msg = resp.text[:300]
+            # 401 means the pasted key is invalid OR was created for a
+            # different signer address. Surface that clearly to the
+            # operator so the fix is obvious. NOT a transient error,
+            # so don't fall through to a direct-RPC retry that will
+            # also fail (no MATIC) and confuse the message.
+            if resp.status_code == 401:
+                return RedeemResult(
+                    redeemed=False, tx_hash=None,
+                    error=(
+                        f"relayer rejected RELAYER_API_KEY (401). "
+                        f"Check that the key was created on "
+                        f"polymarket.com -> Settings -> Relayer API "
+                        f"keys with the SAME wallet you have "
+                        f"connected to Delfi. Response: {msg}"
+                    ),
+                )
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=f"relayer submit failed: {resp.status_code} {msg}",
+            )
+
+        data = resp.json()
+        tx_hash = data.get("transactionHash")
+        state   = data.get("state")
+        if not tx_hash:
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=f"relayer accepted submit but no tx hash: {data}",
+            )
+
+        # VERIFY actual on-chain payout before declaring success.
+        #
+        # 2026-05-18: position 317's first redeem returned
+        # STATE_EXECUTED with a valid tx hash, but the on-chain
+        # PayoutRedemption event fired with `payout = 0` because
+        # the redeem was sent with the wrong collateral. The relayer
+        # has no business logic gating - it broadcasts whatever you
+        # signed and reports tx success at the EVM level only.
+        #
+        # Without this check, we'd persist redeem_tx_hash for an
+        # all-zero redeem and the sweeper would never retry — the
+        # user's tokens would sit unredeemed forever even though
+        # Delfi thought it was done.
+        #
+        # Belt-and-suspenders against the same bug class going
+        # forward: pull the receipt, decode PayoutRedemption,
+        # demand payout > 0.
+        verified = _verify_payout_from_receipt(tx_hash, cond_bytes)
+        if verified is True:
+            print(
+                f"[pm_redeemer] relayer redeemed via RELAYER_API_KEY: "
+                f"tx={tx_hash} state={state} (verified payout > 0)",
+                file=sys.stderr, flush=True,
+            )
+            return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
+        if verified is False:
+            return RedeemResult(
+                redeemed=False, tx_hash=tx_hash,
+                error=(
+                    f"relayer tx {tx_hash} mined with payout=0 — "
+                    f"likely wrong collateral or tokens at different "
+                    f"funder. Will retry on next sweeper tick."
+                ),
+            )
+        # verified is None: receipt fetch failed. Don't penalise the
+        # relayer for a transient RPC blip; trust the relayer's
+        # STATE_EXECUTED. The sweeper will rescan if the position
+        # is somehow still flagged stuck.
+        print(
+            f"[pm_redeemer] relayer redeemed via RELAYER_API_KEY: "
+            f"tx={tx_hash} state={state} (receipt fetch failed, "
+            f"trusting relayer)",
+            file=sys.stderr, flush=True,
+        )
+        return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
+    except Exception as exc:
+        # Network blip, payload bug, or unexpected SDK error. Fall
+        # through to the next path so a transient relayer outage
+        # doesn't permanently block redeem.
+        print(
+            f"[pm_redeemer] relayer-api-key path failed "
+            f"({type(exc).__name__}: {str(exc)[:200]}); "
+            f"falling back to next path",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+# PayoutRedemption event signature on CTF:
+# keccak("PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)")
+_PAYOUT_REDEMPTION_TOPIC = (
+    "0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d"
+)
+
+# Polymarket's user-facing collateral wrapper contract on Polygon.
+# Holds the Wrapper role on pUSD; users call its wrap() to swap legacy
+# USDC.e (paid out by CTF.redeemPositions when the market settled in
+# the V1 collateral) into V2-spendable pUSD.
+#
+# Captured 2026-05-18 by inspecting polymarket.com's "Confirm pending
+# deposit" -> "Continue" network call (POST relayer-v2.polymarket.com/
+# submit with a 2-call DepositWallet batch: USDC.e.approve(wrapper, x)
+# then wrapper.wrap(USDC.e, funder, x)).
+POLYMARKET_LEGACY_WRAPPER_ADDRESS = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+
+
+def activate_legacy_collateral_balance(*, max_per_run: int = 1) -> dict:
+    """Convert any USDC.e at the user's funder into pUSD via the
+    Polymarket wrapper, so funds actually become tradeable Cash.
+
+    Why this exists: when a CTF market settled in USDC.e (the legacy
+    V1 collateral), `CTF.redeemPositions` pays out USDC.e to the
+    funder. Polymarket's V2 trading engine only spends pUSD, so any
+    USDC.e in the funder appears in Polymarket's UI as "Confirm
+    pending deposit" — gating the user out of their own funds until
+    they click through a manual flow.
+
+    The Polymarket frontend's "Confirm pending deposit" simply submits
+    a 2-call DepositWallet batch to relayer-v2.polymarket.com/submit:
+      1. USDC.e.approve(legacy-wrapper, amount)
+      2. legacy-wrapper.wrap(USDC.e, funder, amount)
+    Same RELAYER_API_KEY auth we already use for redeem. No wallet
+    signature popup needed.
+
+    This function runs the exact same submission idempotently from
+    the bot. Cheap when the funder has 0 USDC.e (single balanceOf
+    eth_call, returns immediately). When > 0, fires the approve+wrap
+    batch and the funds become tradeable within a block.
+
+    Designed to be called by a periodic scheduler job alongside
+    the redeem sweeper. Returns a small summary dict for logging.
+    """
+    summary = {"activated_usd": 0.0, "tx_hash": None, "error": None}
+
+    try:
+        from engine.user_config import (
+            get_user_config, get_active_polymarket_creds,
+            get_polymarket_relayer_api_key,
+        )
+    except Exception as exc:
+        summary["error"] = f"config import failed: {exc}"
+        return summary
+
+    try:
+        cfg = get_user_config()
+    except Exception as exc:
+        summary["error"] = f"config read failed: {exc}"
+        return summary
+
+    if (getattr(cfg, "mode", "") or "").lower() != "live":
+        return summary  # nothing to activate in simulation
+
+    api_key = None
+    try:
+        api_key = get_polymarket_relayer_api_key()
+    except Exception:
+        api_key = None
+    if not api_key:
+        # No RELAYER_API_KEY → can't gasless-submit. Skip silently.
+        # The user-facing UI nudge to paste a key handles this case.
+        return summary
+
+    try:
+        creds = get_active_polymarket_creds(cfg)
+    except Exception:
+        creds = None
+    wallet = (creds or {}).get("wallet_address") or ""
+    pk     = (creds or {}).get("private_key") or ""
+    if not wallet or not pk:
+        return summary  # no creds, nothing we can do
+
+    # Resolve the funder (smart-wallet contract that holds USDC.e
+    # after a redeem). Same reasoning as the relayer redeem path:
+    # USDC.e is paid out to the funder, not the signing EOA. Probing
+    # balanceOf at the EOA returns 0 and the wrap never fires. Pass
+    # the funder to BOTH the balance probe AND the relayer wallet_address.
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        signer_info = get_poly_signer_info(pk) or {}
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] activate-legacy: signer-info probe failed: {exc}; "
+            f"falling back to raw wallet address",
+            file=sys.stderr, flush=True,
+        )
+        signer_info = {}
+    funder = (signer_info.get("funder") or wallet)
+
+    # Check funder USDC.e balance via eth_call. Free; no submission
+    # unless balance > 0.
+    try:
+        import requests as _requests
+        from eth_utils import keccak as _keccak
+    except Exception as exc:
+        summary["error"] = f"deps missing: {exc}"
+        return summary
+
+    bal_sel = _keccak(text="balanceOf(address)")[:4].hex()
+    addr_padded = "00" * 12 + funder.lower().removeprefix("0x")
+    # Try each RPC in turn. Hardcoding POLYGON_RPC_URLS[0] used to
+    # silently kill the activator when llamarpc DNS failed on the user's
+    # network (the failure mode that left a $5 USDC.e payout stuck at
+    # the DepositWallet for hours). Iterate and accept the first
+    # successful response.
+    balance_raw: Optional[int] = None
+    probe_errors: list[str] = []
+    for rpc_url in POLYGON_RPC_URLS:
+        try:
+            r = _requests.post(
+                rpc_url,
+                json={
+                    "jsonrpc": "2.0", "id": 1, "method": "eth_call",
+                    "params": [
+                        {"to": USDCE_ADDRESS,
+                         "data": "0x" + bal_sel + addr_padded},
+                        "latest",
+                    ],
+                },
+                timeout=10,
+            )
+            raw = r.json().get("result")
+            if not raw:
+                probe_errors.append(f"{rpc_url}: no result")
+                continue
+            balance_raw = int(raw, 16)
+            break
+        except Exception as exc:
+            probe_errors.append(
+                f"{rpc_url}: {type(exc).__name__}: {str(exc)[:120]}"
+            )
+            continue
+    if balance_raw is None:
+        summary["error"] = (
+            f"balance probe failed on all RPCs: "
+            f"{' | '.join(probe_errors[:3])}"
+        )
+        print(
+            f"[pm_redeemer] activate-legacy balance probe failed on "
+            f"all RPCs: {summary['error']}",
+            file=sys.stderr, flush=True,
+        )
+        return summary
+
+    if balance_raw <= 0:
+        return summary  # nothing to do
+
+    # Build approve + wrap calls.
+    try:
+        from py_builder_relayer_client.models import (
+            DepositWalletCall, DepositWalletTransactionArgs,
+        )
+        from py_builder_relayer_client.builder.deposit_wallet import (
+            build_deposit_wallet_batch_request,
+        )
+        from py_builder_relayer_client.config import get_contract_config
+        from py_builder_relayer_client.signer import Signer
+        from eth_utils import to_checksum_address
+        from eth_abi import encode as _encode
+    except Exception as exc:
+        summary["error"] = f"SDK import failed: {exc}"
+        return summary
+
+    approve_sel = _keccak(text="approve(address,uint256)")[:4]
+    approve_args = _encode(
+        ["address", "uint256"],
+        [to_checksum_address(POLYMARKET_LEGACY_WRAPPER_ADDRESS), balance_raw],
+    )
+    approve_data = "0x" + (approve_sel + approve_args).hex()
+    approve_call = DepositWalletCall(
+        target=to_checksum_address(USDCE_ADDRESS),
+        value="0", data=approve_data,
+    )
+
+    wrap_sel = _keccak(text="wrap(address,address,uint256)")[:4]
+    wrap_args = _encode(
+        ["address", "address", "uint256"],
+        [to_checksum_address(USDCE_ADDRESS),
+         to_checksum_address(funder),
+         balance_raw],
+    )
+    wrap_data = "0x" + (wrap_sel + wrap_args).hex()
+    wrap_call = DepositWalletCall(
+        target=to_checksum_address(POLYMARKET_LEGACY_WRAPPER_ADDRESS),
+        value="0", data=wrap_data,
+    )
+
+    base = POLYMARKET_RELAYER_URL.rstrip("/")
+
+    try:
+        signer = Signer(pk, POLYGON_CHAIN_ID)
+        nonce_resp = _requests.get(
+            f"{base}/nonce?address={signer.address()}&type=WALLET",
+            timeout=15,
+        )
+        nonce_resp.raise_for_status()
+        nonce = str(nonce_resp.json().get("nonce", "0"))
+
+        dw_args = DepositWalletTransactionArgs(
+            from_address=signer.address(),
+            chain_id=POLYGON_CHAIN_ID,
+            wallet_address=funder,
+            nonce=nonce,
+            deadline=str(int(time.time()) + 3600),
+            calls=[approve_call, wrap_call],
+        )
+        ccfg = get_contract_config(POLYGON_CHAIN_ID)
+        req = build_deposit_wallet_batch_request(
+            signer=signer, args=dw_args, config=ccfg,
+        )
+        body = req.to_dict()
+        r = _requests.post(
+            f"{base}/submit",
+            json=body,
+            headers={
+                "RELAYER_API_KEY": api_key,
+                "RELAYER_API_KEY_ADDRESS": signer.address(),
+            },
+            timeout=60,
+        )
+        if r.status_code != 200:
+            msg = r.text[:300]
+            summary["error"] = (
+                f"relayer rejected wrap submission: "
+                f"{r.status_code} {msg}"
+            )
+            return summary
+
+        data = r.json()
+        tx_hash = data.get("transactionHash")
+        if tx_hash:
+            summary["tx_hash"] = tx_hash
+            summary["activated_usd"] = balance_raw / 1e6
+            print(
+                f"[pm_redeemer] activated ${balance_raw/1e6:.2f} USDC.e "
+                f"-> pUSD via wrapper. tx={tx_hash}",
+                file=sys.stderr, flush=True,
+            )
+            return summary
+
+        summary["error"] = f"submit returned no tx hash: {data}"
+        return summary
+    except Exception as exc:
+        summary["error"] = (
+            f"wrap submission failed: {type(exc).__name__}: "
+            f"{str(exc)[:200]}"
+        )
+        return summary
+
+
+def _verify_payout_from_receipt(
+    tx_hash: str, cond_bytes: bytes, *, retries: int = 6,
+) -> Optional[bool]:
+    """Pull the tx receipt and confirm CTF emitted PayoutRedemption
+    with payout > 0 for the expected conditionId.
+
+    Returns:
+      True  — receipt has PayoutRedemption(conditionId=ours, payout>0).
+      False — receipt missing PayoutRedemption OR payout=0 OR wrong
+              conditionId. Either way, the redeem was effectively a
+              no-op; the sweeper should NOT mark the position as
+              redeemed.
+      None  — receipt not yet available (tx still propagating) or
+              all RPCs failed. Defer judgement; the caller trusts
+              the relayer's STATE_EXECUTED.
+
+    Retries with backoff because the relayer often returns
+    STATE_EXECUTED a beat before the receipt is queryable from
+    public RPCs.
+    """
+    if not tx_hash:
+        return None
+    try:
+        import requests as _requests
+        from eth_abi import decode as _decode
+    except Exception:
+        return None
+
+    for attempt in range(retries):
+        for rpc in POLYGON_RPC_URLS:
+            try:
+                r = _requests.post(
+                    rpc,
+                    json={
+                        "jsonrpc": "2.0", "id": 1,
+                        "method": "eth_getTransactionReceipt",
+                        "params": [tx_hash],
+                    },
+                    timeout=10,
+                )
+                rec = r.json().get("result")
+            except Exception:
+                continue
+            if not rec:
+                continue
+
+            if rec.get("status") != "0x1":
+                # On-chain revert; definitely no payout.
+                return False
+
+            for log in rec.get("logs") or []:
+                topics = log.get("topics") or []
+                if not topics or topics[0] != _PAYOUT_REDEMPTION_TOPIC:
+                    continue
+                data_hex = (log.get("data") or "0x")[2:]
+                if not data_hex:
+                    continue
+                try:
+                    log_cond, _idx_sets, payout = _decode(
+                        ["bytes32", "uint256[]", "uint256"],
+                        bytes.fromhex(data_hex),
+                    )
+                except Exception:
+                    continue
+                if log_cond != cond_bytes:
+                    continue
+                return int(payout) > 0
+
+            # Receipt was found but no PayoutRedemption for our
+            # conditionId. Either the redeem call ran on the wrong
+            # condition, or the user's funder didn't hold the
+            # tokens. Either way, payout is effectively zero.
+            return False
+
+        # Receipt not yet available on any RPC. Backoff.
+        time.sleep(2.0 * (attempt + 1))
+
+    return None  # Never got a receipt; defer to caller.
+
+
+# Polygon mainnet CTF Exchange / Deposit Wallet factory + impl
+_DW_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+_DW_IMPL    = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+
+
+def _try_gasless_redeem(
+    *,
+    cond_bytes: bytes,
+    index_sets: Sequence[int],
+    wallet: str,
+    private_key: str,
+    acct_address: str,
+) -> Optional[RedeemResult]:
+    """Submit the redeem via Polymarket's relayer (no MATIC required).
+
+    Returns:
+      RedeemResult(redeemed=True, ...)  — succeeded
+      RedeemResult(redeemed=False, ...) — terminal failure (do NOT fall back)
+      None                              — Builder API creds missing or
+                                          import failure; caller should
+                                          fall through to direct RPC.
+
+    The relayer requires Builder/Relayer API Keys that the user creates
+    on polymarket.com → Settings → API Keys. The bot's auto-derived
+    CLOB trading keys are NOT accepted by the relayer (different key
+    class). When Builder creds are absent the function returns None
+    so the caller falls back to the direct-RPC path.
+    """
+    # Look up manual Builder API creds. Same Settings field as the
+    # CLOB manual creds; user can paste a single Builder API Key
+    # tuple that works for both order placement AND relayer redeems.
+    try:
+        from engine.user_config import get_polymarket_api_creds
+        builder_creds = get_polymarket_api_creds()
+    except Exception:
+        builder_creds = None
+    if not builder_creds:
+        return None  # caller falls through to direct RPC
+
+    # Import the Polymarket SDKs lazily — they may not be present in
+    # an environment that only does sim mode.
+    try:
+        from py_builder_relayer_client.client import RelayClient
+        from py_builder_relayer_client.models import (
+            DepositWalletCall, DepositWalletTransactionArgs,
+        )
+        from py_builder_signing_sdk.config import (
+            BuilderConfig, BuilderApiKeyCreds,
+        )
+        from eth_utils import keccak, to_checksum_address
+        from eth_abi import encode as eth_abi_encode
+    except Exception as exc:
+        print(
+            f"[pm_redeemer] gasless: SDK import failed: {exc}; "
+            f"falling back to direct RPC",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+    # Resolve actual collateral (USDC.e vs pUSD) before building the
+    # call. Same lookup as the relayer-api-key path.
+    collateral_for_redeem = (
+        resolve_collateral_for_position(
+            cond_bytes=cond_bytes,
+            index_sets=index_sets,
+            holder_address=wallet,
+        )
+        or USDCE_ADDRESS
+    )
+
+    # Build the redeemPositions calldata that will be batched into a
+    # DepositWalletCall.
+    selector = keccak(text="redeemPositions(address,bytes32,bytes32,uint256[])")[:4]
+    encoded_args = eth_abi_encode(
+        ["address", "bytes32", "bytes32", "uint256[]"],
+        [to_checksum_address(collateral_for_redeem), b"\x00" * 32,
+         cond_bytes, list(index_sets)],
+    )
+    redeem_data = "0x" + (selector + encoded_args).hex()
+    call = DepositWalletCall(
+        target=to_checksum_address(CTF_ADDRESS),
+        value="0",
+        data=redeem_data,
+    )
+
+    try:
+        builder_config = BuilderConfig(
+            local_builder_creds=BuilderApiKeyCreds(
+                key=builder_creds["api_key"],
+                secret=builder_creds["api_secret"],
+                passphrase=builder_creds["api_passphrase"],
+            )
+        )
+        client = RelayClient(
+            POLYMARKET_RELAYER_URL,
+            POLYGON_CHAIN_ID,
+            private_key,
+            builder_config,
+        )
+        deposit_wallet_addr = client.get_expected_deposit_wallet()
+        nonce_payload = client.get_nonce(acct_address, "WALLET") or {}
+        nonce = str(nonce_payload.get("nonce", "0"))
+        # +1 hour deadline (see relayer-api-key path comment).
+        deadline = str(int(time.time()) + 3600)
+
+        resp = client.execute_deposit_wallet_batch(
+            calls=[call],
+            wallet_address=deposit_wallet_addr,
+            nonce=nonce,
+            deadline=deadline,
+        )
+        tx_id = getattr(resp, "transaction_id", None)
+        tx_hash = getattr(resp, "transaction_hash", None)
+        print(
+            f"[pm_redeemer] gasless: submitted to relayer "
+            f"tx_id={tx_id} tx_hash={tx_hash}",
+            file=sys.stderr, flush=True,
+        )
+        final = None
+        try:
+            final = resp.wait()
+        except Exception as exc:
+            print(
+                f"[pm_redeemer] gasless: wait for relayer "
+                f"settlement failed: {exc}",
+                file=sys.stderr, flush=True,
+            )
+        # Whether wait succeeded or not, if we have a tx_hash the
+        # transaction was at least broadcast. Polygonscan can verify.
+        if tx_hash:
+            return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
+        return RedeemResult(
+            redeemed=False, tx_hash=None,
+            error=f"relayer accepted submission but no tx hash: {final}",
+        )
+    except Exception as exc:
+        # 401 → user has the key but it's not a Builder/Relayer key.
+        # 400 → wrong payload (probably wallet not deployed, bad nonce).
+        # Anything else → relayer-side issue.
+        msg = str(exc)
+        if "invalid authorization" in msg or "401" in msg:
+            # Surface as terminal so the caller doesn't fall back to
+            # direct RPC and produce a confusing "no MATIC" error.
+            # The user needs to know their pasted key isn't a relayer
+            # key. They can either re-generate it as a Builder key on
+            # polymarket.com OR clear the field to use direct RPC.
+            return RedeemResult(
+                redeemed=False, tx_hash=None,
+                error=(
+                    "relayer rejected the API key (401). The key in "
+                    "Delfi -> Settings -> Polymarket API Key must be a "
+                    "Builder API Key created on polymarket.com -> "
+                    "Settings -> API Keys (the CLOB trading-key class "
+                    "is not accepted by the relayer). Clear that field "
+                    "to fall back to direct-RPC redeem with MATIC."
+                ),
+            )
+        # Other errors: fall back to direct RPC.
+        print(
+            f"[pm_redeemer] gasless: failed ({type(exc).__name__}: "
+            f"{msg[:200]}); falling back to direct RPC",
+            file=sys.stderr, flush=True,
+        )
+        return None

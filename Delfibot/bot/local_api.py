@@ -99,6 +99,8 @@ from engine.user_config import (
     get_llm_backup_key,
     get_newsapi_key,
     get_polymarket_api_creds,
+    get_polymarket_relayer_api_key,
+    set_polymarket_relayer_api_key,
     get_user_config,
     get_user_telegram_config,
     set_anthropic_api_key,
@@ -149,6 +151,8 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
     # Finance / markets.
     "crypto":             {"label": "Crypto",
                            "description": "BTC, ETH, SOL, altcoins. Price moves, exchange events, token unlocks."},
+    "crypto_short":       {"label": "Crypto micro-window",
+                           "description": "5-30 minute \"Up or Down\" direction markets settled on a single price tick. Default-skipped: research is per-event, the market is per-window, so the forecaster has no information advantage."},
     "stocks":             {"label": "Stocks",
                            "description": "Equity prices, IPOs, earnings, S&P / NASDAQ / index moves."},
     "macro":              {"label": "Macro",
@@ -350,6 +354,28 @@ class LocalAPI:
         # watchdog's import in this module's import graph.
         self._watchdog = watchdog
 
+        # Dedicated threadpool for INTERACTIVE GUI endpoints
+        # (/api/state, /api/summary, /api/credentials, /api/config,
+        # /api/positions...). Isolated from the default loop
+        # executor so that the analyst's heavy LLM + research work
+        # cannot starve the dashboard. Sized at 8 workers — enough
+        # for half a dozen simultaneous dashboard fetches with
+        # headroom; small enough that runaway sync work in a single
+        # handler can't lock up the rest of the threadpool.
+        #
+        # Before this: every offload went through the default
+        # ThreadPoolExecutor (32 workers, shared with APScheduler).
+        # When the analyst was mid-scan it could hold most of those
+        # workers for 30-60s doing per-market LLM calls. Dashboard
+        # fetches queued behind that work and timed out at 30s on
+        # the React side, surfacing as the "/api/state timed out
+        # after 30s. The sidecar may be stuck" banner.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        self._api_executor = _TPE(
+            max_workers=8,
+            thread_name_prefix="delfi-api",
+        )
+
     def set_scheduler(self, scheduler) -> None:
         self._scheduler = scheduler
 
@@ -415,6 +441,7 @@ class LocalAPI:
         app.router.add_get("/api/credentials", self._get_credentials)
         app.router.add_put("/api/credentials", self._put_credentials)
         app.router.add_get("/api/positions",   self._get_positions)
+        app.router.add_get("/api/open-orders", self._get_open_orders)
         app.router.add_get("/api/events",      self._get_events)
         app.router.add_post("/api/bot/start",  self._bot_start)
         app.router.add_post("/api/bot/stop",   self._bot_stop)
@@ -569,7 +596,7 @@ class LocalAPI:
 
     # ── Executor offload helper ─────────────────────────────────────────────
     async def _offload(self, fn, *args, **kwargs):
-        """Run a sync callable on the default executor.
+        """Run a sync callable on the API-dedicated executor.
 
         Every handler that touches SQLite, the keychain, or the
         filesystem MUST go through here. Sync calls on the asyncio
@@ -577,11 +604,18 @@ class LocalAPI:
         contention with the scheduler, a half-open keychain prompt)
         wedges every other endpoint until it returns. The 5-hour
         outage of 2026-05-06 was the trigger to make this universal.
+
+        Uses `_api_executor` (8 workers) instead of the default
+        ThreadPoolExecutor, so heavy work scheduled by APScheduler
+        / pm_analyst can never starve the dashboard. The default
+        executor still serves background jobs.
         """
         loop = asyncio.get_event_loop()
         if args or kwargs:
-            return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
-        return await loop.run_in_executor(None, fn)
+            return await loop.run_in_executor(
+                self._api_executor, lambda: fn(*args, **kwargs)
+            )
+        return await loop.run_in_executor(self._api_executor, fn)
 
     # ── Middleware ──────────────────────────────────────────────────────────
     @web.middleware
@@ -682,7 +716,7 @@ class LocalAPI:
         # the GUI's 30s splash timeout fires and the user sees
         # "Delfi could not start". Offload to the default thread pool.
         cfg = await asyncio.get_event_loop().run_in_executor(
-            None, get_user_config,
+            self._api_executor, get_user_config,
         )
         # `can_trade_live` is gated on `mode == 'live'` (correct for
         # the sizer's "am I actually live right now" check) but that
@@ -696,6 +730,31 @@ class LocalAPI:
             cfg.wallet_address
             and _keyring_get(KEYRING_POLYMARKET_KEY) is not None
         )
+
+        # idle_reason: when the scan is being skipped to save LLM tokens
+        # because the user has nothing to spend, surface that on the
+        # dashboard so they see a clear "the bot paused itself, here's
+        # why" message instead of silent inaction. Today the only
+        # programmatic idle state is insufficient_bankroll; other halts
+        # (bot_enabled=False, /pause, circuit breaker) are reflected by
+        # the existing bot_enabled / ready_to_trade fields.
+        #
+        # Cheap because the wallet probe behind it is cached with a 60s
+        # TTL; offloaded to the executor anyway so a cold-cache call
+        # can't block the aiohttp event loop.
+        idle_reason: Optional[str] = None
+        try:
+            from engine.pm_analyst import is_scan_idle_for_bankroll
+            if await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, is_scan_idle_for_bankroll,
+            ):
+                idle_reason = "insufficient_bankroll"
+        except Exception:
+            # Fail-quiet: idle_reason stays None and the dashboard
+            # shows no banner. The scan gate itself is the source of
+            # truth; this is just a UI hint.
+            pass
+
         return _ok({
             "mode": cfg.mode,
             "bot_enabled": bool(getattr(cfg, "bot_enabled", False)),
@@ -705,6 +764,7 @@ class LocalAPI:
             "is_onboarded": cfg.is_onboarded,
             "can_trade_live": cfg.can_trade_live,
             "live_creds_ready": live_creds_ready,
+            "idle_reason": idle_reason,
             "uptime_s": proc_health.uptime_seconds,
             "started_at": (proc_health.start_time.isoformat()
                            if proc_health.start_time else None),
@@ -713,7 +773,7 @@ class LocalAPI:
 
     async def _get_config(self, _req: web.Request) -> web.Response:
         cfg = await asyncio.get_event_loop().run_in_executor(
-            None, get_user_config,
+            self._api_executor, get_user_config,
         )
         return _ok(_config_to_dict(cfg))
 
@@ -804,7 +864,7 @@ class LocalAPI:
         # config-update response should not block on a third-party
         # HTTPS call.
         try:
-            asyncio.get_event_loop().run_in_executor(None, _send)
+            asyncio.get_event_loop().run_in_executor(self._api_executor, _send)
         except Exception as exc:
             print(
                 f"[local_api] could not dispatch telegram notify: {exc}",
@@ -855,11 +915,20 @@ class LocalAPI:
                 "has_polymarket_api_key":       bool(pm_api.get("api_key")),
                 "has_polymarket_api_secret":    bool(pm_api.get("api_secret")),
                 "has_polymarket_api_passphrase": bool(pm_api.get("api_passphrase")),
+                # Relayer API Key (single UUID, separate from Builder
+                # API tuple). Enables gasless redemption via the 2-
+                # header auth scheme. One-time paste, no wallet
+                # MATIC needed.
+                "has_polymarket_relayer_api_key": (
+                    get_polymarket_relayer_api_key() is not None
+                ),
             }
 
         try:
             booleans = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _read_all),
+                asyncio.get_event_loop().run_in_executor(
+                    self._api_executor, _read_all
+                ),
                 timeout=20,
             )
         except asyncio.TimeoutError:
@@ -999,6 +1068,12 @@ class LocalAPI:
         pm_api_key        = _clean("polymarket_api_key")
         pm_api_secret     = _clean("polymarket_api_secret")
         pm_api_passphrase = _clean("polymarket_api_passphrase")
+        # Relayer API Key (separate key class - single UUID created
+        # on polymarket.com -> Settings -> Relayer API keys). Used
+        # for gasless redeem; writing this enables auto-redeem of
+        # every future winning position without the user funding
+        # MATIC or pasting Builder API tuples.
+        pm_relayer_api_key = _clean("polymarket_relayer_api_key")
         if pm_api_key is not None or pm_api_secret is not None or pm_api_passphrase is not None:
             try:
                 await self._offload(
@@ -1013,6 +1088,18 @@ class LocalAPI:
                 if pm_api_passphrase is not None: wrote.append("polymarket_api_passphrase")
             except Exception as exc:
                 return _err(f"failed to write polymarket api creds: {exc}", 500)
+
+        # Relayer API Key - independent of the Builder tuple above.
+        if pm_relayer_api_key is not None:
+            try:
+                await self._offload(
+                    lambda: set_polymarket_relayer_api_key(pm_relayer_api_key)
+                )
+                wrote.append("polymarket_relayer_api_key")
+            except Exception as exc:
+                return _err(
+                    f"failed to write polymarket relayer api key: {exc}", 500,
+                )
 
         # Hot-reload the running process so the new keys take effect
         # WITHOUT a daemon restart. Two things need to happen:
@@ -1052,8 +1139,15 @@ class LocalAPI:
             # BEFORE this save. Flush the cache so the next order picks
             # up the freshly-saved creds.
             try:
-                from execution.pm_executor import _CLOB_CLIENT_CACHE
+                from execution.pm_executor import (
+                    _CLOB_CLIENT_CACHE, reset_v2_signer_mismatch_state,
+                )
                 _CLOB_CLIENT_CACHE.clear()
+                # Reset the V2 signer-mismatch gate. If the user just
+                # pasted Trading API Keys to fix the very rejection that
+                # tripped the gate, the next order must be allowed to
+                # try them instead of falling straight to simulation.
+                reset_v2_signer_mismatch_state()
                 # Also clear the api-key-rotation memo so a manual key
                 # change doesn't get blocked by "already rotated this
                 # context".
@@ -1127,10 +1221,52 @@ class LocalAPI:
                 return [dict(r._mapping) for r in conn.execute(stmt)]
 
         try:
-            rows = await asyncio.get_event_loop().run_in_executor(None, _read)
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
         except Exception as exc:
             return _err(f"failed to read positions: {exc}", 500)
         return _ok({"positions": rows})
+
+    async def _get_open_orders(self, _req: web.Request) -> web.Response:
+        """Read-only proxy for CLOB get_open_orders().
+
+        The Positions page surfaces this as an "Open orders" sub-tab
+        so the user can see any unfilled limit orders sitting on the
+        Polymarket book - the same orders the reconciler will cancel
+        if they age past _STALE_ORDER_AGE_S. Returns an empty list if
+        the user has no Polymarket key configured or the CLOB is
+        unreachable; never errors the page.
+        """
+        def _read() -> list[dict]:
+            from engine.user_config import (
+                get_active_polymarket_creds, get_user_config,
+            )
+            from execution.pm_executor import _get_clob_client
+            cfg = get_user_config()
+            creds = get_active_polymarket_creds(cfg)
+            pk = (creds.get("private_key") or "").strip()
+            wallet = (creds.get("wallet_address") or "").strip()
+            if not pk or not wallet:
+                return []
+            try:
+                client = _get_clob_client(wallet, pk)
+                if client is None:
+                    return []
+                orders = client.get_open_orders()  # type: ignore[union-attr]
+            except Exception as exc:
+                print(f"[open_orders] CLOB fetch failed: {exc}",
+                      file=sys.stderr, flush=True)
+                return []
+            return orders if isinstance(orders, list) else []
+
+        try:
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
+        except Exception as exc:
+            return _err(f"failed to read open orders: {exc}", 500)
+        return _ok({"orders": rows})
 
     async def _get_events(self, req: web.Request) -> web.Response:
         try:
@@ -1150,7 +1286,9 @@ class LocalAPI:
                 return [dict(r._mapping) for r in conn.execute(stmt)]
 
         try:
-            rows = await asyncio.get_event_loop().run_in_executor(None, _read)
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
         except Exception as exc:
             return _err(f"failed to read events: {exc}", 500)
         return _ok({"events": rows})
@@ -1242,13 +1380,36 @@ class LocalAPI:
         Headline performance numbers: bankroll, equity, win rate, ROI, Brier.
         Single-user; no X-User-Id needed. Mode is always taken from
         user_config (no view-mode override in v1).
+
+        Cached 5s. The dashboard polls this every ~5s; underlying
+        portfolio stats don't change that fast (a trade settle is
+        the only meaningful change source, and those fire every
+        10-30min). Caching at this layer prevents 6 concurrent
+        React components from each spawning a fresh DB+offload pass.
+        Cache miss path is unchanged; cache hit returns in <1ms.
+
+        Why this matters: the polymarket-runner + analyst jobs hog
+        the default ThreadPoolExecutor for 5-30s at a time during
+        a scan. If /api/summary's offload also competes for those
+        threads, it queues. The user sees the GUI's 30s timeout
+        even though no single handler took 30s. Caching upstream of
+        the offload eliminates that contention almost entirely.
         """
+        import time as _t
+        cache = getattr(self, "_summary_cache", None)
+        if cache is not None:
+            ts, payload = cache
+            if _t.monotonic() - ts < 5.0:
+                return _ok(payload)
+
         def _stats() -> dict:
             executor = PMExecutor(DEFAULT_USER_ID)
             return executor.get_portfolio_stats()
 
         try:
-            stats = await asyncio.get_event_loop().run_in_executor(None, _stats)
+            stats = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _stats,
+            )
         except Exception as exc:
             return _err(f"failed to compute portfolio stats: {exc}", 500)
 
@@ -1261,7 +1422,7 @@ class LocalAPI:
         _stats_mode = stats.get("mode") or "simulation"
         try:
             brier = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: calibration.get_report(
                     source="polymarket", user_id=DEFAULT_USER_ID,
                     mode=_stats_mode,
@@ -1279,64 +1440,46 @@ class LocalAPI:
         # is funded. The authoritative source is Polymarket's CLOB
         # `/balance-allowance` endpoint, which knows the proxy and
         # returns the collateral the bot can actually trade with.
-        # Helper has a 60 s in-memory cache so the Dashboard poll
-        # loop doesn't slam the CLOB. On any failure we leave the
-        # DB-derived value alone (don't flash $0 on a network
-        # hiccup).
+        #
+        # CRITICAL: this overlay reads from the in-process cache
+        # ONLY - never the network. A separate scheduled job
+        # (pm_balance_refresh in main.py, 60s cadence) refreshes
+        # the cache in the background. Before this change, every
+        # /api/summary poll could trigger a fresh probe; a slow DNS
+        # or SSL call on that probe wedged the daemon for 30s+ and
+        # the dashboard kept showing "sidecar may be stuck". Moving
+        # the refresh off the user-request path means /api/summary
+        # always returns in milliseconds - at worst the bankroll
+        # number is up to 60s stale on a network blip.
         bankroll = stats.get("bankroll")
         equity   = stats.get("equity")
         open_cost = float(stats.get("open_cost") or 0.0)
-        # position_value: current market value of open positions.
-        # In simulation = open_cost (no live prices). In live mode the
-        # MTM block below overwrites it. Always satisfies:
-        #   equity == bankroll + position_value
-        position_value: float = open_cost
-        unrealized_pnl: float = 0.0
         if stats.get("mode") == "live":
             try:
-                from feeds.polymarket_wallet import get_live_clob_balance
+                from feeds.polymarket_wallet import (
+                    get_cached_total_funder_balance,
+                )
                 pm_key = await self._offload(
                     _keyring_get, KEYRING_POLYMARKET_KEY,
                 )
                 if pm_key:
-                    clob_balance = await asyncio.get_event_loop().run_in_executor(
-                        None, get_live_clob_balance, pm_key,
-                    )
-                    if clob_balance is not None:
-                        bankroll = float(clob_balance)
-                        # Mark open positions to market. open_cost stays as
-                        # original purchase cost for risk calcs (drawdown,
-                        # exposure cap, live_starting). position_value is the
-                        # MTM figure exposed to the frontend so that:
-                        #   balance + position_value == equity (always)
-                        #
-                        # Hard 9s outer timeout guards against aiohttp
-                        # hanging inside the PyInstaller bundle (DNS stall,
-                        # socket never closed, etc.).  The inner
-                        # ClientTimeout(total=8) is a best-effort; this
-                        # wait_for is the guaranteed kill-switch.
-                        try:
-                            mtm_value, _ = await asyncio.wait_for(
-                                self._fetch_mtm_position_value(DEFAULT_USER_ID),
-                                timeout=9.0,
-                            )
-                            position_value = mtm_value
-                        except asyncio.TimeoutError:
-                            print("[summary] MTM fetch timed out - using cost basis",
-                                  flush=True)
-                            position_value = open_cost
-                        except Exception as mtm_exc:
-                            print(f"[summary] MTM fetch failed: {mtm_exc}",
-                                  flush=True)
-                            position_value = open_cost
-                        equity = bankroll + position_value
-                        unrealized_pnl = position_value - open_cost
+                    # Total funder balance = pUSD (V2 tradeable now) +
+                    # USDC.e (legacy, auto-activated by
+                    # pm_activate_legacy within ~10 min). The earlier
+                    # version reported only pUSD, which hid winnings
+                    # that had landed as USDC.e and made the Balance
+                    # number on dashboards / Telegram look wrong
+                    # whenever a V1-collateral market settled.
+                    # Non-blocking, no lock, no network.
+                    total_balance = get_cached_total_funder_balance(pm_key)
+                    if total_balance is not None:
+                        bankroll = float(total_balance)
+                        equity = bankroll + open_cost
             except Exception as exc:
-                # Don't break the dashboard if the CLOB API blips.
-                print(f"[summary] live CLOB balance overlay failed: {exc}",
+                # Should not be reachable now that the call is non-
+                # blocking and side-effect-free, but keep the guard.
+                print(f"[summary] live balance overlay failed: {exc}",
                       flush=True)
-                position_value = open_cost
-                equity = bankroll + open_cost
 
         starting = float(stats.get("starting_cash") or 0.0)
         realized = float(stats.get("realized_pnl") or 0.0)
@@ -1365,32 +1508,50 @@ class LocalAPI:
             starting = max(1.0, live_starting)
 
         roi = (realized / starting) if starting > 0 else None
-        total_pnl = realized + unrealized_pnl
 
-        return _ok({
-            "mode":            stats.get("mode"),
-            "bankroll":        bankroll,
-            "equity":          equity,
-            # position_value = current MTM value of open positions.
-            # balance + position_value == equity (by construction).
-            # open_cost = original purchase cost; kept for Risk panel
-            # (exposure cap, drawdown gauge) where cost basis is correct.
-            "position_value":  round(position_value, 4),
-            "starting_cash":   starting,
-            "open_positions":  stats.get("open_positions"),
-            "open_cost":       stats.get("open_cost"),
-            "settled_total":   stats.get("settled_total"),
-            "settled_wins":    stats.get("settled_wins"),
-            "skipped_total":   stats.get("skipped_total"),
-            "win_rate":        stats.get("win_rate"),
-            "realized_pnl":    stats.get("realized_pnl"),
-            "unrealized_pnl":  round(unrealized_pnl, 4),
-            "total_pnl":       round(total_pnl, 4),
-            "roi":             roi,
-            "brier":           brier.get("brier"),
+        # Unrealized P&L = mark-to-market value of currently-open
+        # positions minus their cost basis. open_cost is the data-api
+        # MTM sum, bot_open_cost is the DB cost basis sum. Their diff
+        # is the unrealized gain/loss. Total P&L matches Polymarket's
+        # "All-Time Profit/Loss" tile, which is (current portfolio
+        # value - cumulative deposits) - i.e. realized + unrealized
+        # over every trade ever made. Without this, Delfi's
+        # realized-only number underrepresents performance against
+        # the Polymarket UI any time positions are open at a gain.
+        open_cost_mtm   = float(stats.get("open_cost") or 0.0)
+        open_cost_basis = float(stats.get("bot_open_cost") or 0.0)
+        unrealized_pnl  = open_cost_mtm - open_cost_basis
+        total_pnl       = realized + unrealized_pnl
+
+        payload = {
+            "mode":           stats.get("mode"),
+            "bankroll":       bankroll,
+            "equity":         equity,
+            "starting_cash":  starting,
+            "open_positions": stats.get("open_positions"),
+            # open_cost is the user-facing "Locked Capital" number:
+            # sum of current market value of EVERY position the wallet
+            # holds (bot-opened + manually-opened on Polymarket).
+            # Source is Polymarket's data-api in live mode, the DB sum
+            # in sim mode. bot_open_cost is the bot-tracked subset
+            # used for the bot's own P&L bookkeeping; surfaces that
+            # want to show "tracked vs untracked" can subtract.
+            "open_cost":      stats.get("open_cost"),
+            "bot_open_cost":  stats.get("bot_open_cost"),
+            "settled_total":  stats.get("settled_total"),
+            "settled_wins":   stats.get("settled_wins"),
+            "skipped_total":  stats.get("skipped_total"),
+            "win_rate":       stats.get("win_rate"),
+            "realized_pnl":   stats.get("realized_pnl"),
+            "unrealized_pnl": unrealized_pnl,
+            "total_pnl":      total_pnl,
+            "roi":            roi,
+            "brier":          brier.get("brier"),
             "resolved_predictions": brier.get("resolved"),
             "total_predictions":    brier.get("total"),
-        })
+        }
+        self._summary_cache = (_t.monotonic(), payload)
+        return _ok(payload)
 
     async def _get_calibration(self, req: web.Request) -> web.Response:
         """Full calibration report (Brier + reliability buckets).
@@ -1409,7 +1570,7 @@ class LocalAPI:
         )
         try:
             report = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: calibration.get_report(
                     source=None if source == "all" else source,
                     since_days=since_int,
@@ -1448,7 +1609,9 @@ class LocalAPI:
                 ), {"uid": DEFAULT_USER_ID, "m": current_mode}).fetchall()
 
         try:
-            rows = await asyncio.get_event_loop().run_in_executor(None, _query)
+            rows = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _query,
+            )
         except Exception as exc:
             return _err(f"brier-trend query failed: {exc}", 500)
 
@@ -1478,7 +1641,7 @@ class LocalAPI:
         include_snoozed = req.query.get("include_snoozed", "1") != "0"
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: list_pending_suggestions(
                     DEFAULT_USER_ID, include_snoozed=include_snoozed,
                 ),
@@ -1501,7 +1664,7 @@ class LocalAPI:
         limit = max(1, min(200, limit))
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: list_resolved_suggestions(DEFAULT_USER_ID, limit=limit),
             )
         except Exception as exc:
@@ -1533,12 +1696,16 @@ class LocalAPI:
 
         loop = asyncio.get_event_loop()
         try:
-            result = await loop.run_in_executor(None, lambda: fn(sid, **kwargs))
+            result = await loop.run_in_executor(
+                self._api_executor, lambda: fn(sid, **kwargs),
+            )
         except TypeError:
             # Older signatures may not accept wait_trades; retry without.
             kwargs.pop("wait_trades", None)
             try:
-                result = await loop.run_in_executor(None, lambda: fn(sid, **kwargs))
+                result = await loop.run_in_executor(
+                    self._api_executor, lambda: fn(sid, **kwargs),
+                )
             except Exception as exc:
                 return _err(f"suggestion action failed: {exc}", 500)
         except Exception as exc:
@@ -1563,7 +1730,7 @@ class LocalAPI:
         limit = max(1, min(limit, 50))
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
-                None,
+                self._api_executor,
                 lambda: list_learning_reports(
                     user_id=DEFAULT_USER_ID, limit=limit, include_admin=False,
                 ),
@@ -2265,27 +2432,35 @@ class LocalAPI:
     # ── System ops: restart, logs, backup, launch stats, login item ─────────
 
     async def _post_restart(self, _req: web.Request) -> web.Response:
-        """Restart the daemon via launchctl kickstart -k.
+        """Restart the daemon by self-SIGTERMing the running process.
 
-        Sends SIGTERM, launchd respawns within ThrottleInterval
-        (10s). The respawned daemon picks a fresh port and rewrites
-        sidecar.port; the GUI's request retry logic picks it up
-        without the user having to do anything.
+        We used to call `launchctl kickstart -k`, which kicks the pid
+        launchd CURRENTLY THINKS is the daemon. When launchd loses
+        track of the right pid (which happens after install.sh's
+        bootout/rsync/bootstrap dance leaves the original daemon
+        alive while a duplicate respawn wins launchd's tracked-pid
+        slot), kickstart aims at a ghost and the real lock-holding
+        daemon never receives SIGTERM. Restart hangs forever and
+        the user sees a stuck spinner.
 
-        Self-restart is a deadlock trap: `launchctl kickstart -k`
-        blocks until the killed process exits, and we ARE that
-        process, blocked inside subprocess.run waiting for launchctl
-        to return. A 5s timeout used to fire before either side
-        moved, so the restart never happened. The fix detaches
-        launchctl into a background shell with a brief pre-sleep,
-        which gives us time to send this HTTP response before
-        launchd SIGTERMs us.
+        os.kill(getpid(), SIGTERM) targets the actual running daemon
+        unconditionally. Whether launchd's tracked pid is right is
+        irrelevant. KeepAlive=true on the LaunchAgent respawns us
+        within ThrottleInterval (10s); the respawn wins the
+        singleton lock cleanly (we just freed it) and writes a fresh
+        sidecar.port that the GUI's retry logic picks up.
 
-        macOS-only for now. On Windows we'd need to terminate the
-        process and rely on the user's manually-launched fallback,
-        or wire a Windows Service equivalent.
+        Probing launchd first confirms the service is bootstrapped
+        (i.e. respawn WILL happen). If it isn't, we'd die and never
+        come back, leaving a dead app.
+
+        macOS-only for now. On Windows we'd need to wire a Windows
+        Service equivalent.
         """
+        import asyncio as _asyncio
+        import os
         import platform
+        import signal
         import subprocess
 
         sysname = platform.system()
@@ -2321,9 +2496,8 @@ class LocalAPI:
         _, service_id = self._autostart_paths()
 
         # Probe the LaunchAgent before scheduling the kill. If the
-        # service isn't bootstrapped, launchctl kickstart will silently
-        # do nothing and the daemon will never come back, leaving the
-        # user with a dead app.
+        # service isn't bootstrapped, no respawn will happen and the
+        # daemon stays dead.
         try:
             probe = subprocess.run(
                 ["launchctl", "print", service_id],
@@ -2338,20 +2512,18 @@ class LocalAPI:
                 400,
             )
 
-        # Fire-and-forget the kickstart. The 1s sleep buys us enough
-        # runway to finish writing this HTTP response before launchd
-        # SIGTERMs us. start_new_session=True detaches the shell from
-        # our process group so it survives our death.
-        try:
-            subprocess.Popen(
-                ["sh", "-c",
-                 f"sleep 1; exec launchctl kickstart -k {service_id}"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            return _err(f"failed to spawn restart: {exc}", 500)
+        # Schedule self-SIGTERM AFTER returning the HTTP response. We
+        # need enough runway to finish writing the response body back
+        # to the client before our event loop tears down. 500 ms is
+        # comfortable - the aiohttp handler returns in milliseconds.
+        async def _self_terminate() -> None:
+            await _asyncio.sleep(0.5)
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except OSError as exc:
+                print(f"[restart] self-SIGTERM failed: {exc}", flush=True)
+
+        _asyncio.create_task(_self_terminate())
 
         return _ok({"ok": True, "detail": "Restart signal sent. The daemon "
                     "will be back online in a few seconds."})
@@ -2510,12 +2682,19 @@ class LocalAPI:
         import subprocess
 
         if platform.system() != "Darwin":
+            # On non-macOS, the sidecar is spawned + supervised by the
+            # Tauri GUI (no launchd / Service). Report self-state so
+            # the daemon-health pill shows "running" instead of
+            # "unsupported": this endpoint only fires when the sidecar
+            # is alive enough to answer HTTP, so by definition we ARE
+            # running. runs / last_exit_code are not tracked because
+            # the GUI-spawned model has no respawn-counter equivalent.
             return _ok({
-                "supported": False,
-                "runs":      None,
+                "supported": True,
+                "runs":      1,
                 "last_exit_code": None,
-                "pid":       None,
-                "state":     None,
+                "pid":       os.getpid(),
+                "state":     "running",
             })
 
         _, service_id = self._autostart_paths()

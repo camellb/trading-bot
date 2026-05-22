@@ -2,9 +2,10 @@
 Offline Ed25519 license verifier.
 
 Replaces the prior Lemon Squeezy online validator (2026-04-28 cutover
-to Stripe + self-signed licenses; see apps/web/lib/license.ts for the
-matching server-side signer and apps/web/scripts/generate-license-keypair.mjs
-for the keypair generator).
+to self-signed licenses). The keypair generator lives in
+`Delfibot/scripts/generate-license-keypair.mjs`. Licenses are signed
+out-of-band by the operator and delivered to the user as a single
+text blob they paste in Settings.
 
 Why offline / why Ed25519:
 
@@ -31,8 +32,9 @@ Payload (canonical JSON, sorted keys):
      "version":   1}
 
 Signature: Ed25519 over the UTF-8 bytes of the base64url-encoded
-payload (NOT the raw JSON). Matches the signer in
-apps/web/lib/license.ts so we don't have to re-canonicalise here.
+payload (NOT the raw JSON). The signer side runs the same encoding
+in `Delfibot/scripts/generate-license-keypair.mjs` so we don't have
+to re-canonicalise here.
 
 Cached state:
 
@@ -64,7 +66,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 # ── Embedded public key ────────────────────────────────────────────────────
 #
 # Set this to the contents of `.keys/license-public.b64` produced by
-# `node apps/web/scripts/generate-license-keypair.mjs`. It is the raw
+# `node Delfibot/scripts/generate-license-keypair.mjs`. It is the raw
 # 32-byte Ed25519 public key, base64-encoded (44 chars including padding).
 #
 # This is PUBLIC -- no harm shipping it in the binary or committing it.
@@ -148,7 +150,7 @@ def _load_public_key() -> Optional[Ed25519PublicKey]:
 
 
 def verify_license(blob: str) -> LicenseValidationResult:
-    """Verify a license blob produced by `apps/web/lib/license.ts`.
+    """Verify a license blob produced by the operator-side signer.
 
     Args:
       blob: the full string the user pasted, exactly as delivered in

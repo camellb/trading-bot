@@ -21,6 +21,8 @@ errors, tracebacks) does not live here - it is logged to stderr.
 
 from __future__ import annotations
 
+from typing import Optional
+
 
 # Hard limits matching the original truncation behaviour.
 MAX_QUESTION_NEW_POSITION = 140
@@ -42,8 +44,38 @@ def new_position(
     confidence: float,
     bankroll_after: float,
     mode: str,
+    equity_after: Optional[float] = None,
+    locked_capital: Optional[float] = None,
 ) -> str:
+    """The new-position notification renders a single canonical money
+    block so the math is verifiable at a glance:
+
+        Stake          - what just left cash to buy CTF tokens
+        Balance        - spendable cash AFTER the bet
+        Locked capital - sum of cost basis on every open position
+                         (includes the bet that was just opened)
+        Total equity   - Balance + Locked capital (= total wealth)
+
+    The same block format is used by settled_win, settled_loss, and
+    the early-exit messages so balances reconcile across surfaces.
+
+    `bankroll_after` is the post-bet wallet balance (real on-chain
+    in live mode, DB formula in simulation).
+    `locked_capital` is the sum of cost_usd for every open position;
+    when not supplied, falls back to `stake_usd` (the just-opened
+    bet's cost), correct only when this is the user's only open
+    position. Callers should pass the real value when available.
+    `equity_after` defaults to `bankroll_after + locked_capital`.
+    """
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    locked = (
+        float(locked_capital) if locked_capital is not None
+        else float(stake_usd)
+    )
+    eq = (
+        float(equity_after) if equity_after is not None
+        else float(bankroll_after) + locked
+    )
     return (
         f"🎯 <b>New position</b>\n"
         f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
@@ -53,6 +85,8 @@ def new_position(
         f"\n"
         f"Stake: ${stake_usd:.2f}\n"
         f"Balance: ${bankroll_after:.2f}\n"
+        f"Locked capital: ${locked:.2f}\n"
+        f"Total equity: ${eq:.2f}\n"
         f"Mode: {mode_label}"
     )
 
@@ -67,10 +101,23 @@ def settled_win(
     roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
     equity: float,
+    locked_capital: Optional[float] = None,
     mode: str | None = None,
 ) -> str:
+    """WIN settlement notification. Renders the same canonical money
+    block as new_position (Balance / Locked capital / Total equity)
+    so values reconcile across surfaces.
+
+    `locked_capital`, when not supplied, falls back to
+    ``equity - bankroll`` (the algebraic identity for any caller
+    using the unified get_portfolio_stats(); see pm_executor).
+    """
     _ = roi  # preserved for API compat
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    locked = (
+        float(locked_capital) if locked_capital is not None
+        else max(0.0, float(equity) - float(bankroll))
+    )
     return (
         f"✅ <b>WIN</b> | +${pnl:.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
@@ -78,7 +125,127 @@ def settled_win(
         f"Bet: {side}\n"
         f"Resolved: {outcome}\n"
         f"Balance: ${bankroll:.2f}\n"
-        f"Equity: ${equity:.2f}\n"
+        f"Locked capital: ${locked:.2f}\n"
+        f"Total equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
+    )
+
+
+# ── 2b. Order REJECTED (live-only) ───────────────────────────────────────────
+def order_rejected(
+    *,
+    question: str,
+    side: str,
+    stake_usd: float,
+    price: float,
+    error_text: str,
+    mode: str | None = None,
+) -> str:
+    """Polymarket rejected a live order at the CLOB. Surface to
+    Telegram so the user sees the rejection within seconds instead
+    of finding out from the dashboard much later.
+    """
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    return (
+        f"⚠️ <b>Order rejected</b>\n"
+        f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
+        f"\n"
+        f"Side: {side}\n"
+        f"Stake: ${stake_usd:.2f} @ ${price:.3f}\n"
+        f"\n"
+        f"Reason: {_clip(error_text, 300)}\n"
+        f"Mode: {mode_label}"
+    )
+
+
+# ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
+def early_exit_win(
+    *,
+    question: str,
+    side: str,
+    reason: str,        # 'take_profit' | 'stop_loss' | 'time_decay'
+    pnl: float,
+    roi: float,
+    bankroll: float,
+    equity: float,
+    details: str,
+    locked_capital: Optional[float] = None,
+    mode: str | None = None,
+) -> str:
+    """Position closed early by the exit policy with a positive P&L.
+    Most often a take-profit hit; stop-loss + time-decay can also land
+    here on rare positive-P&L exits (e.g. flat band crossing zero).
+
+    Renders the same canonical Balance / Locked capital / Total equity
+    block as settled_win.
+    """
+    _ = roi  # preserved for API compat with settled_win
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    reason_label = {
+        "take_profit": "Take-profit hit",
+        "stop_loss":   "Stop-loss hit",
+        "time_decay":  "Time-decay exit",
+    }.get(reason, "Exit policy")
+    locked = (
+        float(locked_capital) if locked_capital is not None
+        else max(0.0, float(equity) - float(bankroll))
+    )
+    return (
+        f"✅ <b>Closed early</b> | +${pnl:.2f}\n"
+        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
+        f"\n"
+        f"Bet: {side}\n"
+        f"Reason: {reason_label}\n"
+        f"Detail: {_clip(details, 160)}\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Locked capital: ${locked:.2f}\n"
+        f"Total equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
+    )
+
+
+# ── 2d. Early exit - LOSS (exit policy tripped, position closed negative) ───
+def early_exit_loss(
+    *,
+    question: str,
+    side: str,
+    reason: str,
+    pnl: float,
+    roi: float,
+    bankroll: float,
+    equity: float,
+    details: str,
+    locked_capital: Optional[float] = None,
+    mode: str | None = None,
+) -> str:
+    """Position closed early by the exit policy with a negative P&L.
+    Stop-loss is the usual cause; time-decay also can land here when a
+    stalled position is sold at a slight bid discount.
+
+    Renders the same canonical Balance / Locked capital / Total equity
+    block as settled_loss.
+    """
+    _ = roi
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    reason_label = {
+        "take_profit": "Take-profit hit",
+        "stop_loss":   "Stop-loss hit",
+        "time_decay":  "Time-decay exit",
+    }.get(reason, "Exit policy")
+    locked = (
+        float(locked_capital) if locked_capital is not None
+        else max(0.0, float(equity) - float(bankroll))
+    )
+    return (
+        f"❌ <b>Closed early</b> | -${abs(pnl):.2f}\n"
+        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
+        f"\n"
+        f"Bet: {side}\n"
+        f"Reason: {reason_label}\n"
+        f"Detail: {_clip(details, 160)}\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Locked capital: ${locked:.2f}\n"
+        f"Total equity: ${equity:.2f}\n"
         f"Mode: {mode_label}"
     )
 
@@ -120,10 +287,18 @@ def settled_loss(
     roi: float,    # kept for call-site stability; not rendered
     bankroll: float,
     equity: float,
+    locked_capital: Optional[float] = None,
     mode: str | None = None,
 ) -> str:
+    """LOSS settlement notification. Same canonical money block as
+    new_position / settled_win so values reconcile across surfaces.
+    """
     _ = roi  # preserved for API compat
     mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    locked = (
+        float(locked_capital) if locked_capital is not None
+        else max(0.0, float(equity) - float(bankroll))
+    )
     return (
         f"❌ <b>LOSS</b> | -${abs(pnl):.2f}\n"
         f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
@@ -131,7 +306,8 @@ def settled_loss(
         f"Bet: {side}\n"
         f"Resolved: {outcome}\n"
         f"Balance: ${bankroll:.2f}\n"
-        f"Equity: ${equity:.2f}\n"
+        f"Locked capital: ${locked:.2f}\n"
+        f"Total equity: ${equity:.2f}\n"
         f"Mode: {mode_label}"
     )
 

@@ -45,13 +45,137 @@ from engine.user_config import (
 )
 from db.logger import log_event
 from execution.pm_executor import PMExecutor
-from execution.pm_sizer import size_position, SizingDecision
+from execution.pm_sizer import (
+    size_position, SizingDecision, POLYMARKET_MIN_ORDER_USD,
+)
 from feeds.polymarket_feed import PolymarketFeed, PolyMarket
 from research.fetcher import fetch_research, ResearchBundle
 
 
 SOURCE = "polymarket"
 
+# Per-process dedup for the one-shot "Polymarket platform minimum is
+# blocking most trades" Telegram alert. Adds the user_id once we've
+# fired the notification for that user; the rest of the session is
+# silent (skips still hit the Skipped tab, just no Telegram spam).
+# Reset on process restart — fine since the alert is informational,
+# not a critical event the user needs to see every time.
+_POLYMARKET_MIN_SKIP_NOTIFIED: set = set()
+
+
+# ─── Bankroll precondition gate ───────────────────────────────────────────
+#
+# Halt the scan entirely when the user can't afford to place even a
+# minimum-size bet. Calling Claude on markets we couldn't trade on is
+# pure waste on the user's LLM bill (the user pays for tokens).
+#
+# Threshold = POLYMARKET_MIN_ORDER_USD ($1) — the absolute platform
+# floor. Any deployable cash above this can theoretically buy something
+# on a longshot market (5 shares × $0.20 = $1.00). Below this, no bet
+# can pass Polymarket's size check regardless of which market we look
+# at. Pre-Claude.
+#
+# Recovery is automatic: the 60s `pm_balance_refresh` job keeps the
+# cached wallet probe fresh; the next scan tick re-checks and resumes
+# as soon as a deposit lands or an open position settles back to cash.
+#
+# Same rule applies in simulation: LLM tokens cost the same in both
+# modes, so a $0 sim bankroll halts scanning identically.
+#
+# Flag persists in-process only. Resets on daemon restart, which is
+# acceptable: the alert is informational, not critical.
+
+_bankroll_pause_announced: bool = False
+
+
+def _user_deployable_cash(user_id: str) -> Optional[tuple[float, float]]:
+    """Return ``(bankroll, deployable)`` for ``user_id``, or None on error.
+
+    ``deployable = bankroll * (1 - dry_powder_reserve_pct)``.
+
+    Open positions are already netted by `executor.get_bankroll()` in
+    both live (wallet probe reflects on-chain spent collateral) and
+    simulation (DB formula subtracts open cost).
+    """
+    try:
+        cfg = get_user_config(user_id)
+        exec_ = PMExecutor(user_id)
+        if not exec_.ready:
+            return None
+        bankroll = float(exec_.get_bankroll())
+        reserve_pct = float(getattr(cfg, "dry_powder_reserve_pct", 0.0) or 0.0)
+        deployable = bankroll * max(0.0, 1.0 - reserve_pct)
+        return bankroll, deployable
+    except Exception as exc:
+        print(
+            f"[pm_analyst] deployable probe failed for {user_id}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
+def is_scan_idle_for_bankroll(user_id: str = "local") -> bool:
+    """True iff `user_id` is currently below the platform-minimum
+    deployable floor.
+
+    Used by:
+      * scan_and_analyze   as the gate that skips per-market LLM work.
+      * local_api._state   to surface `idle_reason` on the dashboard.
+
+    Cheap: the wallet probe is cached with a 60s TTL, so this is a
+    dict lookup in steady state. Fail-open on any error (caller treats
+    'unknown' as 'not idle' so the scan still runs and the downstream
+    sizer remains the source of truth).
+    """
+    try:
+        cfg = get_user_config(user_id)
+    except Exception:
+        return False
+    if not getattr(cfg, "bot_enabled", False):
+        # Different state entirely (manually paused / not onboarded).
+        # The dashboard surfaces those separately.
+        return False
+    pair = _user_deployable_cash(user_id)
+    if pair is None:
+        return False
+    _, deployable = pair
+    return deployable < POLYMARKET_MIN_ORDER_USD
+
+
+def _maybe_broadcast_bankroll_pause(
+    user_id: str, bankroll: float, deployable: float,
+) -> None:
+    """One-shot Telegram alert on the active→paused transition.
+
+    Subsequent paused scans no-op until the flag is reset by a
+    resume (via `_reset_bankroll_pause_announcement`).
+    """
+    global _bankroll_pause_announced
+    if _bankroll_pause_announced:
+        return
+    _bankroll_pause_announced = True
+    try:
+        from feeds.telegram_notifier import notify
+        notify(
+            "💤 Evaluator paused to save tokens. Your available cash "
+            "is below the minimum needed to place a bet. Bot will "
+            "resume automatically when a position closes or you top "
+            "up your wallet.",
+            user_id=user_id,
+        )
+    except Exception as exc:
+        print(
+            f"[pm_analyst] bankroll-pause telegram failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+
+
+def _reset_bankroll_pause_announcement() -> None:
+    """Called every time a scan actually runs (gate passes). Lets the
+    next active→paused transition re-broadcast."""
+    global _bankroll_pause_announced
+    _bankroll_pause_announced = False
 
 
 @dataclass
@@ -104,6 +228,18 @@ class PMAnalyst:
                 fetch_research(
                     market.question, market.category_hint,
                     days_to_resolution=market.days_to_end,
+                    # Resolution date pins DDG queries to the SPECIFIC
+                    # event month+year. Without it, evergreen searches
+                    # like "head to head" surface 18-month-old results
+                    # that confuse the forecaster.
+                    resolution_date=market.resolution_at_estimate,
+                    # Event slug carries the opponent+date for markets
+                    # whose question is opaque on its own (e.g.
+                    # "Spread: Thunder (-5.5)" with event slug
+                    # "nba-sas-okc-2026-05-20"). Without this the
+                    # keyword extractor misses the opponent and pulls
+                    # research about the wrong game.
+                    event_slug=getattr(market, "event_slug", None),
                 ),
                 timeout=30,
             )
@@ -189,8 +325,27 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        has_pos = executor.has_open_position_on_market(market.id)
-        if has_pos:
+        # Classify archetype up front so the SKIP rows below can record
+        # it; the sizer below uses the same value.
+        archetype = classify_archetype(
+            market.question,
+            category=evaluation.category,
+            event_slug=getattr(market, "event_slug", None),
+        )
+
+        if executor.has_open_position_on_market(market.id):
+            # Persist a SKIP row so the user can see the bot DID look at
+            # this market and chose to pass because of an existing
+            # position. Without this, re-scans of held markets evaporate
+            # silently and the Recent Activity surface stays empty.
+            _log_market_evaluation(
+                market=market, evaluation=evaluation, decision=None,
+                research_sources=research.sources,
+                prediction_id=prediction_id, recommendation="SKIP",
+                market_archetype=archetype,
+                user_id=user_id, mode=user_config.mode,
+                skip_reason="Already holding an open position on this market.",
+            )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_EXISTING_POSITION",
@@ -206,6 +361,20 @@ class PMAnalyst:
             user_id=user_id,
         )
         if verdict.halted:
+            # Record the risk-halt skip so the user can see why the bot
+            # passed on otherwise-tradeable markets when a circuit
+            # breaker is active.
+            _log_market_evaluation(
+                market=market, evaluation=evaluation, decision=None,
+                research_sources=research.sources,
+                prediction_id=prediction_id, recommendation="SKIP",
+                market_archetype=archetype,
+                user_id=user_id, mode=user_config.mode,
+                skip_reason=(
+                    f"Risk circuit breaker is active: "
+                    f"{verdict.halt_reason or 'risk breaker tripped'}"
+                ),
+            )
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="SKIP_RISK_HALT",
@@ -213,11 +382,45 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        archetype = classify_archetype(
-            market.question,
-            category=evaluation.category,
-            event_slug=getattr(market, "event_slug", None),
-        )
+        # Hard skip backstop: when the evaluator set
+        # MarketEvaluation.force_skip = True (today only used by the
+        # same_event_verified=no branch), refuse to call the sizer.
+        # This defends against the boundary case where the sizer's
+        # direction-agreement gate's strict `< 0` test produces 0
+        # (market_p_yes exactly 0.50) and would otherwise let the
+        # trade through. force_skip is the unconditional source of
+        # truth: no clever sizing math can override it.
+        #
+        # Persist the SKIP row BEFORE returning. The evaluator's
+        # force_skip is the dominant skip path in steady state
+        # (typically same_event_verified=no on sports markets where
+        # research returned placeholder content). Until 2026-05-20
+        # these never reached market_evaluations and the Dashboard's
+        # Recent Activity feed stayed empty for hours while the bot
+        # was scanning normally.
+        if getattr(evaluation, "force_skip", False):
+            _log_market_evaluation(
+                market=market, evaluation=evaluation, decision=None,
+                research_sources=research.sources,
+                prediction_id=prediction_id, recommendation="SKIP",
+                market_archetype=archetype,
+                user_id=user_id, mode=user_config.mode,
+                skip_reason=(
+                    evaluation.reasoning_short
+                    or "Research returned by the fetcher does not describe "
+                       "this specific event/edition - cannot forecast without "
+                       "on-event evidence."
+                ),
+            )
+            return AnalysisOutcome(
+                market_id=market.id, question=q,
+                status="SKIP_EVALUATOR",
+                detail=evaluation.reasoning_short
+                       or "Evaluator returned a hard skip "
+                          "(research does not match this market).",
+                evaluation=evaluation, prediction_id=prediction_id,
+            )
+
         decision = size_position(
             claude_p    = evaluation.probability_yes,
             confidence  = evaluation.confidence,
@@ -250,6 +453,39 @@ class PMAnalyst:
         )
 
         if not decision.should_trade:
+            # One-shot user-facing alert: if the bot is in live mode and
+            # the FIRST skip we see from this user is the Polymarket
+            # 5-share platform minimum, fire ONE bot_status event with
+            # Telegram so the user knows why most markets are being
+            # passed on. Subsequent skips just land silently in the
+            # Skipped tab. Per-user dedup so multi-tenant accounts each
+            # get exactly one alert; reset on process restart.
+            if (
+                user_config.mode == "live"
+                and decision.skip_reason
+                and "Polymarket needs" in decision.skip_reason
+                and user_id not in _POLYMARKET_MIN_SKIP_NOTIFIED
+            ):
+                _POLYMARKET_MIN_SKIP_NOTIFIED.add(user_id)
+                try:
+                    telegram_html = (
+                        "<b>ℹ️ Most markets being skipped</b>\n"
+                        "Your stake is below Polymarket's per-order minimum.\n"
+                        "Settings → Risk → raise Base stake (or fund the wallet)."
+                    )
+                    log_event(
+                        event_type="bot_status",
+                        severity=2,
+                        description=(
+                            "Polymarket 5-share floor blocking most trades "
+                            f"(skip reason: {decision.skip_reason})"
+                        ),
+                        source="pm_analyst.polymarket_min_skip",
+                        telegram_html=telegram_html,
+                    )
+                except Exception as _exc:
+                    # Don't let the notification path break the scan.
+                    pass
             return AnalysisOutcome(
                 market_id=market.id, question=q,
                 status="LOGGED_NO_TRADE",
@@ -296,6 +532,42 @@ class PMAnalyst:
                 prediction_id=prediction_id,
             )
         _link_evaluation_to_position(eval_row_id, pos_id)
+
+        # Replace in-memory decision with the ACTUAL fill from the
+        # persisted row. The executor's `_open_live` swaps to actual
+        # values internally but its mutation doesn't propagate up the
+        # call stack (dataclass.replace returns a new instance bound
+        # only to its local scope). Without this re-read, every
+        # downstream consumer of `decision` — the notification, the
+        # event_log description, the AnalysisOutcome detail string,
+        # the dashboard's activity feed — would render INTENT values
+        # (e.g. "stake $3.23") even when only $3.04 actually filled
+        # on-chain. User-reported 2026-05-18.
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import get_engine as _eng
+            with _eng().begin() as _conn:
+                _row = _conn.execute(_text(
+                    "SELECT shares, cost_usd, entry_price "
+                    "FROM pm_positions WHERE id = :pid"
+                ), {"pid": pos_id}).fetchone()
+            if _row:
+                from dataclasses import replace as _replace
+                try:
+                    decision = _replace(
+                        decision,
+                        shares=float(_row[0]),
+                        stake_usd=float(_row[1]),
+                        entry_price=float(_row[2]),
+                    )
+                except TypeError:
+                    pass
+        except Exception as _exc:
+            print(
+                f"[pm_analyst] actual-fill re-read failed for pos "
+                f"{pos_id}: {_exc}",
+                file=sys.stderr,
+            )
 
         try:
             await self._notify_open(market, evaluation, decision,
@@ -367,6 +639,54 @@ class PMAnalyst:
                 "no_trade": 0, "skipped": 0,
                 "skip_reason": "bot_disabled",
             }
+
+        # Bankroll precondition: if NO bot-enabled user has deployable
+        # cash above the platform minimum, halt the entire scan. Calling
+        # Claude on markets we can't trade is pure spend on the user's
+        # LLM bill. See the module-level docstring for the full rationale.
+        bankroll_summaries: list[tuple[str, float, float]] = []
+        any_can_trade = False
+        for _uid in _uids:
+            try:
+                if not get_user_config(_uid).bot_enabled:
+                    continue
+            except Exception:
+                continue
+            pair = _user_deployable_cash(_uid)
+            if pair is None:
+                # Fail-open: if we can't read this user's bankroll we let
+                # the scan run. The sizer's per-market check remains the
+                # source of truth.
+                any_can_trade = True
+                continue
+            bankroll, deployable = pair
+            bankroll_summaries.append((_uid, bankroll, deployable))
+            if deployable >= POLYMARKET_MIN_ORDER_USD:
+                any_can_trade = True
+
+        if not any_can_trade and bankroll_summaries:
+            # Fire one Telegram per active→paused transition (per user).
+            for _uid, _bk, _dep in bankroll_summaries:
+                _maybe_broadcast_bankroll_pause(_uid, _bk, _dep)
+            _summary_line = " | ".join(
+                f"{u}: bankroll=${b:.2f} deployable=${d:.2f}"
+                for u, b, d in bankroll_summaries
+            )
+            print(
+                f"[pm_analyst] scan halted: insufficient bankroll. "
+                f"{_summary_line}",
+                flush=True,
+            )
+            return {
+                "fetched": 0, "analyzed": 0, "opened": 0,
+                "no_trade": 0, "skipped": 0,
+                "skip_reason": "insufficient_bankroll",
+            }
+
+        # Scan is going to run: reset the pause-announce flag so the
+        # next active→paused transition re-broadcasts.
+        _reset_bankroll_pause_announcement()
+
         if _uids:
             _ucfg = get_user_config(_uids[0])
             user_min = _ucfg.min_days_to_resolution
@@ -572,11 +892,82 @@ class PMAnalyst:
         # Local-first build: notifications go to the SQLite event_log table,
         # which the dashboard reads via GET /api/events. No Telegram, no
         # outbound network for user notifications.
+
+        # CRITICAL: read the ACTUAL persisted shares / cost / entry_price
+        # from the pm_positions row, not from the in-memory `decision`.
+        # `_open_live` mutates a LOCAL copy of `decision` after polling
+        # the actual fill, but the caller's reference (this method's
+        # `decision` arg) is the un-mutated INTENT. Reading the DB row
+        # — which has the post-fill values — makes the notification
+        # match what's actually on-chain. User-reported 2026-05-18:
+        # "you told me Stake is $3.23 but the actual value is $3.04.
+        # What happened to the $0.19?" Answer: the $0.19 never left
+        # the wallet (5-share intent only partially filled at 4.68
+        # shares), but the notification fired with intent values.
+        try:
+            from sqlalchemy import text as _text
+            from db.engine import get_engine as _eng
+            with _eng().begin() as _conn:
+                _row = _conn.execute(_text(
+                    "SELECT shares, cost_usd, entry_price "
+                    "FROM pm_positions WHERE id = :pid"
+                ), {"pid": position_id}).fetchone()
+            if _row:
+                from dataclasses import replace as _replace
+                try:
+                    decision = _replace(
+                        decision,
+                        shares=float(_row[0]),
+                        stake_usd=float(_row[1]),
+                        entry_price=float(_row[2]),
+                    )
+                except TypeError:
+                    pass
+        except Exception as _exc:
+            print(
+                f"[pm_analyst] notify: actual-fill lookup failed for "
+                f"pos {position_id}: {_exc}",
+                file=sys.stderr,
+            )
+        # Force a wallet-probe refresh so the bankroll we report
+        # reflects the post-trade state (the order just spent N
+        # dollars of pUSD). Without this, the cached probe is up to
+        # 60s stale and the notification shows pre-trade bankroll —
+        # the user-reported "$8.47 + $3.23 = $11.70 equity" bug.
+        try:
+            from engine.user_config import get_user_polymarket_creds
+            from feeds.polymarket_wallet import refresh_live_balance_cache
+            _creds = get_user_polymarket_creds(user_id)
+            _pk = (_creds or {}).get("private_key") if _creds else None
+            if _pk:
+                refresh_live_balance_cache(_pk)
+        except Exception as _exc:
+            print(f"[pm_analyst] post-open wallet refresh failed: {_exc}",
+                  file=sys.stderr)
+
         bankroll_after = 0.0
+        equity_after: float = 0.0
+        locked_capital_after: float = float(decision.stake_usd)
         try:
             bankroll_after = float(executor.get_bankroll())
+            # Total equity = leftover cash + cost of every open
+            # position. The DB has the just-opened row by this point
+            # so summing cost_usd over status='open' gives the right
+            # number even when the user has other open positions.
+            from sqlalchemy import text as _text
+            from db.engine import get_engine as _eng
+            with _eng().begin() as _conn:
+                _open_cost = _conn.execute(_text(
+                    "SELECT COALESCE(SUM(cost_usd), 0) "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = :m "
+                    "  AND status = 'open'"
+                ), {"uid": user_id,
+                    "m": executor.trading_mode}).scalar() or 0.0
+            locked_capital_after = float(_open_cost)
+            equity_after = bankroll_after + locked_capital_after
         except Exception:
-            pass
+            equity_after = bankroll_after + float(decision.stake_usd)
         market_pct = decision.p_win * 100.0
         # `probability_yes` is the forecaster's P(YES), always.
         # `forecast_pct_yes` keeps it as P(YES) for the description
@@ -620,6 +1011,8 @@ class PMAnalyst:
                 forecast_pct=forecast_pct_side,
                 confidence=float(evaluation.confidence or 0.0),
                 bankroll_after=bankroll_after,
+                equity_after=equity_after,
+                locked_capital=locked_capital_after,
                 mode=mode,
             )
         except Exception as exc:
@@ -662,14 +1055,23 @@ def _recently_predicted(market_id: str, days: int) -> bool:
 def _log_market_evaluation(
     market:           PolyMarket,
     evaluation:       MarketEvaluation,
-    decision:         SizingDecision,
+    decision:         Optional[SizingDecision],
     research_sources: list[str],
     prediction_id:    Optional[int],
     recommendation:   str,
     market_archetype: Optional[str] = None,
     user_id:          Optional[str] = None,
     mode:             Optional[str] = None,
+    skip_reason:      Optional[str] = None,
 ) -> Optional[int]:
+    # `decision` may be None for early-return skip paths (force_skip,
+    # risk halt, existing-position). Those bail before the sizer
+    # runs, but the evaluation still happened and is worth persisting
+    # so the Dashboard's Recent Activity surface (and Positions ->
+    # Skipped tab) can show the user WHY each market was passed on.
+    # Without this, force_skip rejections evaporated and the user
+    # saw a silent 5h gap in activity while the bot was actually
+    # running normally (2026-05-20 ticket).
     if user_id is None:
         from engine.user_config import DEFAULT_USER_ID
         user_id = DEFAULT_USER_ID
@@ -680,20 +1082,33 @@ def _log_market_evaluation(
         from engine.user_config import get_user_config
         mode = get_user_config(user_id).mode or "simulation"
     try:
+        ev_bps = float(decision.ev * 10_000.0) if decision is not None else 0.0
         with get_engine().begin() as conn:
+            # Derive an effective skip_reason. Three sources, in priority
+            # order:
+            #   1. Explicit `skip_reason` arg (from force_skip / risk halt /
+            #      existing-position / per-event cap / max-concurrent etc).
+            #   2. `decision.skip_reason` from the sizer (direction
+            #      disagreement, archetype skip-list, price-band, platform
+            #      minimum, etc).
+            #   3. None - only on BUY rows where there's nothing to explain.
+            effective_skip_reason = skip_reason
+            if effective_skip_reason is None and decision is not None:
+                effective_skip_reason = getattr(decision, "skip_reason", None)
+
             row = conn.execute(text(
                 "INSERT INTO market_evaluations ("
                 "  user_id, market_id, condition_id, slug, question, category, "
                 "  market_price_yes, claude_probability, confidence, "
                 "  ev_bps, recommendation, reasoning, reasoning_short, "
                 "  research_sources, prediction_id, market_archetype, event_slug, "
-                "  mode"
+                "  mode, skip_reason"
                 ") VALUES ("
                 "  :user_id, :mid, :cid, :slug, :q, :cat, "
                 "  :mp, :cp, :conf, "
                 "  :ev_bps, :rec, :reason, :reason_short, "
                 "  :srcs, :pid, :arch, :event_slug, "
-                "  :mode"
+                "  :mode, :skip_reason"
                 ") RETURNING id"
             ), {
                 "user_id": user_id,
@@ -705,7 +1120,7 @@ def _log_market_evaluation(
                 "mp":   market.yes_price,
                 "cp":   evaluation.probability_yes,
                 "conf": evaluation.confidence,
-                "ev_bps": decision.ev * 10_000.0,
+                "ev_bps": ev_bps,
                 "rec":  recommendation,
                 "reason": evaluation.reasoning,
                 "reason_short": (getattr(evaluation, "reasoning_short", "") or None),
@@ -714,6 +1129,7 @@ def _log_market_evaluation(
                 "arch": market_archetype,
                 "event_slug": getattr(market, "event_slug", None),
                 "mode": mode,
+                "skip_reason": effective_skip_reason,
             }).fetchone()
             return int(row[0]) if row else None
     except Exception as exc:
