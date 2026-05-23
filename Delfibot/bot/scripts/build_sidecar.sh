@@ -33,6 +33,19 @@ if ! "${PYTHON}" -m PyInstaller --version >/dev/null 2>&1; then
   exit 1
 fi
 
+# ─── Regression-test gates ────────────────────────────────────────────
+# Each script asserts a previously-fixed bug stays fixed. Failing the
+# gate fails the build by design, so a regression never ships. Add a
+# new gate per fixed bug whose recurrence would erode user trust.
+# Cheap to run (source-text checks, no DB / network).
+echo "[build_sidecar] running regression-test gates..."
+"${PYTHON}" "${BOT_DIR}/tools/test_pending_payout_guards.py" || {
+  echo "[build_sidecar] BUILD FAILED: pending_payout guard regression." >&2
+  echo "[build_sidecar] See Delfibot/bot/tools/test_pending_payout_guards.py" >&2
+  echo "[build_sidecar] and Obsidian/Delfi/50_Feedback/log_every_major_bug.md" >&2
+  exit 1
+}
+
 # rustc may not be on the non-interactive PATH even though it is
 # installed (rustup puts it in ~/.cargo/bin and only updates .zshrc /
 # .bash_profile, which non-login shells do not source).

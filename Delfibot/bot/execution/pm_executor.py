@@ -932,6 +932,18 @@ class PMExecutor:
         #            credited the wallet.
         # equity   = bankroll + open_cost (cost basis of open positions).
         #
+        # ═══════════════════════════════════════════════════════════
+        # DO NOT WIDEN THIS QUERY. Read the regression test in
+        # Delfibot/bot/tools/test_pending_payout_guards.py before
+        # touching either of the two guards below. The bug fixed
+        # here (2026-05-23, commit a718bc3) cost the user trust by
+        # showing $10+ phantom money in Telegram messages and on the
+        # dashboard for ~3 days because a stale invalid-market row
+        # stayed in this projection forever. We've fixed the same
+        # class of bug FOUR times. The user said: "engrave it
+        # somewhere so it doesn't get fucked up anymore."
+        # ═══════════════════════════════════════════════════════════
+        #
         # Why the pending-payout projection:
         # The relayer redeem chain typically completes within 30-60s
         # of settle_position firing. During that window the real
@@ -944,8 +956,7 @@ class PMExecutor:
         # `redeem_tx_hash` is still NULL AND which settled in the
         # last 10 minutes.
         #
-        # Two narrowings vs the original 2026-05-18 design (changed
-        # 2026-05-23 after the user-reported bug):
+        # Two narrowings — DO NOT REMOVE EITHER:
         #
         # 1. status='invalid' rows EXCLUDED. Polymarket auto-refunds
         #    voided markets directly to the wallet — they don't go
