@@ -755,14 +755,18 @@ def _alert_multi_outcome_skip(row: dict) -> None:
     # says "manage this on polymarket.com" because that exposes a
     # bot failure as a user problem.
     #
-    # The real guarantee is upstream:
-    # `polymarket_feed._as_market` filters every negRisk /
-    # negRiskOther market BEFORE the evaluator runs, so the bot
-    # never opens one in the first place (commit 3df8377).
-    # If this function fires, the upstream filter has a hole — the
-    # right response is to FIX the filter, not to push paperwork
-    # onto the user. Stderr-log for the engineer, no event_log
-    # row, no Telegram, no dashboard banner.
+    # The current expected reachability of this function: zero.
+    # `_outcome_to_side` maps outcomeIndex 0 -> YES, 1 -> NO for
+    # both pure-binary AND negative-risk individual markets
+    # (commit c80d1aa, 2026-05-23). The only way `side is None`
+    # here is if Polymarket starts emitting outcomeIndex >= 2,
+    # which would mean their data model changed. Treat this as a
+    # canary, not an alarm.
+    #
+    # If it fires, log loudly to stderr for the engineer (so the
+    # next session sees the unexpected outcomeIndex shape) and
+    # do NOT push to event_log, Telegram, or the dashboard - the
+    # banned-copy rule from 2026-05-23 stands.
     #
     # Dedup logic preserved so we don't spam the log on every
     # reconciler tick for the same condition.
@@ -773,12 +777,13 @@ def _alert_multi_outcome_skip(row: dict) -> None:
     title   = (row.get("title") or "(unknown)")[:100]
     size    = row.get("size")
     outcome = row.get("outcome")
+    idx     = row.get("outcomeIndex")
     print(
-        f"[pm_reconciler] BUG: untracked on-chain position "
-        f"(condition={cond_id}, title={title!r}, outcome={outcome!r}, "
-        f"size={size}). The neg-risk filter in "
-        f"polymarket_feed._as_market should have prevented the bot "
-        f"from opening this; investigate why it passed through.",
+        f"[pm_reconciler] CANARY: outcomeIndex={idx!r} for "
+        f"condition={cond_id}, title={title!r}, outcome={outcome!r}, "
+        f"size={size}. Expected 0 or 1; Polymarket's data model may "
+        f"have changed. Investigate the data-api row and extend "
+        f"`_outcome_to_side` if needed.",
         file=sys.stderr, flush=True,
     )
 
