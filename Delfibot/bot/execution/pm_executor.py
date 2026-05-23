@@ -933,24 +933,40 @@ class PMExecutor:
         # equity   = bankroll + open_cost (cost basis of open positions).
         #
         # Why the pending-payout projection:
-        # The redeem+wrap chain typically completes within 30-60s of
-        # settle_position firing. During that window the real wallet
-        # probe still shows the pre-redeem balance, so a WIN
-        # notification would render "Balance: $X" where X doesn't yet
-        # include the just-won money. Users read this as "the win
-        # wasn't credited" even though it's already on its way. The
-        # projection closes that gap: we add the expected payout
+        # The relayer redeem chain typically completes within 30-60s
+        # of settle_position firing. During that window the real
+        # wallet probe still shows the pre-redeem balance, so a WIN
+        # notification would render "Balance: $X" where X doesn't
+        # yet include the just-won money. Users read this as "the
+        # win wasn't credited" even though it's already on its way.
+        # The projection closes that gap: we add the expected payout
         # (cost_usd + realized_pnl_usd) for every settled winner whose
-        # `redeem_tx_hash` is still NULL, so the displayed Balance
-        # matches what the wallet will reach as soon as the in-flight
-        # relayer transactions mine. Once they mine, the wallet probe
-        # picks them up natively and the projection drops back to 0.
+        # `redeem_tx_hash` is still NULL AND which settled in the
+        # last 10 minutes.
+        #
+        # Two narrowings vs the original 2026-05-18 design (changed
+        # 2026-05-23 after the user-reported bug):
+        #
+        # 1. status='invalid' rows EXCLUDED. Polymarket auto-refunds
+        #    voided markets directly to the wallet — they don't go
+        #    through the relayer redeem chain that pending_payout
+        #    was built for. Including them caused the bug where an
+        #    invalid market from 3 days earlier (#332, $10.88 cost)
+        #    permanently inflated Balance by $10.88 across every
+        #    dashboard refresh and every Telegram WIN/LOSS message
+        #    — the wallet had ALREADY been refunded by Polymarket;
+        #    the bot was double-counting.
+        #
+        # 2. 10-minute settled_at floor. The relayer redeem completes
+        #    in 30-90s in steady state; anything older than 10 min
+        #    means either the redeem completed and the tx-hash
+        #    capture missed (so the wallet probe ALREADY reflects
+        #    the payout) or the redeem never fired (a tracking bug
+        #    we can't unblock by projecting forever). Either way the
+        #    right answer is "stop projecting, trust the wallet."
         #
         # Sim mode never needs this: get_bankroll() already counts
-        # realized P&L for settled rows via the DB formula. Losers and
-        # voided markets contribute 0 to the projection (their
-        # cost_usd + realized_pnl_usd = 0 for losers, = cost_usd for
-        # invalid refunds, so the formula is correct for both).
+        # realized P&L for settled rows via the DB formula.
         bankroll_wallet  = float(self.get_bankroll())
         pending_payout   = 0.0
         if self.mode == "live":
@@ -963,12 +979,11 @@ class PMExecutor:
                         "FROM pm_positions "
                         "WHERE user_id = :uid "
                         "  AND mode = 'live' "
-                        "  AND status IN ('settled', 'invalid') "
+                        "  AND status = 'settled' "
+                        "  AND side = settlement_outcome "
                         "  AND redeem_tx_hash IS NULL "
-                        "  AND ("
-                        "    side = settlement_outcome "  # winning binary
-                        "    OR status = 'invalid'"        # voided refund
-                        "  )"
+                        "  AND settled_at IS NOT NULL "
+                        "  AND settled_at > datetime('now', '-10 minutes')"
                     ), {"uid": self.user_id}).scalar() or 0.0
                     pending_payout = float(pending)
             except Exception as exc:
