@@ -945,12 +945,32 @@ def _refresh_positions_cache(funder_address: str) -> bool:
         currentValue: size * curPrice (USD value at current prices)
         initialValue: size * entry price (incl. trading fees)
         cashPnl:      currentValue - initialValue (signed)
-    Lost positions linger in the response with curPrice=0 (and
-    currentValue=0). Their cashPnl appears as a negative number
-    (= -initialValue), which IS the realized loss until the user
-    redeems the (zero-value) winning side to clear the row from
-    the wallet. We sum cashPnl across the whole list so losers
-    pull the total down correctly.
+    Lost positions linger in the data-api response with curPrice=0
+    and `redeemable=true`. These are settled losers whose tokens
+    sit in the wallet forever (there's nothing to redeem - the
+    losing-side ERC-1155s are worthless). Their cashPnl on the
+    data-api row is `-initialValue` (the full cost basis), which
+    Polymarket's portfolio UI categorises as REALIZED loss in the
+    All-Time P&L tile but as "open position cashPnl = 0" in the
+    Open Positions tile (because curVal is 0).
+
+    Our DB ALSO categorises them as realized: `settle_position`
+    writes `status='settled'` + `realized_pnl_usd = -cost` the
+    moment the resolution lands, regardless of whether the redeem
+    ceremony has fired. So if we ALSO add their cashPnl into the
+    `total_pnl` sum (our "unrealized" bucket), we double-count the
+    loss: realized $X already includes it, and "unrealized" pulls
+    it down by the same amount again. Net effect: the dashboard
+    shows realized + unrealized that doesn't sum to the headline
+    total_pnl from Polymarket's user-pnl-api, and the user reads
+    that as "P&L not consistent with Polymarket". (Diagnosed
+    2026-05-23, when realized=$12.97 + wrong unrealized=-$7.46 =
+    $5.51 contradicted Polymarket's correct $13.15.)
+
+    Fix: skip `redeemable=true` rows when summing cashPnl. Their
+    P&L lives in the realized bucket (DB), not unrealized. The
+    `total_value` (currentValue) sum already excludes them
+    naturally because their curVal is 0.
     """
     import requests as _r
     resp = _r.get(
@@ -977,6 +997,13 @@ def _refresh_positions_cache(funder_address: str) -> bool:
                 total_value += v
         except (TypeError, ValueError):
             pass
+        # cashPnl belongs in "unrealized" only for currently-held,
+        # not-yet-settled positions. Redeemable rows are settled
+        # losers that the DB already realized; including them
+        # double-counts the loss. See the long-form rationale in
+        # this function's docstring.
+        if row.get("redeemable"):
+            continue
         try:
             # cashPnl can be negative (losing positions); include
             # in the sum without a sign filter.
