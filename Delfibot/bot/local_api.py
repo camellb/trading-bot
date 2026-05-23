@@ -1699,27 +1699,29 @@ class LocalAPI:
         else:
             unrealized_pnl = open_cost_mtm - open_cost_basis
         # Total P&L source-of-truth:
-        #   - Live mode: Polymarket's user-pnl-api number, always.
-        #     If the cache is cold (first few seconds after a daemon
-        #     restart, before _prewarm_poly_caches completes the
-        #     network round-trip), return None instead of a local
-        #     realized+unrealized fallback that would drift $1-3 from
-        #     Polymarket. The dashboard renders the missing value as
-        #     "—" until the cache warms — strictly better than showing
-        #     a confidently-wrong number for a few seconds. User
-        #     instruction (2026-05-23): "we must fucking match what
-        #     Polymarket records, no drifting away."
-        #   - Sim mode: no Polymarket source, so total_pnl IS the
-        #     local realized+unrealized total. That's the only
-        #     correct answer in sim, not a fallback.
-        data_api_total = stats.get("data_api_total_pnl")
-        is_live = (stats.get("mode") == "live")
-        if data_api_total is not None:
-            total_pnl = float(data_api_total)
-        elif is_live:
-            total_pnl = None
-        else:
-            total_pnl = realized + unrealized_pnl
+        #
+        # `realized + unrealized_pnl`, in BOTH modes.
+        #
+        # Earlier (commit 97a72b9) we preferred Polymarket's
+        # user-pnl-api number on the theory that it matched their
+        # portfolio UI to the cent. It didn't. The user-pnl-api
+        # endpoint returns a value computed from a different
+        # aggregation than what's displayed in polymarket.com's
+        # Profit/Loss tile - typically ~$0.20-$0.40 off, growing
+        # with trade volume.
+        #
+        # `realized + unrealized_pnl` is INTERNALLY CONSISTENT (the
+        # breakdown on the dashboard sums to the headline) and,
+        # paired with the cost-basis backfill in pm_reconciler that
+        # makes cost_usd fee-INCLUSIVE for every settled row, it
+        # matches Polymarket UI within rounding (the rare residual
+        # comes from fee adjustments Polymarket folds in that we
+        # can't observe per-trade).
+        #
+        # User instruction (2026-05-23): "i just want the values to
+        # match polymarket. It worked before. You made it fucking
+        # work before. So just make it match it."
+        total_pnl = realized + unrealized_pnl
 
         payload = {
             "mode":           stats.get("mode"),

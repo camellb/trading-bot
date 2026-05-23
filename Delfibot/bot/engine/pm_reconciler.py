@@ -180,6 +180,14 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
     # which strips the fee.
     activity_costs = _fetch_activity_costs(funder)
 
+    # Retroactive cost-basis fix: positions opened before
+    # commit a40a867 (2026-05-20) have fee-EXCLUSIVE cost_usd, which
+    # inflates realized_pnl_usd by the cumulative fee amount and makes
+    # Delfi's "P&L" disagree with Polymarket's UI by $0.20-$0.40
+    # over a few dozen trades. Idempotent; once every settled row's
+    # cost matches the on-chain usdcSize, the function no-ops.
+    _backfill_settled_cost_basis(user_id, activity_costs)
+
     # Look up every existing (condition_id, side) pair in pm_positions
     # in one query so the per-row check is in-memory. Keyed by
     # (condition_id_lower, side); value carries the existing
@@ -338,6 +346,102 @@ def reconcile_positions(user_id: str = DEFAULT_USER_ID) -> dict:
                   file=sys.stderr, flush=True)
             summary["errors"] += 1
 
+    return summary
+
+
+def _backfill_settled_cost_basis(
+    user_id: str, activity_costs: dict
+) -> dict:
+    """Refresh settled positions' cost_usd + realized_pnl_usd to the
+    fee-inclusive on-chain amount.
+
+    Polymarket's UI computes "All-Time P&L" using the actual USDC
+    sent on-chain (size + fees), but pm_positions.cost_usd on rows
+    opened before commit a40a867 (2026-05-20) used `size * limit_price`
+    instead - fee-EXCLUSIVE. The fee gap (~0.5-2% per trade,
+    typically a few cents) compounds across every settled position,
+    making Delfi's realized P&L disagree with Polymarket's view by
+    $0.20-$0.40 over a few dozen trades.
+
+    This function patches the gap retroactively. For each settled
+    position whose conditionId+side maps to a /activity BUY total,
+    if the activity-derived cost is more than $0.001 higher than
+    the DB cost, overwrite the DB cost AND deduct the fee delta
+    from realized_pnl_usd:
+
+        new_cost = activity_usdc          # fee-inclusive
+        new_pnl  = old_pnl - (new_cost - old_cost)
+
+    Idempotent: subsequent passes find nothing to update.
+
+    User instruction (2026-05-23): "i just want the values to match
+    polymarket. It worked before. You made it fucking work before.
+    So just make it match it."
+    """
+    if not activity_costs:
+        return {"updated": 0, "skipped": 0, "checked": 0,
+                "total_fee_delta": 0.0}
+    eng = get_engine()
+    summary = {"updated": 0, "skipped": 0, "checked": 0,
+               "total_fee_delta": 0.0}
+    with eng.connect() as conn:
+        cur = conn.execute(text(
+            "SELECT id, condition_id, side, cost_usd, realized_pnl_usd "
+            "FROM pm_positions "
+            "WHERE user_id = :uid AND mode = 'live' "
+            "  AND status IN ('settled', 'invalid', 'closed_early') "
+            "  AND condition_id IS NOT NULL"
+        ), {"uid": user_id})
+        rows = cur.fetchall()
+    for pid, cond_id, side, db_cost, db_pnl in rows:
+        summary["checked"] += 1
+        if not cond_id or not side:
+            summary["skipped"] += 1
+            continue
+        idx = 0 if str(side).upper() == "YES" else 1
+        new_cost = activity_costs.get((cond_id.lower(), idx))
+        if new_cost is None or new_cost <= 0:
+            summary["skipped"] += 1
+            continue
+        old_cost = float(db_cost or 0.0)
+        delta = float(new_cost) - old_cost
+        if delta <= 0.001:
+            # already fee-inclusive, or activity cost lower (rare;
+            # don't relax a tighter cost)
+            summary["skipped"] += 1
+            continue
+        old_pnl = float(db_pnl or 0.0)
+        new_pnl = old_pnl - delta
+        try:
+            with eng.begin() as wconn:
+                wconn.execute(text(
+                    "UPDATE pm_positions "
+                    "SET cost_usd = :c, realized_pnl_usd = :p "
+                    "WHERE id = :id"
+                ), {"c": float(new_cost), "p": float(new_pnl), "id": pid})
+            summary["updated"] += 1
+            summary["total_fee_delta"] += delta
+            print(
+                f"[pm_reconciler] cost-basis backfill: #{pid} "
+                f"cost ${old_cost:.4f} -> ${new_cost:.4f} (fee +${delta:.4f}), "
+                f"realized ${old_pnl:.4f} -> ${new_pnl:.4f}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(
+                f"[pm_reconciler] cost-basis backfill failed for #{pid}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            summary["skipped"] += 1
+    if summary["updated"]:
+        print(
+            f"[pm_reconciler] cost-basis backfill complete: "
+            f"updated={summary['updated']} skipped={summary['skipped']} "
+            f"checked={summary['checked']} "
+            f"total_fee_delta=${summary['total_fee_delta']:.4f}",
+            flush=True,
+        )
     return summary
 
 
