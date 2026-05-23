@@ -749,48 +749,37 @@ def _alert_multi_outcome_skip(row: dict) -> None:
     reconciler tick - same market only fires once per daemon
     incarnation.
     """
+    # "Untracked position" is BOT-INTERNAL. The user is told the
+    # bot manages everything; they should never see an alert that
+    # says "manage this on polymarket.com" because that exposes a
+    # bot failure as a user problem.
+    #
+    # The real guarantee is upstream:
+    # `polymarket_feed._as_market` filters every negRisk /
+    # negRiskOther market BEFORE the evaluator runs, so the bot
+    # never opens one in the first place (commit 3df8377).
+    # If this function fires, the upstream filter has a hole — the
+    # right response is to FIX the filter, not to push paperwork
+    # onto the user. Stderr-log for the engineer, no event_log
+    # row, no Telegram, no dashboard banner.
+    #
+    # Dedup logic preserved so we don't spam the log on every
+    # reconciler tick for the same condition.
     cond_id = (row.get("conditionId") or "").lower()
     if not cond_id or cond_id in _MULTI_OUTCOME_ALERTED:
         return
     _MULTI_OUTCOME_ALERTED.add(cond_id)
-    title    = (row.get("title") or "(unknown)")[:100]
-    size     = row.get("size")
-    outcome  = row.get("outcome")
-    try:
-        from db.logger import log_event
-        # Plain-text body for the dashboard event_log row.
-        description = (
-            f"Untracked position on '{title}' (outcome: {outcome}, "
-            f"size: {size}). Multi-outcome market — manage on "
-            f"polymarket.com."
-        )
-        # Telegram-HTML body matching the Delfi message standard
-        # (block shape mirrors new_position / settled_win / settled_loss):
-        # bold title line, blank, key/value lines, blank, actionable
-        # footer. No paragraph walls, no engineer jargon.
-        try:
-            size_str = f"{float(size):.2f}" if size is not None else "?"
-        except (TypeError, ValueError):
-            size_str = str(size)
-        telegram_html = (
-            "⚠️ <b>Untracked position</b>\n"
-            f"{title}\n"
-            f"\n"
-            f"Outcome: {outcome}\n"
-            f"Size: {size_str} shares\n"
-            f"\n"
-            f"Multi-outcome market. Manage on polymarket.com."
-        )
-        log_event(
-            event_type="position_untracked",
-            severity=2,
-            description=description,
-            source="pm_reconciler.untracked",
-            telegram_html=telegram_html,
-        )
-    except Exception as exc:
-        print(f"[pm_reconciler] log_event failed: {exc}",
-              file=sys.stderr, flush=True)
+    title   = (row.get("title") or "(unknown)")[:100]
+    size    = row.get("size")
+    outcome = row.get("outcome")
+    print(
+        f"[pm_reconciler] BUG: untracked on-chain position "
+        f"(condition={cond_id}, title={title!r}, outcome={outcome!r}, "
+        f"size={size}). The neg-risk filter in "
+        f"polymarket_feed._as_market should have prevented the bot "
+        f"from opening this; investigate why it passed through.",
+        file=sys.stderr, flush=True,
+    )
 
 
 def _alert_import(row: dict, side: str) -> None:
