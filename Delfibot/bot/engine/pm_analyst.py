@@ -1001,26 +1001,29 @@ class PMAnalyst:
                 f"pos {position_id}: {_exc}",
                 file=sys.stderr,
             )
-        # Force-refresh EVERY Polymarket-side cache (wallet probe,
-        # data-api positions sum, user-pnl) so the values we write
-        # into the new_position Telegram message reflect post-trade
-        # truth. Without this, multiple settlements/opens within the
-        # wallet cache's 5-min TTL produced inconsistent sequences:
-        # WIN at T0 showed projected balance, OPEN at T1 read stale
-        # cache (showing pre-redeem cash), LOSS at T2 finally saw
-        # fresh cache — three "Balance" numbers that couldn't be
-        # reconciled to a single wallet timeline.
+        # Wallet probe refresh after opening a position. The order
+        # just spent N dollars of pUSD; without this the cached
+        # probe (5-min TTL) shows pre-trade balance for up to 5 min.
+        #
+        # NOTE: a8e9625 escalated this to
+        # force_refresh_all_polymarket_caches (wallet + data-api
+        # positions + user-pnl, all in one synchronous burst).
+        # Reverted 2026-05-23 — the bundled HTTPS calls saturated
+        # the api_executor under load and wedged the daemon (same
+        # GIL-contention pattern as earlier "user-pnl-in-request
+        # -path" bugs). The pending_payout SQL narrowing in
+        # a718bc3 fixes the actual root cause of the inflated-
+        # Balance bug; this lighter wallet-only refresh is enough
+        # to keep the new_position message's bankroll fresh.
         try:
             from engine.user_config import get_user_polymarket_creds
-            from feeds.polymarket_wallet import (
-                force_refresh_all_polymarket_caches,
-            )
+            from feeds.polymarket_wallet import refresh_live_balance_cache
             _creds = get_user_polymarket_creds(user_id)
             _pk = (_creds or {}).get("private_key") if _creds else None
             if _pk:
-                force_refresh_all_polymarket_caches(_pk)
+                refresh_live_balance_cache(_pk)
         except Exception as _exc:
-            print(f"[pm_analyst] post-open cache refresh failed: {_exc}",
+            print(f"[pm_analyst] post-open wallet refresh failed: {_exc}",
                   file=sys.stderr)
 
         bankroll_after = 0.0
