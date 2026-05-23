@@ -256,7 +256,13 @@ export default function Dashboard({ state, goto }: Props) {
             alignItems: "center",
             gap: 10,
             padding: "10px 14px",
-            margin: "0 0 14px",
+            // No bottom margin: `.dash-hero` already supplies its own
+            // 32px top margin. Adding 14px here on top of that made
+            // the banner → hero gap (46px) visibly larger than the
+            // hero-balance → hero-chart gap (32px) on stacked
+            // viewports. Letting dash-hero own the spacing keeps
+            // both gaps at a consistent 32px.
+            margin: 0,
             borderRadius: 8,
             background: "rgba(120, 180, 220, 0.06)",
             border: "1px solid rgba(120, 180, 220, 0.22)",
