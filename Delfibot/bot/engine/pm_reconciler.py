@@ -753,23 +753,40 @@ def _alert_multi_outcome_skip(row: dict) -> None:
     if not cond_id or cond_id in _MULTI_OUTCOME_ALERTED:
         return
     _MULTI_OUTCOME_ALERTED.add(cond_id)
-    title    = (row.get("title") or "(unknown)")[:80]
+    title    = (row.get("title") or "(unknown)")[:100]
     size     = row.get("size")
     outcome  = row.get("outcome")
     try:
         from db.logger import log_event
+        # Plain-text body for the dashboard event_log row.
+        description = (
+            f"Untracked position on '{title}' (outcome: {outcome}, "
+            f"size: {size}). Multi-outcome market — manage on "
+            f"polymarket.com."
+        )
+        # Telegram-HTML body matching the Delfi message standard
+        # (block shape mirrors new_position / settled_win / settled_loss):
+        # bold title line, blank, key/value lines, blank, actionable
+        # footer. No paragraph walls, no engineer jargon.
+        try:
+            size_str = f"{float(size):.2f}" if size is not None else "?"
+        except (TypeError, ValueError):
+            size_str = str(size)
+        telegram_html = (
+            "⚠️ <b>Untracked position</b>\n"
+            f"{title}\n"
+            f"\n"
+            f"Outcome: {outcome}\n"
+            f"Size: {size_str} shares\n"
+            f"\n"
+            f"Multi-outcome market. Manage on polymarket.com."
+        )
         log_event(
             event_type="position_untracked",
             severity=2,
-            description=(
-                f"Polymarket position on '{title}' (outcome: "
-                f"{outcome!r}, size: {size}) cannot be imported into "
-                f"Delfi - it's a multi-outcome / negative-risk market "
-                f"and pm_positions.side only supports binary YES/NO. "
-                f"The position is real on-chain; manage it manually "
-                f"on polymarket.com until multi-outcome support lands."
-            ),
+            description=description,
             source="pm_reconciler.untracked",
+            telegram_html=telegram_html,
         )
     except Exception as exc:
         print(f"[pm_reconciler] log_event failed: {exc}",

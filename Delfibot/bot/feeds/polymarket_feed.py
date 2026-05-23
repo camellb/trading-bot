@@ -206,7 +206,23 @@ def extract_resolution_estimate(raw: dict) -> Optional[datetime]:
 def _as_market(m: dict) -> Optional[PolyMarket]:
     """Map a raw Gamma dict to a PolyMarket, or None if it isn't binary/parseable."""
     try:
-        if m.get("negRiskOther"):
+        # Negative-risk filter. Polymarket exposes TWO flags for the
+        # 3+ outcome event structure:
+        #   * negRisk       = this market is part of a negative-risk
+        #                     multi-outcome group (e.g. "Bayern win"
+        #                     is ONE of three outcomes of a soccer
+        #                     match group: Bayern win / Draw / Other).
+        #   * negRiskOther  = the "everything else" rollup outcome of
+        #                     such a group.
+        # We MUST exclude both. Earlier the filter only caught
+        # negRiskOther, so the "main" outcomes of soccer / multi-team
+        # markets slipped through, got evaluated as binary YES/NO,
+        # and the order placed. The reconciler then surfaced the
+        # on-chain reality with a "cannot be imported into Delfi"
+        # alert (user-reported 2026-05-23, Bayern Munich market).
+        # pm_positions.side only supports binary YES/NO; until
+        # multi-outcome support lands these markets can't be tracked.
+        if m.get("negRisk") or m.get("negRiskOther"):
             return None
         prices   = _parse_price_list(m.get("outcomePrices"))
         outcomes = _parse_str_list(m.get("outcomes"))
