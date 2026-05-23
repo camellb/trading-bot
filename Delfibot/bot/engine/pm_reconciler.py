@@ -385,15 +385,19 @@ def _backfill_settled_cost_basis(
     summary = {"updated": 0, "skipped": 0, "checked": 0,
                "total_fee_delta": 0.0}
     with eng.connect() as conn:
+        # Backfill ALL live positions (open + settled + invalid +
+        # closed_early). For open rows we update cost_usd and
+        # entry_price; for settled rows we additionally adjust
+        # realized_pnl_usd by the fee delta.
         cur = conn.execute(text(
-            "SELECT id, condition_id, side, cost_usd, realized_pnl_usd "
+            "SELECT id, condition_id, side, cost_usd, "
+            "       realized_pnl_usd, shares, status "
             "FROM pm_positions "
             "WHERE user_id = :uid AND mode = 'live' "
-            "  AND status IN ('settled', 'invalid', 'closed_early') "
             "  AND condition_id IS NOT NULL"
         ), {"uid": user_id})
         rows = cur.fetchall()
-    for pid, cond_id, side, db_cost, db_pnl in rows:
+    for pid, cond_id, side, db_cost, db_pnl, shares, status in rows:
         summary["checked"] += 1
         if not cond_id or not side:
             summary["skipped"] += 1
@@ -412,19 +416,54 @@ def _backfill_settled_cost_basis(
             continue
         old_pnl = float(db_pnl or 0.0)
         new_pnl = old_pnl - delta
+        sh = float(shares or 0.0)
+        new_entry = (float(new_cost) / sh) if sh > 0 else None
         try:
+            is_settled = (status or "open").lower() in (
+                "settled", "invalid", "closed_early"
+            )
             with eng.begin() as wconn:
-                wconn.execute(text(
-                    "UPDATE pm_positions "
-                    "SET cost_usd = :c, realized_pnl_usd = :p "
-                    "WHERE id = :id"
-                ), {"c": float(new_cost), "p": float(new_pnl), "id": pid})
+                if is_settled:
+                    if new_entry is not None:
+                        wconn.execute(text(
+                            "UPDATE pm_positions "
+                            "SET cost_usd = :c, entry_price = :e, "
+                            "    realized_pnl_usd = :p "
+                            "WHERE id = :id"
+                        ), {"c": float(new_cost), "e": float(new_entry),
+                            "p": float(new_pnl), "id": pid})
+                    else:
+                        wconn.execute(text(
+                            "UPDATE pm_positions "
+                            "SET cost_usd = :c, realized_pnl_usd = :p "
+                            "WHERE id = :id"
+                        ), {"c": float(new_cost), "p": float(new_pnl),
+                            "id": pid})
+                else:
+                    # open: don't touch realized_pnl_usd
+                    if new_entry is not None:
+                        wconn.execute(text(
+                            "UPDATE pm_positions "
+                            "SET cost_usd = :c, entry_price = :e "
+                            "WHERE id = :id"
+                        ), {"c": float(new_cost), "e": float(new_entry),
+                            "id": pid})
+                    else:
+                        wconn.execute(text(
+                            "UPDATE pm_positions "
+                            "SET cost_usd = :c "
+                            "WHERE id = :id"
+                        ), {"c": float(new_cost), "id": pid})
             summary["updated"] += 1
             summary["total_fee_delta"] += delta
+            tail = (
+                f", realized ${old_pnl:.4f} -> ${new_pnl:.4f}"
+                if is_settled else ""
+            )
             print(
                 f"[pm_reconciler] cost-basis backfill: #{pid} "
-                f"cost ${old_cost:.4f} -> ${new_cost:.4f} (fee +${delta:.4f}), "
-                f"realized ${old_pnl:.4f} -> ${new_pnl:.4f}",
+                f"({status}) cost ${old_cost:.4f} -> ${new_cost:.4f} "
+                f"(fee +${delta:.4f}){tail}",
                 flush=True,
             )
         except Exception as exc:

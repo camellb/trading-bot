@@ -1679,25 +1679,28 @@ class LocalAPI:
 
         # Unrealized P&L.
         #
-        # Source-of-truth order (best → fallback):
-        #   1. data_api_unrealized: sum of cashPnl across every
-        #      position the wallet holds, from Polymarket's
-        #      data-api. This IS Polymarket's number, so the Dashboard
-        #      P&L reconciles to the cent with their portfolio UI.
-        #   2. Local "MTM - cost basis" using bot-tracked aggregates.
-        #      Used when data-api is unreachable or in simulation.
-        #      Slightly overstates real P&L because the bot's cost
-        #      was recorded at execution price + excludes trading
-        #      fees, while Polymarket folds both into initialValue.
-        # Without source 1, /api/summary's P&L could read ~$1 higher
-        # than the Polymarket portfolio tile on the same wallet.
+        # `open_cost_mtm - open_cost_basis` where:
+        #   open_cost_mtm   = Polymarket's currentValue sum on open
+        #                     positions (live MTM)
+        #   open_cost_basis = DB cost_usd sum on open positions
+        #                     (fee-INCLUSIVE after the
+        #                     _backfill_settled_cost_basis sweep in
+        #                     pm_reconciler aligns it to the actual
+        #                     usdcSize from /activity)
+        #
+        # Earlier this preferred Polymarket's data-api `cashPnl`
+        # field which is `currentValue - initialValue`, but
+        # initialValue is FEE-EXCLUSIVE (= size * avgPrice), so that
+        # `cashPnl` reads too high by the per-trade fee. That gap
+        # compounded with the realized-side fee gap to drift the
+        # dashboard ~$0.50+ from Polymarket UI's P&L tile by the
+        # time the user noticed (2026-05-23).
+        #
+        # MTM (currentValue) - fee-inclusive cost gives the true
+        # unrealized P&L, the same way Polymarket UI computes it.
         open_cost_mtm    = float(stats.get("open_cost") or 0.0)
         open_cost_basis  = float(stats.get("bot_open_cost") or 0.0)
-        data_api_unreal  = stats.get("data_api_unrealized")
-        if data_api_unreal is not None:
-            unrealized_pnl = float(data_api_unreal)
-        else:
-            unrealized_pnl = open_cost_mtm - open_cost_basis
+        unrealized_pnl   = open_cost_mtm - open_cost_basis
         # Total P&L source-of-truth:
         #
         # `realized + unrealized_pnl`, in BOTH modes.
