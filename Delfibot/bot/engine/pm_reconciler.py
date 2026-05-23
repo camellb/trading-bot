@@ -393,21 +393,22 @@ def _fetch_activity_costs(funder: str) -> dict:
 def _outcome_to_side(row: dict) -> Optional[str]:
     """Map a data-api position outcome to a Delfi pm_positions.side.
 
-    Polymarket's binary markets always present outcomeIndex 0 as the
-    "yes/up/over/positive" side and outcomeIndex 1 as the
-    "no/down/under/negative" side. Delfi's pm_positions.side is
-    CHAR(3) constrained to 'YES'/'NO'.
+    Polymarket's individual markets — binary OR member-of-a-negative-
+    risk-group — all present outcomeIndex 0 as the "yes" side and 1
+    as the "no" side. A negative-risk soccer match is just three
+    separate binary YES/NO markets ("Bayern win?", "Draw?", "Other
+    win?") that happen to be linked at the group level for resolution.
+    Each individual market has clean YES/NO outcomes that fit
+    pm_positions.side.
 
-    For negative-risk multi-outcome markets the indices are
-    contract-specific and we don't have a stable mapping yet - return
-    None and let the caller skip the import.
+    Earlier this function bailed on `negativeRisk` rows defensively
+    (2026-04-28-ish, when neg-risk markets were new). That was wrong:
+    the mapping IS clean. The negative-risk flag matters only for
+    the redemption contract used at settlement, which the V2 relayer
+    handles automatically for DepositWallet users — the bot doesn't
+    call redeem manually. Reverted 2026-05-23 after the user pushed
+    back on the bot refusing to trade soccer / tournament markets.
     """
-    if row.get("negativeRisk"):
-        # Multi-outcome markets (e.g. "Which team wins the title?")
-        # use a different on-chain contract and don't have a clean
-        # YES/NO mapping. Skip for now; future work will widen
-        # pm_positions.side or add a separate table.
-        return None
     idx = row.get("outcomeIndex")
     if idx == 0:
         return "YES"
