@@ -82,10 +82,48 @@ _POLYMARKET_MIN_SKIP_NOTIFIED: set = set()
 # Same rule applies in simulation: LLM tokens cost the same in both
 # modes, so a $0 sim bankroll halts scanning identically.
 #
-# Flag persists in-process only. Resets on daemon restart, which is
-# acceptable: the alert is informational, not critical.
+# Announcement state persists to a marker file under app-data so it
+# survives daemon restarts. The previous version was a module-level
+# boolean that reset to False on every process start, which meant
+# every install / launchd respawn / crash re-broadcast the "paused"
+# Telegram. User got six identical paused-messages in a single day
+# on 2026-05-23 from my deploy loop; engraved this as "once is
+# fucking enough."
+_PAUSE_MARKER_NAME = "bankroll_pause_announced"
 
-_bankroll_pause_announced: bool = False
+
+def _pause_marker_path():
+    """Return the marker-file path, created lazily under app-data.
+    Single-user local-first so no per-user keying.
+    """
+    from db.engine import app_data_dir
+    base = app_data_dir() / "data"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / _PAUSE_MARKER_NAME
+
+
+def _pause_already_announced() -> bool:
+    try:
+        return _pause_marker_path().exists()
+    except Exception:
+        # If we can't read the marker (permissions, etc.), default
+        # to "already announced" so we don't spam on a degraded FS.
+        return True
+
+
+def _set_pause_announced(flag: bool) -> None:
+    try:
+        p = _pause_marker_path()
+        if flag:
+            p.touch()
+        elif p.exists():
+            p.unlink()
+    except Exception as exc:
+        print(
+            f"[pm_analyst] pause-marker write failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
 
 
 def _user_deployable_cash(user_id: str) -> Optional[tuple[float, float]]:
@@ -149,18 +187,22 @@ def _maybe_broadcast_bankroll_pause(
 
     Subsequent paused scans no-op until the flag is reset by a
     resume (via `_reset_bankroll_pause_announcement`).
+
+    State is persisted to a marker file under app-data so the
+    "once-only" guarantee survives daemon restarts. See the long
+    comment block above `_PAUSE_MARKER_NAME`.
     """
-    global _bankroll_pause_announced
-    if _bankroll_pause_announced:
+    if _pause_already_announced():
         return
-    _bankroll_pause_announced = True
+    _set_pause_announced(True)
     try:
         from feeds.telegram_notifier import notify
         notify(
-            "💤 Evaluator paused to save tokens. Your available cash "
-            "is below the minimum needed to place a bet. Bot will "
-            "resume automatically when a position closes or you top "
-            "up your wallet.",
+            "💤 Delfi's evaluator paused to save tokens. Your "
+            "available cash is below the minimum needed to place a "
+            "bet. Delfi will resume automatically when more funds "
+            "are available (when a position closes or you top up "
+            "your wallet).",
             user_id=user_id,
         )
     except Exception as exc:
@@ -172,10 +214,10 @@ def _maybe_broadcast_bankroll_pause(
 
 
 def _reset_bankroll_pause_announcement() -> None:
-    """Called every time a scan actually runs (gate passes). Lets the
-    next active→paused transition re-broadcast."""
-    global _bankroll_pause_announced
-    _bankroll_pause_announced = False
+    """Called every time a scan actually runs (gate passes, which
+    means deployable >= POLYMARKET_MIN_ORDER_USD). Lets the next
+    active→paused transition re-broadcast."""
+    _set_pause_announced(False)
 
 
 @dataclass

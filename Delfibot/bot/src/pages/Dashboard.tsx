@@ -278,9 +278,10 @@ export default function Dashboard({ state, goto }: Props) {
             💤
           </span>
           <span>
-            Evaluator paused to save tokens. Available cash is below
-            the minimum for an order. The bot will resume automatically
-            when a position closes or you top up your wallet.
+            Delfi's evaluator paused to save tokens. Your available
+            cash is below the minimum needed to place a bet. Delfi
+            will resume automatically when more funds are available
+            (when a position closes or you top up your wallet).
           </span>
         </div>
       )}
