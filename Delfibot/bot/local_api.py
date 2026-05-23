@@ -1650,57 +1650,57 @@ class LocalAPI:
                       flush=True)
 
         starting = float(stats.get("starting_cash") or 0.0)
-        realized = float(stats.get("realized_pnl") or 0.0)
 
-        # In LIVE mode, the legacy `starting_cash` from user_config is
-        # whatever the user typed at SIM onboarding (typically $1000).
-        # That number has nothing to do with live trading - it makes
-        # the Dashboard's Risk gauges nonsense ("drawdown 99.1%" when
-        # the user just deposited $9, exposure cap "$900" when the
-        # user has $9 of collateral). Override it to a value that
-        # matches the live session:
+        # Realized + Unrealized P&L source-of-truth.
         #
-        #     live_starting = bankroll - realized_pnl + open_cost
+        # Polymarket UI's "All-Time P&L" tile is:
+        #     realized  = sum(realizedPnl)  from /closed-positions
+        #               + sum(cashPnl)      from /positions where
+        #                                   redeemable=true
+        #     unrealized= sum(cashPnl)      from /positions where
+        #                                   redeemable=false
+        #     total     = realized + unrealized
         #
-        # Rationale: bankroll = starting + realized_pnl - open_cost,
-        # so the formula above gives back the user's effective
-        # starting capital for this live session. With no trades yet,
-        # live_starting == bankroll and drawdown = 0%. As trades
-        # settle the drawdown gauge tracks the right thing.
+        # Using these exact fields (read via the polymarket_wallet
+        # cache, refreshed every 60s by the pm_pnl_refresh job)
+        # makes the dashboard match polymarket.com's portfolio
+        # tile to the cent. Earlier attempts that derived realized
+        # from our local DB or composed total from user-pnl-api
+        # drifted from the UI by $0.20-$0.50 because their fee
+        # accounting differs from ours; this trusts Polymarket
+        # directly.
+        #
+        # In sim mode (no Polymarket data) we fall back to the DB
+        # realized + bot-tracked MTM unrealized.
+        pm_closed   = stats.get("polymarket_closed_realized")
+        pm_redeem   = stats.get("polymarket_redeemable_cashPnl")
+        pm_open_pnl = stats.get("data_api_unrealized")
+        is_live = (stats.get("mode") == "live")
+        if (is_live and pm_closed is not None and pm_redeem is not None
+                and pm_open_pnl is not None):
+            realized = float(pm_closed) + float(pm_redeem)
+            unrealized_pnl = float(pm_open_pnl)
+        else:
+            realized = float(stats.get("realized_pnl") or 0.0)
+            open_cost_mtm    = float(stats.get("open_cost") or 0.0)
+            open_cost_basis  = float(stats.get("bot_open_cost") or 0.0)
+            unrealized_pnl   = open_cost_mtm - open_cost_basis
+
+        # In LIVE mode, derive a sensible "starting capital" for this
+        # session from the equation
+        #     bankroll = starting + realized - open_cost
+        # so live_starting = bankroll - realized + open_cost. Uses
+        # the same Polymarket-derived `realized` as the headline so
+        # the Risk gauges agree with the P&L tile.
         if stats.get("mode") == "live":
             open_cost = float(stats.get("open_cost") or 0.0)
             live_starting = bankroll - realized + open_cost
-            # Floor at $1 so the downstream gauge math (which divides
-            # by `starting`) doesn't choke when bankroll is briefly
-            # zero (e.g. mid-deposit).
+            # Floor at $1 so the downstream gauge math (which
+            # divides by `starting`) doesn't choke when bankroll is
+            # briefly zero (e.g. mid-deposit).
             starting = max(1.0, live_starting)
 
         roi = (realized / starting) if starting > 0 else None
-
-        # Unrealized P&L.
-        #
-        # `open_cost_mtm - open_cost_basis` where:
-        #   open_cost_mtm   = Polymarket's currentValue sum on open
-        #                     positions (live MTM)
-        #   open_cost_basis = DB cost_usd sum on open positions
-        #                     (fee-INCLUSIVE after the
-        #                     _backfill_settled_cost_basis sweep in
-        #                     pm_reconciler aligns it to the actual
-        #                     usdcSize from /activity)
-        #
-        # Earlier this preferred Polymarket's data-api `cashPnl`
-        # field which is `currentValue - initialValue`, but
-        # initialValue is FEE-EXCLUSIVE (= size * avgPrice), so that
-        # `cashPnl` reads too high by the per-trade fee. That gap
-        # compounded with the realized-side fee gap to drift the
-        # dashboard ~$0.50+ from Polymarket UI's P&L tile by the
-        # time the user noticed (2026-05-23).
-        #
-        # MTM (currentValue) - fee-inclusive cost gives the true
-        # unrealized P&L, the same way Polymarket UI computes it.
-        open_cost_mtm    = float(stats.get("open_cost") or 0.0)
-        open_cost_basis  = float(stats.get("bot_open_cost") or 0.0)
-        unrealized_pnl   = open_cost_mtm - open_cost_basis
         # Total P&L source-of-truth:
         #
         # `realized + unrealized_pnl`, in BOTH modes.
@@ -1745,7 +1745,7 @@ class LocalAPI:
             "settled_wins":   stats.get("settled_wins"),
             "skipped_total":  stats.get("skipped_total"),
             "win_rate":       stats.get("win_rate"),
-            "realized_pnl":   stats.get("realized_pnl"),
+            "realized_pnl":   realized,
             "unrealized_pnl": unrealized_pnl,
             "total_pnl":      total_pnl,
             "roi":            roi,

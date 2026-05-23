@@ -1043,6 +1043,8 @@ class PMExecutor:
         #     Polymarket page to the cent.
         data_api_unrealized: Optional[float] = None
         data_api_total_pnl: Optional[float] = None
+        polymarket_closed_realized: Optional[float] = None
+        polymarket_redeemable_cashPnl: Optional[float] = None
         if self.mode == "live":
             try:
                 from engine.user_config import get_user_polymarket_creds
@@ -1050,6 +1052,8 @@ class PMExecutor:
                     get_total_open_positions_value,
                     cached_total_open_positions_cash_pnl,
                     cached_user_total_pnl,
+                    cached_closed_realized_pnl,
+                    cached_redeemable_cashPnl,
                     get_poly_signer_info,
                 )
                 creds = get_user_polymarket_creds(self.user_id)
@@ -1061,11 +1065,11 @@ class PMExecutor:
                         # currentValue is the cheap sub-second probe;
                         # leaving it on the request path because it
                         # rarely hangs and has its own non-blocking
-                        # lock + stale-cache fallback. The two
-                        # SLOW endpoints (cashPnl, user-pnl) are
-                        # cache-only here so they can never hold an
-                        # api_executor worker; the pm_pnl_refresh
-                        # scheduler job keeps both caches warm.
+                        # lock + stale-cache fallback. The slow
+                        # endpoints (cashPnl, user-pnl, closed-pnl)
+                        # are cache-only here so they can never hold
+                        # an api_executor worker; the pm_pnl_refresh
+                        # scheduler job keeps the caches warm.
                         total_open_value = get_total_open_positions_value(funder)
                         if total_open_value is not None:
                             locked_capital = float(total_open_value)
@@ -1075,6 +1079,17 @@ class PMExecutor:
                         user_pnl = cached_user_total_pnl(funder)
                         if user_pnl is not None:
                             data_api_total_pnl = float(user_pnl)
+                        # Polymarket UI's "All-Time P&L" = sum of
+                        # realizedPnl from /closed-positions PLUS
+                        # cashPnl from /positions (redeemable +
+                        # open). Surface both pieces so /api/summary
+                        # can compose them.
+                        closed_r = cached_closed_realized_pnl(funder)
+                        if closed_r is not None:
+                            polymarket_closed_realized = float(closed_r)
+                        redeem_pnl = cached_redeemable_cashPnl(funder)
+                        if redeem_pnl is not None:
+                            polymarket_redeemable_cashPnl = float(redeem_pnl)
             except Exception as exc:
                 print(
                     f"[pm_executor] locked_capital probe failed for "
@@ -1104,14 +1119,24 @@ class PMExecutor:
             "win_rate":        (wins / settled_n) if settled_n else None,
             "realized_pnl":    realized,
             # data_api_unrealized = sum of cashPnl from data-api
-            # /positions. Per-position live MTM gain.
+            # /positions, currently-open rows only (non-redeemable).
+            # Per-position live MTM gain on what the user still
+            # owns.
             "data_api_unrealized": data_api_unrealized,
             # data_api_total_pnl = Polymarket's "All-Time P&L" from
-            # user-pnl-api/user-pnl. /api/summary prefers this for
-            # `total_pnl` so the headline matches their portfolio UI
-            # to the cent. None in simulation, or in live mode when
-            # the endpoint is unreachable.
+            # user-pnl-api/user-pnl. Legacy reading kept for any
+            # surface that hasn't been migrated; /api/summary now
+            # prefers polymarket_closed_realized +
+            # polymarket_redeemable_cashPnl + data_api_unrealized
+            # which matches the polymarket.com portfolio tile.
             "data_api_total_pnl": data_api_total_pnl,
+            # Polymarket UI components. Sum of these three equals
+            # the "All-Time P&L" number Polymarket displays:
+            #   polymarket_closed_realized      (closed winners)
+            #   polymarket_redeemable_cashPnl   (settled losers)
+            #   data_api_unrealized             (open positions MTM)
+            "polymarket_closed_realized":   polymarket_closed_realized,
+            "polymarket_redeemable_cashPnl": polymarket_redeemable_cashPnl,
             "ready":           True,
         }
 

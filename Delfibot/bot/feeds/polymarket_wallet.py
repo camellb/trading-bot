@@ -243,17 +243,30 @@ _CLOB_BALANCE_TTL_SECONDS = 60.0
 # TTL is enough that the Dashboard's 5s poll doesn't hammer the
 # data-api endpoint.
 # Cached aggregates from data-api /positions. Tuple:
-#   (currentValue_sum, cashPnl_sum, fetched_at)
-# currentValue_sum drives "Locked capital" / equity (every position
-# the wallet holds, including manual trades).
-# cashPnl_sum drives unrealized P&L so the Dashboard's number
-# matches Polymarket's portfolio P&L to the cent (their accounting
-# uses mid-price + relayer fees, both bundled into cashPnl). Without
-# this the bot's local "currentValue - cost_usd" computation
-# overstates unrealized by the relayer-fee delta and the bid/ask
-# spread.
-_POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float, float]] = {}
+#   (currentValue_sum,         # locked-capital / open-position MTM
+#    open_cashPnl_sum,         # cashPnl on NON-redeemable rows
+#    redeemable_cashPnl_sum,   # cashPnl on redeemable rows (= -cost)
+#    fetched_at)
+#
+# The split between open and redeemable matters because Polymarket
+# UI counts redeemable rows in REALIZED P&L (they're closed deals
+# on Polymarket's books, just awaiting redeem ceremony), while
+# `cashPnl on currently-open` is the unrealized bucket. Without
+# the split, summing both into one bucket double-counted the
+# settled losses (see commit 02714ac).
+_POSITIONS_VALUE_CACHE: Dict[str, Tuple[float, float, float, float]] = {}
 _POSITIONS_VALUE_TTL_SECONDS = 60.0
+
+# Cache for sum of `realizedPnl` from data-api /closed-positions.
+# This is Polymarket's own bookkeeping of realized P&L on WINNING
+# positions that have been REDEEMED (the redeem ceremony fired,
+# proceeds in the wallet). Combined with redeemable_cashPnl_sum
+# (settled losers), it gives the Polymarket-UI-matching "realized"
+# half of total P&L.
+#
+# Tuple: (closed_realizedPnl_sum, fetched_at)
+_CLOSED_REALIZED_CACHE: Dict[str, Tuple[float, float]] = {}
+_CLOSED_REALIZED_TTL_SECONDS = 60.0
 # Single-flight lock for get_total_open_positions_value (defined later
 # next to its sibling _POLY_SIGNER_LOCK after the threading import).
 _POSITIONS_VALUE_LOCK = None  # type: ignore[assignment]
@@ -989,7 +1002,8 @@ def _refresh_positions_cache(funder_address: str) -> bool:
     if not isinstance(data, list):
         return False
     total_value = 0.0
-    total_pnl = 0.0
+    open_cashPnl = 0.0
+    redeemable_cashPnl = 0.0
     for row in data:
         try:
             v = float(row.get("currentValue") or 0.0)
@@ -997,22 +1011,23 @@ def _refresh_positions_cache(funder_address: str) -> bool:
                 total_value += v
         except (TypeError, ValueError):
             pass
-        # cashPnl belongs in "unrealized" only for currently-held,
-        # not-yet-settled positions. Redeemable rows are settled
-        # losers that the DB already realized; including them
-        # double-counts the loss. See the long-form rationale in
-        # this function's docstring.
-        if row.get("redeemable"):
-            continue
         try:
-            # cashPnl can be negative (losing positions); include
-            # in the sum without a sign filter.
             p = float(row.get("cashPnl") or 0.0)
-            total_pnl += p
         except (TypeError, ValueError):
-            pass
+            continue
+        if row.get("redeemable"):
+            # Settled loser whose tokens still sit in the wallet.
+            # Polymarket UI's "All-Time P&L" tile counts this in
+            # REALIZED, not unrealized. Keep them separate so
+            # /api/summary can wire them to the right bucket.
+            redeemable_cashPnl += p
+        else:
+            # Currently-open position; live MTM movement = the
+            # unrealized bucket.
+            open_cashPnl += p
     _POSITIONS_VALUE_CACHE[funder_address.lower()] = (
-        float(total_value), float(total_pnl), time.monotonic(),
+        float(total_value), float(open_cashPnl),
+        float(redeemable_cashPnl), time.monotonic(),
     )
     return True
 
@@ -1039,7 +1054,7 @@ def get_total_open_positions_value(
     key = funder_address.lower()
     now = time.monotonic()
     cached = _POSITIONS_VALUE_CACHE.get(key)
-    if cached is not None and now - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
+    if cached is not None and now - cached[3] < _POSITIONS_VALUE_TTL_SECONDS:
         return cached[0]
     # Single-flight: /api/summary fires 7 endpoints in parallel. On
     # cold positions cache, without this lock each request would
@@ -1055,7 +1070,7 @@ def get_total_open_positions_value(
         # Re-check the cache: another thread may have populated it
         # while we were waiting on the GIL between get and acquire.
         cached = _POSITIONS_VALUE_CACHE.get(key)
-        if cached is not None and time.monotonic() - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
+        if cached is not None and time.monotonic() - cached[3] < _POSITIONS_VALUE_TTL_SECONDS:
             return cached[0]
         if _refresh_positions_cache(funder_address):
             return _POSITIONS_VALUE_CACHE[key][0]
@@ -1134,11 +1149,91 @@ def cached_total_open_positions_cash_pnl(
     return cached[1]
 
 
+def cached_redeemable_cashPnl(
+    funder_address: Optional[str],
+) -> Optional[float]:
+    """Cache-only read: sum of cashPnl across REDEEMABLE positions
+    (= settled losers still in the wallet). Their `cashPnl` is
+    `-initialValue` (the full loss). Polymarket UI counts this in
+    realized P&L; we expose it separately so /api/summary can route
+    it to the right bucket.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    cached = _POSITIONS_VALUE_CACHE.get(key)
+    if cached is None:
+        return None
+    return cached[2]
+
+
+def cached_closed_realized_pnl(
+    funder_address: Optional[str],
+) -> Optional[float]:
+    """Cache-only read: sum of `realizedPnl` from Polymarket's
+    /closed-positions endpoint. This is THE field Polymarket uses
+    on their portfolio UI for the realized half of "All-Time P&L".
+
+    Returns None when the cache is cold. The pm_pnl_refresh job
+    populates it every 60s.
+    """
+    if not funder_address:
+        return None
+    key = funder_address.lower()
+    cached = _CLOSED_REALIZED_CACHE.get(key)
+    if cached is None:
+        return None
+    return cached[0]
+
+
+def _refresh_closed_realized_cache(funder_address: str) -> bool:
+    """Fetch /closed-positions and aggregate `realizedPnl` into the
+    cache. Single source of truth for "winners realized" the
+    Polymarket UI uses.
+
+    /closed-positions returns one row per condition-id+side pair
+    that has been fully closed (redeem ceremony fired). Each row
+    has `realizedPnl` = the dollar P&L Polymarket attributes to
+    that closed deal.
+    """
+    import requests as _r
+    resp = _r.get(
+        "https://data-api.polymarket.com/closed-positions",
+        params={"user": funder_address, "limit": "500"},
+        timeout=8,
+    )
+    if resp.status_code != 200:
+        print(
+            f"[polymarket_wallet] data-api closed-positions returned "
+            f"{resp.status_code} for {funder_address}",
+            file=sys.stderr,
+        )
+        return False
+    data = resp.json()
+    if not isinstance(data, list):
+        return False
+    total = 0.0
+    for row in data:
+        try:
+            total += float(row.get("realizedPnl") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    _CLOSED_REALIZED_CACHE[funder_address.lower()] = (
+        float(total), time.monotonic(),
+    )
+    return True
+
+
 def refresh_pnl_caches(funder_address: Optional[str]) -> None:
     """Background-only entry point. Called from the pm_pnl_refresh
-    scheduler job (every 60s) to keep both PnL caches warm. The
-    network IO happens here, OFF the request path, so a slow
-    Polymarket endpoint can never wedge a /api/* read.
+    scheduler job (every 60s) to keep PnL caches warm. The network
+    IO happens here, OFF the request path, so a slow Polymarket
+    endpoint can never wedge a /api/* read.
+
+    Refreshes THREE caches:
+      1. user-pnl-api time series (legacy; some surfaces still use)
+      2. /positions: currentValue + open cashPnl + redeemable cashPnl
+      3. /closed-positions: realized P&L on closed winners
 
     Catches and logs any exception so a transient endpoint outage
     doesn't poison the scheduler job (which would stop ALL future
@@ -1155,9 +1250,6 @@ def refresh_pnl_caches(funder_address: Optional[str]) -> None:
             file=sys.stderr,
         )
     try:
-        # _refresh_positions_cache populates BOTH currentValue and
-        # cashPnl in one fetch, so this also keeps the locked-capital
-        # cache warm without an extra round-trip.
         acquired = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
         if acquired:
             try:
@@ -1168,6 +1260,14 @@ def refresh_pnl_caches(funder_address: Optional[str]) -> None:
         print(
             f"[polymarket_wallet] background positions refresh failed "
             f"for {funder_address}: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+    try:
+        _refresh_closed_realized_cache(funder_address)
+    except Exception as exc:
+        print(
+            f"[polymarket_wallet] background closed-positions refresh "
+            f"failed for {funder_address}: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
 
@@ -1282,14 +1382,14 @@ def get_total_open_positions_cash_pnl(
     key = funder_address.lower()
     now = time.monotonic()
     cached = _POSITIONS_VALUE_CACHE.get(key)
-    if cached is not None and now - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
+    if cached is not None and now - cached[3] < _POSITIONS_VALUE_TTL_SECONDS:
         return cached[1]
     acquired = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
     if not acquired:
         return cached[1] if cached is not None else None
     try:
         cached = _POSITIONS_VALUE_CACHE.get(key)
-        if cached is not None and time.monotonic() - cached[2] < _POSITIONS_VALUE_TTL_SECONDS:
+        if cached is not None and time.monotonic() - cached[3] < _POSITIONS_VALUE_TTL_SECONDS:
             return cached[1]
         if _refresh_positions_cache(funder_address):
             return _POSITIONS_VALUE_CACHE[key][1]
