@@ -1278,6 +1278,44 @@ def get_total_open_positions_cash_pnl(
         _POSITIONS_VALUE_LOCK.release()
 
 
+def force_refresh_all_polymarket_caches(private_key: Optional[str]) -> None:
+    """One-shot cache invalidation for every Polymarket-side number
+    a user-visible message might read: wallet balance, data-api
+    positions sum (locked_capital), data-api cashPnl (unrealized
+    P&L), and user-pnl all-time P&L.
+
+    Use BEFORE constructing any Telegram message or computing values
+    for a downstream notification. Without this, two messages that
+    fire within the wallet cache's 5-minute TTL show different
+    numbers depending on which cache happened to be fresh when each
+    message was built — observed 2026-05-23 with a WIN at T0, OPEN
+    at T1, LOSS at T2 all showing wildly inconsistent Balance /
+    Locked capital / Total equity values that should have formed a
+    coherent sequence.
+
+    All four refreshes are best-effort; failures are swallowed.
+    Slowest is the wallet probe (~2-5s on a cold network); the
+    others are sub-second after the signer info is warm.
+    """
+    if not private_key:
+        return
+    try:
+        refresh_live_balance_cache(private_key)
+    except Exception as exc:
+        print(f"[polymarket_wallet] force-refresh wallet failed: {exc}",
+              file=sys.stderr)
+    try:
+        info = get_poly_signer_info(private_key)
+        funder = (info or {}).get("funder") if info else None
+        if funder:
+            # refresh_pnl_caches fetches /positions (currentValue +
+            # cashPnl) AND user-pnl in one go.
+            refresh_pnl_caches(funder)
+    except Exception as exc:
+        print(f"[polymarket_wallet] force-refresh pnl caches "
+              f"failed: {exc}", file=sys.stderr)
+
+
 def refresh_live_balance_cache(private_key: Optional[str]) -> bool:
     """Force-refresh the cached wallet probe for this key.
 

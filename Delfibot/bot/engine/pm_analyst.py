@@ -1001,43 +1001,52 @@ class PMAnalyst:
                 f"pos {position_id}: {_exc}",
                 file=sys.stderr,
             )
-        # Force a wallet-probe refresh so the bankroll we report
-        # reflects the post-trade state (the order just spent N
-        # dollars of pUSD). Without this, the cached probe is up to
-        # 60s stale and the notification shows pre-trade bankroll —
-        # the user-reported "$8.47 + $3.23 = $11.70 equity" bug.
+        # Force-refresh EVERY Polymarket-side cache (wallet probe,
+        # data-api positions sum, user-pnl) so the values we write
+        # into the new_position Telegram message reflect post-trade
+        # truth. Without this, multiple settlements/opens within the
+        # wallet cache's 5-min TTL produced inconsistent sequences:
+        # WIN at T0 showed projected balance, OPEN at T1 read stale
+        # cache (showing pre-redeem cash), LOSS at T2 finally saw
+        # fresh cache — three "Balance" numbers that couldn't be
+        # reconciled to a single wallet timeline.
         try:
             from engine.user_config import get_user_polymarket_creds
-            from feeds.polymarket_wallet import refresh_live_balance_cache
+            from feeds.polymarket_wallet import (
+                force_refresh_all_polymarket_caches,
+            )
             _creds = get_user_polymarket_creds(user_id)
             _pk = (_creds or {}).get("private_key") if _creds else None
             if _pk:
-                refresh_live_balance_cache(_pk)
+                force_refresh_all_polymarket_caches(_pk)
         except Exception as _exc:
-            print(f"[pm_analyst] post-open wallet refresh failed: {_exc}",
+            print(f"[pm_analyst] post-open cache refresh failed: {_exc}",
                   file=sys.stderr)
 
         bankroll_after = 0.0
         equity_after: float = 0.0
         locked_capital_after: float = float(decision.stake_usd)
         try:
-            bankroll_after = float(executor.get_bankroll())
-            # Total equity = leftover cash + cost of every open
-            # position. The DB has the just-opened row by this point
-            # so summing cost_usd over status='open' gives the right
-            # number even when the user has other open positions.
-            from sqlalchemy import text as _text
-            from db.engine import get_engine as _eng
-            with _eng().begin() as _conn:
-                _open_cost = _conn.execute(_text(
-                    "SELECT COALESCE(SUM(cost_usd), 0) "
-                    "FROM pm_positions "
-                    "WHERE user_id = :uid AND mode = :m "
-                    "  AND status = 'open'"
-                ), {"uid": user_id,
-                    "m": executor.trading_mode}).scalar() or 0.0
-            locked_capital_after = float(_open_cost)
-            equity_after = bankroll_after + locked_capital_after
+            # Single source of truth for the message numbers: pull
+            # bankroll + locked_capital + equity from the SAME stats
+            # snapshot that settled_win/loss uses (polymarket_runner).
+            # In live mode locked_capital comes from Polymarket's
+            # data-api currentValue sum, exactly matching what the
+            # user sees on polymarket.com. Previously this path
+            # computed locked_capital from SUM(cost_usd) on
+            # pm_positions, which is the BOT'S cost basis — diverged
+            # from Polymarket's MTM-based "Locked Capital" tile and
+            # caused the new_position message to disagree with the
+            # adjacent settled_win/loss messages.
+            stats = executor.get_portfolio_stats()
+            bankroll_after = float(stats.get("bankroll", 0.0))
+            locked_capital_after = float(
+                stats.get("locked_capital",
+                          stats.get("open_cost", 0.0)) or 0.0
+            )
+            equity_after = float(
+                stats.get("equity", bankroll_after + locked_capital_after)
+            )
         except Exception:
             equity_after = bankroll_after + float(decision.stake_usd)
         market_pct = decision.p_win * 100.0

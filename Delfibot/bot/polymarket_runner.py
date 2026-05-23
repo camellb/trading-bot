@@ -251,6 +251,33 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                     # so the message reflects the ledger that actually
                     # changed. Cached per (user, mode) so repeated
                     # settlements in the same scan are cheap.
+                    # Force-refresh every Polymarket-side cache so the
+                    # WIN/LOSS message reads post-redeem truth. Without
+                    # this, when several positions settle within ~5
+                    # minutes (each WIN triggers a relayer redeem that
+                    # changes the wallet balance), later messages read
+                    # the wallet cache populated BEFORE the earlier
+                    # redeem cleared, producing impossible Balance /
+                    # Locked / Equity sequences across the messages.
+                    # See: 2026-05-23 user report — WIN at T0, OPEN at
+                    # T1, LOSS at T2 all showed different Balance
+                    # numbers that couldn't be reconciled to a single
+                    # wallet timeline.
+                    try:
+                        from engine.user_config import get_user_polymarket_creds
+                        from feeds.polymarket_wallet import (
+                            force_refresh_all_polymarket_caches,
+                        )
+                        _settle_creds = get_user_polymarket_creds(user_id)
+                        _settle_pk = (
+                            (_settle_creds or {}).get("private_key")
+                            if _settle_creds else None
+                        )
+                        if _settle_pk:
+                            force_refresh_all_polymarket_caches(_settle_pk)
+                    except Exception as _exc:
+                        print(f"[pm_runner] settle cache refresh failed: "
+                              f"{_exc}", file=sys.stderr)
                     position_mode = p.get("mode") or "simulation"
                     if position_mode == executor.mode:
                         stats_executor = executor
