@@ -53,6 +53,10 @@ There is no remote infrastructure. To ship a new version:
 2. `npm run tauri build -- --bundles app` — Tauri builds the macOS `.app`.
 3. `bash Delfibot/install.sh` — rsyncs into `/Applications/Delfi.app`, reloads the LaunchAgent. The daemon restarts under launchd's KeepAlive; the GUI relaunches.
 
+**Step 1 is mandatory whenever ANY file under `Delfibot/bot/**/*.py` changed.** `npm run tauri build` only rebuilds the Rust shell + React frontend; it does NOT re-run PyInstaller. The PyInstaller-bundled `delfi-sidecar` is what launchd actually executes, so skipping step 1 leaves the daemon running pre-fix Python even after the install completes. This has burned us at least once (2026-05-23: a "removed" `position_untracked` alert kept firing for 3 hours after the commit because only steps 2 + 3 ran). When in doubt, run step 1 anyway, it costs ~60 seconds. See `Obsidian/Delfi/50_Feedback/log_every_major_bug.md` (entry: "banned message keeps showing up... hours after the fix commit") for the post-mortem.
+
+**When killing a user-visible alert, also delete persisted instances.** The dashboard reads from `event_log` (and other tables); removing the writer in code leaves the old rows visible until they age out. Standard cleanup after such a commit: `sqlite3 ~/Library/Application\ Support/com.delfi.desktop/delfi.db "DELETE FROM event_log WHERE event_type = '<the_event_type>' AND timestamp < datetime('now');"` (or filtered by description LIKE if the event_type is too broad). Same incident as above.
+
 CI cross-compiles for macOS + Windows on every push to `main` via `.github/workflows/build.yml`. Tagged pushes (`v*`) auto-publish to GitHub Releases. No code signing yet.
 
 ## Single-user invariants
