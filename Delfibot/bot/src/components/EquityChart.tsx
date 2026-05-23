@@ -26,7 +26,12 @@ const INNER_H = H - PAD_T - PAD_B;
 const Y_TICKS = 4;  // 4 intervals -> 5 gridlines including baseline
 const X_TICKS = 4;  // 4 intervals -> 5 date labels
 
+// Tooltip uses cent precision so a settlement of $13.57 reads as
+// $13.57 instead of being rounded to $14. Axis tick labels stay at
+// round-dollar precision so the y-axis stays readable.
 const fmtUsd = (n: number) =>
+  `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtUsdAxis = (n: number) =>
   `$${n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
 
 // Tz-aware formatters live in src/lib/format.ts. The local consts
@@ -133,7 +138,7 @@ export function EquityChart({
               textAnchor="end"
               fontFamily="var(--font-mono)"
             >
-              {fmtUsd(v)}
+              {fmtUsdAxis(v)}
             </text>
           </g>
         ))}

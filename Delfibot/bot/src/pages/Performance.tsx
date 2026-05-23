@@ -136,7 +136,16 @@ export default function Performance() {
   const equitySeries = useMemo(() => {
     const start = summary?.starting_cash ?? 0;
     let cum = start;
-    return [{ ts: "", v: start }, ...filtered.map((r) => {
+    // Starting-anchor timestamp: derive from the first settlement so
+    // the leftmost point's hover tooltip shows a real date/time
+    // instead of "-". Backdate by 60s so the anchor visibly precedes
+    // the first settlement on the X axis. See matching block in
+    // Dashboard.tsx.
+    const firstSettlement = filtered[0]?.settled_at as string | null | undefined;
+    const anchorTs = firstSettlement
+      ? new Date(new Date(firstSettlement).getTime() - 60_000).toISOString()
+      : "";
+    return [{ ts: anchorTs, v: start }, ...filtered.map((r) => {
       cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
       return { ts: r.settled_at ?? "", v: cum };
     })];
