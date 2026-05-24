@@ -266,14 +266,16 @@ export default function Positions() {
     [positions],
   );
   const settled = useMemo(
-    // `closed` is a stale status string no code path emits today;
-    // pm_executor.py only writes open / settled / invalid / closed_early.
-    // Show natural settlements AND early-policy exits side-by-side under
-    // the Closed pane; the status badge in the table disambiguates.
+    // Closed positions: real trades that resolved with a YES/NO
+    // outcome (status='settled') or were exited by the policy
+    // (status='closed_early'). pm_executor also writes 'invalid'
+    // rows for auto-refunded markets, but those aren't trades the
+    // user took: Polymarket excludes them from portfolio stats too.
+    // Excluding them here keeps the Closed (N) chip, panel meta,
+    // and row count all consistent with summary.settled_total
+    // (which excludes 'invalid' as of 2026-05-24).
     () => positions.filter(
-      (p) => p.status === "settled"
-          || p.status === "invalid"
-          || p.status === "closed_early"
+      (p) => p.status === "settled" || p.status === "closed_early"
     ),
     [positions],
   );
@@ -335,7 +337,17 @@ export default function Positions() {
     [skipped, skippedSort.field, skippedSort.dir],
   );
 
-  const deployed = open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
+  // `deployed` = live MTM of currently-open positions, identical to
+  // the "Locked capital" tile on Dashboard. Same source: Polymarket
+  // data-api currentValue sum (= summary.open_cost in live mode) or
+  // equity - bankroll as the algebraic identity. Previously this
+  // summed `p.cost_usd` from the DB, which is the COST BASIS, not
+  // the current value - so a position currently worth $40 with a
+  // $35 cost basis would show "deployed $35" on Positions but
+  // "deployed $40" on Dashboard. Aligned 2026-05-24.
+  const deployed = (summary && summary.equity != null && summary.bankroll != null)
+    ? Math.max(0, summary.equity - summary.bankroll)
+    : open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
 
   const togglePos = (id: number) =>
     setExpandedPos((prev) => {

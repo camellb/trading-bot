@@ -134,13 +134,24 @@ export default function Performance() {
   }, [filtered, summary]);
 
   const equitySeries = useMemo(() => {
-    const start = summary?.starting_cash ?? 0;
+    // Anchored so chart ENDPOINT == summary.equity (matches the
+    // "Total equity" headline tile on this page and Dashboard). See
+    // matching block in Dashboard.tsx for the derivation.
+    if (filtered.length === 0) return [] as { ts: string; v: number }[];
+    const totalRealized = filtered.reduce(
+      (s, r) => s + ((r.realized_pnl_usd as number | null | undefined) ?? 0),
+      0,
+    );
+    const currentEquity = summary?.equity ?? summary?.starting_cash ?? 0;
+    // On time-windowed ranges (30d/7d) we only have the slice of
+    // realized within the window; anchoring to current equity would
+    // mis-represent the chart for "30 days" view. Fall back to the
+    // legacy starting_cash + cum behaviour outside the all-time
+    // range so the windowed charts still make sense.
+    const start = range === "all"
+      ? currentEquity - totalRealized
+      : summary?.starting_cash ?? 0;
     let cum = start;
-    // Starting-anchor timestamp: derive from the first settlement so
-    // the leftmost point's hover tooltip shows a real date/time
-    // instead of "-". Backdate by 60s so the anchor visibly precedes
-    // the first settlement on the X axis. See matching block in
-    // Dashboard.tsx.
     const firstSettlement = filtered[0]?.settled_at as string | null | undefined;
     const anchorTs = firstSettlement
       ? new Date(new Date(firstSettlement).getTime() - 60_000).toISOString()
@@ -149,7 +160,7 @@ export default function Performance() {
       cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
       return { ts: r.settled_at ?? "", v: cum };
     })];
-  }, [summary, filtered]);
+  }, [summary, filtered, range]);
 
   return (
     <div className="page-wrap">
@@ -179,17 +190,16 @@ export default function Performance() {
 
       <div className="stat-row">
         <div className="stat-cell">
-          {/* "Starting capital" = how much the user has put into
-              Polymarket net. Derived from current_equity - total_pnl
-              so it tracks the Polymarket-implied deposits exactly.
-              Previously this tile was labeled "Capital" and showed
-              `summary.bankroll` (current cash), which was redundant
-              with Overview's CASH tile and didn't give the user any
-              new info for a Performance page. */}
-          <div className="stat-cell-label">Starting capital</div>
+          {/* Mirrors the Overview dashboard's "Total equity" tile so
+              both pages show the same headline number for the same
+              metric. Source: summary.equity from /api/summary
+              (Polymarket-truth: wallet cash + currentValue of all
+              open positions, refreshed every 60s by the
+              pm_balance_refresh scheduler). */}
+          <div className="stat-cell-label">Total equity</div>
           <div className="stat-cell-val t-num">
-            {summary && summary.equity != null && summary.total_pnl != null
-              ? fmtMoney(summary.equity - summary.total_pnl)
+            {summary && summary.equity != null
+              ? fmtMoney(summary.equity)
               : "-"}
           </div>
         </div>

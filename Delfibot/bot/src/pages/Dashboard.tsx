@@ -154,21 +154,30 @@ export default function Dashboard({ state, goto }: Props) {
     [positions],
   );
 
-  // Equity time-series for the dashboard chart. Same shape Performance
-  // uses: start at starting_cash, then a step at each settlement equal
-  // to the cumulative realized P&L. Sort ascending by settled_at so
-  // the chart reads left-to-right oldest-to-newest.
+  // Equity time-series for the dashboard chart. Anchored so the
+  // chart ENDPOINT == summary.equity (the headline "Total equity"
+  // tile). The chart traces a realized journey: starts at
+  // (current_equity - total_realized), steps up/down by each
+  // realized_pnl_usd, lands exactly at current_equity. Without this
+  // anchor the chart endpoint was (starting_cash + DB_realized),
+  // which drifted from the headline tile by the unrealized open-
+  // position P&L (~$4 on this user) - a visible inconsistency.
+  // Same logic mirrored in Performance.tsx.
   const equitySeries = useMemo(() => {
-    const start = summary?.starting_cash ?? 0;
     if (settled.length === 0) return [] as { ts: string; v: number }[];
     const sorted = [...settled].sort((a, b) =>
       ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1),
     );
+    const totalRealized = sorted.reduce(
+      (s, r) => s + ((r.realized_pnl_usd as number | null | undefined) ?? 0),
+      0,
+    );
+    const currentEquity = summary?.equity ?? summary?.starting_cash ?? 0;
+    const start = currentEquity - totalRealized;
     // Starting-anchor timestamp: derive from the first settlement so
     // the leftmost point on the chart has a real date/time in the
-    // hover tooltip (was "-" before, because an empty string fell
-    // through fmtDateTime's empty-input branch). Backdate by 60s so
-    // the anchor visibly precedes the first settlement on the X axis.
+    // hover tooltip. Backdate by 60s so the anchor visibly precedes
+    // the first settlement on the X axis.
     const firstSettlement = sorted[0].settled_at as string | null | undefined;
     const anchorTs = firstSettlement
       ? new Date(new Date(firstSettlement).getTime() - 60_000).toISOString()
