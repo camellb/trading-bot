@@ -860,10 +860,19 @@ class PMExecutor:
                 # bankroll, equity, and win-rate purposes; the
                 # distinguishing field is `close_reason`, used by the
                 # review report to score exit quality separately.
+                # `settled_n` counts only real trades that resolved
+                # with a YES/NO outcome (status='settled' or
+                # 'closed_early'). `invalid` markets are
+                # auto-refunded by Polymarket and aren't trades the
+                # user "took" - including them in the denominator
+                # drags win-rate down for no reason (15W/22T=68%
+                # vs 15W/21T=71% for the same trades). The
+                # Performance page already excludes invalids; this
+                # aligns Overview to match.
                 row = conn.execute(text(
                     "SELECT "
                     "  COUNT(*) FILTER (WHERE status = 'open') AS open_n, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')) AS settled_n, "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early')) AS settled_n, "
                     # open_cost_mtm = mark-to-market value of open
                     # positions when the refresher has populated
                     # current_value_usd, otherwise cost basis. Drives
@@ -889,8 +898,8 @@ class PMExecutor:
                     "    SUM(cost_usd) FILTER (WHERE status = 'open'),"
                     "    0"
                     "  ) AS open_cost_basis, "
-                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early')), 0) AS realized, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid', 'closed_early') AND realized_pnl_usd > 0) AS wins "
+                    "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'closed_early')), 0) AS realized, "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early') AND realized_pnl_usd > 0) AS wins "
                     "FROM pm_positions WHERE user_id = :uid AND mode = :m"
                 ), {"uid": self.user_id, "m": self.mode}).fetchone()
                 open_n         = int(row[0] or 0)

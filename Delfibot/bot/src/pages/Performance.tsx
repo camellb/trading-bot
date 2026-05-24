@@ -179,19 +179,48 @@ export default function Performance() {
 
       <div className="stat-row">
         <div className="stat-cell">
-          <div className="stat-cell-label">Capital</div>
+          {/* "Starting capital" = how much the user has put into
+              Polymarket net. Derived from current_equity - total_pnl
+              so it tracks the Polymarket-implied deposits exactly.
+              Previously this tile was labeled "Capital" and showed
+              `summary.bankroll` (current cash), which was redundant
+              with Overview's CASH tile and didn't give the user any
+              new info for a Performance page. */}
+          <div className="stat-cell-label">Starting capital</div>
           <div className="stat-cell-val t-num">
-            {summary ? fmtMoney(summary.bankroll ?? summary.starting_cash ?? 0) : "-"}
+            {summary && summary.equity != null && summary.total_pnl != null
+              ? fmtMoney(summary.equity - summary.total_pnl)
+              : "-"}
           </div>
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">Realized P&amp;L</div>
-          <div className={`stat-cell-val t-num ${filteredStats.totalPnl > 0 ? "profit" : filteredStats.totalPnl < 0 ? "ember" : ""}`}>
-            {loaded ? fmtMoney(filteredStats.totalPnl) : "-"}
-          </div>
-          <div className={`stat-cell-delta ${filteredStats.roi < 0 ? "down" : ""}`}>
-            {loaded && filteredStats.totalCost > 0 ? `${fmtPct(filteredStats.roi)} ROI` : ""}
-          </div>
+          {/* On ALL TIME, use the Polymarket-derived realized
+              (= /closed-positions realizedPnl + redeemable cashPnl)
+              so Performance matches the Overview headline to the
+              cent. For 30/7-day ranges, fall back to the
+              DB-filtered sum since Polymarket doesn't expose a
+              time-windowed realized. */}
+          {(() => {
+            const useApi = range === "all"
+              && summary
+              && summary.realized_pnl != null;
+            const value = useApi
+              ? (summary!.realized_pnl as number)
+              : filteredStats.totalPnl;
+            const denom = summary?.starting_cash ?? 0;
+            const roi = denom > 0 ? (value / denom) * 100 : 0;
+            return (
+              <>
+                <div className={`stat-cell-val t-num ${value > 0 ? "profit" : value < 0 ? "ember" : ""}`}>
+                  {loaded ? fmtMoney(value) : "-"}
+                </div>
+                <div className={`stat-cell-delta ${roi < 0 ? "down" : ""}`}>
+                  {loaded && denom > 0 ? `${fmtPct(roi)} ROI` : ""}
+                </div>
+              </>
+            );
+          })()}
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">Win rate</div>
