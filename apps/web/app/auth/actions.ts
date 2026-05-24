@@ -1,0 +1,101 @@
+"use server";
+
+import { redirect } from "next/navigation";
+import { headers } from "next/headers";
+
+import { createClient } from "@/lib/supabase/server";
+
+export type AuthState = { error?: string; ok?: boolean };
+
+async function computeOrigin(): Promise<string> {
+  const h = await headers();
+  const origin = h.get("origin");
+  if (origin && origin.startsWith("http")) return origin;
+  const forwardedHost = h.get("x-forwarded-host");
+  const host = forwardedHost ?? h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  if (host) return `${proto}://${host}`;
+  const envUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "";
+  if (envUrl) return envUrl.replace(/\/$/, "");
+  return "https://trading-bot-web-six.vercel.app";
+}
+
+export async function signIn(_: AuthState, formData: FormData): Promise<AuthState> {
+  const email = String(formData.get("email") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
+  const redirectTo = String(formData.get("redirect") ?? "/dashboard");
+
+  if (!email || !password) return { error: "Email and password are required." };
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) return { error: error.message };
+
+  redirect(redirectTo);
+}
+
+export async function signUp(_: AuthState, formData: FormData): Promise<AuthState> {
+  const email = String(formData.get("email") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
+  const referral = String(formData.get("referral") ?? "").trim() || null;
+
+  if (!email || !password) return { error: "Email and password are required." };
+  if (password.length < 8) return { error: "Password must be at least 8 characters." };
+
+  const origin = await computeOrigin();
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo: `${origin}/auth/callback`,
+      data: { referral_code: referral },
+    },
+  });
+  if (error) return { error: error.message };
+
+  if (data.session) redirect("/subscribe");
+  return { ok: true };
+}
+
+export async function requestPasswordReset(
+  _: AuthState,
+  formData: FormData,
+): Promise<AuthState> {
+  const email = String(formData.get("email") ?? "").trim();
+  if (!email) return { error: "Email is required." };
+
+  const origin = await computeOrigin();
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${origin}/auth/callback`,
+  });
+  if (error) return { error: error.message };
+  return { ok: true };
+}
+
+export async function signOut() {
+  const supabase = await createClient();
+  await supabase.auth.signOut();
+  redirect("/");
+}
+
+export async function signInWithGoogle(_formData: FormData) {
+  const origin = await computeOrigin();
+  const redirectTo = `${origin}/auth/callback`;
+  console.log("[auth/signInWithGoogle] redirectTo", { origin, redirectTo });
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: { redirectTo },
+  });
+  if (error || !data?.url) {
+    console.error("[auth/signInWithGoogle] failed", { error: error?.message });
+    const errUrl = new URL("/auth", origin);
+    errUrl.hash = "login";
+    errUrl.searchParams.set("error", error?.message ?? "Google sign-in failed");
+    redirect(errUrl.toString());
+  }
+  redirect(data.url);
+}

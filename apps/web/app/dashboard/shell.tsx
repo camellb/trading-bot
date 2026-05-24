@@ -1,0 +1,350 @@
+"use client";
+
+import React, { useEffect, useState, useTransition } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { signOut } from "../auth/actions";
+import { setBotEnabled } from "./actions";
+import { Tour } from "./Tour";
+import { ViewModeProvider, useViewMode, type ViewMode } from "@/lib/view-mode";
+
+export type IconKey =
+  | "grid"
+  | "layers"
+  | "trend"
+  | "list"
+  | "shield"
+  | "gear"
+  | "life"
+  | "pause"
+  | "bolt"
+  | "arrow"
+  | "plus"
+  | "book";
+
+type NavItem = {
+  id: string;
+  label: string;
+  icon: IconKey;
+  href: string;
+  match?: RegExp;
+  sub?: { id: string; label: string; href: string }[];
+};
+
+const NAV: NavItem[] = [
+  { id: "dashboard", label: "Dashboard", icon: "grid", href: "/dashboard", match: /^\/dashboard\/?$/ },
+  { id: "positions", label: "Positions", icon: "layers", href: "/dashboard/positions", match: /^\/dashboard\/positions/ },
+  { id: "performance", label: "Performance", icon: "trend", href: "/dashboard/performance", match: /^\/dashboard\/performance/ },
+  { id: "intelligence", label: "Intelligence", icon: "bolt", href: "/dashboard/intelligence", match: /^\/dashboard\/intelligence/ },
+  {
+    id: "settings",
+    label: "Settings",
+    icon: "gear",
+    href: "/dashboard/settings/account",
+    match: /^\/dashboard\/settings|^\/dashboard\/risk/,
+    sub: [
+      { id: "account", label: "Account", href: "/dashboard/settings/account" },
+      { id: "risk", label: "Risk controls", href: "/dashboard/settings/risk" },
+      { id: "notifications", label: "Notifications", href: "/dashboard/settings/notifications" },
+    ],
+  },
+  { id: "support", label: "Support", icon: "life", href: "/dashboard/support", match: /^\/dashboard\/support/ },
+];
+
+export const ICON: Record<IconKey, React.ReactNode> = {
+  grid: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="3" y="3" width="7" height="7" />
+      <rect x="14" y="3" width="7" height="7" />
+      <rect x="3" y="14" width="7" height="7" />
+      <rect x="14" y="14" width="7" height="7" />
+    </svg>
+  ),
+  layers: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M12 3 3 8l9 5 9-5-9-5z" />
+      <path d="M3 13l9 5 9-5" />
+      <path d="M3 18l9 5 9-5" />
+    </svg>
+  ),
+  trend: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M3 17l6-6 4 4 8-10" />
+      <path d="M14 5h7v7" />
+    </svg>
+  ),
+  list: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M8 6h13M8 12h13M8 18h13" />
+      <circle cx="4" cy="6" r="1.2" />
+      <circle cx="4" cy="12" r="1.2" />
+      <circle cx="4" cy="18" r="1.2" />
+    </svg>
+  ),
+  shield: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M12 3 4 6v6c0 4.5 3.2 8.3 8 9 4.8-.7 8-4.5 8-9V6l-8-3z" />
+    </svg>
+  ),
+  gear: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.36.15.68.4.9.74" />
+    </svg>
+  ),
+  life: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="3.5" />
+      <path d="M5 5l4.3 4.3M14.7 14.7 19 19M5 19l4.3-4.3M14.7 9.3 19 5" />
+    </svg>
+  ),
+  pause: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <rect x="6" y="5" width="4" height="14" />
+      <rect x="14" y="5" width="4" height="14" />
+    </svg>
+  ),
+  bolt: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />
+    </svg>
+  ),
+  arrow: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M5 12h14M13 6l6 6-6 6" />
+    </svg>
+  ),
+  plus: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  ),
+  book: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+      <path d="M4 5v14a2 2 0 0 0 2 2h14V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2z" />
+      <path d="M8 7h8M8 11h8M8 15h5" />
+    </svg>
+  ),
+};
+
+export type Mode = "simulation" | "live";
+
+export type DashboardUser = { name: string; email: string; initials: string };
+
+export function DashboardShell({
+  children,
+  user,
+  isAdmin = false,
+  botEnabled = false,
+  tradingMode = null,
+  tourCompleted = false,
+}: {
+  children: React.ReactNode;
+  user: DashboardUser;
+  isAdmin?: boolean;
+  botEnabled?: boolean;
+  tradingMode?: "simulation" | "live" | null;
+  tourCompleted?: boolean;
+}) {
+  const pathname = usePathname() || "/dashboard";
+
+  useEffect(() => {
+    document.body.classList.add("app");
+    return () => {
+      document.body.classList.remove("app");
+    };
+  }, []);
+
+  const activeId = NAV.find((n) => n.match?.test(pathname))?.id ?? "dashboard";
+
+  return (
+    <ViewModeProvider>
+      <div className="app-shell density-roomy" data-screen-label="Dashboard">
+        <Sidebar
+          activeId={activeId}
+          user={user}
+          pathname={pathname}
+          isAdmin={isAdmin}
+          botEnabled={botEnabled}
+          tradingMode={tradingMode}
+        />
+        <main className="app-main">
+          {children}
+        </main>
+        {!tourCompleted && <Tour />}
+      </div>
+    </ViewModeProvider>
+  );
+}
+
+function ViewModeToggle() {
+  const { mode, setMode } = useViewMode();
+  const options: { id: ViewMode; label: string }[] = [
+    { id: "simulation", label: "Simulation" },
+    { id: "live", label: "Live" },
+  ];
+  return (
+    <div className="view-mode-toggle" role="group" aria-label="View mode">
+      <div className="view-mode-chips">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            className={`view-mode-chip ${mode === o.id ? "active" : ""}`}
+            onClick={() => setMode(o.id)}
+            aria-pressed={mode === o.id}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BotStatusPill({
+  botEnabled,
+  tradingMode,
+}: {
+  botEnabled: boolean;
+  tradingMode: "simulation" | "live" | null;
+}) {
+  const [pending, startTransition] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
+
+  const toggle = (next: boolean) => {
+    setErr(null);
+    startTransition(async () => {
+      const res = await setBotEnabled(next);
+      if (!res.ok) setErr(res.error);
+    });
+  };
+
+  const modeLabel = tradingMode === "live"
+    ? "Live"
+    : tradingMode === "simulation"
+      ? "Simulation"
+      : "Not set";
+
+  return (
+    <div className={`bot-pill ${botEnabled ? "on" : "off"}`}>
+      <div className="bot-pill-row">
+        <span className="bot-pill-label">Status</span>
+        <span className="bot-pill-status">
+          <span className={`bot-pill-dot ${botEnabled ? "on" : "off"}`}></span>
+          <span className="bot-pill-state">{botEnabled ? "ON" : "OFF"}</span>
+        </span>
+      </div>
+      <div className="bot-pill-row">
+        <span className="bot-pill-label">Mode</span>
+        <span className={`bot-pill-mode ${tradingMode ?? "unset"}`}>
+          {modeLabel}
+        </span>
+      </div>
+      {botEnabled ? (
+        <button
+          type="button"
+          className="bot-pill-btn stop"
+          onClick={() => toggle(false)}
+          disabled={pending}
+        >
+          {pending ? "Pausing..." : "Pause bot"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="bot-pill-btn start"
+          onClick={() => toggle(true)}
+          disabled={pending}
+        >
+          {pending ? "Starting..." : "Start Delfi"}
+        </button>
+      )}
+      {err && <div className="bot-pill-err">Couldn&apos;t update: {err}</div>}
+    </div>
+  );
+}
+
+function Sidebar({
+  activeId,
+  user,
+  pathname,
+  isAdmin,
+  botEnabled,
+  tradingMode,
+}: {
+  activeId: string;
+  user: DashboardUser;
+  pathname: string;
+  isAdmin: boolean;
+  botEnabled: boolean;
+  tradingMode: "simulation" | "live" | null;
+}) {
+  return (
+    <aside className="side">
+      <Link href="/" className="side-brand">
+        <img src="/brand/mark.svg" alt="" className="side-mark" />
+        <span className="side-word">DELFI</span>
+      </Link>
+
+      <nav className="side-nav">
+        {NAV.map((item) => {
+          const isActive = item.id === activeId;
+          return (
+            <div className="side-group" key={item.id}>
+              <Link
+                href={item.href}
+                className={`side-link ${isActive ? "active" : ""}`}
+                aria-current={isActive ? "page" : undefined}
+              >
+                <span className="side-icon">{ICON[item.icon]}</span>
+                <span className="side-label">{item.label}</span>
+              </Link>
+              {isActive && item.sub && (
+                <div className="side-sub">
+                  {item.sub.map((s) => (
+                    <Link
+                      className={`side-sublink ${pathname === s.href ? "active" : ""}`}
+                      href={s.href}
+                      key={s.id}
+                    >
+                      {s.label}
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </nav>
+
+      {isAdmin && (
+        <Link href="/admin" className="side-link side-admin-link">
+          <span className="side-icon">{ICON["shield"]}</span>
+          <span className="side-label">Admin panel</span>
+        </Link>
+      )}
+
+      <BotStatusPill botEnabled={botEnabled} tradingMode={tradingMode} />
+
+      <ViewModeToggle />
+
+      <div className="side-foot">
+        <Link className="side-user" href="/dashboard/settings/account">
+          <span className="side-avatar" aria-hidden="true">
+            {user.initials}
+          </span>
+          <span className="side-user-body">
+            <span className="side-user-name">{user.name}</span>
+            <span className="side-user-mail">{user.email}</span>
+          </span>
+        </Link>
+        <form action={signOut} className="side-signout-form">
+          <button type="submit" className="side-signout">Sign out</button>
+        </form>
+      </div>
+    </aside>
+  );
+}
+
