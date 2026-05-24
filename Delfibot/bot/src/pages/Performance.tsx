@@ -204,19 +204,24 @@ export default function Performance() {
           </div>
         </div>
         <div className="stat-cell">
-          <div className="stat-cell-label">Realized P&amp;L</div>
-          {/* On ALL TIME, use the Polymarket-derived realized
-              (= /closed-positions realizedPnl + redeemable cashPnl)
-              so Performance matches the Overview headline to the
-              cent. For 30/7-day ranges, fall back to the
-              DB-filtered sum since Polymarket doesn't expose a
-              time-windowed realized. */}
+          {/* "Total P&L" mirrors the Overview dashboard's P&L tile
+              EXACTLY: same metric (realized + unrealized open MTM),
+              same source (summary.total_pnl), same ROI denominator
+              (summary.starting_cash). Previously this tile was
+              labeled "Realized P&L" with just summary.realized_pnl,
+              which showed $12.96 here vs $17.09 on Dashboard for
+              the same wallet - same-ish label, different number,
+              and the user (2026-05-24) called it inconsistent.
+              For 30/7-day ranges we fall back to the DB-filtered
+              sum since Polymarket doesn't expose a time-windowed
+              total. */}
+          <div className="stat-cell-label">Total P&amp;L</div>
           {(() => {
             const useApi = range === "all"
               && summary
-              && summary.realized_pnl != null;
+              && summary.total_pnl != null;
             const value = useApi
-              ? (summary!.realized_pnl as number)
+              ? (summary!.total_pnl as number)
               : filteredStats.totalPnl;
             const denom = summary?.starting_cash ?? 0;
             const roi = denom > 0 ? (value / denom) * 100 : 0;
