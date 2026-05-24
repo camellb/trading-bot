@@ -36,6 +36,39 @@ export function LicenseGate({ children }: Props) {
       const s = await api.license();
       setStatus(s);
     } catch (err) {
+      // A network/timeout error here means the daemon is slow or
+      // momentarily unreachable - it does NOT mean the user's
+      // license is invalid. Flipping to the gate on every transient
+      // hiccup is what the user (2026-05-24) called "it fucking
+      // logged me out again." The license key never expired; the
+      // daemon's executor pool just clogged on a CLOB api-key
+      // retry storm and could not service /api/license/status
+      // within the GUI's timeout.
+      //
+      // Policy: on a connection-class error, KEEP the last-known
+      // status. If we were valid, we stay valid; the next 60s
+      // poll will refresh once the daemon recovers. Only flip to
+      // "error" / the gate if we never had a valid status to fall
+      // back on (first-launch case where status is still
+      // "loading").
+      const raw = (err instanceof Error ? err.message : String(err)).toLowerCase();
+      const isConnError =
+        raw.includes("timed out")
+        || raw.includes("could not connect")
+        || raw.includes("connection refused")
+        || raw.includes("load failed")
+        || raw.includes("network");
+      if (isConnError) {
+        // First-launch only: surface "error" so the gate shows the
+        // booting message. Otherwise hold the previous status -
+        // most importantly, hold `valid: true` so the user stays
+        // in the app while the daemon recovers.
+        setStatus((prev) => prev === "loading" ? "error" : prev);
+        if (status === "loading") {
+          setErrorMsg(err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
       setStatus("error");
       setErrorMsg(err instanceof Error ? err.message : String(err));
     }
