@@ -1544,7 +1544,16 @@ class PMExecutor:
             try:
                 from db.logger import log_event
                 from feeds import telegram_messages as _tm
-                question_short = (market.question or "")[:80]
+                # Full question text. The earlier 80-char truncation made
+                # the Errors tab's "category" lookup fail for any market
+                # whose question exceeded 80 chars (Errors tab matches
+                # the parsed question against pm_positions / market_
+                # evaluations by full text). Reported 2026-05-24: all
+                # Elon-tweet and Spurs/Thunder errors showed Category="-"
+                # because their full questions ran past 80 chars.
+                # event_log.description is TEXT, no length cap on the
+                # column; the truncation was vestigial.
+                question_short = market.question or ""
                 if is_signer_mismatch:
                     _V2_SIGNER_MISMATCH_DETECTED = True
                     description = (

@@ -1999,7 +1999,14 @@ class LocalAPI:
             limit = int(req.query.get("limit", "100"))
         except ValueError:
             limit = 100
-        limit = max(1, min(limit, 500))
+        # Cap at 5000: Positions page's Errors-tab category lookup
+        # builds a question->category map from all recent evaluations,
+        # and the older 500-row cap meant errors from markets
+        # evaluated more than ~3 days ago showed Category="-" because
+        # their classification had aged out of the window. Reported
+        # 2026-05-24. SQLite returns 5000 rows in <50ms; the JSON
+        # payload is ~300KB. Both fine.
+        limit = max(1, min(limit, 5000))
 
         def _read():
             engine = get_engine()

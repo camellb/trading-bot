@@ -225,8 +225,16 @@ export default function Positions() {
   const refresh = useCallback(async () => {
     try {
       const [p, e, s, ev] = await Promise.all([
-        api.positions(100).then((r) => r.positions),
-        api.evaluations(50).then((r) => r.evaluations),
+        // 2000-row evaluations window: large enough that the
+        // questionToCategory map below covers every error in the
+        // rolling 200-row event window. With the previous (100, 50)
+        // limits, errors from markets evaluated more than a day or
+        // two ago showed Category="-" because their classification
+        // had aged out. 500 caught the recent week (~80%); 2000
+        // covers the full bot history at current volume. Reported
+        // 2026-05-24.
+        api.positions(500).then((r) => r.positions),
+        api.evaluations(2000).then((r) => r.evaluations),
         api.summary(),
         // Pull a generous slice so the Errors tab has history. We
         // filter client-side to order_error rows below; everything
@@ -878,13 +886,29 @@ export default function Positions() {
                     : "";
                   // Resolve category by matching the parsed question
                   // text against the positions/evaluations map built
-                  // above. Falls through to "-" if no match (rare).
+                  // above. The error description's question used to
+                  // be truncated to 80 chars (fixed in pm_executor as
+                  // of 2026-05-24), so for older error rows we
+                  // fall back to a prefix match: if no exact key
+                  // matches, scan the map for any key that starts
+                  // with our lookup string. Cheap; map has at most
+                  // a few hundred entries.
                   const lookupKey = question.trim().toLowerCase().replace(/\s+/g, " ");
-                  const category = questionToCategory.get(lookupKey) ?? "-";
+                  let category: string | undefined =
+                    questionToCategory.get(lookupKey);
+                  if (!category && lookupKey.length >= 20) {
+                    for (const [k, v] of questionToCategory) {
+                      if (k.startsWith(lookupKey)) {
+                        category = v;
+                        break;
+                      }
+                    }
+                  }
+                  const categoryText = category ?? "-";
                   return (
                     <tr key={row.id}>
                       <td className="truncate" title={question}>{question}</td>
-                      <td className="truncate" title={category}>{category}</td>
+                      <td className="truncate" title={categoryText}>{categoryText}</td>
                       <td className={`mono ${sideClass}`}>{side}</td>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>
                         {size && price
