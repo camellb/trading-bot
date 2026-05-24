@@ -287,10 +287,10 @@ export default function Dashboard({ state, goto }: Props) {
             💤
           </span>
           <span>
-            Delfi's evaluator paused to save tokens. Your available
-            cash is below the minimum needed to place a bet. Delfi
-            will resume automatically when more funds are available
-            (when a position closes or you top up your wallet).
+            Delfi has paused. Your available cash is below the
+            minimum needed to place a trade. Trading will resume
+            automatically once funds free up (a position closes or
+            you deposit more).
           </span>
         </div>
       )}
@@ -525,9 +525,9 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         <div>Category</div>
         <div>Side</div>
         <div>Size</div>
-        <div>M YES %</div>
-        <div>D YES %</div>
-        <div>D CONF</div>
+        <div>Market YES</div>
+        <div>Delfi YES</div>
+        <div>Confidence</div>
         <div>Opened</div>
         <div>Closes</div>
         <div />
@@ -645,7 +645,7 @@ function buildActivity(
       sortKey: p.created_at ?? "",
       kind: "execute",
       text: `Bought ${p.side} · ${p.question}`,
-      meta: `$${p.cost_usd.toFixed(0)} · M ${mYesPct}% · D ${dYesPct} · CONF ${dConfPct}${cat ? ` · ${cat}` : ""}`,
+      meta: `$${p.cost_usd.toFixed(0)} · Market ${mYesPct}% · Delfi ${dYesPct} · Confidence ${dConfPct}${cat ? ` · ${cat}` : ""}`,
       tone: "gold",
     };
   });
@@ -665,7 +665,7 @@ function buildActivity(
         sortKey: e.evaluated_at ?? "",
         kind: "pass",
         text: `Skipped · ${e.question}`,
-        meta: `M ${mYesPct} · D ${dYesPct} · CONF ${dConfPct}${e.category ? ` · ${e.category}` : ""}`,
+        meta: `Market ${mYesPct} · Delfi ${dYesPct} · Confidence ${dConfPct}${e.category ? ` · ${e.category}` : ""}`,
         tone: "muted",
       };
     });

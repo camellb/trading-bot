@@ -334,18 +334,41 @@ USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
 )
 
 NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
+    # Trade lifecycle.
     "position_opened",
     "position_settled",
+    "position_closed_early",   # take-profit / stop-loss / time-decay exit
+
+    # Order-side problems.
+    "order_error",             # rejected by Polymarket before fill
+                               # (signer mismatch, insufficient
+                               # collateral, etc.)
+    "order_rejected",          # placed but didn't fill within timeout
+
+    # Risk + bot state.
+    "risk_event",              # circuit breaker trip
+    "bot_status",              # paused or resumed
+
+    # Periodic summaries + proposals.
+    "learning_report_ready",   # 50-trade calibration proposal
     "daily_summary",
     "weekly_summary",
+
+    # Legacy key, kept so existing stored prefs that toggled
+    # "calibration" off retain intent until the user explicitly
+    # toggles the renamed `learning_report_ready`. Hidden from the
+    # UI by the Settings page (filtered out of the displayed list).
     "calibration",
-    "risk_event",
-    # Fires whenever a LIVE order is rejected by the CLOB (e.g.
-    # "maker address not allowed", "insufficient collateral",
-    # tick-size mismatch). Without this the bot can silently fail
-    # dozens of orders in a row and the user only finds out by
-    # noticing the dashboard isn't growing. Defaults ON.
-    "order_error",
+)
+
+# Categories shown in the Settings -> Notifications panel. Excludes
+# the legacy `calibration` key (its successor `learning_report_ready`
+# is the new canonical name; `calibration` is kept only so a user who
+# previously disabled it doesn't have it silently re-enabled). New
+# installs never see `calibration`; existing installs that flipped it
+# off keep their preference effective via should_notify().
+NOTIFICATION_CATEGORIES_VISIBLE: Tuple[str, ...] = tuple(
+    c for c in NOTIFICATION_CATEGORIES if c != "calibration"
 )
 
 ARCHETYPE_MULTIPLIER_BOUNDS: Tuple[float, float] = (0.1, 10.0)

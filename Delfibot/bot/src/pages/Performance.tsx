@@ -261,7 +261,7 @@ export default function Performance() {
         </div>
         {filteredStats.trades === 0 ? (
           <div className="empty-state">
-            {loaded ? "No equity history yet, take a trade to see this curve." : "Loading..."}
+            {loaded ? "No equity history yet. The curve will populate once Delfi settles its first trade." : "Loading..."}
           </div>
         ) : (
           <EquityChart series={equitySeries} />
@@ -315,7 +315,7 @@ function PriceBandTable({ calibration }: { calibration: CalibrationReport | null
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By price band</h2>
-        <span className="panel-meta">raw market price at entry</span>
+        <span className="panel-meta">Market price at entry</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         How each market-price band has actually performed. 0-50 means
@@ -541,7 +541,7 @@ function HorizonTable({ calibration }: { calibration: CalibrationReport | null }
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By horizon</h2>
-        <span className="panel-meta">Resolution time bucket</span>
+        <span className="panel-meta">Time to settlement</span>
       </div>
       <table className="table-simple">
         <thead>

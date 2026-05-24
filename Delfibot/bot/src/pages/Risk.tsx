@@ -157,6 +157,17 @@ function ExitPolicyPanel({
     e.preventDefault();
     setBusy(true);
     setMsg(null);
+    // User-facing labels for validation messages so errors read
+    // "Take-profit target must be between 5 and 500." instead of
+    // "take_profit_threshold_pct must be between 0.05 and 5."
+    const fieldLabels: Record<string, string> = {
+      take_profit_threshold_pct:         "Take-profit target",
+      stop_loss_threshold_pct:           "Stop-loss threshold",
+      stop_loss_min_time_remaining_pct:  "Stop-loss grace period",
+      time_decay_flat_band_pct:          "Flat-move threshold",
+      time_decay_max_hours:              "Maximum hold time",
+      exit_min_time_to_resolution_minutes: "Minimum time before settlement",
+    };
     try {
       const changes: Record<string, unknown> = {
         exit_policy_enabled: form.exit_policy_enabled,
@@ -174,9 +185,10 @@ function ExitPolicyPanel({
         const raw = (form[k] as string).trim();
         if (raw === "") continue;
         const n = Number(raw);
-        if (!Number.isFinite(n)) throw new Error(`${k} must be a number.`);
+        const label = fieldLabels[k] ?? k;
+        if (!Number.isFinite(n)) throw new Error(`${label} must be a number.`);
         const [lo, hi] = BOUNDS[k];
-        if (n < lo || n > hi) throw new Error(`${k} must be between ${lo} and ${hi}.`);
+        if (n < lo || n > hi) throw new Error(`${label} must be between ${lo} and ${hi}.`);
         changes[k] = n;
       }
       const numericInt = [
@@ -187,9 +199,10 @@ function ExitPolicyPanel({
         const raw = (form[k] as string).trim();
         if (raw === "") continue;
         const n = Number(raw);
-        if (!Number.isInteger(n)) throw new Error(`${k} must be a whole number.`);
+        const label = fieldLabels[k] ?? k;
+        if (!Number.isInteger(n)) throw new Error(`${label} must be a whole number.`);
         const [lo, hi] = BOUNDS[k];
-        if (n < lo || n > hi) throw new Error(`${k} must be between ${lo} and ${hi}.`);
+        if (n < lo || n > hi) throw new Error(`${label} must be between ${lo} and ${hi}.`);
         changes[k] = n;
       }
       await api.updateConfig(changes);
@@ -298,10 +311,10 @@ function ExitPolicyPanel({
             />
           </div>
           <span className="form-hint">
-            Universal across all three rules. Within this window, Delfi
-            holds every position to natural resolution — the spread plus
-            Polymarket fees exceed the time-value gain of selling that
-            close to settlement.
+            Applies to all three rules. Within this window, Delfi
+            holds every position until the market resolves. The
+            bid-ask spread plus Polymarket fees would erase any gain
+            from selling this close to settlement.
           </span>
         </div>
 
@@ -551,6 +564,16 @@ function RiskPanel({
     e.preventDefault();
     setBusy(true);
     setMsg(null);
+    // User-facing labels for validation messages on circuit-breaker
+    // fields. Matches the input labels rendered below.
+    const fieldLabels: Record<string, string> = {
+      base_stake_pct:         "Default bet size",
+      max_stake_pct:          "Maximum bet size",
+      daily_loss_limit_pct:   "Daily loss limit",
+      weekly_loss_limit_pct:  "Weekly loss limit",
+      drawdown_halt_pct:      "Maximum drawdown",
+      dry_powder_reserve_pct: "Reserve cash",
+    };
     try {
       const changes: Record<string, unknown> = {};
       const numericKeys = [
@@ -561,9 +584,10 @@ function RiskPanel({
         const raw = risk[k].trim();
         if (raw === "") continue;
         const n = Number(raw);
-        if (!Number.isFinite(n)) throw new Error(`${k} must be a number.`);
+        const label = fieldLabels[k] ?? k;
+        if (!Number.isFinite(n)) throw new Error(`${label} must be a number.`);
         const [lo, hi] = BOUNDS[k];
-        if (n < lo || n > hi) throw new Error(`${k} must be between ${lo} and ${hi}.`);
+        if (n < lo || n > hi) throw new Error(`${label} must be between ${lo} and ${hi}.`);
         changes[k] = n;
       }
       const streakRaw = risk.streak_cooldown_losses.trim();
@@ -1080,10 +1104,10 @@ function ArchetypeCard({
       {bandsOpen && (
         <div className="archetype-bands-panel">
           <p className="archetype-bands-help">
-            Toggle off any 10pp band Delfi should skip on {a.label}{" "}
-            markets. 0-50 means market favours NO; 50-100 means YES. A
-            band disabled here only applies to {a.label}; other
-            archetypes are unaffected.
+            Toggle off any 10-point price range Delfi should avoid on{" "}
+            {a.label} markets. 0-50 means the market favours NO;
+            50-100 means YES. Ranges switched off here only affect{" "}
+            {a.label} markets.
           </p>
           <div className="price-band-row">
             {PRICE_BANDS.map(([lo, hi]) => {

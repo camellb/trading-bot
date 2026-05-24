@@ -606,9 +606,9 @@ function RestartPanel() {
       } else {
         setMsg({
           kind: "err",
-          text: "Daemon did not come back within 30 seconds. " +
+          text: "Delfi did not come back within 30 seconds. " +
                 "Quit Delfi from the macOS menu bar and reopen " +
-                "from /Applications.",
+                "it from /Applications.",
         });
       }
     } catch (err) {
@@ -625,9 +625,10 @@ function RestartPanel() {
         <span className="panel-meta">macOS</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Bounces the daemon. Open positions are preserved, in-flight
-        scans get cancelled, Delfi is back online within ~10s. Use
-        this when something looks stuck.
+        Restarts Delfi. Open positions are preserved, any
+        in-progress market scans are cancelled, and Delfi resumes
+        within about 10 seconds. Use this when something looks
+        stuck.
       </p>
       {!confirm ? (
         <div className="form-actions">
@@ -697,13 +698,12 @@ function LogsPanel() {
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Daemon logs</h2>
+        <h2 className="panel-title">Activity log</h2>
         <span className="panel-meta">last 200 lines</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Stream Delfi's stdout and stderr without opening Terminal.
-        stderr usually has the interesting stuff (crashes, retries,
-        rate-limit warnings); stdout is the routine activity feed.
+        Recent activity from Delfi. The error log captures crashes
+        and warnings; the activity log shows routine operations.
       </p>
       <div className="form-actions" style={{ marginBottom: 12 }}>
         <button
@@ -712,7 +712,7 @@ function LogsPanel() {
           onClick={() => { setStream("stdout"); load("stdout"); }}
           disabled={busy}
         >
-          stdout
+          Activity
         </button>
         <button
           type="button"
@@ -720,7 +720,7 @@ function LogsPanel() {
           onClick={() => { setStream("stderr"); load("stderr"); }}
           disabled={busy}
         >
-          stderr
+          Errors
         </button>
         <button
           type="button"
@@ -754,13 +754,10 @@ function LogsPanel() {
           }}>
             {tail.lines.length === 0 ? "(empty)" : tail.lines.join("\n")}
           </pre>
-          <p className="form-hint" style={{ marginTop: 8 }}>
-            Source: {tail.path}
-          </p>
         </>
       )}
       {!tail && !busy && !error && (
-        <p className="page-sub">Click stdout or stderr to load logs.</p>
+        <p className="page-sub">Click Activity or Errors to load.</p>
       )}
     </div>
   );
@@ -1017,7 +1014,7 @@ function LaunchStatsPanel() {
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Daemon stats</h2>
+        <h2 className="panel-title">Reliability</h2>
         <button
           type="button"
           className="btn ghost small"
@@ -1028,25 +1025,23 @@ function LaunchStatsPanel() {
         </button>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Diagnostic view on what launchd reports about the daemon.
-        Total runs goes up by one every time Delfi starts (login,
-        crash + auto-restart, or a manual Restart). A nonzero last
-        exit code means the previous run died on an exception worth
-        investigating in the logs.
+        How Delfi has been behaving since it was installed. The run
+        count goes up every time Delfi starts (login, recovery from
+        a crash, or a manual restart). A non-zero exit code means
+        the last run ended unexpectedly.
       </p>
       {error && <div className="error">{error}</div>}
       {stats && stats.supported === false && (
-        <p className="page-sub">Stats are macOS-only.</p>
+        <p className="page-sub">Reliability stats are macOS-only.</p>
       )}
       {stats && stats.supported && (
         <div style={{
           display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
+          gridTemplateColumns: "repeat(3, 1fr)",
           gap: 24,
           maxWidth: 720,
         }}>
-          <Stat label="State" value={stats.state ?? "-"} />
-          <Stat label="PID" value={stats.pid != null ? String(stats.pid) : "-"} />
+          <Stat label="Status" value={stats.state ?? "-"} />
           <Stat label="Total runs" value={stats.runs != null ? String(stats.runs) : "-"} />
           <Stat
             label="Last exit code"
@@ -1477,29 +1472,63 @@ function ConnectionsPanel({
 const CATEGORY_LABELS: Record<string, { title: string; description: string }> = {
   position_opened: {
     title: "New positions",
-    description: "Every time Delfi opens a position: market, side, stake, and forecast.",
+    description: "When Delfi opens a position. Shows market, side, stake, and forecast.",
   },
   position_settled: {
     title: "Position resolutions",
-    description: "Every win or loss when a market resolves, with P&L and running capital.",
+    description: "Wins and losses when a market resolves. Shows P&L and updated balance.",
+  },
+  position_closed_early: {
+    title: "Early exits",
+    description: "Positions closed before resolution by take-profit, stop-loss, or time-decay.",
+  },
+  order_error: {
+    title: "Order errors",
+    description: "Orders rejected by Polymarket before they could fill.",
+  },
+  order_rejected: {
+    title: "Unfilled orders",
+    description: "Orders placed on Polymarket that didn't fill in time. No position opened.",
+  },
+  risk_event: {
+    title: "Risk alerts",
+    description: "Circuit breaker trips: daily loss cap, drawdown halt, or streak cooldown.",
+  },
+  bot_status: {
+    title: "Bot status changes",
+    description: "When Delfi pauses or resumes trading, with the reason.",
+  },
+  learning_report_ready: {
+    title: "Strategy proposals",
+    description: "Every 50 settled trades, Delfi reviews performance and may propose a tuning change.",
   },
   daily_summary: {
     title: "Daily summary",
-    description: "End-of-day recap with trades, P&L, and record.",
+    description: "End-of-day recap of trades, P&L, and running record.",
   },
   weekly_summary: {
     title: "Weekly summary",
     description: "Weekly performance review with win rate and P&L.",
   },
+  // Legacy alias kept for users whose stored prefs still reference
+  // it. Hidden from the panel by NOTIFICATION_CATEGORIES_VISIBLE on
+  // the server side; this entry exists only as a defensive label
+  // in case it ever leaks through.
   calibration: {
-    title: "Calibration proposals",
-    description: "When Delfi proposes a strategy change, with evidence and inline controls.",
-  },
-  risk_event: {
-    title: "Risk events",
-    description: "Circuit breaker trips: daily loss cap, drawdown halt, or streak cooldown.",
+    title: "Strategy proposals",
+    description: "Every 50 settled trades, Delfi reviews performance and may propose a tuning change.",
   },
 };
+
+// Fallback for any new category the server adds before this map is
+// updated: snake_case -> Title Case so the user never sees a raw
+// key like "order_error" again.
+function prettifyKey(key: string): string {
+  return key
+    .split("_")
+    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
+}
 
 function NotificationsPanel({ goto }: { goto: Goto }) {
   const [notif, setNotif] = useState<NotificationsConfig | null>(null);
@@ -1559,12 +1588,15 @@ function NotificationsPanel({ goto }: { goto: Goto }) {
       <TelegramConnectorPanel goto={goto} />
       <div className="panel">
         <div className="panel-head">
-          <h2 className="panel-title">What Delfi will surface</h2>
+          <h2 className="panel-title">Notification types</h2>
           <span className="panel-meta">Changes apply immediately</span>
         </div>
         <div>
           {categories.map((key) => {
-            const label = CATEGORY_LABELS[key] ?? { title: key, description: "" };
+            const label = CATEGORY_LABELS[key] ?? {
+              title: prettifyKey(key),
+              description: "",
+            };
             return (
               <div key={key} className="notif-row">
                 <div>

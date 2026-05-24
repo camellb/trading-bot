@@ -188,7 +188,22 @@ function humanizePolymarketError(raw: string): string {
       "Polymarket private key in Settings."
     );
   }
-  // Anything else: hand back the raw error. We don't pretend.
+  // Anything else: strip the SDK exception wrapper and return a
+  // cleaner message. The user shouldn't see "PolyApiException[
+  // status_code=400, error_message={'error': '...'}]" - they
+  // should see the inner reason if one is parseable, or a
+  // generic "Polymarket rejected the order" if not.
+  const wrapped = raw.match(/error_message=\{?['"]?error['"]?:\s*['"]([^'"]+)['"]/i);
+  if (wrapped) {
+    const inner = wrapped[1].trim();
+    return inner ? inner.charAt(0).toUpperCase() + inner.slice(1) + "." : raw;
+  }
+  // Final fallback: if the raw text contains SDK markers, replace
+  // with a generic message; otherwise return as-is (might be a
+  // human-readable error already).
+  if (/PolyApiException|status_code=|error_message=/i.test(raw)) {
+    return "Polymarket rejected the order. Open the activity log for details.";
+  }
   return raw;
 }
 
@@ -409,7 +424,7 @@ export default function Positions() {
           {open.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No open positions yet. Delfi is evaluating markets, positions will appear once a trade clears the gate."
+                ? "No open positions yet. Delfi is reviewing markets, trades will appear here as they're placed."
                 : "Loading..."}
             </div>
           ) : (
@@ -601,8 +616,8 @@ export default function Positions() {
                   <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
                   <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
                   <SortableTh field="entry"    sort={closedSort}>Entry</SortableTh>
-                  <SortableTh field="myes"     sort={closedSort}>M YES %</SortableTh>
-                  <SortableTh field="dyes"     sort={closedSort}>D YES %</SortableTh>
+                  <SortableTh field="myes"     sort={closedSort}>Market YES</SortableTh>
+                  <SortableTh field="dyes"     sort={closedSort}>Delfi YES</SortableTh>
                   <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
                   <SortableTh field="settled"  sort={closedSort}>Settled</SortableTh>
                 </tr>
@@ -622,15 +637,15 @@ export default function Positions() {
                   const isClosedEarly = status === "closed_early";
                   const won = !isInvalid && !isClosedEarly && (outcome ? outcome === s.side : pnl > 0);
                   const closeReason = (s.close_reason as string | null | undefined) ?? null;
-                  const reasonLabel = closeReason === "take_profit" ? "TP"
-                                    : closeReason === "stop_loss"   ? "SL"
-                                    : closeReason === "time_decay"  ? "TIME"
-                                    : "EARLY";
+                  const reasonLabel = closeReason === "take_profit" ? "Take profit"
+                                    : closeReason === "stop_loss"   ? "Stop loss"
+                                    : closeReason === "time_decay"  ? "Time decay"
+                                    : "Early exit";
                   const outcomeLabel = isInvalid
-                    ? "VOID"
+                    ? "Refunded"
                     : isClosedEarly
-                      ? `EXIT ${reasonLabel}`
-                      : (won ? "WON" : "LOST");
+                      ? reasonLabel
+                      : (won ? "Won" : "Lost");
                   const outcomeClass = isInvalid
                     ? "pill pill-void"
                     : isClosedEarly
@@ -695,9 +710,9 @@ export default function Positions() {
                   <th style={{ textAlign: "left" }}>#</th>
                   <SortableTh field="market"    sort={skippedSort}>Market</SortableTh>
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
-                  <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
-                  <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
-                  <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
+                  <SortableTh field="myes"      sort={skippedSort}>Market YES</SortableTh>
+                  <SortableTh field="dyes"      sort={skippedSort}>Delfi YES</SortableTh>
+                  <SortableTh field="dconf"     sort={skippedSort}>Confidence</SortableTh>
                   <SortableTh field="evaluated" sort={skippedSort}>Evaluated</SortableTh>
                   <th>Result</th>
                   <th style={{ width: 28 }} />
@@ -842,7 +857,7 @@ export default function Positions() {
           {errors.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No order errors. Every live order has been accepted by Polymarket."
+                ? "No order errors. Every order has been accepted by Polymarket."
                 : "Loading..."}
             </div>
           ) : (

@@ -88,6 +88,7 @@ from engine.user_config import (
     KEYRING_ANTHROPIC_KEY,
     KEYRING_POLYMARKET_KEY,
     NOTIFICATION_CATEGORIES,
+    NOTIFICATION_CATEGORIES_VISIBLE,
     V1_DEFAULT_ARCHETYPE_SKIP_LIST,
     V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS,
     _keyring_get,
@@ -2030,9 +2031,15 @@ class LocalAPI:
         # Categories not present in the stored prefs default to True so
         # a fresh install gets every notification until the user opts
         # out. The shape mirrors what the UI expects.
+        # `notification_prefs` returns every key including the
+        # legacy `calibration` so the user's stored preference for
+        # it still gates Telegram delivery via should_notify().
+        # `categories` returns only the keys the UI should display
+        # (excludes `calibration` since `learning_report_ready` is
+        # the canonical successor).
         full = {cat: bool(prefs.get(cat, True)) for cat in NOTIFICATION_CATEGORIES}
         return _ok({
-            "categories":         list(NOTIFICATION_CATEGORIES),
+            "categories":         list(NOTIFICATION_CATEGORIES_VISIBLE),
             "notification_prefs": full,
         })
 
@@ -2061,7 +2068,7 @@ class LocalAPI:
         full = {cat: bool((cfg.notification_prefs or {}).get(cat, True))
                 for cat in NOTIFICATION_CATEGORIES}
         return _ok({
-            "categories":         list(NOTIFICATION_CATEGORIES),
+            "categories":         list(NOTIFICATION_CATEGORIES_VISIBLE),
             "notification_prefs": full,
         })
 

@@ -718,5 +718,12 @@ const PARAM_LABELS: Record<string, string> = {
 };
 
 function prettyParamName(p: string): string {
-  return PARAM_LABELS[p] ?? p;
+  if (PARAM_LABELS[p]) return PARAM_LABELS[p];
+  // Fallback for any new param the server emits before this map is
+  // updated: snake_case -> Title Case so the user never sees a raw
+  // key like "stop_loss_threshold_pct" in the UI.
+  return p
+    .split("_")
+    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ");
 }

@@ -693,34 +693,31 @@ function Troubleshooting() {
           </ul>
         </Guide>
 
-        <Guide title="'/api/state: timed out' banner">
+        <Guide title="'Delfi isn't responding' banner">
           <ul>
             <li>
               Click <strong>Restart Delfi</strong> on the banner.
-              The restart has hard timeouts on every shelled
-              command.
+              The restart is bounded, so it won't hang.
             </li>
             <li>
               If the banner keeps coming back, check{" "}
               <strong>Settings &rarr; Diagnostics</strong> for
-              stuck scheduler jobs.
+              stuck scheduled jobs.
             </li>
           </ul>
         </Guide>
 
         <Guide title="Restart Delfi button seems stuck">
           <p>
-            Worst case the restart shell-command set takes ~15
-            seconds and the GUI reload waits another 8 seconds,
-            total around 23 seconds before the dashboard
-            reconnects. Wait the full window.
+            A restart can take up to 25 seconds before the
+            dashboard reconnects. Wait the full window.
           </p>
           <p>
             If after a full minute the dashboard is still on
             &quot;Restarting...&quot;, quit Delfi from the macOS
-            menu bar and relaunch from /Applications. The daemon
-            runs under launchd and is unaffected; only the GUI
-            shell needs to come back.
+            menu bar and relaunch it from /Applications. The bot
+            itself keeps running in the background; only the
+            dashboard window needs to come back.
           </p>
         </Guide>
 

@@ -123,7 +123,7 @@ export function LicenseGate({ children }: Props) {
   const reason = isConnError
     ? ""
     : status === "error"
-      ? (errorMsg ?? "Could not reach the local engine.")
+      ? (errorMsg ?? "Could not reach Delfi. It may still be starting up - try again in a moment.")
       : (status.reason ?? "Your license is not active yet.");
   const hasKey = status !== "error" && status.has_key;
 
