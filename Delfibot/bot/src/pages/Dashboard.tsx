@@ -525,9 +525,9 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         <div>Category</div>
         <div>Side</div>
         <div>Size</div>
-        <div>Market YES</div>
-        <div>Delfi YES</div>
-        <div>Confidence</div>
+        <div>M YES %</div>
+        <div>D YES %</div>
+        <div>D CONF</div>
         <div>Opened</div>
         <div>Closes</div>
         <div />

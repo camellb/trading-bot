@@ -616,8 +616,8 @@ export default function Positions() {
                   <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
                   <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
                   <SortableTh field="entry"    sort={closedSort}>Entry</SortableTh>
-                  <SortableTh field="myes"     sort={closedSort}>Market YES</SortableTh>
-                  <SortableTh field="dyes"     sort={closedSort}>Delfi YES</SortableTh>
+                  <SortableTh field="myes"     sort={closedSort}>M YES %</SortableTh>
+                  <SortableTh field="dyes"     sort={closedSort}>D YES %</SortableTh>
                   <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
                   <SortableTh field="settled"  sort={closedSort}>Settled</SortableTh>
                 </tr>
@@ -710,9 +710,9 @@ export default function Positions() {
                   <th style={{ textAlign: "left" }}>#</th>
                   <SortableTh field="market"    sort={skippedSort}>Market</SortableTh>
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
-                  <SortableTh field="myes"      sort={skippedSort}>Market YES</SortableTh>
-                  <SortableTh field="dyes"      sort={skippedSort}>Delfi YES</SortableTh>
-                  <SortableTh field="dconf"     sort={skippedSort}>Confidence</SortableTh>
+                  <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
+                  <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
+                  <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
                   <SortableTh field="evaluated" sort={skippedSort}>Evaluated</SortableTh>
                   <th>Result</th>
                   <th style={{ width: 28 }} />
