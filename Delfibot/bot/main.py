@@ -105,6 +105,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.executors.pool import ThreadPoolExecutor as APThreadPoolExecutor
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 import asyncio as _asyncio_module  # alias for the sync job wrappers below
 
 # Force aiohttp's DNS resolver onto a thread pool BEFORE any
@@ -1519,6 +1520,166 @@ async def main() -> None:
             print(f"[delfi] resolve_skipped failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_daily_summary():
+        """End-of-day recap to Telegram. Fires every day at 23:00 UTC.
+        Aggregates the last 24h of resolved positions + the day's
+        analysed-market count, formats via telegram_messages.daily_
+        summary, sends via log_event so the user's notification-prefs
+        toggle gates delivery (event_type='daily_summary').
+
+        Skips the send if nothing happened in the window (no
+        resolved positions AND no markets analysed). An empty
+        end-of-day ping is noise.
+        """
+        try:
+            from sqlalchemy import text
+            from db.engine import get_engine
+            from db.logger import log_event
+            from execution.pm_executor import PMExecutor
+            from engine.user_config import DEFAULT_USER_ID
+            from feeds import telegram_messages as _tm
+
+            executor = PMExecutor(DEFAULT_USER_ID)
+            stats = executor.get_portfolio_stats()
+            if not stats.get("ready"):
+                return
+            bankroll  = float(stats.get("bankroll", 0.0))
+            open_n    = int(stats.get("open_positions", 0))
+            open_cost = float(stats.get("open_cost", 0.0))
+            settled_n = int(stats.get("settled_total", 0))
+            settled_w = int(stats.get("settled_wins", 0))
+            win_pct_all = (settled_w / settled_n * 100.0) if settled_n else 0.0
+
+            eng = get_engine()
+            with eng.connect() as conn:
+                row24 = conn.execute(text(
+                    "SELECT "
+                    "  COUNT(*) AS resolved24, "
+                    "  COALESCE(SUM(CASE WHEN realized_pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins24, "
+                    "  COALESCE(SUM(CASE WHEN realized_pnl_usd < 0 THEN 1 ELSE 0 END), 0) AS losses24, "
+                    "  COALESCE(SUM(realized_pnl_usd), 0) AS pnl24 "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = 'live' "
+                    "  AND status IN ('settled', 'closed_early') "
+                    "  AND settled_at > datetime('now', '-24 hours')"
+                ), {"uid": DEFAULT_USER_ID}).fetchone()
+                resolved24 = int(row24[0] or 0)
+                wins24     = int(row24[1] or 0)
+                losses24   = int(row24[2] or 0)
+                pnl24      = float(row24[3] or 0.0)
+                cnt24_row = conn.execute(text(
+                    "SELECT COUNT(*) FROM market_evaluations "
+                    "WHERE user_id = :uid "
+                    "  AND evaluated_at > datetime('now', '-24 hours')"
+                ), {"uid": DEFAULT_USER_ID}).fetchone()
+                cnt24 = int(cnt24_row[0] or 0)
+
+            # Quiet days: no resolved positions AND no markets even
+            # looked at. Send nothing.
+            if resolved24 == 0 and cnt24 == 0:
+                return
+
+            win_pct = (wins24 / resolved24 * 100.0) if resolved24 else 0.0
+            telegram_html = _tm.daily_summary(
+                bankroll=bankroll,
+                pnl24=pnl24,
+                resolved24=resolved24,
+                wins24=wins24,
+                losses24=losses24,
+                win_pct=win_pct,
+                open_positions=open_n,
+                open_cost=open_cost,
+                cnt24=cnt24,
+            )
+            log_event(
+                event_type="daily_summary",
+                severity=10,
+                description=(
+                    f"Daily summary: {wins24}W/{losses24}L, "
+                    f"P&L ${pnl24:+.2f}, {cnt24} markets analysed."
+                ),
+                source="main._run_daily_summary",
+                telegram_html=telegram_html,
+            )
+            proc_health.record_job_ok("daily_summary")
+        except Exception as exc:
+            proc_health.record_job_error("daily_summary")
+            print(f"[delfi] daily_summary failed: {exc}",
+                  file=sys.stderr, flush=True)
+
+    def _run_weekly_summary():
+        """Weekly performance recap. Fires Sunday at 23:30 UTC.
+        Same gating model as daily_summary: event_type='weekly_
+        summary', so the toggle in Settings -> Notifications
+        controls delivery.
+        """
+        try:
+            from sqlalchemy import text
+            from db.engine import get_engine
+            from db.logger import log_event
+            from execution.pm_executor import PMExecutor
+            from engine.user_config import DEFAULT_USER_ID
+            from feeds import telegram_messages as _tm
+
+            executor = PMExecutor(DEFAULT_USER_ID)
+            stats = executor.get_portfolio_stats()
+            if not stats.get("ready"):
+                return
+            bankroll      = float(stats.get("bankroll", 0.0))
+            settled_total = int(stats.get("settled_total", 0))
+            settled_wins  = int(stats.get("settled_wins", 0))
+            realized_all  = float(stats.get("realized_pnl", 0.0))
+            win_pct_all   = (settled_wins / settled_total * 100.0) if settled_total else 0.0
+
+            eng = get_engine()
+            with eng.connect() as conn:
+                row7 = conn.execute(text(
+                    "SELECT "
+                    "  COUNT(*) AS resolved7, "
+                    "  COALESCE(SUM(CASE WHEN realized_pnl_usd > 0 THEN 1 ELSE 0 END), 0) AS wins7, "
+                    "  COALESCE(SUM(CASE WHEN realized_pnl_usd < 0 THEN 1 ELSE 0 END), 0) AS losses7, "
+                    "  COALESCE(SUM(realized_pnl_usd), 0) AS pnl7 "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = 'live' "
+                    "  AND status IN ('settled', 'closed_early') "
+                    "  AND settled_at > datetime('now', '-7 days')"
+                ), {"uid": DEFAULT_USER_ID}).fetchone()
+                resolved7 = int(row7[0] or 0)
+                wins7     = int(row7[1] or 0)
+                losses7   = int(row7[2] or 0)
+                pnl7      = float(row7[3] or 0.0)
+
+            # Skip if the week was empty.
+            if resolved7 == 0:
+                return
+
+            win_pct7 = (wins7 / resolved7 * 100.0) if resolved7 else 0.0
+            telegram_html = _tm.weekly_summary(
+                bankroll=bankroll,
+                pnl7=pnl7,
+                wins7=wins7,
+                losses7=losses7,
+                win_pct7=win_pct7,
+                win_pct_all=win_pct_all,
+                pnl_all=realized_all,
+                settled_total=settled_total,
+            )
+            log_event(
+                event_type="weekly_summary",
+                severity=10,
+                description=(
+                    f"Weekly summary: {wins7}W/{losses7}L over 7d, "
+                    f"P&L ${pnl7:+.2f}."
+                ),
+                source="main._run_weekly_summary",
+                telegram_html=telegram_html,
+            )
+            proc_health.record_job_ok("weekly_summary")
+        except Exception as exc:
+            proc_health.record_job_error("weekly_summary")
+            print(f"[delfi] weekly_summary failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_license_revocation_check():
         """Daily call to the licensing server to see if this license
         has been revoked (refund, dispute, manual admin action).
@@ -1687,6 +1848,29 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(seconds=1),
         max_instances=1, coalesce=True,
         executor="threadpool",
+    )
+    # Daily summary at 23:00 UTC every day. Cron rather than
+    # interval so the message lands at a consistent local clock
+    # time across restarts. Skips its own send when the day had
+    # no activity (see `_run_daily_summary`).
+    scheduler.add_job(
+        _run_daily_summary, CronTrigger(hour=23, minute=0),
+        id="daily_summary",
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        misfire_grace_time=3600,
+    )
+    # Weekly summary at 23:30 UTC every Sunday. Half-hour offset
+    # from daily so they don't both fire at the same instant on
+    # Sundays (small detail, but the daily would otherwise hit the
+    # weekly's 7-day window in a way that conflates the two
+    # message types in the user's Telegram history).
+    scheduler.add_job(
+        _run_weekly_summary, CronTrigger(day_of_week="sun", hour=23, minute=30),
+        id="weekly_summary",
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        misfire_grace_time=3600,
     )
     scheduler.add_job(
         _run_license_revocation_check, IntervalTrigger(hours=12),
