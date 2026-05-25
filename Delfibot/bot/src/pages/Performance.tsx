@@ -271,9 +271,24 @@ export default function Performance() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Brier trend</h2>
-            <span className="panel-meta">Lower is better, 0 is perfect</span>
           </div>
-          <BrierSpark points={trend} />
+          {/* Same interactive chart primitive as the equity history,
+              just configured for Brier semantics: gold stroke,
+              3-decimal precision in the hover tooltip, integer-
+              %-style ticks on the axis, lower = better so green/red
+              colour logic is inverted, and a tiny minSpan since
+              Brier values live inside [0, 1]. */}
+          <EquityChart
+            series={trend
+              .filter((p) => p.date)
+              .map((p) => ({ ts: p.date as string, v: p.brier }))}
+            strokeColor="var(--gold)"
+            fillColor="rgba(212,175,55,0.08)"
+            lowerIsBetter
+            minSpan={0.05}
+            formatValue={(n) => n.toFixed(3)}
+            formatValueAxis={(n) => n.toFixed(2)}
+          />
         </div>
       )}
 
@@ -314,7 +329,6 @@ function PriceBandTable({ calibration }: { calibration: CalibrationReport | null
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By price band</h2>
-        <span className="panel-meta">Market price at entry</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         How each market-price band has actually performed. 0-50 means
@@ -388,7 +402,6 @@ function ArchetypeTable({ calibration }: { calibration: CalibrationReport | null
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By archetype</h2>
-        <span className="panel-meta">{calibration.by_archetype?.length ?? 0} archetypes</span>
       </div>
       {rows.length > 0 ? (
         <table className="table-simple">
@@ -463,7 +476,6 @@ function CategoryTable({ calibration }: { calibration: CalibrationReport | null 
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By category</h2>
-        <span className="panel-meta">{calibration.by_category.length} categories</span>
       </div>
       {rows.length > 0 ? (
         <table className="table-simple">
@@ -540,7 +552,6 @@ function HorizonTable({ calibration }: { calibration: CalibrationReport | null }
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">By horizon</h2>
-        <span className="panel-meta">Time to settlement</span>
       </div>
       <table className="table-simple">
         <thead>
@@ -583,27 +594,9 @@ function HorizonTable({ calibration }: { calibration: CalibrationReport | null }
 //  shared with the Dashboard so both views render identical hover
 //  behaviour and tick math.)
 
-function BrierSpark({ points }: { points: BrierTrendPoint[] }) {
-  if (points.length < 2) return null;
-  const W = 800, H = 60, PAD = 6;
-  const ys = points.map((p) => p.brier);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const sx = (i: number) => PAD + ((W - PAD * 2) * i) / (points.length - 1);
-  const sy = (v: number) => H - PAD - ((H - PAD * 2) * (v - minY)) / Math.max(1e-9, maxY - minY);
-  const d = points.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i)},${sy(p.brier)}`).join(" ");
-  return (
-    <div className="brier-spark">
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
-        <path d={d} fill="none" stroke="var(--gold)" strokeWidth="1.4" />
-      </svg>
-      <p className="brier-foot">
-        {points[0].brier.toFixed(3)} → {points[points.length - 1].brier.toFixed(3)} ·
-        {" "}{points.length} samples
-      </p>
-    </div>
-  );
-}
+// BrierSpark removed 2026-05-25: replaced by the shared EquityChart
+// (now generalised with formatter + colour props) so Brier trend is
+// fully interactive with the same hover-tooltip behaviour as equity.
 
 // ── Export CSV ───────────────────────────────────────────────────────────
 

@@ -923,7 +923,6 @@ function ArchetypePanel({ onSaved }: { onSaved: () => void }) {
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Archetypes</h2>
-        <span className="panel-meta">{data.archetypes.length} categories</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Each market Delfi looks at is classified into one archetype. Skip an

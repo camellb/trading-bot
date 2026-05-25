@@ -180,17 +180,10 @@ function SetupChecklist({
     },
   ];
 
-  const totalRows = groups.reduce((n, g) => n + g.rows.length, 0);
-  const okCount   = groups.reduce(
-    (n, g) => n + g.rows.filter((r) => r.ok).length,
-    0,
-  );
-
   return (
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Setup checklist</h2>
-        <span className="panel-meta">{okCount} of {totalRows} connected</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
         {groups.map((g) => (

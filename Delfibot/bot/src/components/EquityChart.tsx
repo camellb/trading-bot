@@ -47,9 +47,27 @@ const fmtDateTime = (s: string): string => s ? formatDateTime(s) : "-";
 export function EquityChart({
   series,
   height = H,
+  formatValue,
+  formatValueAxis,
+  strokeColor,
+  fillColor,
+  // For series where DOWN is good (Brier: 0 is perfect, 1 is worst),
+  // pass lowerIsBetter=true to flip the green/red logic. Ignored when
+  // strokeColor is also passed.
+  lowerIsBetter = false,
+  // Pad the y-range minimum span. USD equity defaults to 1.0 ($1).
+  // Brier values live in [0,1] so the natural span is small; pass a
+  // smaller floor (e.g. 0.01) to keep movement visible.
+  minSpan = 1,
 }: {
   series: { ts: string; v: number }[];
   height?: number;
+  formatValue?: (n: number) => string;
+  formatValueAxis?: (n: number) => string;
+  strokeColor?: string;
+  fillColor?: string;
+  lowerIsBetter?: boolean;
+  minSpan?: number;
 }) {
   const [hoverI, setHoverI] = useState<number | null>(null);
 
@@ -59,7 +77,7 @@ export function EquityChart({
   const ys = series.map((p) => p.v);
   const rawMin = Math.min(...ys);
   const rawMax = Math.max(...ys);
-  const span = Math.max(rawMax - rawMin, 1);
+  const span = Math.max(rawMax - rawMin, minSpan);
   const minY = rawMin - span * 0.08;
   const maxY = rawMax + span * 0.08;
 
@@ -71,10 +89,16 @@ export function EquityChart({
   const d = series.map((p, i) => `${i === 0 ? "M" : "L"}${sx(i)},${sy(p.v)}`).join(" ");
   const lastV = series[series.length - 1].v;
   const firstV = series[0].v;
-  const positive = lastV >= firstV;
-  const stroke = positive ? "var(--profit)" : "var(--ember)";
-  const fill = positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)";
+  // "Positive" = series moved in the user-good direction. For equity
+  // that's last >= first; for Brier (lower is better) it's last <= first.
+  const positive = lowerIsBetter ? lastV <= firstV : lastV >= firstV;
+  const stroke = strokeColor ?? (positive ? "var(--profit)" : "var(--ember)");
+  const fill = fillColor ?? (positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)");
   const area = `${d} L${sx(series.length - 1)},${PAD_T + INNER_H} L${sx(0)},${PAD_T + INNER_H} Z`;
+
+  // Value formatters with USD defaults preserved for equity callers.
+  const fmtValue = formatValue ?? fmtUsd;
+  const fmtAxis  = formatValueAxis ?? fmtUsdAxis;
 
   // Gridlines: even spacing across the padded range.
   const yTickValues = Array.from({ length: Y_TICKS + 1 }, (_, i) =>
@@ -138,7 +162,7 @@ export function EquityChart({
               textAnchor="end"
               fontFamily="var(--font-mono)"
             >
-              {fmtUsdAxis(v)}
+              {fmtAxis(v)}
             </text>
           </g>
         ))}
@@ -202,7 +226,7 @@ export function EquityChart({
           }}
         >
           <div className="eq-tip-date">{fmtDateTime(tipPoint.ts)}</div>
-          <div className="eq-tip-val">{fmtUsd(tipPoint.v)}</div>
+          <div className="eq-tip-val">{fmtValue(tipPoint.v)}</div>
         </div>
       )}
     </div>
