@@ -257,7 +257,6 @@ export default function Performance() {
       <div className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Equity history</h2>
-          <span className="panel-meta">{filteredStats.trades} settled trades</span>
         </div>
         {filteredStats.trades === 0 ? (
           <div className="empty-state">
