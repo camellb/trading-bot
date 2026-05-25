@@ -600,13 +600,13 @@ function RestartPanel() {
       // command returns as soon as it's fired the kill + kickstart;
       // the daemon usually comes back in 5-10 s (launchd
       // ThrottleInterval=10 s + PyInstaller cold-start).
-      const alive = await waitForSidecar(30_000);
+      const alive = await waitForSidecar(60_000);
       if (alive) {
         setMsg({ kind: "ok", text: "Delfi restarted." });
       } else {
         setMsg({
           kind: "err",
-          text: "Delfi did not come back within 30 seconds. " +
+          text: "Delfi did not come back within 60 seconds. " +
                 "Quit Delfi from the macOS menu bar and reopen " +
                 "it from /Applications.",
         });

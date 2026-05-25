@@ -134,7 +134,7 @@ export async function tauriRestartSidecar(): Promise<void> {
  * caller's deadline. Polling `get_api_port` directly keeps the loop
  * tight: every iteration is bounded by `pollIntervalMs`.
  */
-export async function waitForSidecar(timeoutMs = 30_000): Promise<boolean> {
+export async function waitForSidecar(timeoutMs = 60_000): Promise<boolean> {
   if (typeof window !== "undefined" && !window.__TAURI_INTERNALS__) {
     return false;
   }
@@ -235,31 +235,42 @@ async function request<T>(
       },
     });
   } catch (err) {
-    // AbortError = our own timeout fired. WebKit raises a TypeError
-    // with .message = "Load failed" on any network-level failure
-    // (connection refused, DNS, etc). Translate both into something
-    // the UI can render directly.
-    const isAbort = err instanceof DOMException && err.name === "AbortError";
-    if (isAbort) {
-      throw new Error(`${path}: timed out`);
-    }
-    // Connection refused. The most common cause is a daemon respawn
-    // (launchd KeepAlive, autostart toggle, install rebuild) that
-    // picked a new random port - leaving our cachedPort stale. Re-
-    // resolve the port file and retry once before surfacing the
-    // error to the UI. This single retry costs ~50ms when the daemon
-    // is up and ~3s when it isn't (TCP probe timeout in Rust).
+    // Two failure modes the cached-port path can hit, BOTH of
+    // which need the same recovery (re-resolve the port file +
+    // replay once):
+    //
+    //   1. AbortError = our own timeout fired. The cached port is
+    //      bound by SOMETHING (so connection wasn't refused), but
+    //      nothing is responding in time. Most often this is the
+    //      daemon respawned on a new port and the OLD port got
+    //      reused by an unrelated process / TIME_WAIT lingering /
+    //      etc - our fetch reaches it but no response ever comes.
+    //
+    //   2. WebKit TypeError "Load failed" = connection refused,
+    //      DNS error, TLS error, etc. Usually the daemon
+    //      respawned on a new port and the OLD port is fully
+    //      closed.
+    //
+    // Previously we only retried on case 2; case 1 left the GUI
+    // permanently stuck on "/api/state: timed out" with no path
+    // forward except quit-and-reopen. Reported 2026-05-25:
+    // "It's been fucking stuck in time out. When I click restart
+    // it just shows 'restarting' for forever."
     //
     // Skipped when init.noRetry is true: the caller has opted out
-    // because the request is non-idempotent and replaying it could
-    // double-execute (e.g. consume two seats from the billing
-    // provider when the daemon dies mid-activation).
+    // because the request is non-idempotent and replaying it
+    // could double-execute (e.g. consume two seats from the
+    // billing provider when the daemon dies mid-activation).
+    const isAbort = err instanceof DOMException && err.name === "AbortError";
     if (_retryCount === 0 && !init?.noRetry) {
       const refreshed = await refreshPort();
       if (refreshed) {
         clearTimeout(timer);
         return request<T>(path, init, 1);
       }
+    }
+    if (isAbort) {
+      throw new Error(`${path}: timed out`);
     }
     throw new Error("Could not connect to Delfi. Please restart the app.");
   } finally {

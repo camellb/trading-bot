@@ -346,12 +346,12 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
       // Wait for the daemon to come back, then reload. If it doesn't
       // come back within 30 s, surface a concrete next step instead
       // of an infinite spinner.
-      const alive = await waitForSidecar(30_000);
+      const alive = await waitForSidecar(60_000);
       if (alive) {
         window.location.reload();
       } else {
         setRestartError(
-          "Daemon did not come back. Quit Delfi from the macOS menu " +
+          "Delfi did not come back. Quit Delfi from the macOS menu " +
           "bar and reopen from /Applications.",
         );
         setRestarting(false);
@@ -400,12 +400,12 @@ function BootScreen({ error }: { error: string | null }) {
       // re-runs its boot probe with a clean cache. If the daemon
       // doesn't come back within 30 s, surface a concrete next step
       // instead of an infinite spinner.
-      const alive = await waitForSidecar(30_000);
+      const alive = await waitForSidecar(60_000);
       if (alive) {
         window.location.reload();
       } else {
         setRestartError(
-          "Daemon did not come back. Quit Delfi from the macOS menu " +
+          "Delfi did not come back. Quit Delfi from the macOS menu " +
           "bar and reopen from /Applications.",
         );
         setRestarting(false);
