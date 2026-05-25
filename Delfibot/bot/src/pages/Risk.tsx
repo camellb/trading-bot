@@ -226,6 +226,7 @@ function ExitPolicyPanel({
         <div style={{ marginBottom: 18 }}>
           <ToggleRow
             label="Early exits"
+            description="Master switch. When off, every position runs to natural settlement."
             checked={form.exit_policy_enabled}
             onChange={(v) => setForm({ ...form, exit_policy_enabled: v })}
           />
@@ -235,6 +236,7 @@ function ExitPolicyPanel({
           <div style={{ marginBottom: 12 }}>
             <ToggleRow
               label="Take-profit"
+              description="Sell positions that have gained enough vs. entry."
               checked={form.take_profit_enabled}
               onChange={(v) => setForm({ ...form, take_profit_enabled: v })}
               disabled={disabled}
@@ -246,6 +248,7 @@ function ExitPolicyPanel({
               fractionRange={BOUNDS.take_profit_threshold_pct}
               fractionValue={form.take_profit_threshold_pct}
               onChangeFraction={(v) => setForm({ ...form, take_profit_threshold_pct: v })}
+              note="Close once unrealized gain reaches this % of cost."
             />
           </div>
         </div>
@@ -254,6 +257,7 @@ function ExitPolicyPanel({
           <div style={{ marginBottom: 12 }}>
             <ToggleRow
               label="Stop-loss"
+              description="Cut positions that have lost enough vs. entry."
               checked={form.stop_loss_enabled}
               onChange={(v) => setForm({ ...form, stop_loss_enabled: v })}
               disabled={disabled}
@@ -265,12 +269,14 @@ function ExitPolicyPanel({
               fractionRange={BOUNDS.stop_loss_threshold_pct}
               fractionValue={form.stop_loss_threshold_pct}
               onChangeFraction={(v) => setForm({ ...form, stop_loss_threshold_pct: v })}
+              note="Close once unrealized loss reaches this % of cost."
             />
             <PercentField
               label="Stop-loss grace period" step="1"
               fractionRange={BOUNDS.stop_loss_min_time_remaining_pct}
               fractionValue={form.stop_loss_min_time_remaining_pct}
               onChangeFraction={(v) => setForm({ ...form, stop_loss_min_time_remaining_pct: v })}
+              note="Hold off on stop-loss until this % of time-to-settlement has passed."
             />
           </div>
         </div>
@@ -279,6 +285,7 @@ function ExitPolicyPanel({
           <div style={{ marginBottom: 12 }}>
             <ToggleRow
               label="Time-based exit"
+              description="Drop positions that haven't moved much after a long hold."
               checked={form.time_decay_enabled}
               onChange={(v) => setForm({ ...form, time_decay_enabled: v })}
               disabled={disabled}
@@ -290,12 +297,14 @@ function ExitPolicyPanel({
               range={BOUNDS.time_decay_max_hours}
               value={form.time_decay_max_hours}
               onChange={(v) => setForm({ ...form, time_decay_max_hours: v })}
+              note="Time-based exit fires after this many hours."
             />
             <PercentField
               label="Flat-move threshold" step="1"
               fractionRange={BOUNDS.time_decay_flat_band_pct}
               fractionValue={form.time_decay_flat_band_pct}
               onChangeFraction={(v) => setForm({ ...form, time_decay_flat_band_pct: v })}
+              note="Only exit if |P&L| is still within this % of cost (i.e. flat)."
             />
           </div>
         </div>
@@ -308,14 +317,9 @@ function ExitPolicyPanel({
               range={BOUNDS.exit_min_time_to_resolution_minutes}
               value={form.exit_min_time_to_resolution_minutes}
               onChange={(v) => setForm({ ...form, exit_min_time_to_resolution_minutes: v })}
+              note="Inside this window, Delfi holds every position to natural settlement. Selling this close costs more in spread + fees than it could gain."
             />
           </div>
-          <span className="form-hint">
-            Applies to all three rules. Within this window, Delfi
-            holds every position until the market resolves. The
-            bid-ask spread plus Polymarket fees would erase any gain
-            from selling this close to settlement.
-          </span>
         </div>
 
         <div className="form-actions" style={{ marginTop: 20 }}>
