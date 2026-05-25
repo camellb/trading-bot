@@ -231,6 +231,62 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                 telegram_html: str | None = None
                 try:
                     from feeds import telegram_messages as _tm
+                    # Force-refresh the Polymarket /positions cache
+                    # before fetching stats so the just-settled
+                    # position is OUT of locked_capital. Without
+                    # this, get_portfolio_stats() returns a stale
+                    # locked sum that still includes this position's
+                    # currentValue while bankroll ALREADY reflects
+                    # the redeem proceeds via the wallet probe -
+                    # the position gets double-counted in equity.
+                    # User screenshot 2026-05-25: Israel WIN showed
+                    # equity $51.89 = bankroll $13.72 + locked
+                    # $38.17, but actual equity was ~$38.71;
+                    # Israel was double-counted ($13.18 in both).
+                    # This is a scheduled job, not an HTTP request
+                    # path, so a synchronous cache refresh here is
+                    # safe (the GIL-wedge concern from a8e9625's
+                    # revert applies only to /api/* handlers).
+                    try:
+                        from feeds.polymarket_wallet import (
+                            _refresh_positions_cache,
+                            _refresh_closed_realized_cache,
+                            get_poly_signer_info,
+                            _POSITIONS_VALUE_LOCK,
+                        )
+                        from engine.user_config import (
+                            get_active_polymarket_creds,
+                            get_user_config as _gcfg,
+                        )
+                        _cfg = _gcfg(user_id)
+                        _creds = get_active_polymarket_creds(_cfg)
+                        _pk = (_creds or {}).get("private_key")
+                        if _pk:
+                            _info = get_poly_signer_info(_pk)
+                            _funder = (_info or {}).get("funder")
+                            if _funder:
+                                _acq = _POSITIONS_VALUE_LOCK.acquire(
+                                    blocking=False,
+                                )
+                                if _acq:
+                                    try:
+                                        _refresh_positions_cache(_funder)
+                                    finally:
+                                        _POSITIONS_VALUE_LOCK.release()
+                                # The closed-positions cache also
+                                # needs a refresh so realized_pnl
+                                # picks up this just-redeemed winner.
+                                try:
+                                    _refresh_closed_realized_cache(_funder)
+                                except Exception:
+                                    pass
+                    except Exception as exc:
+                        print(
+                            f"[pm_runner] settle-time cache refresh "
+                            f"failed for position #{p.get('id')}: "
+                            f"{type(exc).__name__}: {exc}",
+                            file=sys.stderr, flush=True,
+                        )
                     # Pull both values from the same stats snapshot so
                     # they agree. bankroll = cash available to deploy;
                     # equity = cash + cost-basis of all open positions.
