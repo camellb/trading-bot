@@ -170,51 +170,84 @@ export default function Dashboard({ state, goto }: Props) {
 
   // Equity time-series for the dashboard chart.
   //
-  // PRIMARY SOURCE: equity_snapshots written by the daemon every
-  // ~10 min. Each row carries the actual (bankroll, open_cost,
-  // equity) triple captured at `ts`. Plotting them directly means a
-  // wallet deposit shows up as a natural step-up on the day it
-  // happened - we never retcon past values.
+  // Strategy: ALWAYS show the full historical curve back to the
+  // first settled trade, then transition to real snapshots once
+  // the daemon has been recording them.
   //
-  // FALLBACK: when the snapshot table has <2 rows (fresh install,
-  // first 20 min of uptime) we reconstruct a curve from settled
-  // positions: start at (current_equity - total_realized), step by
-  // each realized_pnl_usd, land at current_equity. This path
-  // silently retcons history on deposit but is the best we can do
-  // before real snapshots accumulate. The curve transitions to the
-  // accurate snapshot-based view as soon as the 2nd snapshot lands.
+  // HISTORICAL PORTION: back-stepped from the equity at the
+  // anchor point (= first snapshot's equity, or current equity if
+  // no snapshots exist yet) through every settled position
+  // chronologically. This reproduces the pre-snapshot chart 1:1
+  // for the period before equity_snapshots existed.
+  //
+  // SNAPSHOT PORTION: real (ts, equity) points captured by the
+  // daemon every ~10 min. Joined smoothly to the historical
+  // portion at the first snapshot's ts (the back-step's last
+  // point lands at the same equity value, so the visual is a
+  // continuous curve).
+  //
+  // Deposits/withdrawals show as natural step-ups in the snapshot
+  // region. Historical region cannot capture deposits made BEFORE
+  // the first snapshot (we don't track historical deposit events)
+  // but the user's full trading history is still visible.
   //
   // Same logic mirrored in Performance.tsx.
   const equitySeries = useMemo(() => {
-    if (equitySnapshots.length >= 2) {
-      return equitySnapshots.map((s) => ({ ts: s.ts, v: s.equity }));
+    if (settled.length === 0 && equitySnapshots.length === 0) {
+      return [] as { ts: string; v: number }[];
     }
-    if (settled.length === 0) return [] as { ts: string; v: number }[];
+
     const sorted = [...settled].sort((a, b) =>
       ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1),
     );
-    const totalRealized = sorted.reduce(
+
+    // Anchor: first snapshot if available, else current equity.
+    let anchorTs: string;
+    let anchorEquity: number;
+    let beforeAnchor: typeof sorted;
+    if (equitySnapshots.length > 0) {
+      const firstSnap = equitySnapshots[0];
+      anchorTs = firstSnap.ts;
+      anchorEquity = firstSnap.equity;
+      beforeAnchor = sorted.filter((r) =>
+        (r.settled_at ?? "") < anchorTs,
+      );
+    } else {
+      anchorTs = "";
+      anchorEquity = summary?.equity ?? summary?.starting_cash ?? 0;
+      beforeAnchor = sorted;
+    }
+
+    // Walk backward from the anchor through every settled position
+    // before it to recover the starting equity, then walk forward
+    // emitting one chart point per settled event.
+    const realizedBefore = beforeAnchor.reduce(
       (s, r) => s + ((r.realized_pnl_usd as number | null | undefined) ?? 0),
       0,
     );
-    const currentEquity = summary?.equity ?? summary?.starting_cash ?? 0;
-    const start = currentEquity - totalRealized;
-    // Starting-anchor timestamp: derive from the first settlement so
-    // the leftmost point on the chart has a real date/time in the
-    // hover tooltip. Backdate by 60s so the anchor visibly precedes
-    // the first settlement on the X axis.
-    const firstSettlement = sorted[0].settled_at as string | null | undefined;
-    const anchorTs = firstSettlement
-      ? new Date(new Date(firstSettlement).getTime() - 60_000).toISOString()
-      : "";
-    let cum = start;
-    return [
-      { ts: anchorTs, v: start },
-      ...sorted.map((r) => {
+    const startEquity = anchorEquity - realizedBefore;
+    const historical: { ts: string; v: number }[] = [];
+    if (beforeAnchor.length > 0) {
+      const firstTs = beforeAnchor[0].settled_at as string | null | undefined;
+      const startTs = firstTs
+        ? new Date(new Date(firstTs).getTime() - 60_000).toISOString()
+        : "";
+      historical.push({ ts: startTs, v: startEquity });
+      let cum = startEquity;
+      for (const r of beforeAnchor) {
         cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
-        return { ts: (r.settled_at as string | null | undefined) ?? "", v: cum };
-      }),
-    ];
+        historical.push({ ts: (r.settled_at as string | null | undefined) ?? "", v: cum });
+      }
+    }
+
+    // Append real snapshots after the historical portion. The first
+    // snapshot's equity equals the back-step's last value, so the
+    // curve transitions smoothly.
+    const snapshotPoints = equitySnapshots.map((s) => ({
+      ts: s.ts, v: s.equity,
+    }));
+
+    return [...historical, ...snapshotPoints];
   }, [summary, settled, equitySnapshots]);
 
   const activity = useMemo(

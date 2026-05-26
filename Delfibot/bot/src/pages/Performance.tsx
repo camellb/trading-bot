@@ -143,53 +143,72 @@ export default function Performance() {
   }, [filtered, summary]);
 
   const equitySeries = useMemo(() => {
-    // PRIMARY SOURCE: equity_snapshots written by the daemon every
-    // ~10 min. Plotting these directly means deposits/withdrawals
-    // show as natural step-ups at the actual time they happened,
-    // instead of parallel-shifting the entire historical curve.
+    // Same strategy as Dashboard.tsx: full historical back-step
+    // from the first settled trade up to the first snapshot, then
+    // real snapshot points afterward. Joined smoothly at the first
+    // snapshot's ts. See Dashboard.tsx for the long-form rationale.
     //
-    // For 30d/7d ranges we filter snapshots by ts cutoff. The
-    // all-time range plots every snapshot we have.
-    if (equitySnapshots.length > 0) {
-      let pool = equitySnapshots;
-      if (range !== "all") {
-        const days = RANGE_DAYS[range];
-        const cutoffMs = Date.now() - days * 86_400_000;
-        pool = pool.filter((s) => {
-          const t = Date.parse(s.ts);
-          return Number.isFinite(t) && t >= cutoffMs;
-        });
-      }
-      if (pool.length >= 2) {
-        return pool.map((s) => ({ ts: s.ts, v: s.equity }));
-      }
+    // For 30d / 7d windowed ranges we restrict BOTH the back-step
+    // input (already pre-filtered into `filtered`) AND the snapshot
+    // pool to the same time window so the chart stays scoped.
+    if (filtered.length === 0 && equitySnapshots.length === 0) {
+      return [] as { ts: string; v: number }[];
     }
 
-    // FALLBACK: not enough snapshots yet (fresh install, first 20
-    // min of uptime, or the requested window is shorter than the
-    // snapshot history). Reconstruct from settled-position realized
-    // P&L. Endpoint anchors to current equity for all-time, to
-    // starting_cash for windowed ranges. Same back-step logic the
-    // chart used before equity_snapshots existed; will be replaced
-    // by real snapshots within minutes of accumulating enough rows.
-    if (filtered.length === 0) return [] as { ts: string; v: number }[];
-    const totalRealized = filtered.reduce(
+    let snapshotPool = equitySnapshots;
+    if (range !== "all") {
+      const days = RANGE_DAYS[range];
+      const cutoffMs = Date.now() - days * 86_400_000;
+      snapshotPool = snapshotPool.filter((s) => {
+        const t = Date.parse(s.ts);
+        return Number.isFinite(t) && t >= cutoffMs;
+      });
+    }
+
+    // Anchor: first snapshot in the window, else current equity
+    // (all-time) or starting_cash (windowed).
+    let anchorTs: string;
+    let anchorEquity: number;
+    let beforeAnchor: typeof filtered;
+    if (snapshotPool.length > 0) {
+      const firstSnap = snapshotPool[0];
+      anchorTs = firstSnap.ts;
+      anchorEquity = firstSnap.equity;
+      beforeAnchor = filtered.filter((r) =>
+        (r.settled_at ?? "") < anchorTs,
+      );
+    } else {
+      anchorTs = "";
+      anchorEquity = range === "all"
+        ? (summary?.equity ?? summary?.starting_cash ?? 0)
+        : (summary?.starting_cash ?? 0);
+      beforeAnchor = filtered;
+    }
+
+    const realizedBefore = beforeAnchor.reduce(
       (s, r) => s + ((r.realized_pnl_usd as number | null | undefined) ?? 0),
       0,
     );
-    const currentEquity = summary?.equity ?? summary?.starting_cash ?? 0;
-    const start = range === "all"
-      ? currentEquity - totalRealized
-      : summary?.starting_cash ?? 0;
-    let cum = start;
-    const firstSettlement = filtered[0]?.settled_at as string | null | undefined;
-    const anchorTs = firstSettlement
-      ? new Date(new Date(firstSettlement).getTime() - 60_000).toISOString()
-      : "";
-    return [{ ts: anchorTs, v: start }, ...filtered.map((r) => {
-      cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
-      return { ts: r.settled_at ?? "", v: cum };
-    })];
+    const startEquity = anchorEquity - realizedBefore;
+    const historical: { ts: string; v: number }[] = [];
+    if (beforeAnchor.length > 0) {
+      const firstTs = beforeAnchor[0].settled_at as string | null | undefined;
+      const startTs = firstTs
+        ? new Date(new Date(firstTs).getTime() - 60_000).toISOString()
+        : "";
+      historical.push({ ts: startTs, v: startEquity });
+      let cum = startEquity;
+      for (const r of beforeAnchor) {
+        cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
+        historical.push({ ts: r.settled_at ?? "", v: cum });
+      }
+    }
+
+    const snapshotPoints = snapshotPool.map((s) => ({
+      ts: s.ts, v: s.equity,
+    }));
+
+    return [...historical, ...snapshotPoints];
   }, [summary, filtered, range, equitySnapshots]);
 
   return (
