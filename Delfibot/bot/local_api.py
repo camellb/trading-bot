@@ -2067,13 +2067,24 @@ class LocalAPI:
 
         def _read():
             engine = get_engine()
+            # LEFT JOIN to predictions so the Skipped tab can show the
+            # counterfactual P&L the bot WOULD have made if it hadn't
+            # skipped (predictions.resolved_pnl_usd, stamped at $5
+            # stake by the resolver job), plus the market's actual
+            # resolution timestamp (predictions.resolved_at). Both are
+            # NULL until the market settles, which is the correct
+            # signal for the frontend to render dashes.
+            from sqlalchemy import text as _sa_text
             with engine.connect() as conn:
-                stmt = (
-                    select(market_evaluations)
-                    .order_by(desc(market_evaluations.c.evaluated_at))
-                    .limit(limit)
-                )
-                return [dict(r._mapping) for r in conn.execute(stmt)]
+                rows = conn.execute(_sa_text(
+                    "SELECT me.*, pr.resolved_at AS resolved_at, "
+                    "       pr.resolved_pnl_usd AS resolved_pnl_usd "
+                    "FROM market_evaluations me "
+                    "LEFT JOIN predictions pr ON pr.id = me.prediction_id "
+                    "ORDER BY me.evaluated_at DESC "
+                    "LIMIT :lim"
+                ), {"lim": limit}).fetchall()
+                return [dict(r._mapping) for r in rows]
         try:
             rows = await self._offload(_read)
         except Exception as exc:

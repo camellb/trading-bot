@@ -591,7 +591,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         <div>Size</div>
         <div>M YES %</div>
         <div>D YES %</div>
-        <div>D CONF</div>
+        <div>P&amp;L</div>
         <div>Opened</div>
         <div>Closes</div>
         <div />
@@ -600,9 +600,21 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
         const mYesPct = Math.round(marketYes * 100);
         const cp = (p.delfi_probability as number | null | undefined) ?? null;
-        const cf = (p.confidence as number | null | undefined) ?? null;
         const dYesPct = cp != null ? Math.round(cp * 100) : null;
-        const dConfPct = cf != null ? Math.round(cf * 100) : null;
+        // P&L = mark-to-market value minus cost basis. NULL during the
+        // first ~60s after open before the exit-policy job stamps
+        // current_value_usd, in which case the cell renders an em-dash.
+        const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+          | number | null | undefined;
+        const havePnlMark = cv != null && p.shares > 0;
+        const pnlVal = havePnlMark ? (Number(cv) - p.cost_usd) : null;
+        const pnlClass = pnlVal == null ? ""
+          : pnlVal > 0 ? "profit"
+          : pnlVal < 0 ? "loss" : "";
+        const pnlText = pnlVal == null ? "—"
+          : pnlVal > 0 ? `+$${pnlVal.toFixed(2)}`
+          : pnlVal < 0 ? `-$${Math.abs(pnlVal).toFixed(2)}`
+          : "$0.00";
         const isOpen = expanded.has(p.id);
         const reasoning = ((p.reasoning as string | null | undefined) ?? "").trim();
         const slug = p.slug as string | null | undefined;
@@ -626,10 +638,10 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
               <div className="pos-q">{p.question}</div>
               <div className="pos-cat">{category ?? "-"}</div>
               <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-              <div className="pos-num t-num">${p.cost_usd.toFixed(0)}</div>
+              <div className="pos-num t-num">${p.cost_usd.toFixed(2)}</div>
               <div className="pos-num t-num">{mYesPct}%</div>
               <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
-              <div className="pos-num t-num">{dConfPct != null ? `${dConfPct}%` : "-"}</div>
+              <div className={`pos-num t-num ${pnlClass}`}>{pnlText}</div>
               <div className="pos-num t-num">{timeAgo(p.created_at)}</div>
               <div className="pos-closes t-num">{daysFromNow(closesAt)}</div>
               <div className={`pos-chevron ${isOpen ? "open" : ""}`}>▸</div>

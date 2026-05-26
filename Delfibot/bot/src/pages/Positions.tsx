@@ -71,9 +71,9 @@ type OpenSk    = "market" | "category" | "side" | "size"
                 | "avg"   | "now"      | "value" | "pnl"
                 | "myes"  | "dyes"     | "dconf" | "opened" | "closes";
 type ClosedSk  = "market" | "category" | "side" | "outcome"
-                | "entry" | "myes"     | "dyes"  | "pnl" | "settled";
+                | "size"  | "myes"     | "dyes"  | "pnl" | "settled";
 type SkippedSk = "market" | "category" | "myes" | "dyes"
-                | "dconf" | "evaluated";
+                | "pnl"   | "closed";
 
 function openKpi(p: PMPosition, f: OpenSk): SortKey {
   switch (f) {
@@ -128,7 +128,7 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
       const won = o ? o === p.side : ((p.realized_pnl_usd as number | null) ?? 0) >= 0;
       return won ? "WON" : "LOST";
     }
-    case "entry":    return p.entry_price;
+    case "size":     return p.cost_usd;
     case "myes":     return p.side === "YES" ? p.entry_price : 1 - p.entry_price;
     case "dyes":     return (p.delfi_probability as number | null) ?? null;
     case "pnl":      return (p.realized_pnl_usd as number | null) ?? null;
@@ -213,9 +213,9 @@ function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
     case "category": return e.category ?? "";
     case "myes":     return e.market_price_yes ?? null;
     case "dyes":     return e.delfi_probability ?? null;
-    case "dconf":    return e.confidence ?? null;
-    case "evaluated": {
-      const iso = e.evaluated_at;
+    case "pnl":      return (e.resolved_pnl_usd as number | null | undefined) ?? null;
+    case "closed": {
+      const iso = (e.resolved_at as string | null | undefined) ?? null;
       return iso ? new Date(iso).getTime() : null;
     }
   }
@@ -334,7 +334,7 @@ export default function Positions() {
   // what users will scan for in that view.
   const openSort    = useSort<OpenSk>("size", "desc");
   const closedSort  = useSort<ClosedSk>("settled", "desc");
-  const skippedSort = useSort<SkippedSk>("evaluated", "desc");
+  const skippedSort = useSort<SkippedSk>("closed", "desc");
 
   const openRows = useMemo(
     () => openSort.apply(open, openKpi),
@@ -434,10 +434,9 @@ export default function Positions() {
                 <col style={{ width: "auto" }} />
                 <col style={{ width: "10%" }} />
                 <col style={{ width: "56px" }} />
-                <col style={{ width: "64px" }} />
-                <col style={{ width: "64px" }} />
-                <col style={{ width: "64px" }} />
-                <col style={{ width: "64px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
@@ -449,10 +448,9 @@ export default function Positions() {
                   <SortableTh field="market"   sort={openSort}>Market</SortableTh>
                   <SortableTh field="category" sort={openSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={openSort}>Side</SortableTh>
-                  <SortableTh field="avg"      sort={openSort}>Avg</SortableTh>
-                  <SortableTh field="now"      sort={openSort}>Now</SortableTh>
-                  <SortableTh field="size"     sort={openSort}>Traded</SortableTh>
-                  <SortableTh field="value"    sort={openSort}>Value</SortableTh>
+                  <SortableTh field="size"     sort={openSort}>Size</SortableTh>
+                  <SortableTh field="myes"     sort={openSort}>M YES %</SortableTh>
+                  <SortableTh field="dyes"     sort={openSort}>D YES %</SortableTh>
                   <SortableTh field="pnl"      sort={openSort}>P&amp;L</SortableTh>
                   <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
                   <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
@@ -475,14 +473,19 @@ export default function Positions() {
                   const cv  = (p as unknown as Record<string, unknown>).current_value_usd as
                     | number | null | undefined;
                   const haveMark = cv != null && p.shares > 0;
-                  const nowPx = haveMark ? (Number(cv) / p.shares) : null;
-                  const value = haveMark ? Number(cv) : null;
                   const pnl   = haveMark ? (Number(cv) - p.cost_usd) : null;
                   const pnlClass =
                     pnl == null ? ""
                     : pnl > 0 ? "cell-up"
                     : pnl < 0 ? "cell-down"
                     : "";
+                  // Market YES probability at entry. For YES bets the
+                  // bought-side price IS the YES probability; for NO
+                  // bets we flip (entry_price = NO price = 1 - YES).
+                  const marketYesEntry = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
+                  const mYesPct = Math.round(marketYesEntry * 100);
+                  const dCp = (p.delfi_probability as number | null | undefined) ?? null;
+                  const dYesPct = dCp != null ? Math.round(dCp * 100) : null;
                   return (
                     <React.Fragment key={p.id}>
                       <tr
@@ -494,10 +497,9 @@ export default function Positions() {
                         <td className="truncate" title={p.question}>{p.question}</td>
                         <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
-                        <td className="mono">${p.entry_price.toFixed(3)}</td>
-                        <td className="mono">{nowPx != null ? `$${nowPx.toFixed(3)}` : "—"}</td>
-                        <td className="mono">${p.cost_usd.toFixed(0)}</td>
-                        <td className="mono">{value != null ? `$${value.toFixed(2)}` : "—"}</td>
+                        <td className="mono">${p.cost_usd.toFixed(2)}</td>
+                        <td className="mono">{mYesPct}%</td>
+                        <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className={`mono ${pnlClass}`}>{
                           pnl == null ? "—"
                           : pnl > 0 ? `+$${pnl.toFixed(2)}`
@@ -519,7 +521,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={12} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={11} style={{ padding: "16px 20px 22px" }}>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -614,12 +616,12 @@ export default function Positions() {
                   <SortableTh field="market"   sort={closedSort}>Market</SortableTh>
                   <SortableTh field="category" sort={closedSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
-                  <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
-                  <SortableTh field="entry"    sort={closedSort}>Entry</SortableTh>
+                  <SortableTh field="size"     sort={closedSort}>Size</SortableTh>
                   <SortableTh field="myes"     sort={closedSort}>M YES %</SortableTh>
                   <SortableTh field="dyes"     sort={closedSort}>D YES %</SortableTh>
                   <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
-                  <SortableTh field="settled"  sort={closedSort}>Settled</SortableTh>
+                  <SortableTh field="settled"  sort={closedSort}>Closed</SortableTh>
+                  <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
                 </tr>
               </thead>
               <tbody>
@@ -673,14 +675,14 @@ export default function Positions() {
                       <td>{s.question}</td>
                       <td>{category ?? "-"}</td>
                       <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
-                      <td><span className={outcomeClass}>{outcomeLabel}</span></td>
-                      <td className="mono">{s.entry_price.toFixed(3)}</td>
+                      <td className="mono">${s.cost_usd.toFixed(2)}</td>
                       <td className="mono">{mYesPct}%</td>
                       <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                       <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
                       <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
                         {settledAt ? timeAgo(settledAt) : "-"}
                       </td>
+                      <td><span className={outcomeClass}>{outcomeLabel}</span></td>
                     </tr>
                   );
                 })}
@@ -712,9 +714,9 @@ export default function Positions() {
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
                   <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
                   <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
-                  <SortableTh field="dconf"     sort={skippedSort}>D CONF</SortableTh>
-                  <SortableTh field="evaluated" sort={skippedSort}>Evaluated</SortableTh>
-                  <th>Result</th>
+                  <SortableTh field="pnl"       sort={skippedSort}>P&amp;L</SortableTh>
+                  <SortableTh field="closed"    sort={skippedSort}>Closed</SortableTh>
+                  <th>Outcome</th>
                   <th style={{ width: 28 }} />
                 </tr>
               </thead>
@@ -723,7 +725,19 @@ export default function Positions() {
                   const isOpen = expandedEval.has(e.id);
                   const dYesPct = e.delfi_probability != null ? Math.round(e.delfi_probability * 100) : null;
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
-                  const dConfPct = e.confidence != null ? Math.round(e.confidence * 100) : null;
+                  // Counterfactual P&L the bot WOULD have made at a $5
+                  // stake had it not skipped (joined from predictions
+                  // via /api/evaluations). NULL while the market is
+                  // still trading; rendered as "-" in that case.
+                  const cfPnl = (e.resolved_pnl_usd as number | null | undefined) ?? null;
+                  const cfPnlClass = cfPnl == null ? ""
+                    : cfPnl > 0 ? "cell-up"
+                    : cfPnl < 0 ? "cell-down" : "";
+                  const cfPnlText = cfPnl == null ? "—"
+                    : cfPnl > 0 ? `+$${cfPnl.toFixed(2)}`
+                    : cfPnl < 0 ? `-$${Math.abs(cfPnl).toFixed(2)}`
+                    : "$0.00";
+                  const resolvedAt = (e.resolved_at as string | null | undefined) ?? null;
                   const reasoning = (e.reasoning ?? "").trim();
                   // Explicit decision-path reason ("Delfi disagrees with
                   // the market", "Research does not match this event",
@@ -749,9 +763,9 @@ export default function Positions() {
                         <td>{e.category ?? "-"}</td>
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
-                        <td className="mono">{dConfPct != null ? `${dConfPct}%` : "-"}</td>
-                        <td className="mono" title={e.evaluated_at ? fmtDateTime(e.evaluated_at) : ""}>
-                          {e.evaluated_at ? timeAgo(e.evaluated_at) : "-"}
+                        <td className={`mono ${cfPnlClass}`}>{cfPnlText}</td>
+                        <td className="mono" title={resolvedAt ? fmtDateTime(resolvedAt) : ""}>
+                          {resolvedAt ? timeAgo(resolvedAt) : "—"}
                         </td>
                         <td>
                           {(() => {
@@ -863,16 +877,12 @@ export default function Positions() {
           ) : (
             <table className="table-simple" style={{ tableLayout: "fixed", width: "100%" }}>
               <colgroup>
-                {/* Market: takes a comfortable chunk; truncates long
-                    questions. Category: short tag. Side: pill
-                    width. Size: enough for "$1234" without
-                    wrapping. Reason: takes the rest, which is the
-                    column with real information density. When:
-                    short relative-time cell. */}
+                {/* Market: comfortable chunk; truncates long
+                    questions. Category: short tag. Reason: takes
+                    the rest, the column with real information
+                    density. When: short relative-time cell. */}
                 <col style={{ width: "26%" }} />
                 <col style={{ width: 96 }} />
-                <col style={{ width: 64 }} />
-                <col style={{ width: 80 }} />
                 <col />
                 <col style={{ width: 96 }} />
               </colgroup>
@@ -880,8 +890,6 @@ export default function Positions() {
                 <tr>
                   <th>Market</th>
                   <th>Category</th>
-                  <th>Side</th>
-                  <th>Size</th>
                   <th>Reason</th>
                   <th>When</th>
                 </tr>
@@ -897,9 +905,12 @@ export default function Positions() {
                     /^Order rejected on '(.+?)':\s*(\S+)\s+([\d.]+)@\$([\d.]+)\.\s*(.*)$/
                   );
                   const question = m?.[1] ?? "—";
-                  const side     = m?.[2] ?? "—";
-                  const size     = m?.[3] ?? null;
-                  const price    = m?.[4] ?? null;
+                  // side/size/price are still parsed out of the
+                  // description regex so they can be surfaced if we
+                  // want richer error rendering later (e.g. in an
+                  // expanded row), but they're no longer their own
+                  // table columns - user wanted Errors collapsed to
+                  // {market, category, reason, when} only.
                   const reasonRaw = m?.[5] ?? desc;
                   // Pull the human-readable error out of the SDK's
                   // PolyApiException wrapper for prettier display.
@@ -907,10 +918,6 @@ export default function Positions() {
                     /error_message=\{'error':\s*'(.+?)'\}/
                   );
                   const reason = humanizePolymarketError(polyErr?.[1] ?? reasonRaw);
-                  const sideClass =
-                    side === "YES" ? "side-yes"
-                    : side === "NO" ? "side-no"
-                    : "";
                   // Resolve category by matching the parsed question
                   // text against the positions/evaluations map built
                   // above. The error description's question used to
@@ -936,12 +943,6 @@ export default function Positions() {
                     <tr key={row.id}>
                       <td className="truncate" title={question}>{question}</td>
                       <td className="truncate" title={categoryText}>{categoryText}</td>
-                      <td className={`mono ${sideClass}`}>{side}</td>
-                      <td className="mono" style={{ whiteSpace: "nowrap" }}>
-                        {size && price
-                          ? `$${(Number(size) * Number(price)).toFixed(0)}`
-                          : "—"}
-                      </td>
                       <td
                         style={{
                           color: "var(--vellum-60)",

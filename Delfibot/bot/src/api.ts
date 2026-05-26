@@ -689,6 +689,14 @@ export interface MarketEvaluation {
   // for non-SKIP rows and for legacy rows recorded before this
   // field was added.
   skip_reason?: string | null;
+  // Joined from the linked predictions row (LEFT JOIN). The
+  // resolver stamps these once the market settles. Surfaces on
+  // the Skipped tab as the "P&L" + "CLOSED" columns: what the bot
+  // WOULD have made at a $5 stake had it not skipped, and when
+  // the market actually resolved. Both NULL while the market is
+  // still trading.
+  resolved_at?: string | null;
+  resolved_pnl_usd?: number | null;
   [k: string]: unknown;
 }
 
