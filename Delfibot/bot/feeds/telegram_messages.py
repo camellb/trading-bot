@@ -363,52 +363,52 @@ def first_loss(
 
 
 # ── 6. Daily summary ─────────────────────────────────────────────────────────
+#
+# Shape locked 2026-05-26 by user. Top three lines are the wallet
+# triple (Total Equity / Available Cash / Locked in trades) so the
+# user sees the same picture in Telegram that they see at the top
+# of the Dashboard. Then the two performance lines for the day.
+# Everything else (W/L counts, all-time win rate, open-position
+# counter, analysed-markets counter) was removed - too many numbers
+# telling slightly different stories.
 def daily_summary(
     *,
+    equity: float,
     bankroll: float,
-    pnl24: float,
-    resolved24: int,
-    wins24: int,
-    losses24: int,
-    win_pct: float,
-    open_positions: int,
     open_cost: float,
-    cnt24: int,
+    pnl_today: float,
+    win_pct_today: float,
 ) -> str:
     return (
         f"📊 <b>Daily summary</b>\n"
         f"\n"
-        f"Balance: ${bankroll:.2f}\n"
-        f"P/L today: ${pnl24:+.2f} ({resolved24} resolved)\n"
-        f"Today's record: {wins24}W {losses24}L\n"
-        f"All-time win rate: {win_pct:.0f}%\n"
-        f"\n"
-        f"Open positions: {open_positions} (${open_cost:.2f} at risk)\n"
-        f"Positions analysed today: {cnt24}"
+        f"Equity: ${equity:.2f}\n"
+        f"Available cash: ${bankroll:.2f}\n"
+        f"Locked in trades: ${open_cost:.2f}\n"
+        f"P/L today: ${pnl_today:+.2f}\n"
+        f"Today's win rate: {win_pct_today:.0f}%"
     )
 
 
 # ── 7. Weekly summary ────────────────────────────────────────────────────────
+#
+# Same shape as daily_summary. Different time window + label only.
 def weekly_summary(
     *,
+    equity: float,
     bankroll: float,
-    pnl7: float,
-    wins7: int,
-    losses7: int,
-    win_pct7: float,
-    win_pct_all: float,
-    pnl_all: float,
-    settled_total: int,
+    open_cost: float,
+    pnl_week: float,
+    win_pct_week: float,
 ) -> str:
     return (
         f"📈 <b>Weekly summary</b>\n"
         f"\n"
-        f"Balance: ${bankroll:.2f}\n"
-        f"P/L this week: ${pnl7:+.2f}\n"
-        f"This week's record: {wins7}W {losses7}L ({win_pct7:.0f}%)\n"
-        f"All-time win rate: {win_pct_all:.0f}%\n"
-        f"\n"
-        f"All-time P/L: ${pnl_all:+.2f} across {settled_total} positions"
+        f"Equity: ${equity:.2f}\n"
+        f"Available cash: ${bankroll:.2f}\n"
+        f"Locked in trades: ${open_cost:.2f}\n"
+        f"P/L this week: ${pnl_week:+.2f}\n"
+        f"This week's win rate: {win_pct_week:.0f}%"
     )
 
 
