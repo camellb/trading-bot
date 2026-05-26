@@ -286,6 +286,19 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
         "calibration":        [],
         "cost_validation":    None,
         "exit_policy":        exit_policy,
+        # V1.5 diagnostic slices: every section the new proposers
+        # reason about gets surfaced here so the Intelligence page
+        # can render them as "show your work" tables next to the
+        # actual suggestion cards. NULL/empty when there is not
+        # enough data; the frontend just hides those sections.
+        "horizon_pnl":             [],
+        "archetype_price_band":    [],
+        "loss_day_recovery":       None,
+        "loss_week_recovery":      None,
+        "loss_streak":             None,
+        "exit_threshold_sweep":    None,
+        "exit_policy_attribution": None,
+        "aggregate_roi":           None,
         "top_wins":           [],
         "top_losses":         [],
         "top_wins_admin":     [],
@@ -304,6 +317,55 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     # empty - if the user has no settled trades at all it will read all
     # zeros and the report still renders cleanly.
     lifetime.update(_fetch_lifetime_stats(user_id=user_id, mode=mode))
+
+    # V1.5 diagnostic slices. Pull each one in a try/except so a
+    # SQL error in any single helper doesn't sink the whole report;
+    # the frontend already tolerates null/empty for any of these.
+    try:
+        from engine import learning_diagnostics as LD
+        try:
+            data["horizon_pnl"] = LD.horizon_pnl_attribution(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] horizon_pnl slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["archetype_price_band"] = LD.archetype_price_band_pnl(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] archetype_price_band slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["loss_day_recovery"] = LD.loss_day_recovery(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] loss_day_recovery slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["loss_week_recovery"] = LD.loss_week_recovery(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] loss_week_recovery slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["loss_streak"] = LD.loss_streak_analysis(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] loss_streak slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["exit_threshold_sweep"] = LD.exit_threshold_backtest(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] exit_threshold_sweep slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["exit_policy_attribution"] = LD.exit_policy_attribution(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] exit_policy_attribution slice failed: {_exc}",
+                  file=sys.stderr)
+        try:
+            data["aggregate_roi"] = LD.aggregate_roi_and_drawdown(user_id, mode)
+        except Exception as _exc:
+            print(f"[review_report] aggregate_roi slice failed: {_exc}",
+                  file=sys.stderr)
+    except Exception as _exc:
+        print(f"[review_report] learning_diagnostics import failed: {_exc}",
+              file=sys.stderr)
 
     rows = _fetch_settled_rows(user_id=user_id, mode=mode,
                                cycle_size=cycle_size)

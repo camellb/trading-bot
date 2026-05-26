@@ -481,6 +481,155 @@ def loss_day_recovery(
     return out
 
 
+# ── Loss-WEEK recovery analysis ─────────────────────────────────────────────
+
+def loss_week_recovery(
+    user_id: str = "local",
+    mode: str = "live",
+) -> dict:
+    """Same shape as `loss_day_recovery` but bucketed by ISO week.
+
+    Drives the weekly_loss_limit_pct proposer: high recovery_rate
+    after a losing week suggests the limit can be loosened; low
+    rate suggests the bot should halt sooner so a bad week doesn't
+    cascade.
+
+    SQLite's `strftime('%Y-%W', ...)` returns "YYYY-WW" buckets
+    (week numbers 00-53). Two settled positions on the same ISO
+    week roll up to one bucket.
+    """
+    out = {
+        "n_loss_weeks":      0,
+        "n_recovered":       0,
+        "n_continued":       0,
+        "recovery_rate":     None,
+        "mean_loss_week_pnl": 0.0,
+        "mean_next_week_pnl": 0.0,
+    }
+    try:
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT strftime('%Y-%W', settled_at) AS w, "
+                "       COALESCE(SUM(realized_pnl_usd), 0) AS pnl "
+                "FROM pm_positions "
+                "WHERE user_id = :uid AND mode = :m "
+                "  AND settled_at IS NOT NULL "
+                "  AND realized_pnl_usd IS NOT NULL "
+                "  AND status IN ('settled','invalid','closed_early') "
+                "GROUP BY w ORDER BY w ASC"
+            ), {"uid": user_id, "m": mode}).fetchall()
+    except Exception as exc:
+        print(f"[learning_diagnostics] loss_week_recovery failed: {exc}",
+              file=sys.stderr)
+        return out
+
+    weekly = [(str(r[0]), float(r[1] or 0.0)) for r in rows]
+    loss_pnls: list[float] = []
+    next_pnls: list[float] = []
+    for i, (_w, pnl) in enumerate(weekly):
+        if pnl >= 0:
+            continue
+        loss_pnls.append(pnl)
+        if i + 1 < len(weekly):
+            next_pnl = weekly[i + 1][1]
+            next_pnls.append(next_pnl)
+            if next_pnl > 0:
+                out["n_recovered"] += 1
+            else:
+                out["n_continued"] += 1
+    out["n_loss_weeks"] = len(loss_pnls)
+    if loss_pnls:
+        out["mean_loss_week_pnl"] = round(sum(loss_pnls) / len(loss_pnls), 4)
+    if next_pnls:
+        out["mean_next_week_pnl"] = round(sum(next_pnls) / len(next_pnls), 4)
+        considered = out["n_recovered"] + out["n_continued"]
+        if considered > 0:
+            out["recovery_rate"] = round(out["n_recovered"] / considered, 4)
+    return out
+
+
+# ── Loss-streak analysis ────────────────────────────────────────────────────
+
+def loss_streak_analysis(
+    user_id: str = "local",
+    mode: str = "live",
+) -> dict:
+    """For each chronologically-observed loss streak of length N >= 2,
+    record the realized P&L of the trade IMMEDIATELY AFTER the streak
+    broke (the next settled position).
+
+    Drives the streak_cooldown_losses proposer: if trade-after-
+    streak P&L is consistently worse than the baseline (bot is in a
+    bad regime), the cooldown should kick in sooner; if better
+    (regimes mean-revert quickly), the cooldown can loosen.
+
+    Output:
+      {
+        "n_streaks": 8,           # total streaks of length >= 2
+        "by_length": {            # how many trades-after at each streak length
+          "2": {"n": 5, "mean_next_pnl":  0.40},
+          "3": {"n": 2, "mean_next_pnl": -1.20},
+          "4+": {"n": 1, "mean_next_pnl": -2.10},
+        },
+        "baseline_mean_pnl": 0.18, # avg P&L over ALL settled positions
+        "worst_streak_len":  4,
+      }
+    """
+    out = {
+        "n_streaks":         0,
+        "by_length":         {},
+        "baseline_mean_pnl": 0.0,
+        "worst_streak_len":  0,
+    }
+    try:
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT realized_pnl_usd "
+                "FROM pm_positions "
+                "WHERE user_id = :uid AND mode = :m "
+                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND realized_pnl_usd IS NOT NULL "
+                "  AND settled_at IS NOT NULL "
+                "ORDER BY settled_at ASC"
+            ), {"uid": user_id, "m": mode}).fetchall()
+    except Exception as exc:
+        print(f"[learning_diagnostics] loss_streak_analysis failed: {exc}",
+              file=sys.stderr)
+        return out
+
+    pnls = [float(r[0] or 0.0) for r in rows]
+    if not pnls:
+        return out
+    out["baseline_mean_pnl"] = round(sum(pnls) / len(pnls), 4)
+
+    # Walk the series. Whenever a loss streak (>=2 consecutive
+    # negatives) ENDS, capture the next trade's P&L.
+    streak = 0
+    longest = 0
+    by_len: dict[str, list[float]] = {}
+    for i, p in enumerate(pnls):
+        if p < 0:
+            streak += 1
+            if streak > longest:
+                longest = streak
+        else:
+            if streak >= 2:
+                # The current trade `p` IS the trade-after-streak.
+                key = f"{streak}" if streak < 4 else "4+"
+                by_len.setdefault(key, []).append(p)
+                out["n_streaks"] += 1
+            streak = 0
+    out["worst_streak_len"] = longest
+    out["by_length"] = {
+        k: {
+            "n":             len(v),
+            "mean_next_pnl": round(sum(v) / len(v), 4),
+        }
+        for k, v in by_len.items()
+    }
+    return out
+
+
 # ── Archetype × price-band ROI ──────────────────────────────────────────────
 
 def archetype_price_band_pnl(

@@ -224,6 +224,9 @@ def propose_suggestions(stats: dict, current: UserConfig,
     out.extend(_propose_horizon_window(diag, current))
     out.extend(_propose_base_stake(diag, current))
     out.extend(_propose_daily_loss_limit(diag, current))
+    out.extend(_propose_weekly_loss_limit(diag, current))
+    out.extend(_propose_drawdown_halt(diag, current))
+    out.extend(_propose_streak_cooldown(diag, current))
     out.extend(_propose_archetype_price_band(diag, current))
 
     return out
@@ -265,6 +268,8 @@ def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
             "exit_threshold_sweep": LD.exit_threshold_backtest(uid, mode),
             "horizon_pnl":         LD.horizon_pnl_attribution(uid, mode),
             "loss_day_recovery":   LD.loss_day_recovery(uid, mode),
+            "loss_week_recovery":  LD.loss_week_recovery(uid, mode),
+            "loss_streak":         LD.loss_streak_analysis(uid, mode),
             "archetype_price_band": LD.archetype_price_band_pnl(uid, mode),
             "aggregate_roi":       LD.aggregate_roi_and_drawdown(uid, mode),
         }
@@ -993,6 +998,214 @@ def _propose_archetype_price_band(diag: dict,
                 "value":        value,
             },
         ))
+    return out
+
+
+def _propose_weekly_loss_limit(diag: dict,
+                               current: UserConfig) -> list[Proposal]:
+    """Same logic as _propose_daily_loss_limit but scoped to ISO
+    weeks. Powers weekly_loss_limit_pct tuning.
+    """
+    out: list[Proposal] = []
+    lr = diag.get("loss_week_recovery") or {}
+    n_loss = int(lr.get("n_loss_weeks") or 0)
+    if n_loss < 4:
+        return out  # tighter sample gate: weeks are scarce
+    rec_rate = lr.get("recovery_rate")
+    if rec_rate is None:
+        return out
+    rec_rate = float(rec_rate)
+    currently = float(getattr(current, "weekly_loss_limit_pct", 0.20) or 0.20)
+    lo, hi = USER_CONFIG_BOUNDS["weekly_loss_limit_pct"]
+    proposed: Optional[float] = None
+    rationale = ""
+    if rec_rate <= 0.35:
+        proposed = max(lo, round(currently * 0.7, 4))
+        rationale = (
+            f"Weekly recovery rate after losing weeks "
+            f"{rec_rate*100:.0f}% across {n_loss} weeks is poor - "
+            f"tighten the weekly loss limit from "
+            f"{currently*100:.0f}% to {proposed*100:.0f}% so a "
+            f"bad week doesn't cascade into the next one."
+        )
+    elif rec_rate >= 0.70:
+        proposed = min(hi, round(currently * 1.3, 4))
+        rationale = (
+            f"Weekly recovery rate after losing weeks "
+            f"{rec_rate*100:.0f}% across {n_loss} weeks is strong - "
+            f"loosen the weekly loss limit from "
+            f"{currently*100:.0f}% to {proposed*100:.0f}% so the "
+            f"bot keeps trading through normal weekly variance."
+        )
+    if proposed is None or abs(proposed - currently) < 0.01:
+        return out
+    out.append(Proposal(
+        param_name="weekly_loss_limit_pct",
+        current_value=currently,
+        proposed_value=proposed,
+        evidence=rationale,
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "weekly_loss_limit_pct",
+            "value":     proposed,
+            "stats": {
+                "n_loss_weeks": n_loss,
+                "recovery_rate": round(rec_rate, 4),
+            },
+        },
+    ))
+    return out
+
+
+def _propose_drawdown_halt(diag: dict,
+                          current: UserConfig) -> list[Proposal]:
+    """Tighten drawdown_halt_pct when the observed peak drawdown
+    repeatedly approaches the halt threshold (the brake never quite
+    fired but came close); loosen when the realized drawdown over
+    a large sample stays well below the current halt (the brake is
+    over-conservative and clipping profitable variance).
+
+    Only fires after >= 50 settled trades - drawdown is a tail metric
+    and tiny samples mislead.
+    """
+    out: list[Proposal] = []
+    agg = diag.get("aggregate_roi") or {}
+    n = int(agg.get("n_settled") or 0)
+    if n < 50:
+        return out
+    peak_dd = float(agg.get("peak_drawdown") or 0.0)
+    currently = float(getattr(current, "drawdown_halt_pct", 0.40) or 0.40)
+    lo, hi = USER_CONFIG_BOUNDS["drawdown_halt_pct"]
+    proposed: Optional[float] = None
+    rationale = ""
+    if peak_dd >= currently * 0.85:
+        # Peak drawdown is uncomfortably close to the halt threshold.
+        # Tighten so the brake fires sooner next time.
+        proposed = max(lo, round(currently * 0.75, 4))
+        rationale = (
+            f"Peak drawdown {peak_dd*100:.1f}% over {n} settled trades "
+            f"sits at {peak_dd/currently*100:.0f}% of the halt at "
+            f"{currently*100:.0f}%. Tighten the halt to {proposed*100:.0f}% "
+            f"so the brake fires before drawdown gets this close again."
+        )
+    elif peak_dd <= currently * 0.40:
+        # Drawdown rarely approaches the halt. Loosen to free up
+        # tolerance for normal variance.
+        proposed = min(hi, round(currently * 1.25, 4))
+        rationale = (
+            f"Peak drawdown {peak_dd*100:.1f}% over {n} settled trades "
+            f"is only {peak_dd/currently*100:.0f}% of the halt at "
+            f"{currently*100:.0f}%. Loosen the halt to {proposed*100:.0f}% "
+            f"since the current setting clips variance the bot can absorb."
+        )
+    if proposed is None or abs(proposed - currently) < 0.02:
+        return out
+    out.append(Proposal(
+        param_name="drawdown_halt_pct",
+        current_value=currently,
+        proposed_value=proposed,
+        evidence=rationale,
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "drawdown_halt_pct",
+            "value":     proposed,
+            "stats": {
+                "n":             n,
+                "peak_drawdown": round(peak_dd, 4),
+            },
+        },
+    ))
+    return out
+
+
+def _propose_streak_cooldown(diag: dict,
+                            current: UserConfig) -> list[Proposal]:
+    """Read loss_streak_analysis and tune streak_cooldown_losses.
+
+    Logic: pick the smallest streak length whose mean trade-after-
+    streak P&L is materially worse than the baseline. That's where
+    the bot starts mean-reverting AGAINST itself. Cooldown should
+    kick in at one less (so the very-bad N+1 trade never gets
+    placed).
+
+    If no streak length shows clear mean-reversion damage AND the
+    current cooldown is restrictive, loosen by 1.
+    """
+    out: list[Proposal] = []
+    ls = diag.get("loss_streak") or {}
+    by_len = ls.get("by_length") or {}
+    baseline = float(ls.get("baseline_mean_pnl") or 0.0)
+    currently = int(getattr(current, "streak_cooldown_losses", 3) or 3)
+    lo, hi = USER_CONFIG_BOUNDS["streak_cooldown_losses"]
+
+    # Find the smallest streak length whose next-trade mean P&L is
+    # substantially worse than baseline (more than 50% drop, with at
+    # least 4 samples in that bucket).
+    bad_length: Optional[int] = None
+    for length_key in ("2", "3", "4+"):
+        bucket = by_len.get(length_key)
+        if not bucket:
+            continue
+        n_b = int(bucket.get("n") or 0)
+        mean_next = float(bucket.get("mean_next_pnl") or 0.0)
+        if n_b < 4:
+            continue
+        if baseline > 0 and mean_next < baseline * 0.5:
+            bad_length = 2 if length_key == "2" else (3 if length_key == "3" else 4)
+            break
+        if baseline <= 0 and mean_next < baseline - 0.5:
+            bad_length = 2 if length_key == "2" else (3 if length_key == "3" else 4)
+            break
+
+    proposed: Optional[int] = None
+    rationale = ""
+    if bad_length is not None:
+        # Cooldown at bad_length means: after `bad_length` losses,
+        # pause. So we set streak_cooldown_losses = bad_length.
+        proposed = max(lo, min(hi, bad_length))
+        if proposed != currently:
+            stats = by_len.get(
+                f"{bad_length}" if bad_length < 4 else "4+", {},
+            )
+            rationale = (
+                f"After streaks of {bad_length} losses, the next "
+                f"trade's mean P&L is ${stats.get('mean_next_pnl', 0):+.2f} "
+                f"vs baseline ${baseline:+.2f} - clear mean-reversion "
+                f"damage. Propose tightening cooldown from {currently} "
+                f"to {proposed} so the bot pauses before that next "
+                f"trade fires."
+            )
+    elif currently > lo:
+        # No bad-streak signal AND we have enough streaks to say
+        # so confidently. Consider loosening by 1.
+        n_streaks = int(ls.get("n_streaks") or 0)
+        if n_streaks >= 6:
+            proposed = max(lo, currently - 1)
+            if proposed != currently:
+                rationale = (
+                    f"Across {n_streaks} loss streaks of >=2, no streak "
+                    f"length shows materially worse trade-after P&L - "
+                    f"the cooldown at {currently} is conservatively "
+                    f"clipping recoveries. Loosen to {proposed}."
+                )
+    if proposed is None or proposed == currently:
+        return out
+    out.append(Proposal(
+        param_name="streak_cooldown_losses",
+        current_value=float(currently),
+        proposed_value=float(proposed),
+        evidence=rationale,
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "streak_cooldown_losses",
+            "value":     proposed,
+            "stats": {
+                "n_streaks":     int(ls.get("n_streaks") or 0),
+                "baseline_pnl":  round(baseline, 4),
+                "by_length":     by_len,
+            },
+        },
+    ))
     return out
 
 
