@@ -783,8 +783,11 @@ button { font: inherit; }
 
 .hero-deltas {
   display: flex; align-items: stretch; gap: 24px;
+  /* No border-top here: the .hero-balance-row above already has a
+     border-bottom rendering one line; adding another here drew TWO
+     parallel separators a few px apart. Keep the padding-top so the
+     deltas row still has breathing room from the single line above. */
   padding-top: 24px;
-  border-top: 1px solid var(--vellum-10);
 }
 .hero-delta { display: flex; flex-direction: column; gap: 6px; }
 .hero-delta-label {
