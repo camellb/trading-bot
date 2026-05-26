@@ -706,13 +706,14 @@ button { font: inherit; }
 .dash-hero {
   display: grid;
   grid-template-columns: 1fr 1.1fr;
-  /* gap + margin-bottom unified to 24px so the gap above the
-     bottom-of-page panels matches the gap between hero-balance
-     and hero-chart (stacked) and matches the .dash-grid card gap.
-     Was 32px gap / 20px margin-bottom; user (2026-05-26) flagged
-     the visible inconsistency. */
+  /* gap + margin-top + margin-bottom unified to 24px so the gap
+     between sections is identical everywhere: page-head -> hero,
+     idle banner -> hero, hero -> dash-grid, dash-grid card
+     gap, and .panel stack on Performance. Was 32px top / 20px
+     bottom; user (2026-05-26) flagged the banner -> hero gap
+     specifically. */
   gap: 24px;
-  margin: 32px 0 24px;
+  margin: 24px 0;
 }
 @media (max-width: 1280px) { .dash-hero { grid-template-columns: 1fr; } }
 
