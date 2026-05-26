@@ -125,6 +125,16 @@ pm_positions = Table(
     # "Locked Capital" tile matches Polymarket's "Portfolio" number
     # instead of showing the cost basis.
     Column("current_value_usd", Float, nullable=True),
+    # ── Price-path tracking (drives exit-threshold backtests) ───────────
+    # The exit-policy job (every 60s) records the highest and lowest
+    # mid-prices the position's bought side reached since open. Both
+    # are fractions in [0, 1] - same units as entry_price /
+    # market_p_yes. The learning system reads these as input to a
+    # threshold-sweep backtest: "if take_profit_threshold had been
+    # 0.30 instead of 0.50, would more rows have exited at a profit?"
+    # NULL until the first 60s tick after open writes them.
+    Column("max_price_seen",      Float, nullable=True),
+    Column("min_price_seen",      Float, nullable=True),
     # ── Early-exit tracking ─────────────────────────────────────────────
     # Filled when the exit-policy engine closes a position before its
     # natural settlement. `closed_at` is the timestamp of the SELL fill.
@@ -794,6 +804,19 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE pm_positions ADD COLUMN "
                 "current_value_usd REAL"
+            ))
+        # Price-path columns. Populated by the 60s exit-policy job
+        # (engine/position_exit_tracker.record_price_tick) so the
+        # learning system can backtest "what would have happened
+        # under different exit thresholds" against the actual price
+        # trajectory each position observed.
+        if "max_price_seen" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN max_price_seen REAL"
+            ))
+        if "min_price_seen" not in existing_pm_positions_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pm_positions ADD COLUMN min_price_seen REAL"
             ))
 
         # ── Early-exit columns (added 2026-05-18, exit-policy feature) ──

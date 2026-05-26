@@ -571,12 +571,29 @@ async def evaluate_open_positions() -> dict:
             _shares = float(p.get("shares") or 0.0)
             if _shares > 0.0:
                 _value_usd = float(current_bid) * _shares
+                # Same UPDATE also records the running max / min mid-
+                # price on the bought side. The learning system reads
+                # these to backtest threshold sweeps without needing
+                # a separate price-history table - "what would the
+                # take-profit threshold of X% have done on this row"
+                # only needs to know the price extreme each position
+                # actually reached. CASE expressions keep this a
+                # single row touch per 60s tick.
+                _bid_f = float(current_bid)
                 with get_engine().begin() as _conn:
                     _conn.execute(text(
                         "UPDATE pm_positions "
-                        "SET current_value_usd = :v "
+                        "SET current_value_usd = :v, "
+                        "    max_price_seen = CASE "
+                        "      WHEN max_price_seen IS NULL OR :bid > max_price_seen "
+                        "        THEN :bid ELSE max_price_seen "
+                        "    END, "
+                        "    min_price_seen = CASE "
+                        "      WHEN min_price_seen IS NULL OR :bid < min_price_seen "
+                        "        THEN :bid ELSE min_price_seen "
+                        "    END "
                         "WHERE id = :pid"
-                    ), {"v": _value_usd, "pid": p["id"]})
+                    ), {"v": _value_usd, "bid": _bid_f, "pid": p["id"]})
         except Exception as _exc:
             print(
                 f"[evaluate_exit] current_value_usd write failed for "

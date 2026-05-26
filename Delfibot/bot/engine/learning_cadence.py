@@ -213,6 +213,19 @@ def propose_suggestions(stats: dict, current: UserConfig,
     out.extend(_propose_cost_correction(diag, current))
     out.extend(_propose_archetype_stake_multiplier(diag, current))
 
+    # V1.5 expansion: comprehensive risk-knob proposers. Each reads
+    # one diagnostic slice from engine.learning_diagnostics and only
+    # emits a proposal when its CI gate passes. User instruction
+    # (2026-05-26): reviews and suggestions should be very
+    # comprehensive and cover early exits / take profit / etc., not
+    # just archetype performance.
+    out.extend(_propose_exit_policy_toggle(diag, current))
+    out.extend(_propose_exit_threshold(diag, current))
+    out.extend(_propose_horizon_window(diag, current))
+    out.extend(_propose_base_stake(diag, current))
+    out.extend(_propose_daily_loss_limit(diag, current))
+    out.extend(_propose_archetype_price_band(diag, current))
+
     return out
 
 
@@ -231,11 +244,29 @@ def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
     """
     try:
         from engine import diagnostics as D
+        from engine import learning_diagnostics as LD
+        # Resolve mode for the mode-scoped slices. Fall back to "live"
+        # when no user_id is passed (admin / test path); fall back to
+        # the user's configured mode otherwise. Sim and live cannot
+        # mix (CLAUDE.md hard rule).
+        try:
+            cfg = get_user_config(user_id) if user_id else None
+            mode = (cfg.mode if cfg else None) or "live"
+        except Exception:
+            mode = "live"
+        uid = user_id or DEFAULT_USER_ID
         return {
             "brier_by_archetype":  D.brier_by_archetype("all"),
             "cost_validation":     D.cost_validation(user_id=user_id),
             "archetype_pnl":       D.archetype_pnl_attribution(user_id=user_id),
             "settled_rows":        _load_settled_rows(user_id=user_id),
+            # V1.5 risk-knob slices.
+            "exit_policy":         LD.exit_policy_attribution(uid, mode),
+            "exit_threshold_sweep": LD.exit_threshold_backtest(uid, mode),
+            "horizon_pnl":         LD.horizon_pnl_attribution(uid, mode),
+            "loss_day_recovery":   LD.loss_day_recovery(uid, mode),
+            "archetype_price_band": LD.archetype_price_band_pnl(uid, mode),
+            "aggregate_roi":       LD.aggregate_roi_and_drawdown(uid, mode),
         }
     except Exception as exc:
         print(f"[learning_cadence] diag collection failed: {exc}",
@@ -513,6 +544,456 @@ def _pick_multiplier_tier(roi: float) -> Optional[float]:
         if lo <= roi < hi:
             return mult
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# V1.5 RISK-KNOB PROPOSERS
+# ══════════════════════════════════════════════════════════════════════════════
+# Each function reads ONE slice from engine.learning_diagnostics and emits 0+
+# proposals. Every proposer uses a CI gate: no proposal fires unless the
+# bootstrap interval excludes the null (zero saved-vs-hold for exit policy,
+# the global ROI for horizon bucket, etc.). The CI gate is what stops the
+# system from emitting noisy suggestions on tiny samples - the exact bug
+# the V0->V1 pivot fixed.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Bucket gate for the per-reason exit-policy proposer. Same shape as
+# the archetype-multiplier proposer's MIN_N: a number large enough
+# that a CI exclusion is unlikely to be sample-size noise. 8 is
+# tight; we relax archetype-level gates to 25 because they compound
+# more on the bot's behaviour.
+EXIT_POLICY_MIN_N = 8
+
+
+def _propose_exit_policy_toggle(diag: dict,
+                                current: UserConfig) -> list[Proposal]:
+    """Disable take_profit / stop_loss / time_decay when the
+    counterfactual analysis says the policy is statistically harmful.
+
+    `policy_is_harmful` from exit_policy_attribution() means: at least
+    EXIT_POLICY_MIN_N backfilled rows AND the bootstrap CI on "saved
+    vs hold" lies entirely below zero. That's the strong signal -
+    the policy is reliably costing money vs just holding.
+    """
+    out: list[Proposal] = []
+    ep = diag.get("exit_policy") or {}
+    rows = ep.get("by_reason") or []
+    field_map = {
+        "take_profit": "take_profit_enabled",
+        "stop_loss":   "stop_loss_enabled",
+        "time_decay":  "time_decay_enabled",
+    }
+    for r in rows:
+        reason = r.get("reason")
+        if reason not in field_map:
+            continue
+        if not r.get("policy_is_harmful"):
+            continue
+        field = field_map[reason]
+        # Skip if already disabled.
+        if not bool(getattr(current, field, True)):
+            continue
+        n = int(r.get("n") or 0)
+        mean_saved = float(r.get("mean_saved_vs_hold") or 0.0)
+        ci_lo = float(r.get("ci_lo") or 0.0)
+        ci_hi = float(r.get("ci_hi") or 0.0)
+        out.append(Proposal(
+            param_name=field,
+            current_value=1.0,  # truthy placeholder for the diff renderer
+            proposed_value=0.0,
+            evidence=(
+                f"Over {n} early-exits backfilled with counterfactual P&L, "
+                f"the '{reason}' policy cost an average of "
+                f"${mean_saved:+.2f} per position vs just holding to "
+                f"settlement. 95% CI [${ci_lo:+.2f}, ${ci_hi:+.2f}] lies "
+                f"entirely below zero, so the loss is statistically "
+                f"distinguishable from noise. Proposal: disable "
+                f"'{field}' so the bot holds these positions instead."
+            ),
+            proposal_metadata={
+                "operation": "scalar_set",
+                "field":     field,
+                "value":     False,
+                "stats": {
+                    "n":              n,
+                    "mean_saved_usd": round(mean_saved, 4),
+                    "ci_lo_usd":      round(ci_lo, 4),
+                    "ci_hi_usd":      round(ci_hi, 4),
+                },
+            },
+        ))
+    return out
+
+
+def _propose_exit_threshold(diag: dict,
+                            current: UserConfig) -> list[Proposal]:
+    """For each currently-enabled exit policy whose threshold sweep
+    has identified a BETTER threshold (CI on per-position pnl
+    strictly above baseline), propose adjusting the threshold.
+
+    Only acts on policies that are still enabled - if the user has
+    disabled take-profit, suggesting a take-profit threshold is
+    moot. Pairs with _propose_exit_policy_toggle: disable comes
+    first; threshold tweaks come once the policy stays on.
+    """
+    out: list[Proposal] = []
+    sweep = diag.get("exit_threshold_sweep") or {}
+    n_pos = int(sweep.get("n_positions") or 0)
+    if n_pos < 12:
+        return out  # not enough data for a meaningful sweep
+    baseline = float(sweep.get("baseline_total_pnl") or 0.0)
+
+    def _best_threshold(rows: list[dict]) -> Optional[dict]:
+        # Pick the row with the highest mean_pnl_per_position whose
+        # CI lower bound exceeds the per-position baseline mean.
+        baseline_mean = (baseline / n_pos) if n_pos else 0.0
+        candidates = [
+            r for r in rows
+            if float(r.get("ci_lo") or 0.0) > baseline_mean
+            and int(r.get("n_would_trigger") or 0) >= 3
+        ]
+        if not candidates:
+            return None
+        return max(candidates,
+                   key=lambda r: float(r.get("mean_pnl_per_position") or 0.0))
+
+    # Take-profit threshold.
+    if getattr(current, "take_profit_enabled", True):
+        tp_rows = sweep.get("take_profit") or []
+        best = _best_threshold(tp_rows)
+        currently = float(getattr(current, "take_profit_threshold_pct", 0.50)
+                          or 0.50)
+        if best is not None:
+            proposed = float(best["threshold_pct"])
+            if abs(proposed - currently) >= 0.05:
+                lo, hi = USER_CONFIG_BOUNDS["take_profit_threshold_pct"]
+                proposed = max(lo, min(hi, proposed))
+                if abs(proposed - currently) >= 0.05:
+                    n_trig = int(best["n_would_trigger"])
+                    mpp = float(best["mean_pnl_per_position"])
+                    out.append(Proposal(
+                        param_name="take_profit_threshold_pct",
+                        current_value=currently,
+                        proposed_value=proposed,
+                        evidence=(
+                            f"Backtest across {n_pos} settled positions: a "
+                            f"take-profit threshold of {proposed*100:.0f}% "
+                            f"would have triggered on {n_trig} rows, with a "
+                            f"mean per-position P&L of ${mpp:+.2f} vs the "
+                            f"baseline ${baseline / n_pos:+.2f}. CI lower "
+                            f"bound ${float(best['ci_lo']):+.2f} stays "
+                            f"above baseline."
+                        ),
+                        proposal_metadata={
+                            "operation": "scalar_set",
+                            "field":     "take_profit_threshold_pct",
+                            "value":     proposed,
+                            "stats": {
+                                "n_positions":     n_pos,
+                                "n_would_trigger": n_trig,
+                                "mean_pnl_pp":     round(mpp, 4),
+                                "ci_lo":           float(best["ci_lo"]),
+                                "ci_hi":           float(best["ci_hi"]),
+                            },
+                        },
+                    ))
+
+    # Stop-loss threshold.
+    if getattr(current, "stop_loss_enabled", True):
+        sl_rows = sweep.get("stop_loss") or []
+        best = _best_threshold(sl_rows)
+        currently = float(getattr(current, "stop_loss_threshold_pct", 0.30)
+                          or 0.30)
+        if best is not None:
+            proposed = float(best["threshold_pct"])
+            if abs(proposed - currently) >= 0.05:
+                lo, hi = USER_CONFIG_BOUNDS["stop_loss_threshold_pct"]
+                proposed = max(lo, min(hi, proposed))
+                if abs(proposed - currently) >= 0.05:
+                    n_trig = int(best["n_would_trigger"])
+                    mpp = float(best["mean_pnl_per_position"])
+                    out.append(Proposal(
+                        param_name="stop_loss_threshold_pct",
+                        current_value=currently,
+                        proposed_value=proposed,
+                        evidence=(
+                            f"Backtest across {n_pos} settled positions: a "
+                            f"stop-loss threshold of {proposed*100:.0f}% "
+                            f"would have triggered on {n_trig} rows, with a "
+                            f"mean per-position P&L of ${mpp:+.2f} vs the "
+                            f"baseline ${baseline / n_pos:+.2f}. CI lower "
+                            f"bound ${float(best['ci_lo']):+.2f} stays "
+                            f"above baseline."
+                        ),
+                        proposal_metadata={
+                            "operation": "scalar_set",
+                            "field":     "stop_loss_threshold_pct",
+                            "value":     proposed,
+                            "stats": {
+                                "n_positions":     n_pos,
+                                "n_would_trigger": n_trig,
+                                "mean_pnl_pp":     round(mpp, 4),
+                                "ci_lo":           float(best["ci_lo"]),
+                                "ci_hi":           float(best["ci_hi"]),
+                            },
+                        },
+                    ))
+    return out
+
+
+def _propose_horizon_window(diag: dict,
+                            current: UserConfig) -> list[Proposal]:
+    """If a long-horizon bucket has a statistically negative ROI,
+    propose tightening max_days_to_resolution so the bot stops
+    trading those.
+    """
+    out: list[Proposal] = []
+    rows = diag.get("horizon_pnl") or []
+    # Walk buckets in order; the first bucket whose CI upper bound is
+    # negative AND has usable n is the cutoff. Bucket-label -> max
+    # days for that bucket.
+    bucket_to_max_days = {
+        "< 1d":  1,
+        "1-3d":  3,
+        "3-7d":  7,
+        "7-14d": 14,
+        "14d+":  30,
+    }
+    losing_cutoff: Optional[int] = None
+    for r in rows:
+        if not r.get("usable"):
+            continue
+        ci_hi = float(r.get("ci_hi") or 0.0)
+        if ci_hi >= 0:
+            continue
+        label = r.get("bucket")
+        if label in bucket_to_max_days:
+            # Cutoff = lower edge of this bucket (everything from
+            # this bucket onwards is bad).
+            bucket_low = {
+                "< 1d": 0, "1-3d": 1, "3-7d": 3,
+                "7-14d": 7, "14d+": 14,
+            }[label]
+            losing_cutoff = bucket_low
+            break
+    if losing_cutoff is None or losing_cutoff <= 0:
+        return out
+
+    current_max = int(getattr(current, "max_days_to_resolution", 0) or 0)
+    if current_max == losing_cutoff:
+        return out
+    if current_max != 0 and current_max <= losing_cutoff:
+        return out  # already at least this tight
+    out.append(Proposal(
+        param_name="max_days_to_resolution",
+        current_value=float(current_max) if current_max else None,
+        proposed_value=float(losing_cutoff),
+        evidence=(
+            f"Horizon analysis flags the {losing_cutoff}-day+ bucket as "
+            f"statistically losing (CI excludes zero on the upside). "
+            f"Proposal: tighten max_days_to_resolution to {losing_cutoff} "
+            f"days so the bot stops entering markets whose settlement is "
+            f"further out than the calibration data supports."
+        ),
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "max_days_to_resolution",
+            "value":     losing_cutoff,
+        },
+    ))
+    return out
+
+
+def _propose_base_stake(diag: dict,
+                       current: UserConfig) -> list[Proposal]:
+    """Resize base_stake_pct based on aggregate ROI + drawdown
+    headroom. Only fires after >= 25 settled trades.
+    """
+    out: list[Proposal] = []
+    agg = diag.get("aggregate_roi") or {}
+    n = int(agg.get("n_settled") or 0)
+    if n < 25:
+        return out
+    roi = agg.get("roi")
+    if roi is None:
+        return out
+    roi = float(roi)
+    peak_dd = float(agg.get("peak_drawdown") or 0.0)
+    drawdown_halt = float(getattr(current, "drawdown_halt_pct", 0.40) or 0.40)
+    currently = float(getattr(current, "base_stake_pct", 0.02) or 0.02)
+    lo, hi = USER_CONFIG_BOUNDS["base_stake_pct"]
+
+    proposed: Optional[float] = None
+    rationale = ""
+    if roi >= 0.10 and peak_dd <= drawdown_halt * 0.50:
+        # Strong positive ROI + plenty of drawdown headroom -> size up.
+        proposed = min(hi, round(currently * 1.5, 4))
+        rationale = (
+            f"Aggregate ROI {roi*100:+.1f}% over {n} settled trades and "
+            f"peak drawdown {peak_dd*100:.1f}% is well below the halt at "
+            f"{drawdown_halt*100:.0f}%. Size up base stake to compound "
+            f"faster while keeping risk reserves intact."
+        )
+    elif roi <= -0.05 and peak_dd >= drawdown_halt * 0.60:
+        # Negative ROI + heating drawdown -> size down.
+        proposed = max(lo, round(currently * 0.6, 4))
+        rationale = (
+            f"Aggregate ROI {roi*100:+.1f}% over {n} settled trades and "
+            f"peak drawdown {peak_dd*100:.1f}% is approaching the halt at "
+            f"{drawdown_halt*100:.0f}%. Shrink base stake to slow the "
+            f"bleed."
+        )
+    if proposed is None or abs(proposed - currently) < 0.002:
+        return out
+    out.append(Proposal(
+        param_name="base_stake_pct",
+        current_value=currently,
+        proposed_value=proposed,
+        evidence=(
+            f"{rationale} Current {currently*100:.2f}% -> "
+            f"{proposed*100:.2f}%."
+        ),
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "base_stake_pct",
+            "value":     proposed,
+            "stats": {
+                "n":              n,
+                "roi":            round(roi, 4),
+                "peak_drawdown":  round(peak_dd, 4),
+            },
+        },
+    ))
+    return out
+
+
+def _propose_daily_loss_limit(diag: dict,
+                              current: UserConfig) -> list[Proposal]:
+    """Tighten daily_loss_limit_pct when historical recovery rate
+    on loss days is poor, loosen when consistently good.
+    """
+    out: list[Proposal] = []
+    lr = diag.get("loss_day_recovery") or {}
+    n_loss = int(lr.get("n_loss_days") or 0)
+    if n_loss < 8:
+        return out
+    rec_rate = lr.get("recovery_rate")
+    if rec_rate is None:
+        return out
+    rec_rate = float(rec_rate)
+    currently = float(getattr(current, "daily_loss_limit_pct", 0.10) or 0.10)
+    lo, hi = USER_CONFIG_BOUNDS["daily_loss_limit_pct"]
+    proposed: Optional[float] = None
+    rationale = ""
+    if rec_rate <= 0.35:
+        # Bot rarely bounces back the next day; halt sooner.
+        proposed = max(lo, round(currently * 0.7, 4))
+        rationale = (
+            f"Recovery rate after loss days {rec_rate*100:.0f}% over "
+            f"{n_loss} loss days is poor - tightening the daily loss "
+            f"limit from {currently*100:.0f}% to {proposed*100:.0f}% "
+            f"halts trading sooner before drawdown compounds."
+        )
+    elif rec_rate >= 0.70:
+        # Bot reliably recovers; the current limit is leaving money
+        # on the table by halting too quickly.
+        proposed = min(hi, round(currently * 1.3, 4))
+        rationale = (
+            f"Recovery rate after loss days {rec_rate*100:.0f}% over "
+            f"{n_loss} loss days is strong - loosening the daily loss "
+            f"limit from {currently*100:.0f}% to {proposed*100:.0f}% "
+            f"lets the bot keep trading through normal variance."
+        )
+    if proposed is None or abs(proposed - currently) < 0.01:
+        return out
+    out.append(Proposal(
+        param_name="daily_loss_limit_pct",
+        current_value=currently,
+        proposed_value=proposed,
+        evidence=rationale,
+        proposal_metadata={
+            "operation": "scalar_set",
+            "field":     "daily_loss_limit_pct",
+            "value":     proposed,
+            "stats": {
+                "n_loss_days":  n_loss,
+                "recovery_rate": round(rec_rate, 4),
+            },
+        },
+    ))
+    return out
+
+
+def _propose_archetype_price_band(diag: dict,
+                                  current: UserConfig) -> list[Proposal]:
+    """For each (archetype, 10pp price-band) cell whose ROI CI is
+    statistically negative, propose adding that band to the
+    archetype's price-band skip list.
+
+    Reads `archetype_skip_market_price_bands` (a dict[archetype] ->
+    list[[lo, hi]]) - operation is dict_set per archetype, where
+    `value` is the full updated band list for that archetype.
+    """
+    out: list[Proposal] = []
+    rows = diag.get("archetype_price_band") or []
+    current_bands_map = dict(
+        getattr(current, "archetype_skip_market_price_bands", {}) or {}
+    )
+    # Group flagged cells by archetype so a single archetype produces
+    # one proposal even when multiple bands fail the CI gate.
+    flagged: dict[str, list[tuple[float, float]]] = {}
+    for r in rows:
+        if not r.get("usable"):
+            continue
+        ci_hi = float(r.get("ci_hi") or 0.0)
+        if ci_hi >= 0.0:
+            continue  # CI doesn't exclude positive ROI; not statistically losing
+        arch = r.get("archetype")
+        lo_band = float(r.get("band_lo") or 0.0)
+        hi_band = float(r.get("band_hi") or 0.0)
+        if not arch or hi_band <= lo_band:
+            continue
+        flagged.setdefault(arch, []).append((lo_band, hi_band))
+    for arch, new_bands in flagged.items():
+        existing = current_bands_map.get(arch) or []
+        existing_set = {
+            (round(float(p[0]), 2), round(float(p[1]), 2))
+            for p in existing
+            if isinstance(p, (list, tuple)) and len(p) == 2
+        }
+        truly_new = [
+            (lo, hi) for (lo, hi) in new_bands
+            if (round(lo, 2), round(hi, 2)) not in existing_set
+        ]
+        if not truly_new:
+            continue
+        merged = sorted(
+            existing_set | {(round(lo, 2), round(hi, 2)) for lo, hi in truly_new},
+        )
+        value = [[lo, hi] for lo, hi in merged]
+        out.append(Proposal(
+            param_name="archetype_skip_market_price_bands",
+            current_value=None,
+            proposed_value=None,
+            evidence=(
+                f"Archetype '{arch}': "
+                + ", ".join(
+                    f"band {int(lo*100)}-{int(hi*100)} has statistically "
+                    f"negative ROI"
+                    for lo, hi in truly_new
+                )
+                + f". Proposal: add {len(truly_new)} band(s) to the "
+                f"per-archetype skip list so the bot stops entering "
+                f"'{arch}' markets at those prices."
+            ),
+            proposal_metadata={
+                "operation":    "dict_set",
+                "target_field": "archetype_skip_market_price_bands",
+                "key":          arch,
+                "value":        value,
+            },
+        ))
+    return out
 
 
 # ── Review-report composition + delivery ─────────────────────────────────────
