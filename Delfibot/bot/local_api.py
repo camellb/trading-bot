@@ -1899,11 +1899,19 @@ class LocalAPI:
     async def _get_suggestions(self, req: web.Request) -> web.Response:
         """List pending V1-multiplier proposals from the learning cadence."""
         include_snoozed = req.query.get("include_snoozed", "1") != "0"
+        # Scope to the user's CONFIGURED mode so sim-derived proposals
+        # never appear in the live view (and vice versa). User
+        # instruction (2026-05-27): "I don't want to see data for
+        # simulation in intelligence when im in live mode."
+        current_mode = (
+            (await self._offload(get_user_config)).mode or None
+        )
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
                 self._api_executor,
                 lambda: list_pending_suggestions(
                     DEFAULT_USER_ID, include_snoozed=include_snoozed,
+                    mode=current_mode,
                 ),
             )
         except Exception as exc:
@@ -1922,10 +1930,16 @@ class LocalAPI:
         except ValueError:
             limit = 20
         limit = max(1, min(200, limit))
+        # Same mode-scoping as _get_suggestions.
+        current_mode = (
+            (await self._offload(get_user_config)).mode or None
+        )
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
                 self._api_executor,
-                lambda: list_resolved_suggestions(DEFAULT_USER_ID, limit=limit),
+                lambda: list_resolved_suggestions(
+                    DEFAULT_USER_ID, limit=limit, mode=current_mode,
+                ),
             )
         except Exception as exc:
             return _err(f"failed to list resolved suggestions: {exc}", 500)
@@ -1982,17 +1996,26 @@ class LocalAPI:
         return await self._suggestion_action(req, snooze_suggestion)
 
     async def _get_learning_reports(self, req: web.Request) -> web.Response:
-        """50-trade narrative reviews. Single-user, so no admin gate."""
+        """50-trade narrative reviews. Single-user, so no admin gate.
+
+        Mode-scoped to the user's current trading mode: a user in
+        live mode never sees the sim-cycle reports (or vice versa).
+        User instruction (2026-05-27).
+        """
         try:
             limit = int(req.query.get("limit", "10"))
         except ValueError:
             limit = 10
         limit = max(1, min(limit, 50))
+        current_mode = (
+            (await self._offload(get_user_config)).mode or None
+        )
         try:
             rows = await asyncio.get_event_loop().run_in_executor(
                 self._api_executor,
                 lambda: list_learning_reports(
                     user_id=DEFAULT_USER_ID, limit=limit, include_admin=False,
+                    mode=current_mode,
                 ),
             )
         except Exception as exc:

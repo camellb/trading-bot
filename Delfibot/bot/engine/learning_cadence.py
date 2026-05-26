@@ -137,7 +137,8 @@ def maybe_run_learning_cycle(user_id: str = DEFAULT_USER_ID,
             stored = 0
             for prop in proposals:
                 if _store_pending_suggestion(prop, user_id=user_id,
-                                              settled_count=settled_now):
+                                              settled_count=settled_now,
+                                              mode=mode):
                     stored += 1
 
             report_id = _compose_and_deliver_report(
@@ -1536,7 +1537,8 @@ def _suggestion_fingerprint(
 
 
 def _store_pending_suggestion(prop: Proposal, user_id: str,
-                              settled_count: int) -> bool:
+                              settled_count: int,
+                              mode: Optional[str] = None) -> bool:
     """Persist a proposal, deduplicating against existing pending rows.
 
     The earlier behaviour was a blind INSERT, so the same proposal
@@ -1632,8 +1634,8 @@ def _store_pending_suggestion(prop: Proposal, user_id: str,
                 "INSERT INTO pending_suggestions "
                 "(user_id, param_name, current_value, proposed_value, "
                 " evidence, backtest_delta, backtest_trades, "
-                " settled_count_at_creation, metadata) "
-                "VALUES (:uid, :k, :cur, :prop, :ev, :bd, :bt, :sc, :meta)"
+                " settled_count_at_creation, metadata, mode) "
+                "VALUES (:uid, :k, :cur, :prop, :ev, :bd, :bt, :sc, :meta, :mode)"
             ), {
                 "uid":  user_id,
                 "k":    prop.param_name,
@@ -1644,6 +1646,7 @@ def _store_pending_suggestion(prop: Proposal, user_id: str,
                 "bt":   prop.backtest_trades,
                 "sc":   settled_count,
                 "meta": meta_json,
+                "mode": mode,
             })
         return True
     except Exception as exc:
@@ -1666,7 +1669,13 @@ def _decode_metadata(raw) -> Optional[dict]:
 
 # ── Suggestion lifecycle (called from the dashboard API) ─────────────────────
 def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
-                             include_snoozed: bool = True) -> list[dict]:
+                             include_snoozed: bool = True,
+                             mode: Optional[str] = None) -> list[dict]:
+    """When `mode` is provided, only rows generated in that mode (or
+    mode-agnostic legacy rows where the column is NULL) are returned.
+    The Intelligence page passes the user's currently-configured
+    mode so sim-derived proposals never bleed into the live view.
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
@@ -1675,6 +1684,13 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
         params = {"uid": user_id}
         for i, s in enumerate(statuses):
             params[f"s{i}"] = s
+        # NULL mode is treated as mode-agnostic (legacy rows generated
+        # before the column existed). Filter is "match :mode OR NULL".
+        if mode in ("live", "simulation"):
+            mode_clause = " AND (mode = :mode OR mode IS NULL) "
+            params["mode"] = mode
+        else:
+            mode_clause = " "
         with get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT id, created_at, param_name, current_value, "
@@ -1683,6 +1699,7 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
                 "       metadata "
                 "FROM pending_suggestions "
                 f"WHERE user_id = :uid AND status IN ({placeholders}) "
+                f"{mode_clause}"
                 "ORDER BY created_at DESC"
             ), params).fetchall()
     except Exception as exc:
@@ -1708,7 +1725,8 @@ def list_pending_suggestions(user_id: str = DEFAULT_USER_ID,
 
 
 def list_resolved_suggestions(user_id: str = DEFAULT_USER_ID,
-                              limit: int = 20) -> list[dict]:
+                              limit: int = 20,
+                              mode: Optional[str] = None) -> list[dict]:
     """List historically resolved (applied or skipped) suggestions.
 
     Used by the Intelligence page to show that the user has previously
@@ -1716,10 +1734,19 @@ def list_resolved_suggestions(user_id: str = DEFAULT_USER_ID,
     empty. Without this, a user who applied or skipped every prior
     proposal sees the same "first review is on the way" empty state as
     a brand-new install, which contradicts what they actually saw.
+
+    When `mode` is provided, only rows from that mode (or legacy NULL
+    rows) are returned. Matches list_pending_suggestions' filter.
     """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
+        params: dict = {"uid": user_id, "lim": int(limit)}
+        if mode in ("live", "simulation"):
+            mode_clause = " AND (mode = :mode OR mode IS NULL) "
+            params["mode"] = mode
+        else:
+            mode_clause = " "
         with get_engine().begin() as conn:
             rows = conn.execute(text(
                 "SELECT id, created_at, param_name, current_value, "
@@ -1728,9 +1755,10 @@ def list_resolved_suggestions(user_id: str = DEFAULT_USER_ID,
                 "       metadata, resolved_at, resolved_by "
                 "FROM pending_suggestions "
                 "WHERE user_id = :uid AND status IN ('applied', 'skipped') "
+                f"{mode_clause}"
                 "ORDER BY COALESCE(resolved_at, created_at) DESC "
                 "LIMIT :lim"
-            ), {"uid": user_id, "lim": int(limit)}).fetchall()
+            ), params).fetchall()
     except Exception as exc:
         print(f"[learning_cadence] list_resolved failed: {exc}", file=sys.stderr)
         return []

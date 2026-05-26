@@ -169,12 +169,17 @@ def save_report(user_id: str, mode: str, report: dict) -> Optional[int]:
 
 def list_learning_reports(user_id: str,
                           limit: int = 10,
-                          include_admin: bool = False) -> list[dict]:
+                          include_admin: bool = False,
+                          mode: Optional[str] = None) -> list[dict]:
     """Newest-first. `include_admin=True` exposes the reasoning-bearing
     `summary_admin` variant. The structured `data` JSON column is now
     returned in BOTH modes — the desktop UI consumes it to render
     proper review cards (stat grid, per-archetype, top wins/losses,
     calibration) instead of a monospace text dump.
+
+    When `mode` is provided, only reports generated in that mode are
+    returned. Intelligence page passes the user's current mode so
+    sim-mode reports don't appear in the live view (and vice versa).
     """
     try:
         from sqlalchemy import text
@@ -185,6 +190,12 @@ def list_learning_reports(user_id: str,
         ]
         if include_admin:
             cols.append("summary_admin")
+        params: dict = {"uid": user_id, "lim": int(limit)}
+        if mode in ("live", "simulation"):
+            mode_clause = " AND mode = :mode "
+            params["mode"] = mode
+        else:
+            mode_clause = " "
         # Newest cycle first by BOOKMARK, not by row created_at. The
         # backfill script can insert all rows within one second, which
         # makes created_at a degenerate sort key (SQLite falls back to
@@ -193,13 +204,11 @@ def list_learning_reports(user_id: str,
         # ordering by settled_count is the canonical contract.
         sql = (
             f"SELECT {', '.join(cols)} FROM learning_reports "
-            "WHERE user_id = :uid "
+            f"WHERE user_id = :uid {mode_clause}"
             "ORDER BY settled_count DESC, created_at DESC LIMIT :lim"
         )
         with get_engine().begin() as conn:
-            rows = conn.execute(
-                text(sql), {"uid": user_id, "lim": int(limit)},
-            ).fetchall()
+            rows = conn.execute(text(sql), params).fetchall()
     except Exception as exc:
         print(f"[review_report] list_reports failed: {exc}", file=sys.stderr)
         return []

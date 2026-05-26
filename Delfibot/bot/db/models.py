@@ -389,6 +389,15 @@ pending_suggestions = Table(
     Column("resolved_at", DateTime, nullable=True),
     Column("resolved_by", Text, nullable=True),
     Column("metadata", JSON, nullable=True),
+    # Trading mode of the learning cycle that generated this row.
+    # 'live' / 'simulation' / NULL. NULL on legacy rows generated
+    # before this column existed; the read path treats those as
+    # mode-agnostic and surfaces them under every mode for back
+    # compat. New rows always carry the cycle's mode so the
+    # Intelligence page filters cleanly. User instruction
+    # (2026-05-27): "I don't want to see data for simulation in
+    # intelligence when im in live mode."
+    Column("mode", Text, nullable=True),
 )
 
 
@@ -817,6 +826,23 @@ def create_all_tables() -> None:
         if "min_price_seen" not in existing_pm_positions_cols:
             conn.execute(sa_text(
                 "ALTER TABLE pm_positions ADD COLUMN min_price_seen REAL"
+            ))
+
+        # ── Pending-suggestions: mode column (added 2026-05-27) ─────────
+        # Each suggestion now carries the trading mode of the cycle
+        # that generated it ('live' or 'simulation'). The
+        # Intelligence page filters by the user's current mode so
+        # sim-derived proposals don't leak into the live view. NULL
+        # on rows generated before this column existed; the read
+        # path treats those as mode-agnostic.
+        existing_pending_cols = {
+            r[1] for r in conn.execute(
+                sa_text("PRAGMA table_info(pending_suggestions)")
+            ).fetchall()
+        }
+        if "mode" not in existing_pending_cols:
+            conn.execute(sa_text(
+                "ALTER TABLE pending_suggestions ADD COLUMN mode TEXT"
             ))
 
         # ── Early-exit columns (added 2026-05-18, exit-policy feature) ──
