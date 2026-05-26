@@ -3,6 +3,7 @@ import {
   api,
   BrierTrendPoint,
   CalibrationReport,
+  EquitySnapshot,
   isConnectionError,
   PerformanceSummary,
   PMPosition,
@@ -60,10 +61,13 @@ export default function Performance() {
   const [error, setError] = useState<string | null>(null);
   const [range, setRange] = useState<Range>("all");
   const [loaded, setLoaded] = useState(false);
+  // Periodic (bankroll, open_cost, equity) snapshots recorded by the
+  // daemon every ~10 min. Same source the Dashboard's chart uses.
+  const [equitySnapshots, setEquitySnapshots] = useState<EquitySnapshot[]>([]);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, t, c, p] = await Promise.all([
+      const [s, t, c, p, eh] = await Promise.all([
         api.summary(),
         api.brierTrend().then((x) => x.points),
         api.calibration({ source: "polymarket" }),
@@ -77,11 +81,16 @@ export default function Performance() {
             .filter((x) => x.status === "settled" || x.status === "invalid")
             .sort((a, b) => ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1)),
         ),
+        // Best-effort: an empty / failed equity_history just means
+        // the chart falls back to the legacy back-step reconstruction
+        // for one tick.
+        api.equityHistory().then((r) => r.history).catch(() => []),
       ]);
       setSummary(s);
       setTrend(t);
       setCalibration(c);
       setClosed(p);
+      setEquitySnapshots(eh);
       setLoaded(true);
       // Clear error only on confirmed success (anti-flash pattern,
       // see App.tsx::refresh).
@@ -134,20 +143,41 @@ export default function Performance() {
   }, [filtered, summary]);
 
   const equitySeries = useMemo(() => {
-    // Anchored so chart ENDPOINT == summary.equity (matches the
-    // "Total equity" headline tile on this page and Dashboard). See
-    // matching block in Dashboard.tsx for the derivation.
+    // PRIMARY SOURCE: equity_snapshots written by the daemon every
+    // ~10 min. Plotting these directly means deposits/withdrawals
+    // show as natural step-ups at the actual time they happened,
+    // instead of parallel-shifting the entire historical curve.
+    //
+    // For 30d/7d ranges we filter snapshots by ts cutoff. The
+    // all-time range plots every snapshot we have.
+    if (equitySnapshots.length > 0) {
+      let pool = equitySnapshots;
+      if (range !== "all") {
+        const days = RANGE_DAYS[range];
+        const cutoffMs = Date.now() - days * 86_400_000;
+        pool = pool.filter((s) => {
+          const t = Date.parse(s.ts);
+          return Number.isFinite(t) && t >= cutoffMs;
+        });
+      }
+      if (pool.length >= 2) {
+        return pool.map((s) => ({ ts: s.ts, v: s.equity }));
+      }
+    }
+
+    // FALLBACK: not enough snapshots yet (fresh install, first 20
+    // min of uptime, or the requested window is shorter than the
+    // snapshot history). Reconstruct from settled-position realized
+    // P&L. Endpoint anchors to current equity for all-time, to
+    // starting_cash for windowed ranges. Same back-step logic the
+    // chart used before equity_snapshots existed; will be replaced
+    // by real snapshots within minutes of accumulating enough rows.
     if (filtered.length === 0) return [] as { ts: string; v: number }[];
     const totalRealized = filtered.reduce(
       (s, r) => s + ((r.realized_pnl_usd as number | null | undefined) ?? 0),
       0,
     );
     const currentEquity = summary?.equity ?? summary?.starting_cash ?? 0;
-    // On time-windowed ranges (30d/7d) we only have the slice of
-    // realized within the window; anchoring to current equity would
-    // mis-represent the chart for "30 days" view. Fall back to the
-    // legacy starting_cash + cum behaviour outside the all-time
-    // range so the windowed charts still make sense.
     const start = range === "all"
       ? currentEquity - totalRealized
       : summary?.starting_cash ?? 0;
@@ -160,7 +190,7 @@ export default function Performance() {
       cum += (r.realized_pnl_usd as number | null | undefined) ?? 0;
       return { ts: r.settled_at ?? "", v: cum };
     })];
-  }, [summary, filtered, range]);
+  }, [summary, filtered, range, equitySnapshots]);
 
   return (
     <div className="page-wrap">
@@ -258,9 +288,9 @@ export default function Performance() {
         <div className="panel-head">
           <h2 className="panel-title">Equity history</h2>
         </div>
-        {filteredStats.trades === 0 ? (
+        {equitySeries.length < 2 ? (
           <div className="empty-state">
-            {loaded ? "No equity history yet. The curve will populate once Delfi settles its first trade." : "Loading..."}
+            {loaded ? "No equity history yet. The curve fills in as the daemon records snapshots (every ~10 min) and Delfi settles its first trades." : "Loading..."}
           </div>
         ) : (
           <EquityChart series={equitySeries} />

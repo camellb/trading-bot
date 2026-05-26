@@ -1423,6 +1423,30 @@ async def main() -> None:
             print(f"[delfi] balance refresh failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_equity_snapshot():
+        """Append one (bankroll, open_cost, equity) row to
+        equity_snapshots for the current user+mode.
+
+        Powers the Dashboard + Performance "Equity history" chart.
+        The chart used to be reconstructed on the frontend from
+        current_equity - cumulative_realized_pnl, which silently
+        retconned the past whenever the wallet jumped (deposits,
+        withdrawals, late payouts). Periodic real snapshots make
+        deposits show up as natural step-ups at the actual time
+        they happened.
+
+        10-min cadence. Failure swallowed - missing one tick just
+        leaves a small gap in the curve, never a crash.
+        """
+        try:
+            from engine.equity_snapshot import record_equity_snapshot
+            record_equity_snapshot()
+            proc_health.record_job_ok("equity_snapshot")
+        except Exception as exc:
+            proc_health.record_job_error("equity_snapshot")
+            print(f"[delfi] equity snapshot failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_activate_legacy_balance():
         """Auto-swap any legacy USDC.e at the funder into pUSD so
         the funds become tradeable Cash without a Polymarket-UI
@@ -1846,6 +1870,17 @@ async def main() -> None:
         # replaced, the SIM default $1000. 60s cadence afterwards is
         # fast enough that a fresh deposit shows up within a minute.
         next_run_time=now_utc + timedelta(seconds=1),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    # Equity snapshot every 10 min. First fire 30s after boot so
+    # pm_balance_refresh (fires at +1s) has time to warm the wallet
+    # cache before we read it - otherwise the very first snapshot
+    # would record bankroll=0 on a cold cache.
+    scheduler.add_job(
+        _run_equity_snapshot, IntervalTrigger(minutes=10),
+        id="equity_snapshot",
+        next_run_time=now_utc + timedelta(seconds=30),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )

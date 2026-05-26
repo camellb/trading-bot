@@ -280,6 +280,36 @@ performance_snapshots = Table(
     Column("notes", Text, nullable=True),
 )
 
+# Periodic wallet-equity snapshots that drive the Dashboard +
+# Performance "Equity history" chart. Written every ~10 min by the
+# `equity_snapshot` scheduler job in main.py and read by the
+# `/api/equity-history` endpoint. The chart was previously
+# RECONSTRUCTED on the frontend from current equity minus cumulative
+# realized P&L - which silently retconned the past whenever the user
+# deposited (current equity jumped up; the curve parallel-shifted).
+# Real snapshots fix that: a deposit shows up as a natural step-up at
+# the actual time it happened.
+equity_snapshots = Table(
+    "equity_snapshots",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id",   Text, nullable=False,
+           server_default=sa_text("'local'")),
+    # 'live' or 'simulation' - same domain as pm_positions.mode.
+    # Each mode keeps an independent series so the SIM/LIVE view
+    # toggle never mixes histories.
+    Column("mode",      Text, nullable=False),
+    Column("ts",        DateTime,
+           server_default=sa_text("CURRENT_TIMESTAMP"), nullable=False),
+    # bankroll = spendable cash on the wallet (live: pUSD+USDC.e
+    # probe; sim: starting_cash + realized - open_cost).
+    Column("bankroll",  Float, nullable=False),
+    # open_cost = sum of currentValue across all open positions
+    # (live: data-api MTM; sim: DB cost_usd sum). equity = the sum.
+    Column("open_cost", Float, nullable=False),
+    Column("equity",    Float, nullable=False),
+)
+
 news_event_log = Table(
     "news_event_log",
     metadata,
@@ -582,6 +612,10 @@ def create_all_tables() -> None:
         # User config singleton lookup.
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_config_user "
         "ON user_config(user_id)",
+        # Equity snapshots: chart reads are always (user_id, mode)
+        # filtered + ordered by ts. Composite index covers both.
+        "CREATE INDEX IF NOT EXISTS idx_equity_snapshots_user_mode_ts "
+        "ON equity_snapshots(user_id, mode, ts)",
     )
 
     with engine.begin() as conn:

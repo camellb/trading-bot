@@ -460,6 +460,7 @@ class LocalAPI:
         app.router.add_get("/api/summary",          self._get_summary)
         app.router.add_get("/api/calibration",      self._get_calibration)
         app.router.add_get("/api/brier-trend",      self._get_brier_trend)
+        app.router.add_get("/api/equity-history",   self._get_equity_history)
         app.router.add_get("/api/suggestions",      self._get_suggestions)
         app.router.add_get("/api/suggestions/history",
                             self._get_suggestions_history)
@@ -1839,6 +1840,36 @@ class LocalAPI:
                 "n":     i,
             })
         return _ok({"points": points})
+
+    async def _get_equity_history(self, _req: web.Request) -> web.Response:
+        """Recorded wallet-equity snapshots for the current user+mode.
+
+        Drives the Dashboard + Performance "Equity history" chart.
+        Each row is the (bankroll, open_cost, equity) triple as it
+        was at `ts`, captured by the equity_snapshot scheduler job
+        every ~10 minutes.
+
+        Mode-scoped to the user's CURRENT trading mode so the
+        SIM/LIVE view toggle never mixes histories. Empty array
+        until the first snapshot lands (~30s after a fresh boot).
+        """
+        current_mode = (
+            (await self._offload(get_user_config)).mode or "simulation"
+        )
+
+        def _read() -> list[dict]:
+            from engine.equity_snapshot import get_equity_history
+            return get_equity_history(
+                user_id=DEFAULT_USER_ID, mode=current_mode,
+            )
+
+        try:
+            history = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _read,
+            )
+        except Exception as exc:
+            return _err(f"equity-history query failed: {exc}", 500)
+        return _ok({"history": history, "mode": current_mode})
 
     async def _get_suggestions(self, req: web.Request) -> web.Response:
         """List pending V1-multiplier proposals from the learning cadence."""

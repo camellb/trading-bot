@@ -459,6 +459,13 @@ export interface BrierTrendPoint {
   n: number;
 }
 
+export interface EquitySnapshot {
+  ts: string;        // UTC ISO-8601, e.g. "2026-05-26T19:30:00"
+  bankroll: number;  // wallet cash USD
+  open_cost: number; // sum of open positions' currentValue USD
+  equity: number;    // bankroll + open_cost USD
+}
+
 export interface CalibrationBin {
   lo: number;
   hi: number;
@@ -808,6 +815,8 @@ export const api = {
   // Performance + learning
   summary:     () => request<PerformanceSummary>("/api/summary"),
   brierTrend:  () => request<{ points: BrierTrendPoint[] }>("/api/brier-trend"),
+  equityHistory: () =>
+    request<{ history: EquitySnapshot[]; mode: string }>("/api/equity-history"),
   calibration: (opts?: { source?: string; since_days?: number }) => {
     const q = new URLSearchParams();
     if (opts?.source) q.set("source", opts.source);

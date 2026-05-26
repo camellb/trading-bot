@@ -5,6 +5,7 @@ import { EquityChart } from "../components/EquityChart";
 import {
   api,
   BotState,
+  EquitySnapshot,
   isConnectionError,
   MarketEvaluation,
   PerformanceSummary,
@@ -105,10 +106,17 @@ export default function Dashboard({ state, goto }: Props) {
   const [risk, setRisk] = useState<Risk>({});
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Periodic (bankroll, open_cost, equity) snapshots recorded by the
+  // daemon every ~10 min. When the curve has >=2 snapshots we plot
+  // them directly so deposits show as real step-ups; under that
+  // threshold we fall back to the legacy back-step reconstruction
+  // (which retcons the past on deposit but is the best we can do
+  // before the snapshot table has populated).
+  const [equitySnapshots, setEquitySnapshots] = useState<EquitySnapshot[]>([]);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, p, ev, cfg] = await Promise.all([
+      const [s, p, ev, cfg, eh] = await Promise.all([
         api.summary(),
         // Match Performance's limit so the equity chart on both
         // pages renders the SAME line from the SAME data. With 50
@@ -117,10 +125,16 @@ export default function Dashboard({ state, goto }: Props) {
         api.positions(500).then((r) => r.positions),
         api.evaluations(25).then((r) => r.evaluations),
         api.config(),
+        // Equity history is best-effort. A cold cache (first 30s
+        // after boot) or a transient query failure should not nuke
+        // the rest of the dashboard - swallow to an empty list and
+        // let the legacy back-step path render the chart.
+        api.equityHistory().then((r) => r.history).catch(() => []),
       ]);
       setSummary(s);
       setPositions(p);
       setEvaluations(ev);
+      setEquitySnapshots(eh);
       setRisk({
         daily_loss_limit_pct: numberOr(cfg.daily_loss_limit_pct, 0.10),
         drawdown_halt_pct: numberOr(cfg.drawdown_halt_pct, 0.40),
@@ -154,16 +168,27 @@ export default function Dashboard({ state, goto }: Props) {
     [positions],
   );
 
-  // Equity time-series for the dashboard chart. Anchored so the
-  // chart ENDPOINT == summary.equity (the headline "Total equity"
-  // tile). The chart traces a realized journey: starts at
-  // (current_equity - total_realized), steps up/down by each
-  // realized_pnl_usd, lands exactly at current_equity. Without this
-  // anchor the chart endpoint was (starting_cash + DB_realized),
-  // which drifted from the headline tile by the unrealized open-
-  // position P&L (~$4 on this user) - a visible inconsistency.
+  // Equity time-series for the dashboard chart.
+  //
+  // PRIMARY SOURCE: equity_snapshots written by the daemon every
+  // ~10 min. Each row carries the actual (bankroll, open_cost,
+  // equity) triple captured at `ts`. Plotting them directly means a
+  // wallet deposit shows up as a natural step-up on the day it
+  // happened - we never retcon past values.
+  //
+  // FALLBACK: when the snapshot table has <2 rows (fresh install,
+  // first 20 min of uptime) we reconstruct a curve from settled
+  // positions: start at (current_equity - total_realized), step by
+  // each realized_pnl_usd, land at current_equity. This path
+  // silently retcons history on deposit but is the best we can do
+  // before real snapshots accumulate. The curve transitions to the
+  // accurate snapshot-based view as soon as the 2nd snapshot lands.
+  //
   // Same logic mirrored in Performance.tsx.
   const equitySeries = useMemo(() => {
+    if (equitySnapshots.length >= 2) {
+      return equitySnapshots.map((s) => ({ ts: s.ts, v: s.equity }));
+    }
     if (settled.length === 0) return [] as { ts: string; v: number }[];
     const sorted = [...settled].sort((a, b) =>
       ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1),
@@ -190,7 +215,7 @@ export default function Dashboard({ state, goto }: Props) {
         return { ts: (r.settled_at as string | null | undefined) ?? "", v: cum };
       }),
     ];
-  }, [summary, settled]);
+  }, [summary, settled, equitySnapshots]);
 
   const activity = useMemo(
     () => buildActivity(evaluations, open, settled),
