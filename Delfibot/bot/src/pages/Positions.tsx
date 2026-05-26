@@ -352,18 +352,6 @@ export default function Positions() {
     [skipped, skippedSort.field, skippedSort.dir],
   );
 
-  // `deployed` = live MTM of currently-open positions, identical to
-  // the "Locked capital" tile on Dashboard. Same source: Polymarket
-  // data-api currentValue sum (= summary.open_cost in live mode) or
-  // equity - bankroll as the algebraic identity. Previously this
-  // summed `p.cost_usd` from the DB, which is the COST BASIS, not
-  // the current value - so a position currently worth $40 with a
-  // $35 cost basis would show "deployed $35" on Positions but
-  // "deployed $40" on Dashboard. Aligned 2026-05-24.
-  const deployed = (summary && summary.equity != null && summary.bankroll != null)
-    ? Math.max(0, summary.equity - summary.bankroll)
-    : open.reduce((s, p) => s + (p.cost_usd ?? 0), 0);
-
   const togglePos = (id: number) =>
     setExpandedPos((prev) => {
       const next = new Set(prev);
@@ -417,9 +405,6 @@ export default function Positions() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Open positions</h2>
-            <span className="panel-meta">
-              {open.length} active · ${deployed.toFixed(0)} deployed
-            </span>
           </div>
           {open.length === 0 ? (
             <div className="empty-state">
@@ -599,7 +584,6 @@ export default function Positions() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Closed positions</h2>
-            <span className="panel-meta">{settled.length} settled</span>
           </div>
           {settled.length === 0 ? (
             <div className="empty-state">
@@ -696,7 +680,6 @@ export default function Positions() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Skipped evaluations</h2>
-            <span className="panel-meta">{skipped.length} skipped</span>
           </div>
           {skipped.length === 0 ? (
             <div className="empty-state">
@@ -866,7 +849,6 @@ export default function Positions() {
         <div className="panel">
           <div className="panel-head">
             <h2 className="panel-title">Order errors</h2>
-            <span className="panel-meta">{errors.length} rejected by Polymarket</span>
           </div>
           {errors.length === 0 ? (
             <div className="empty-state">
