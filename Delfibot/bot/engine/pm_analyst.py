@@ -948,6 +948,74 @@ class PMAnalyst:
                     summary["skipped"] += 1
                     continue
 
+                # Risk-breaker re-check INSIDE the loop. The pre-flight
+                # at the top of the scan caught the state at scan-start,
+                # but circuit breakers can trip mid-scan when (a) the
+                # wallet probe refresh job (every 60s) lands a fresh
+                # balance, (b) an earlier market in THIS scan opened a
+                # position that pushed gross exposure over the cap, or
+                # (c) a settlement landed via the resolver. Without this
+                # check the scan keeps feeding every remaining market
+                # to the LLM only for the sizer to skip them - burning
+                # the user's Anthropic tokens for nothing.
+                #
+                # User instruction (2026-05-26): "when the circuit
+                # breaker is on it should completely stop scanning for
+                # new markets, not skip them. Those are wasted tokens
+                # out there."
+                _halt_reasons_now: list[tuple[str, str]] = []
+                _any_active_now = False
+                for _uid in user_ids:
+                    try:
+                        _ucfg = user_cfgs.get(_uid) or get_user_config(_uid)
+                        if not _ucfg.bot_enabled:
+                            continue
+                        _ex = PMExecutor(_uid)
+                        if not _ex.ready:
+                            continue
+                        try:
+                            _eq = _ex.get_equity()
+                        except Exception:
+                            _eq = None
+                        _v = evaluate_risk(
+                            user_config=_ucfg,
+                            bankroll=_ex.get_bankroll(),
+                            starting_cash=_ex.get_starting_cash(),
+                            mode=_ex.mode,
+                            user_id=_uid,
+                            equity=_eq,
+                        )
+                        if _v.halted:
+                            _halt_reasons_now.append(
+                                (_uid, _v.halt_reason or "risk halted"),
+                            )
+                        else:
+                            _any_active_now = True
+                    except Exception as _exc:
+                        # Fail-open: if the probe fails, treat the user
+                        # as active so the scan proceeds. The per-market
+                        # backstop inside _maybe_trade_for_user catches
+                        # any genuine halts that slip through.
+                        print(
+                            f"[pm_analyst] mid-scan risk re-check failed "
+                            f"for {_uid}: {type(_exc).__name__}: {_exc}",
+                            file=sys.stderr,
+                        )
+                        _any_active_now = True
+                if not _any_active_now and _halt_reasons_now:
+                    _reasons = " | ".join(
+                        f"{u}: {r}" for u, r in _halt_reasons_now
+                    )
+                    print(
+                        f"[pm_analyst] risk breaker tripped mid-scan, "
+                        f"halting remaining markets to save LLM calls. "
+                        f"{_reasons}",
+                        flush=True,
+                    )
+                    summary["skip_reason"] = "risk_halted_mid_scan"
+                    summary["risk_reasons"] = dict(_halt_reasons_now)
+                    break
+
                 # Shared work: one Claude call per market, period.
                 shared = await self._shared_evaluate(mk)
                 if shared is None:
