@@ -1218,6 +1218,11 @@ button { font: inherit; }
   font-size: 10px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+  /* Keep multi-word pills like "STOP LOSS" / "TAKE PROFIT" /
+     "TIME DECAY" on one line. Without this they wrapped in narrow
+     table cells and the background grew to a two-row rectangle,
+     making the chip look broken next to single-word neighbours. */
+  white-space: nowrap;
 }
 .pill-yes  { background: var(--profit-dim); color: var(--profit); }
 .pill-no   { background: var(--ember-dim);  color: var(--ember); }
