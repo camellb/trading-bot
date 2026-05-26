@@ -422,6 +422,16 @@ export interface EventLogRow {
 
 export interface PerformanceSummary {
   mode: string | null;
+  /** True when every numeric field below is sourced from a fresh
+   * cache (live: at least one successful wallet probe since boot;
+   * sim: always). False during the 1-2 second window after a fresh
+   * daemon boot in live mode, when bankroll / equity would otherwise
+   * render as $0 placeholders for a moment before the real values
+   * arrive. The Dashboard uses this to render dashes during that
+   * window instead of flashing a wrong number first. Optional in
+   * the type so the dashboard stays compatible with older sidecars
+   * that don't emit the field. */
+  data_ready?: boolean;
   bankroll: number | null;
   equity: number | null;
   starting_cash: number | null;

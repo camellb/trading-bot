@@ -91,7 +91,10 @@ export default function Performance() {
       setCalibration(c);
       setClosed(p);
       setEquitySnapshots(eh);
-      setLoaded(true);
+      // Same data_ready gating as Dashboard: hide values until the
+      // server says the wallet probe has warmed up. See Dashboard.tsx
+      // for the long-form rationale.
+      setLoaded(s?.data_ready !== false);
       // Clear error only on confirmed success (anti-flash pattern,
       // see App.tsx::refresh).
       setError(null);

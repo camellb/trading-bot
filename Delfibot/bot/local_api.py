@@ -1624,7 +1624,26 @@ class LocalAPI:
         bankroll = stats.get("bankroll")
         equity   = stats.get("equity")
         open_cost = float(stats.get("open_cost") or 0.0)
-        if stats.get("mode") == "live":
+        # `data_ready` tells the frontend whether the numbers below
+        # are trustworthy. In simulation mode, all values come from
+        # the local DB so they're always fresh. In live mode, the
+        # wallet probe + Polymarket data-api caches take 1-2 seconds
+        # to warm on a fresh daemon boot; until they do, bankroll /
+        # equity / locked_capital are placeholders that would otherwise
+        # render as $0.00 for a couple of seconds and then jump to
+        # the correct value once the cache populates. The Dashboard
+        # uses this flag to render dashes everywhere instead of
+        # flashing the wrong number first.
+        #
+        # User instruction (2026-05-26): "I don't like that the data
+        # is glitching also. It shows one number (wrong one) and
+        # then after few seconds updates to the correct details. It
+        # should not show anything if it's loading or cached or
+        # whatever, it should just always show correct data - it's
+        # misleading."
+        is_live = stats.get("mode") == "live"
+        data_ready = not is_live  # sim is always ready
+        if is_live:
             try:
                 from feeds.polymarket_wallet import (
                     get_cached_total_funder_balance,
@@ -1645,6 +1664,7 @@ class LocalAPI:
                     if total_balance is not None:
                         bankroll = float(total_balance)
                         equity = bankroll + open_cost
+                        data_ready = True
             except Exception as exc:
                 # Should not be reachable now that the call is non-
                 # blocking and side-effect-free, but keep the guard.
@@ -1730,6 +1750,11 @@ class LocalAPI:
 
         payload = {
             "mode":           stats.get("mode"),
+            # `data_ready` is False during the 1-2 second window
+            # between daemon boot and the first successful wallet
+            # probe in live mode. Frontend gates ALL number rendering
+            # on this so it shows dashes instead of stale fallbacks.
+            "data_ready":     data_ready,
             "bankroll":       bankroll,
             "equity":         equity,
             "starting_cash":  starting,

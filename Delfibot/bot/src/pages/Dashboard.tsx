@@ -140,7 +140,13 @@ export default function Dashboard({ state, goto }: Props) {
         drawdown_halt_pct: numberOr(cfg.drawdown_halt_pct, 0.40),
         dry_powder_reserve_pct: numberOr(cfg.dry_powder_reserve_pct, 0.20),
       });
-      setLoaded(true);
+      // Gate `loaded` on the server's data_ready signal. On a fresh
+      // daemon boot in live mode, the wallet probe takes 1-2s to
+      // warm; until then `data_ready` is false and the hero tiles
+      // show dashes instead of flashing $0 placeholders that jump
+      // to the real value seconds later. Treat `undefined` as ready
+      // for backwards-compat with sidecars that don't emit the field.
+      setLoaded(s?.data_ready !== false);
       // Only clear error after a confirmed successful refresh - same
       // anti-flash pattern as App.tsx's poll loop.
       setError(null);
