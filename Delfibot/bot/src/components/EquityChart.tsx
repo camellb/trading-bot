@@ -81,8 +81,35 @@ export function EquityChart({
   const minY = rawMin - span * 0.08;
   const maxY = rawMax + span * 0.08;
 
-  const sx = (i: number) =>
+  // X positions are proportional to TIME, not array index. Before
+  // this change, the chart placed each data point at an evenly-
+  // spaced X regardless of how far apart its timestamp was from its
+  // neighbours - so a series with 29 historical points spread over
+  // 8 days and 5 snapshot points all on the same day rendered with
+  // the same-day cluster taking up roughly a third of the width.
+  // The X-tick logic (which picks 5 evenly-spaced indices) then
+  // happened to land on two distinct indices that both formatted to
+  // the same day, producing duplicate "May 26" labels at the right
+  // edge. Time-based positioning fixes both: the cluster collapses
+  // to its natural sliver of width, and the 5 tick labels are
+  // selected at evenly-spaced TIMES so they can never duplicate
+  // unless the entire chart spans less than 24h.
+  const tsMs = series.map((p) => Date.parse(p.ts));
+  const tsValid = tsMs.every((t) => Number.isFinite(t));
+  const minTs = tsValid ? Math.min(...tsMs) : 0;
+  const maxTs = tsValid ? Math.max(...tsMs) : 0;
+  const timeSpan = maxTs - minTs;
+  // Fall back to index-based positioning when timestamps are
+  // missing or all collapse to the same instant. Same rendering as
+  // before, applied only in the degenerate cases.
+  const useTime = tsValid && timeSpan > 0;
+
+  const sxByIndex = (i: number) =>
     PAD_L + (INNER_W * i) / Math.max(1, series.length - 1);
+  const sxByTime = (i: number) =>
+    PAD_L + (INNER_W * (tsMs[i] - minTs)) / timeSpan;
+  const sx = useTime ? sxByTime : sxByIndex;
+
   const sy = (v: number) =>
     PAD_T + INNER_H - (INNER_H * (v - minY)) / (maxY - minY);
 
@@ -105,15 +132,29 @@ export function EquityChart({
     minY + ((maxY - minY) * i) / Y_TICKS,
   );
 
-  // Date ticks: pick indices evenly across the series.
-  const xTickEntries = Array.from({ length: X_TICKS + 1 }, (_, k) => {
-    const idx = Math.round(((series.length - 1) * k) / X_TICKS);
-    return { i: idx, ts: series[idx].ts };
-  });
+  // Date ticks. Time-based mode picks 5 evenly-spaced timestamps
+  // across [minTs, maxTs] so the tick gaps reflect calendar time,
+  // not data density. Each tick's X position derives from its
+  // timestamp via the same sxByTime math the curve uses, so labels
+  // line up under the curve point closest in time. Index-based
+  // fallback retains the old behaviour for degenerate series.
+  const xTickEntries: { x: number; ts: string }[] = useTime
+    ? Array.from({ length: X_TICKS + 1 }, (_, k) => {
+        const t = minTs + (timeSpan * k) / X_TICKS;
+        const x = PAD_L + (INNER_W * (t - minTs)) / timeSpan;
+        return { x, ts: new Date(t).toISOString() };
+      })
+    : Array.from({ length: X_TICKS + 1 }, (_, k) => {
+        const idx = Math.round(((series.length - 1) * k) / X_TICKS);
+        return { x: sxByIndex(idx), ts: series[idx].ts };
+      });
 
   // Mouse handler. SVG uses preserveAspectRatio="none", so the
   // viewBox stretches to the wrapper's CSS width. Convert client X
-  // back to viewBox X by ratio.
+  // back to viewBox X by ratio, then to a series index. In time
+  // mode we map the cursor's viewBox X back to a timestamp and pick
+  // the series point closest in time; in index mode we use the
+  // legacy round-to-nearest-index math.
   const handleMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width <= 0) return;
@@ -123,8 +164,23 @@ export function EquityChart({
       return;
     }
     const ratio = (vbx - PAD_L) / INNER_W;
-    const i = Math.max(0, Math.min(series.length - 1,
-      Math.round(ratio * (series.length - 1))));
+    let i: number;
+    if (useTime) {
+      const tHover = minTs + ratio * timeSpan;
+      let bestI = 0;
+      let bestDelta = Math.abs(tsMs[0] - tHover);
+      for (let k = 1; k < tsMs.length; k++) {
+        const dt = Math.abs(tsMs[k] - tHover);
+        if (dt < bestDelta) {
+          bestDelta = dt;
+          bestI = k;
+        }
+      }
+      i = bestI;
+    } else {
+      i = Math.max(0, Math.min(series.length - 1,
+        Math.round(ratio * (series.length - 1))));
+    }
     setHoverI(i);
   };
 
@@ -172,10 +228,10 @@ export function EquityChart({
         <path d={d} fill="none" stroke={stroke} strokeWidth="1.6" />
 
         {/* X-axis date labels. */}
-        {xTickEntries.map(({ i, ts }, k) => (
+        {xTickEntries.map(({ x, ts }, k) => (
           <text
             key={`x-${k}`}
-            x={sx(i)}
+            x={x}
             y={H - 10}
             fontSize="11"
             fill="var(--vellum-40)"

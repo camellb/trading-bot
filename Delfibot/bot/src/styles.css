@@ -706,8 +706,13 @@ button { font: inherit; }
 .dash-hero {
   display: grid;
   grid-template-columns: 1fr 1.1fr;
-  gap: 32px;
-  margin: 32px 0 20px;
+  /* gap + margin-bottom unified to 24px so the gap above the
+     bottom-of-page panels matches the gap between hero-balance
+     and hero-chart (stacked) and matches the .dash-grid card gap.
+     Was 32px gap / 20px margin-bottom; user (2026-05-26) flagged
+     the visible inconsistency. */
+  gap: 24px;
+  margin: 32px 0 24px;
 }
 @media (max-width: 1280px) { .dash-hero { grid-template-columns: 1fr; } }
 
@@ -1175,7 +1180,11 @@ button { font: inherit; }
   border: 1px solid var(--vellum-10);
   border-radius: var(--radius-2);
   padding: 24px 28px;
-  margin-bottom: 20px;
+  /* 24px is the canonical gap between major sections across the
+     app (.dash-hero gap, .dash-grid gap, .stat-row margin-bottom).
+     Was 20px historically; unified 2026-05-26 so panels stack
+     with the same rhythm as everything else. */
+  margin-bottom: 24px;
 }
 .panel-head {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -1298,7 +1307,9 @@ button { font: inherit; }
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 16px;
-  margin-bottom: 28px;
+  /* Unified to the 24px canonical "between major sections" gap
+     (matches .panel, .dash-hero, .dash-grid). Was 28px. */
+  margin-bottom: 24px;
 }
 @media (max-width: 1024px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
 .stat-cell {
