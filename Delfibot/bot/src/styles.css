@@ -117,6 +117,11 @@
 
 /* ─── Auto-updater banner (top of app shell) ─────────────────── */
 .update-banner {
+  /* .app-shell is a 2-column CSS grid (sidebar + main). Without
+   * this, the banner gets placed into the narrow sidebar cell and
+   * the title + version + buttons wrap onto separate lines. Span
+   * the full row instead so it reads as a header strip. */
+  grid-column: 1 / -1;
   position: sticky;
   top: 0;
   z-index: 50;
