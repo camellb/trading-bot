@@ -2078,6 +2078,53 @@ class PMExecutor:
         try:
             from db.logger import log_event
             from feeds import telegram_messages as _tm
+            # Synchronously refresh Polymarket caches BEFORE reading
+            # stats - same pattern as the natural-settle path in
+            # polymarket_runner.py (commit d4ab70e). Without this the
+            # data-api positions cache still shows this just-closed
+            # position with its pre-exit currentValue, locked_capital
+            # double-counts it, and the Telegram message reports a
+            # bankroll/equity that doesn't match Polymarket. Live mode
+            # only; sim mode reads from the DB and doesn't need it.
+            # We're inside an APScheduler job, not an HTTP handler,
+            # so synchronous network is fine (no GIL contention with
+            # /api/* readers).
+            if (row_mode or "").lower() == "live":
+                try:
+                    from feeds.polymarket_wallet import (
+                        _refresh_positions_cache,
+                        _refresh_closed_realized_cache,
+                        get_poly_signer_info,
+                        _POSITIONS_VALUE_LOCK,
+                    )
+                    from engine.user_config import (
+                        get_active_polymarket_creds,
+                        get_user_config as _gcfg,
+                    )
+                    _cfg_refresh = _gcfg(self.user_id)
+                    _creds_refresh = get_active_polymarket_creds(_cfg_refresh)
+                    _pk_refresh = (_creds_refresh or {}).get("private_key")
+                    if _pk_refresh:
+                        _info = get_poly_signer_info(_pk_refresh)
+                        _funder = (_info or {}).get("funder")
+                        if _funder:
+                            _acq = _POSITIONS_VALUE_LOCK.acquire(blocking=False)
+                            if _acq:
+                                try:
+                                    _refresh_positions_cache(_funder)
+                                finally:
+                                    _POSITIONS_VALUE_LOCK.release()
+                            try:
+                                _refresh_closed_realized_cache(_funder)
+                            except Exception:
+                                pass
+                except Exception as _refresh_exc:
+                    print(
+                        f"[pm_executor] early-exit cache refresh failed "
+                        f"for position #{position_id}: "
+                        f"{type(_refresh_exc).__name__}: {_refresh_exc}",
+                        file=sys.stderr, flush=True,
+                    )
             try:
                 # Mode-scoped stats — same pattern as the natural-settle
                 # path in polymarket_runner.

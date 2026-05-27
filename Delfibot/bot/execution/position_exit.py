@@ -201,8 +201,7 @@ def evaluate_exit(
         if time_gate_ok:
             return _exit(
                 "stop_loss", unrealized_pct, current_bid,
-                f"stop-loss tripped at {unrealized_pct * 100:+.1f}% "
-                f"(threshold -{sl_threshold * 100:.1f}%)",
+                f"stop-loss tripped at {unrealized_pct * 100:+.1f}%",
                 hours_open=hours_open, hours_remaining=hours_remaining,
             )
         # Else: stop-loss would have tripped but we're too close to
@@ -214,8 +213,7 @@ def evaluate_exit(
     if tp_enabled and unrealized_pct >= abs(tp_threshold):
         return _exit(
             "take_profit", unrealized_pct, current_bid,
-            f"take-profit tripped at {unrealized_pct * 100:+.1f}% "
-            f"(threshold +{tp_threshold * 100:.1f}%)",
+            f"take-profit tripped at {unrealized_pct * 100:+.1f}%",
             hours_open=hours_open, hours_remaining=hours_remaining,
         )
 
