@@ -156,6 +156,20 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Clean stale bundle output
+        # The cargo cache (above) restores `target/` between runs to
+        # speed up Rust compilation. That cache also includes
+        # `target/release/bundle/{dmg,nsis,msi,macos}/`, which holds
+        # PER-VERSION installer filenames like `Delfi_0.1.0_x64-setup.exe`.
+        # Without wiping, the next build's upload-artifact glob picks
+        # up BOTH the freshly-built `Delfi_1.5.0_*` and the stale
+        # `Delfi_0.1.0_*` from cache, and they all land in the
+        # GitHub Release. The compile cache under target/release/deps
+        # + target/release/build is left intact so the Rust build
+        # stays incremental.
+        run: |
+          rm -rf src-tauri/target/release/bundle || true
+
       - name: Build Tauri app
         # The Tauri build re-runs the frontend build (vite) via its
         # beforeBuildCommand and then bundles per-platform. When
