@@ -1,4 +1,5 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar, waitForSidecar } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
@@ -512,6 +513,19 @@ function Sidebar({
   toggleBotEnabled: () => void;
   modeBusy: boolean;
 }) {
+  // Pull the version from Tauri at runtime (resolves to the value
+  // in tauri.conf.json's `version` field). The footer used to be a
+  // hardcoded "V1.5" literal that fell behind every release; this
+  // makes it follow the bundled app's actual version automatically.
+  const [appVersion, setAppVersion] = useState<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    getVersion()
+      .then((v) => { if (!cancelled) setAppVersion(v); })
+      .catch(() => { /* non-Tauri / dev fallback: leave blank */ });
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <aside className="side">
       <a
@@ -566,7 +580,9 @@ function Sidebar({
       />
 
       <div className="side-foot">
-        <div className="side-footnote">V1.5</div>
+        <div className="side-footnote">
+          {appVersion ? `V${appVersion}` : ""}
+        </div>
       </div>
     </aside>
   );
