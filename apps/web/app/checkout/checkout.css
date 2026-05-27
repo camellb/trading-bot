@@ -411,6 +411,79 @@
   user-select: all;
 }
 
+/* License blob panel on /checkout/return. Gold left rule mirrors
+ * the Resend email's license block so the buyer sees the same
+ * treatment on both surfaces. */
+.checkout-return-license {
+  margin: 16px 0 24px;
+  padding: 18px 20px 16px;
+  background: var(--obsidian-raised, #13141a);
+  border: 1px solid var(--vellum-08, #2a2c34);
+  border-left: 2px solid var(--gold, #daaa4c);
+  border-radius: 8px;
+  text-align: left;
+}
+.checkout-return-license-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  gap: 12px;
+}
+.checkout-return-license-label {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--vellum-50, #8c8675);
+}
+.checkout-return-license-copy {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gold, #daaa4c);
+  background: transparent;
+  border: 1px solid var(--gold, #daaa4c);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.checkout-return-license-copy:hover {
+  background: var(--gold, #daaa4c);
+  color: var(--obsidian, #0a0a0c);
+}
+.checkout-return-license-blob {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--gold, #daaa4c);
+  background: var(--obsidian, #0a0a0c);
+  border: 1px solid var(--vellum-08, #1f2026);
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+  max-height: 200px;
+  overflow: auto;
+}
+.checkout-return-license-pending {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--vellum-50, #8c8675);
+  margin: 16px 0 24px;
+  padding: 14px 18px;
+  background: var(--obsidian-raised, #13141a);
+  border: 1px solid var(--vellum-08, #2a2c34);
+  border-radius: 8px;
+  text-align: left;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────── */
 
 @media (max-width: 920px) {
