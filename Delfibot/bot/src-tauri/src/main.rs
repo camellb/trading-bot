@@ -43,6 +43,240 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::oneshot;
 
+/// Set up the macOS LaunchAgent + UI-less sidecar sub-bundle if either
+/// is missing. Runs at GUI startup before we wait for the sidecar's
+/// port file.
+///
+/// Why this exists: on macOS release the GUI doesn't spawn the
+/// sidecar - it expects `launchd` to be running it via a user
+/// LaunchAgent at ~/Library/LaunchAgents/com.delfi.bot.plist that
+/// points at /Applications/Delfi.app/Contents/Library/Daemon/
+/// DelfiSidecar.app. Neither artifact is in the Tauri build output;
+/// historically they were created by `Delfibot/install.sh`. That
+/// meant every DMG drag-install AND every auto-updater bundle
+/// replacement left the user with no running daemon and the GUI
+/// timing out with "Delfi could not start".
+///
+/// This function is the in-process equivalent of the install.sh
+/// LaunchAgent block, so the .app is self-sufficient on first launch
+/// regardless of how the bundle got into /Applications.
+///
+/// Idempotent: returns early when both artifacts already exist and the
+/// LaunchAgent path matches the current bundle's sub-bundle path. Best
+/// effort - logs and returns on any failure rather than crashing the
+/// GUI (the user can re-run the install script manually if this
+/// silently can't write to the bundle, e.g. quarantined permissions).
+#[cfg(target_os = "macos")]
+fn ensure_macos_launchagent() {
+    let home = match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => h,
+        _ => {
+            eprintln!("[bootstrap] HOME unset; can't install LaunchAgent");
+            return;
+        }
+    };
+
+    // Resolve the .app path from the running binary at
+    // <app>/Contents/MacOS/delfi.
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[bootstrap] current_exe failed: {e}");
+            return;
+        }
+    };
+    let app_dir = match exe.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+        Some(p) => p.to_path_buf(),
+        None => {
+            eprintln!("[bootstrap] couldn't resolve .app dir from {exe:?}");
+            return;
+        }
+    };
+
+    let sub_bundle_root = app_dir.join("Contents/Library/Daemon/DelfiSidecar.app");
+    let sub_bundle_contents = sub_bundle_root.join("Contents");
+    let sub_bundle_macos = sub_bundle_contents.join("MacOS");
+    let sub_bundle_info = sub_bundle_contents.join("Info.plist");
+    let sub_bundle_sidecar = sub_bundle_macos.join("delfi-sidecar");
+    let real_sidecar = app_dir.join("Contents/MacOS/delfi-sidecar");
+    let agent_dir = format!("{home}/Library/LaunchAgents");
+    let agent_path = format!("{agent_dir}/com.delfi.bot.plist");
+    let log_dir = format!("{home}/Library/Logs/Delfi");
+    let appdata_dir = format!("{home}/Library/Application Support/com.delfi.desktop");
+
+    // Detect what's already in place. The LaunchAgent's `ProgramArguments`
+    // must point at THIS bundle's sub-bundle path - if the user
+    // reinstalled the .app at a different path, the stale plist
+    // would launch the wrong binary. Compare path strings as a
+    // cheap freshness check.
+    let agent_exists = std::path::Path::new(&agent_path).exists();
+    let sub_bundle_exists = sub_bundle_sidecar.exists();
+    let agent_matches_current_bundle = if agent_exists {
+        std::fs::read_to_string(&agent_path)
+            .map(|s| s.contains(&*sub_bundle_sidecar.to_string_lossy()))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if agent_exists && sub_bundle_exists && agent_matches_current_bundle {
+        // Already bootstrapped against this bundle path. Nothing to do.
+        return;
+    }
+
+    eprintln!(
+        "[bootstrap] bootstrapping launchd daemon \
+         (agent_exists={agent_exists} sub_bundle_exists={sub_bundle_exists} \
+          agent_matches={agent_matches_current_bundle})"
+    );
+
+    // 1. Create the UI-less sub-bundle so the daemon doesn't paint a
+    //    duplicate Dock tile. The wrapper carries CFBundleIdentifier=
+    //    com.delfi.sidecar + LSUIElement=true; the binary inside is a
+    //    hard link to the real sidecar so we don't double 120MB.
+    if let Err(e) = std::fs::create_dir_all(&sub_bundle_macos) {
+        eprintln!("[bootstrap] create sub-bundle dir failed: {e}");
+        return;
+    }
+    let sub_bundle_info_plist = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.delfi.sidecar</string>
+    <key>CFBundleName</key>
+    <string>Delfi Sidecar</string>
+    <key>CFBundleDisplayName</key>
+    <string>Delfi Sidecar</string>
+    <key>CFBundleExecutable</key>
+    <string>delfi-sidecar</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+"#;
+    if let Err(e) = std::fs::write(&sub_bundle_info, sub_bundle_info_plist) {
+        eprintln!("[bootstrap] write sub-bundle Info.plist failed: {e}");
+        return;
+    }
+    // Hard-link (preferred) or copy (fallback) the sidecar binary
+    // into the wrapper. Hard link keeps the disk footprint flat;
+    // copy is the fallback if hard linking is somehow rejected on
+    // the user's filesystem.
+    let _ = std::fs::remove_file(&sub_bundle_sidecar);
+    if std::fs::hard_link(&real_sidecar, &sub_bundle_sidecar).is_err() {
+        if let Err(e) = std::fs::copy(&real_sidecar, &sub_bundle_sidecar) {
+            eprintln!("[bootstrap] copy sidecar into wrapper failed: {e}");
+            return;
+        }
+    }
+
+    // 2. Create LaunchAgent + Logs dirs (idempotent).
+    let _ = std::fs::create_dir_all(&agent_dir);
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    // 3. Write the LaunchAgent plist. ProgramArguments points at THIS
+    //    bundle's sub-bundle path so an auto-update that moves the
+    //    bundle gets a fresh plist that follows.
+    let sub_bundle_sidecar_str = sub_bundle_sidecar.to_string_lossy();
+    let agent_plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.delfi.bot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{sub_bundle_sidecar_str}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DELFI_DB_PATH</key>
+        <string>{appdata_dir}/delfi.db</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>DELFI_LIVE_KILLSWITCH_OFF</key>
+        <string>1</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{log_dir}/sidecar.log</string>
+    <key>StandardErrorPath</key>
+    <string>{log_dir}/sidecar.err</string>
+    <key>WorkingDirectory</key>
+    <string>{home}</string>
+</dict>
+</plist>
+"#
+    );
+    if let Err(e) = std::fs::write(&agent_path, &agent_plist) {
+        eprintln!("[bootstrap] write LaunchAgent plist failed: {e}");
+        return;
+    }
+
+    // 4. Get UID via id -u (avoids a libc dep just for getuid()).
+    let uid_out = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output();
+    let uid = match uid_out {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        }
+        _ => {
+            eprintln!("[bootstrap] id -u failed");
+            return;
+        }
+    };
+    if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
+        eprintln!("[bootstrap] UID not numeric: {uid:?}");
+        return;
+    }
+    let user_gui = format!("gui/{uid}");
+
+    // 5. bootout + bootstrap. bootout is best-effort (no-op if the
+    //    agent was never registered). bootstrap is the real
+    //    registration. kickstart -k starts the daemon immediately
+    //    without waiting for ThrottleInterval.
+    let _ = std::process::Command::new("/bin/launchctl")
+        .args(["bootout", &user_gui, &agent_path])
+        .output();
+    match std::process::Command::new("/bin/launchctl")
+        .args(["bootstrap", &user_gui, &agent_path])
+        .output()
+    {
+        Ok(o) if o.status.success() => {
+            eprintln!("[bootstrap] launchctl bootstrap OK");
+        }
+        Ok(o) => {
+            eprintln!(
+                "[bootstrap] launchctl bootstrap rc={:?} stderr={}",
+                o.status.code(),
+                String::from_utf8_lossy(&o.stderr)
+            );
+        }
+        Err(e) => {
+            eprintln!("[bootstrap] launchctl bootstrap failed: {e}");
+        }
+    }
+    let _ = std::process::Command::new("/bin/launchctl")
+        .args(["kickstart", "-k", &format!("{user_gui}/com.delfi.bot")])
+        .output();
+}
+
 /// Shared runtime state for the API connection. Exposed to the JS layer
 /// through the `get_api_port` command.
 struct ApiState {
@@ -603,6 +837,17 @@ fn main() {
         })
         .setup(|app| {
             dlog("setup() entry");
+
+            // First job on macOS release builds: make sure the
+            // LaunchAgent + UI-less sidecar sub-bundle exist and point
+            // at this bundle. Idempotent (no-op after the first
+            // launch) - see the doc comment on
+            // ensure_macos_launchagent for the why.
+            #[cfg(target_os = "macos")]
+            if !cfg!(debug_assertions) {
+                ensure_macos_launchagent();
+            }
+
             // System tray icon. Sits in the Windows notification area
             // (the up-arrow "hidden icons" tray) and the macOS menu bar.
             // Left-click brings the main window forward; right-click
