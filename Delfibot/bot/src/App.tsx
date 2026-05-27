@@ -345,8 +345,8 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
     try {
       await tauriRestartSidecar();
       // Wait for the daemon to come back, then reload. If it doesn't
-      // come back within 30 s, surface a concrete next step instead
-      // of an infinite spinner.
+      // come back within 60 s, drop back to the inline banner with
+      // the diagnostic so the user has a concrete next step.
       const alive = await waitForSidecar(60_000);
       if (alive) {
         window.location.reload();
@@ -362,6 +362,25 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
       setRestarting(false);
     }
   };
+
+  // While restarting, take over the entire viewport with the same
+  // boot-style splash the auto-updater and Settings -> Restart Delfi
+  // use. Replaces the previous inline "Restarting..." button text
+  // that left the user staring at a dead dashboard.
+  if (restarting) {
+    return (
+      <div className="boot update-busy" role="status" aria-live="polite">
+        <img src="/brand/mark.svg" alt="" className="boot-mark" />
+        <h1>DELFI</h1>
+        <p className="boot-status">Restarting Delfi</p>
+        <p className="boot-detail">
+          The bot keeps trading. We&apos;re just bouncing the daemon and reconnecting.
+        </p>
+        <div className="boot-progress" aria-hidden="true" />
+      </div>
+    );
+  }
+
   return (
     <div
       className="error"
@@ -379,9 +398,8 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
         type="button"
         className="btn small"
         onClick={onRestart}
-        disabled={restarting}
       >
-        {restarting ? "Restarting..." : "Restart Delfi"}
+        Restart Delfi
       </button>
     </div>
   );
@@ -399,8 +417,8 @@ function BootScreen({ error }: { error: string | null }) {
       await tauriRestartSidecar();
       // Wait for the daemon to come back, then reload so the GUI
       // re-runs its boot probe with a clean cache. If the daemon
-      // doesn't come back within 30 s, surface a concrete next step
-      // instead of an infinite spinner.
+      // doesn't come back within 60 s, drop back to the error UI
+      // with the diagnostic.
       const alive = await waitForSidecar(60_000);
       if (alive) {
         window.location.reload();
@@ -416,6 +434,25 @@ function BootScreen({ error }: { error: string | null }) {
       setRestarting(false);
     }
   };
+
+  // While restarting, swap the error UI for the standard "launching"
+  // splash so the user sees the same calm progress bar they would
+  // see on a clean boot, instead of "Restarting..." overprinted on
+  // the previous error message.
+  if (restarting) {
+    return (
+      <div className="boot">
+        <img src="/brand/mark.svg" alt="" className="boot-mark" />
+        <h1>DELFI</h1>
+        <p className="boot-status">Restarting Delfi</p>
+        <p className="boot-detail">
+          The bot keeps trading. We&apos;re just bouncing the daemon and reconnecting.
+        </p>
+        <div className="boot-progress" aria-hidden="true" />
+      </div>
+    );
+  }
+
   return (
     <div className="boot">
       <img src="/brand/mark.svg" alt="" className="boot-mark" />
@@ -431,9 +468,8 @@ function BootScreen({ error }: { error: string | null }) {
               type="button"
               className="btn small"
               onClick={onRestart}
-              disabled={restarting}
             >
-              {restarting ? "Restarting..." : "Restart Delfi"}
+              Restart Delfi
             </button>
             <a
               className="btn ghost small"
