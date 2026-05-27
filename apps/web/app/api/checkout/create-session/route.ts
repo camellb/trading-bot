@@ -114,6 +114,13 @@ export async function POST(req: Request): Promise<NextResponse> {
         utm_medium:  body.utm?.medium  ?? "",
         utm_content: body.utm?.content ?? "",
       },
+      // Surfaces an "Add promotion code" affordance on Stripe's
+      // embedded checkout. Off by default in the API; without this
+      // the field never renders even when valid Promotion Codes
+      // exist in the dashboard. Codes themselves still need to be
+      // created in Stripe Dashboard -> Products -> Coupons ->
+      // Promotion Codes for any entry to validate.
+      allow_promotion_codes: true,
       // Stripe Tax: turn it on per environment in the dashboard;
       // the SDK respects the dashboard toggle automatically and we
       // don't need to pass tax-related fields here.
