@@ -4,9 +4,12 @@
 // `checkout.session.completed` webhook lands. The email contains:
 //
 //   * Their signed license blob (the only thing that unlocks the app).
-//   * Two platform download links (read from DOWNLOAD_URL_MAC /
-//     DOWNLOAD_URL_WIN env vars, with a GitHub Releases fallback so
-//     the function still works before the env vars are set).
+//   * Two platform download links pointing at the delfibot.com proxy
+//     (/api/download/mac, /api/download/win). The proxy hides the
+//     GitHub release backend from the buyer entirely - user rule
+//     (2026-05-27): "NO ONE SHOULD EVER SEE THE GITHUB. NO USER. EVER."
+//     DOWNLOAD_URL_MAC / DOWNLOAD_URL_WIN env vars can still override
+//     the default (e.g. when migrating to a dedicated CDN later).
 //   * A two-step "paste this in" instruction.
 //
 // Both an HTML and a text body are produced. Resend prefers HTML; the
@@ -20,18 +23,20 @@
 import { resend, RESEND_FROM, SUPPORT_INBOX } from "@/lib/resend";
 
 /** Server-side env var (no NEXT_PUBLIC_*). Override per-environment in
- *  Vercel; otherwise the user lands on the GitHub Releases page and
- *  picks the right binary. */
+ *  Vercel when migrating off the default proxy; otherwise the user
+ *  hits the delfibot.com proxy at /api/download/{mac,win}, which
+ *  streams the latest installer without ever exposing the GitHub
+ *  Release URL to the buyer's browser. */
 function downloadUrl(platform: "mac" | "win"): string {
   if (platform === "mac") {
     return (
       process.env.DOWNLOAD_URL_MAC ||
-      "https://github.com/camellb/trading-bot/releases/latest"
+      "https://delfibot.com/api/download/mac"
     );
   }
   return (
     process.env.DOWNLOAD_URL_WIN ||
-    "https://github.com/camellb/trading-bot/releases/latest"
+    "https://delfibot.com/api/download/win"
   );
 }
 

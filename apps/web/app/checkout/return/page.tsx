@@ -122,14 +122,14 @@ function ReturnInner() {
         <div className="checkout-return-downloads">
           <a
             className="btn-primary checkout-return-download-btn"
-            href="https://github.com/camellb/trading-bot/releases/latest"
+            href="/api/download/mac"
             rel="noopener"
           >
             Download for macOS
           </a>
           <a
             className="btn-primary checkout-return-download-btn"
-            href="https://github.com/camellb/trading-bot/releases/latest"
+            href="/api/download/win"
             rel="noopener"
           >
             Download for Windows
