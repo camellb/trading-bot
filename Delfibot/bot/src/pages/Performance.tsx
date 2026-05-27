@@ -126,15 +126,20 @@ export default function Performance() {
       const outcome = r.settlement_outcome as string | null | undefined;
       if (outcome == null) continue;
       trades++;
-      // Wins/losses count clear YES/NO outcomes. Invalid markets
-      // (outcome neither matches nor mirrors `side` because they
-      // settled at 0.50) are trades but neither wins nor losses.
-      if (outcome === r.side) wins++;
-      else if (outcome === "YES" || outcome === "NO") losses++;
+      // Win/loss determined by realized P&L sign - matches the
+      // server's pm_executor.get_portfolio_stats() so the Dashboard
+      // and Performance page agree on a single win-rate number.
+      // Break-even trades (pnl === 0) and invalid/voided markets
+      // (refunded at the entry price, so pnl ~= 0) count toward
+      // `trades` for the closed-trade total but are excluded from
+      // both numerator and denominator of the win rate.
+      if (pnl > 0) wins++;
+      else if (pnl < 0) losses++;
       totalPnl += pnl;
       totalCost += r.cost_usd ?? 0;
     }
-    const winRate = trades > 0 ? (wins / trades) * 100 : 0;
+    const settled = wins + losses;
+    const winRate = settled > 0 ? (wins / settled) * 100 : 0;
     // ROI on BANKROLL, not on cost - matches CLAUDE.md doctrine
     // ("Maximize ROI on bankroll across all trades") and the
     // dashboard's `pnl/starting * 100` calculation. The cost-based

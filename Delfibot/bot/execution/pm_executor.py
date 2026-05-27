@@ -899,7 +899,17 @@ class PMExecutor:
                     "    0"
                     "  ) AS open_cost_basis, "
                     "  COALESCE(SUM(realized_pnl_usd) FILTER (WHERE status IN ('settled', 'closed_early')), 0) AS realized, "
-                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early') AND realized_pnl_usd > 0) AS wins "
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early') AND realized_pnl_usd > 0) AS wins, "
+                    # `losses` counts only trades that actually lost
+                    # money (realized_pnl_usd < 0). Break-even
+                    # positions (realized_pnl_usd = 0, e.g. an exit at
+                    # the exact entry price) are counted as neither
+                    # wins nor losses. Win rate displayed everywhere
+                    # is wins / (wins + losses), so a break-even
+                    # neither drags it down nor inflates it - and the
+                    # Dashboard "70%" stops disagreeing with the
+                    # Performance page "74%" for the same trades.
+                    "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early') AND realized_pnl_usd < 0) AS losses "
                     "FROM pm_positions WHERE user_id = :uid AND mode = :m"
                 ), {"uid": self.user_id, "m": self.mode}).fetchone()
                 open_n         = int(row[0] or 0)
@@ -908,6 +918,7 @@ class PMExecutor:
                 open_cost_basis = float(row[3] or 0)  # cost basis
                 realized       = float(row[4] or 0)
                 wins           = int(row[5] or 0)
+                losses         = int(row[6] or 0)
 
                 # Skipped evaluations live in market_evaluations, not
                 # pm_positions (a skip never opens a position). Mode
@@ -928,7 +939,7 @@ class PMExecutor:
         except Exception as exc:
             print(f"[pm_executor] get_portfolio_stats({self.user_id}) failed: {exc}",
                   file=sys.stderr)
-            open_n = settled_n = wins = skipped_n = 0
+            open_n = settled_n = wins = losses = skipped_n = 0
             open_cost = open_cost_basis = realized = 0.0
         # SINGLE source of truth for bankroll + equity, used by every
         # downstream surface (Dashboard /api/summary, settlement
@@ -1124,8 +1135,15 @@ class PMExecutor:
             "bot_open_cost":   open_cost_basis,
             "settled_total":   settled_n,
             "settled_wins":    wins,
+            "settled_losses":  losses,
             "skipped_total":   skipped_n,
-            "win_rate":        (wins / settled_n) if settled_n else None,
+            # Win rate is wins / (wins + losses). Break-even trades
+            # (realized_pnl_usd == 0) are excluded from BOTH numerator
+            # and denominator so they don't drag win-rate down (the
+            # Performance page calculates this way client-side; this
+            # change makes the Dashboard agree on a single number).
+            "win_rate":        (wins / (wins + losses))
+                               if (wins + losses) else None,
             "realized_pnl":    realized,
             # data_api_unrealized = sum of cashPnl from data-api
             # /positions, currently-open rows only (non-redeemable).
