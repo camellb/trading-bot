@@ -793,6 +793,10 @@ fn main() {
         // Config (GitHub Releases manifest URL + public verifying
         // key) lives in tauri.conf.json under plugins.updater.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // process.relaunch() so the updater path and the restart
+        // button can restart the GUI themselves instead of asking
+        // the user to quit + reopen.
+        .plugin(tauri_plugin_process::init())
         .manage(ApiState {
             port: Mutex::new(None),
             child: Mutex::new(None),

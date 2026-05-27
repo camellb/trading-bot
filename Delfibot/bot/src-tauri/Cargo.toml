@@ -1,6 +1,6 @@
 [package]
 name = "delfi"
-version = "1.5.6"
+version = "1.5.7"
 description = "Delfi - autonomous Polymarket trader (Tauri shell)"
 authors = ["Delfi"]
 edition = "2021"
@@ -34,6 +34,10 @@ tauri-plugin-opener = "2"
 # signing for in-place replacement; without it the mac update flow
 # falls back to surfacing the latest .dmg URL for manual reinstall.
 tauri-plugin-updater = "2"
+# `process.relaunch()` for the auto-updater. After downloadAndInstall
+# writes the new bundle, we call this to restart the GUI ourselves so
+# the user doesn't have to manually quit + reopen Delfi.
+tauri-plugin-process = "2"
 # Single-instance enforcement for the GUI. When the user double-clicks
 # the Delfi shortcut while a Delfi window is already running, the second
 # .exe detects the first via a named pipe (Windows) / abstract socket

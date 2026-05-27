@@ -585,38 +585,79 @@ function LoginItemPanel() {
  *  reachable (or 30s elapses). On timeout we tell the user to quit
  *  + relaunch Delfi manually so they have a concrete next step. */
 function RestartPanel() {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [phase, setPhase] = useState<"idle" | "restarting" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
 
   const restart = async () => {
-    setBusy(true);
-    setMsg(null);
+    setError(null);
+    setPhase("restarting");
+    setConfirm(false);
     try {
       await tauriRestartSidecar();
-      setConfirm(false);
 
-      // Poll Rust IPC directly for the new daemon's port. The Rust
-      // command returns as soon as it's fired the kill + kickstart;
-      // the daemon usually comes back in 5-10 s (launchd
+      // Poll Rust IPC directly for the new daemon's port. Rust
+      // returns as soon as it's fired the kill + kickstart; the
+      // daemon usually comes back in 5-10 s (launchd
       // ThrottleInterval=10 s + PyInstaller cold-start).
       const alive = await waitForSidecar(60_000);
       if (alive) {
-        setMsg({ kind: "ok", text: "Delfi restarted." });
-      } else {
-        setMsg({
-          kind: "err",
-          text: "Delfi did not come back within 60 seconds. " +
-                "Quit Delfi from the macOS menu bar and reopen " +
-                "it from /Applications.",
-        });
+        // Reload so the React tree reconnects to the freshly-booted
+        // daemon on the new port. The full-screen overlay is gone
+        // the instant the page reloads, so the user sees the boot
+        // splash for a beat and then the dashboard.
+        window.location.reload();
+        return;
       }
+      setError(
+        "Delfi did not come back within 60 seconds. " +
+        "Quit Delfi from the macOS menu bar and reopen " +
+        "it from /Applications.",
+      );
+      setPhase("error");
     } catch (err) {
-      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase("error");
     }
   };
+
+  // While restarting, take over the entire viewport with a boot-
+  // style splash. Same treatment as the auto-updater so the user
+  // gets a single consistent "Delfi is doing something, sit tight"
+  // experience instead of an inline button spinner over a stale
+  // dashboard.
+  if (phase !== "idle") {
+    return (
+      <div className="boot update-busy" role="status" aria-live="polite">
+        <img src="/brand/mark.svg" alt="" className="boot-mark" />
+        <h1>DELFI</h1>
+        <p className="boot-status">
+          {phase === "restarting" ? "Restarting Delfi" : "Restart failed"}
+        </p>
+        <p className="boot-detail">
+          {phase === "restarting"
+            ? "The bot keeps trading. We're just bouncing the daemon and reconnecting."
+            : (error ?? "Something went wrong.")}
+        </p>
+        {phase === "error" ? (
+          <div className="boot-actions">
+            <button
+              type="button"
+              className="btn small"
+              onClick={() => {
+                setError(null);
+                setPhase("idle");
+              }}
+            >
+              Back to settings
+            </button>
+          </div>
+        ) : (
+          <div className="boot-progress" aria-hidden="true" />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="panel">
@@ -636,36 +677,23 @@ function RestartPanel() {
             type="button"
             className="btn ghost small"
             onClick={() => setConfirm(true)}
-            disabled={busy}
           >
             Restart Delfi
           </button>
         </div>
       ) : (
         <div className="form-actions">
-          <button
-            type="button"
-            className="btn small"
-            onClick={restart}
-            disabled={busy}
-          >
-            {busy ? "Restarting..." : "Yes, restart"}
+          <button type="button" className="btn small" onClick={restart}>
+            Yes, restart
           </button>
           <button
             type="button"
             className="btn ghost small"
             onClick={() => setConfirm(false)}
-            disabled={busy}
           >
             Cancel
           </button>
         </div>
-      )}
-      {msg && (
-        <p className={msg.kind === "ok" ? "form-success" : "form-error"}
-           style={{ marginTop: 12 }}>
-          {msg.text}
-        </p>
       )}
     </div>
   );

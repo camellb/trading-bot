@@ -2286,6 +2286,17 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   background: var(--obsidian);
   padding: 24px;
 }
+
+/* `.boot` is the first-launch splash and lives where the entire
+ * app would be (replaces .app-shell while booting). When the same
+ * splash is reused mid-session for an auto-update or a daemon
+ * restart, .app-shell is still in the DOM behind it — so we
+ * promote it to a fixed-positioned overlay covering the window. */
+.boot.update-busy {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
 .boot-mark { width: 56px; height: 56px; opacity: 0.92; }
 .boot h1 {
   margin: 0;
