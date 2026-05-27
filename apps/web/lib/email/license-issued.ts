@@ -97,6 +97,14 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
     `     your Polymarket account. Your private keys never leave`,
     `     your computer.`,
     ``,
+    `Mac users: if macOS says "Delfi is damaged and can't be opened",`,
+    `open Terminal once and run this single line to clear the download`,
+    `quarantine flag that macOS adds to apps from the internet:`,
+    ``,
+    `    xattr -cr /Applications/Delfi.app`,
+    ``,
+    `Then open Delfi normally. This is a one-time step.`,
+    ``,
     `  - Delfi runs entirely on your machine.`,
     `  - Your funds, wallet, and Polymarket account never leave your`,
     `    control.`,
@@ -189,6 +197,19 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
                 <li style="margin:0 0 10px 0;">Delfi starts in Simulation. Watch it trade for as long as you want.</li>
                 <li style="margin:0;">When the numbers convince you, switch to Live and connect your Polymarket account. Your private keys never leave your computer.</li>
               </ol>
+
+              <div style="background:#13141a;border:1px solid #2a2c34;border-radius:6px;padding:18px 20px;margin:0 0 28px 0;">
+                <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 10px 0;">
+                  Mac users
+                </div>
+                <p style="font-size:13px;line-height:1.65;color:#cfcabd;margin:0 0 12px 0;">
+                  If macOS says &ldquo;Delfi is damaged and can&rsquo;t be opened&rdquo;, open Terminal once and run this single line to clear the download quarantine flag macOS adds to apps from the internet:
+                </p>
+                <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:10px 12px;margin:0 0 10px 0;white-space:pre-wrap;word-break:break-all;">xattr -cr /Applications/Delfi.app</pre>
+                <p style="font-size:12px;line-height:1.6;color:#8c8675;margin:0;">
+                  Then open Delfi normally. One-time step.
+                </p>
+              </div>
 
               <div style="height:1px;background:#1f2026;margin:0 0 24px 0;font-size:0;line-height:0;">&nbsp;</div>
 

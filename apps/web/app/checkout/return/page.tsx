@@ -116,7 +116,7 @@ function ReturnInner() {
           <span className="checkout-return-email">
             {status.email ?? "the email you entered"}
           </span>
-          . While you wait, install Delfi for your platform.
+          .
         </p>
 
         <div className="checkout-return-downloads">
@@ -136,13 +136,24 @@ function ReturnInner() {
           </a>
         </div>
 
+        <div className="checkout-return-mac-note">
+          <div className="checkout-return-mac-note-label">Mac users</div>
+          <p className="checkout-return-mac-note-text">
+            If macOS says &ldquo;Delfi is damaged and can&rsquo;t be
+            opened&rdquo;, open Terminal once and run this single line to
+            clear the download quarantine flag macOS adds to apps from
+            the internet:
+          </p>
+          <code className="checkout-return-mac-note-cmd">
+            xattr -cr /Applications/Delfi.app
+          </code>
+        </div>
+
         <p className="checkout-return-body muted">
-          Open the app, paste the license key from your email on first
-          launch, and you&apos;re live.
-        </p>
-        <p className="checkout-return-body muted">
-          Nothing in your inbox in five minutes? Check spam, then reply to
-          info@delfibot.com and we&apos;ll resend.
+          Nothing in your inbox in five minutes?
+          <br />
+          Check spam, then reply to info@delfibot.com and we will resend
+          your license.
         </p>
       </div>
     );
