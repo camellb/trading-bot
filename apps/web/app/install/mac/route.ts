@@ -12,23 +12,35 @@
 //      hits delfibot.com, never github.com)
 //   4. Mounts, copies the .app to /Applications, detaches
 //   5. Strips `com.apple.quarantine` so Gatekeeper doesn't reject
-//      the unsigned bundle (`xattr -cr` is the universal workaround
-//      until we ship an Apple Developer ID + notarized build)
-//   6. Clears any stale singleton-lock / sidecar.port from a previous
-//      broken install so the new sidecar acquires a clean lock
-//   7. `open /Applications/Delfi.app`
+//      the unsigned bundle
+//   6. Creates the UI-less DelfiSidecar.app sub-bundle inside
+//      /Applications/Delfi.app/Contents/Library/Daemon/ so the
+//      launchd-managed daemon doesn't paint a duplicate Dock tile
+//   7. Writes the LaunchAgent plist to
+//      ~/Library/LaunchAgents/com.delfi.bot.plist and
+//      bootstraps it. THIS IS THE STEP MISSING FROM THE DMG
+//      DRAG-INSTALL FLOW. Without it, on macOS release builds the
+//      Tauri GUI doesn't spawn the sidecar (release mode delegates
+//      lifecycle to launchd) so the sidecar never starts and the
+//      GUI shows "Delfi took too long to start". install.sh in
+//      the repo did this step; the DMG never did. Folding it into
+//      this curl|bash installer is what finally makes a clean
+//      fresh install actually work end-to-end.
+//   8. Clears any stale singleton-lock / sidecar.port from a
+//      previous broken install so the new daemon acquires a clean
+//      lock
+//   9. `open /Applications/Delfi.app`
 //
 // The script is idempotent: running it twice just re-installs and
 // re-launches. Buyer secrets at
-//   ~/Library/Application Support/Delfi/data/secrets.json
-// and the SQLite DB at
-//   ~/Library/Application Support/Delfi/delfi.db
-// are never touched.
+//   ~/Library/Application Support/com.delfi.desktop/
+// (the AppData dir the launchd plist points DELFI_DB_PATH at) and
+// the legacy ~/Library/Application Support/Delfi/ are never touched.
 //
 // The downside vs a DMG: the buyer has to open Terminal. The upside:
 // they have to open Terminal anyway (for the xattr step), so this
-// folds the install + xattr + launch into one paste and removes the
-// "drag to Applications" UX entirely.
+// folds the install + xattr + LaunchAgent + launch into one paste
+// and removes the "drag to Applications" UX entirely.
 
 import { NextResponse } from "next/server";
 
@@ -48,9 +60,14 @@ fi
 
 DOWNLOAD_URL="https://delfibot.com/api/download/mac"
 APP_PATH="/Applications/Delfi.app"
-LAUNCHAGENT="$HOME/Library/LaunchAgents/com.delfi.bot.plist"
+LAUNCHAGENT_DIR="$HOME/Library/LaunchAgents"
+LAUNCHAGENT="$LAUNCHAGENT_DIR/com.delfi.bot.plist"
+LOG_DIR="$HOME/Library/Logs/Delfi"
 APPDATA_DIR="$HOME/Library/Application Support/Delfi"
 DESKTOP_ID_DIR="$HOME/Library/Application Support/com.delfi.desktop"
+SIDECAR_WRAPPER="$APP_PATH/Contents/Library/Daemon/DelfiSidecar.app"
+SIDECAR_REAL="$APP_PATH/Contents/MacOS/delfi-sidecar"
+USER_GUI="gui/$(id -u)"
 
 say() { printf "\\033[36m[delfi]\\033[0m %s\\n" "$*"; }
 
@@ -107,13 +124,117 @@ trap 'rm -rf "$TMPDIR_INST"' EXIT
 say "Clearing the macOS quarantine flag..."
 xattr -cr "$APP_PATH"
 
-# 6. Clear stale runtime state from any earlier broken install. Keeps
+# 6. Create the UI-less sidecar sub-bundle. Without this, the
+#    launchd-managed daemon runs from /Applications/Delfi.app's main
+#    Info.plist and paints a duplicate Dock tile next to the GUI.
+#    The wrapper carries its own LSUIElement=true Info.plist; the
+#    binary inside is a hard link to the real sidecar so we don't
+#    double 120MB of disk.
+say "Creating the headless sidecar wrapper..."
+mkdir -p "$SIDECAR_WRAPPER/Contents/MacOS"
+cat > "$SIDECAR_WRAPPER/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.delfi.sidecar</string>
+    <key>CFBundleName</key>
+    <string>Delfi Sidecar</string>
+    <key>CFBundleDisplayName</key>
+    <string>Delfi Sidecar</string>
+    <key>CFBundleExecutable</key>
+    <string>delfi-sidecar</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+rm -f "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+ln "$SIDECAR_REAL" "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+chmod 0755 "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+
+# 7. Install the LaunchAgent. This is the step the DMG drag-install
+#    flow has been missing. Without it, the sidecar never runs on
+#    macOS release builds (the GUI delegates lifecycle to launchd).
+say "Installing the LaunchAgent so the sidecar runs 24/7..."
+mkdir -p "$LAUNCHAGENT_DIR" "$LOG_DIR"
+cat > "$LAUNCHAGENT" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.delfi.bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DELFI_DB_PATH</key>
+        <string>$DESKTOP_ID_DIR/delfi.db</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>DELFI_LIVE_KILLSWITCH_OFF</key>
+        <string>1</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>$LOG_DIR/sidecar.log</string>
+    <key>StandardErrorPath</key>
+    <string>$LOG_DIR/sidecar.err</string>
+
+    <key>WorkingDirectory</key>
+    <string>$HOME</string>
+</dict>
+</plist>
+PLIST
+
+# Idempotent (re-)bootstrap. bootout first in case a prior plist is
+# still registered, then bootstrap the new one. kickstart -k to
+# force-start now without waiting for ThrottleInterval.
+launchctl bootout   "$USER_GUI" "$LAUNCHAGENT"          >/dev/null 2>&1 || true
+launchctl bootstrap "$USER_GUI" "$LAUNCHAGENT"          >/dev/null 2>&1 || true
+launchctl kickstart -k "$USER_GUI/com.delfi.bot"        >/dev/null 2>&1 || true
+
+# 8. Clear stale runtime state from any earlier broken install. Keeps
 #    license + DB intact; only resets the singleton lock and port file.
 say "Resetting runtime state..."
 rm -f "$DESKTOP_ID_DIR/sidecar.lock"
 rm -f "$APPDATA_DIR/sidecar.port"
+rm -f "$DESKTOP_ID_DIR/sidecar.port"
 
-# 7. Launch
+# 9. Wait briefly for the daemon to come up + write its port file,
+#    then launch the GUI. The GUI is a viewer; it reads the port file
+#    the daemon wrote and connects.
+say "Waiting for the daemon to start (up to 30s)..."
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  if [[ -s "$DESKTOP_ID_DIR/sidecar.port" ]] || [[ -s "$APPDATA_DIR/sidecar.port" ]]; then
+    break
+  fi
+  sleep 2
+done
+
 say "Launching Delfi..."
 open "$APP_PATH"
 
