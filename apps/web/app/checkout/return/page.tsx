@@ -136,19 +136,6 @@ function ReturnInner() {
           </a>
         </div>
 
-        <div className="checkout-return-mac-note">
-          <div className="checkout-return-mac-note-label">Mac users</div>
-          <p className="checkout-return-mac-note-text">
-            If macOS says &ldquo;Delfi is damaged and can&rsquo;t be
-            opened&rdquo;, open Terminal once and run this single line to
-            clear the download quarantine flag macOS adds to apps from
-            the internet:
-          </p>
-          <code className="checkout-return-mac-note-cmd">
-            xattr -cr /Applications/Delfi.app
-          </code>
-        </div>
-
         <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes?
           <br />

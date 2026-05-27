@@ -395,48 +395,6 @@
   margin-top: 0;
 }
 
-/* macOS Gatekeeper workaround panel. Unsigned + quarantined apps
- * show "Delfi is damaged" on Apple Silicon; the xattr line clears the
- * download quarantine and is the only one-shot fix until we ship a
- * Developer-ID-notarized build. */
-.checkout-return-mac-note {
-  margin: 0 0 20px;
-  padding: 16px 18px;
-  background: var(--obsidian-raised, #13141a);
-  border: 1px solid var(--vellum-08, #2a2c34);
-  border-radius: 8px;
-  text-align: left;
-}
-.checkout-return-mac-note-label {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--vellum-50, #8c8675);
-  margin: 0 0 10px;
-}
-.checkout-return-mac-note-text {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--vellum-70, #cfcabd);
-  margin: 0 0 10px;
-}
-.checkout-return-mac-note-cmd {
-  display: block;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--gold, #daaa4c);
-  background: var(--obsidian, #0a0a0c);
-  border: 1px solid var(--vellum-08, #1f2026);
-  border-radius: 4px;
-  padding: 10px 12px;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-  user-select: all;
-}
-
 /* ── Responsive ─────────────────────────────────────────────────── */
 
 @media (max-width: 920px) {
