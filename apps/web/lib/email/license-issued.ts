@@ -97,6 +97,13 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
     `     your Polymarket account. Your private keys never leave`,
     `     your computer.`,
     ``,
+    `On macOS you may see a warning that Apple cannot verify Delfi.`,
+    `To avoid it, open Terminal once and paste:`,
+    ``,
+    `    xattr -cr /Applications/Delfi.app`,
+    ``,
+    `Then launch Delfi normally.`,
+    ``,
     `  - Delfi runs entirely on your machine.`,
     `  - Your funds, wallet, and Polymarket account never leave your`,
     `    control.`,
@@ -184,11 +191,19 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 14px 0;">
                 Getting started
               </div>
-              <ol style="font-size:14px;line-height:1.7;color:#cfcabd;margin:0 0 32px 0;padding-left:20px;">
+              <ol style="font-size:14px;line-height:1.7;color:#cfcabd;margin:0 0 24px 0;padding-left:20px;">
                 <li style="margin:0 0 10px 0;">Open Delfi and paste your license key.</li>
                 <li style="margin:0 0 10px 0;">Delfi starts in Simulation. Watch it trade for as long as you want.</li>
                 <li style="margin:0;">When the numbers convince you, switch to Live and connect your Polymarket account. Your private keys never leave your computer.</li>
               </ol>
+
+              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 8px 0;">
+                On macOS you may see a warning that Apple cannot verify Delfi. To avoid it, open Terminal once and paste:
+              </p>
+              <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:10px 12px;margin:0 0 8px 0;white-space:pre-wrap;word-break:break-all;">xattr -cr /Applications/Delfi.app</pre>
+              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
+                Then launch Delfi normally.
+              </p>
 
               <div style="height:1px;background:#1f2026;margin:0 0 24px 0;font-size:0;line-height:0;">&nbsp;</div>
 

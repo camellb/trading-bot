@@ -137,6 +137,17 @@ function ReturnInner() {
         </div>
 
         <p className="checkout-return-body muted">
+          On macOS you may see a warning that Apple cannot verify Delfi.
+          To avoid it, open Terminal once and paste:
+        </p>
+        <code className="checkout-return-cmd">
+          xattr -cr /Applications/Delfi.app
+        </code>
+        <p className="checkout-return-body muted">
+          Then launch Delfi normally.
+        </p>
+
+        <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes?
           <br />
           Check spam, then reply to info@delfibot.com and we will resend
