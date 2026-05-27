@@ -312,8 +312,7 @@ function ReviewsPane({
         <div className="intel-empty-pill">NO REVIEWS YET</div>
         <h2 className="intel-empty-head">First review fires at 50 settled trades</h2>
         <p className="intel-empty-body">
-          Delfi narrates what it learned every 50 closed trades. The most
-          recent review will land here; older ones stack below it.
+          Delfi reviews its performance every 50 closed trades.
         </p>
       </section>
     );
@@ -552,7 +551,7 @@ function ProposalsPane({
         <section className="intel-section">
           <h2 className="intel-section-title">Active proposals</h2>
           <div className="intel-empty-soft">
-            All caught up. {history.length} past proposal{history.length === 1 ? "" : "s"} below.
+            No proposals at the moment
           </div>
         </section>
       )}
