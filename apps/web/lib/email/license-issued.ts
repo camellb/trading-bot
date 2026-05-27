@@ -85,9 +85,14 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
     blob,
     `--- end license ---`,
     ``,
-    `Download Delfi:`,
-    `  macOS:    ${macUrl}`,
+    `Install Delfi:`,
+    `  macOS:    open Terminal and paste:`,
+    `              curl -fsSL https://delfibot.com/install/mac | bash`,
     `  Windows:  ${winUrl}`,
+    ``,
+    `The macOS installer downloads Delfi, places it in /Applications,`,
+    `clears the macOS quarantine flag (which would otherwise show a`,
+    `"Delfi is damaged" warning), and launches it for you.`,
     ``,
     `Getting started:`,
     `  1. Open Delfi and paste your license key.`,
@@ -96,13 +101,6 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
     `  3. When the numbers convince you, switch to Live and connect`,
     `     your Polymarket account. Your private keys never leave`,
     `     your computer.`,
-    ``,
-    `On macOS you may see a warning that Apple cannot verify Delfi.`,
-    `To avoid it, open Terminal once and paste:`,
-    ``,
-    `    xattr -cr /Applications/Delfi.app`,
-    ``,
-    `Then launch Delfi normally.`,
     ``,
     `  - Delfi runs entirely on your machine.`,
     `  - Your funds, wallet, and Polymarket account never leave your`,
@@ -171,18 +169,24 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
               </div>
 
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 12px 0;">
-                Download
+                Install on macOS
+              </div>
+              <p style="font-size:14px;line-height:1.65;color:#cfcabd;margin:0 0 10px 0;">
+                Open Terminal and paste:
+              </p>
+              <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:12px 14px;margin:0 0 10px 0;white-space:pre-wrap;word-break:break-all;">curl -fsSL https://delfibot.com/install/mac | bash</pre>
+              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
+                The installer downloads Delfi, places it in /Applications, clears the macOS quarantine flag, and launches it for you.
+              </p>
+
+              <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 12px 0;">
+                Install on Windows
               </div>
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 36px 0;">
                 <tr>
-                  <td style="padding-right:10px;">
-                    <a href="${escapeHtml(macUrl)}" style="display:inline-block;padding:13px 26px;background:#daaa4c;border:1px solid #daaa4c;border-radius:4px;color:#0a0a0c;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;">
-                      macOS
-                    </a>
-                  </td>
                   <td>
-                    <a href="${escapeHtml(winUrl)}" style="display:inline-block;padding:13px 26px;background:transparent;border:1px solid #daaa4c;border-radius:4px;color:#daaa4c;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;">
-                      Windows
+                    <a href="${escapeHtml(winUrl)}" style="display:inline-block;padding:13px 26px;background:#daaa4c;border:1px solid #daaa4c;border-radius:4px;color:#0a0a0c;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;">
+                      Download for Windows
                     </a>
                   </td>
                 </tr>

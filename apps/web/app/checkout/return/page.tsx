@@ -119,14 +119,18 @@ function ReturnInner() {
           .
         </p>
 
+        <p className="checkout-return-body muted">
+          Install Delfi for macOS in one step. Open Terminal and paste:
+        </p>
+        <code className="checkout-return-cmd">
+          curl -fsSL https://delfibot.com/install/mac | bash
+        </code>
+        <p className="checkout-return-body muted">
+          The installer downloads Delfi, places it in /Applications,
+          and launches it for you.
+        </p>
+
         <div className="checkout-return-downloads">
-          <a
-            className="btn-primary checkout-return-download-btn"
-            href="/api/download/mac"
-            rel="noopener"
-          >
-            Download for macOS
-          </a>
           <a
             className="btn-primary checkout-return-download-btn"
             href="/api/download/win"
@@ -135,17 +139,6 @@ function ReturnInner() {
             Download for Windows
           </a>
         </div>
-
-        <p className="checkout-return-body muted">
-          On macOS you may see a warning that Apple cannot verify Delfi.
-          To avoid it, open Terminal once and paste:
-        </p>
-        <code className="checkout-return-cmd">
-          xattr -cr /Applications/Delfi.app
-        </code>
-        <p className="checkout-return-body muted">
-          Then launch Delfi normally.
-        </p>
 
         <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes?
