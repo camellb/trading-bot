@@ -5,8 +5,12 @@
 # entries for every rebuild.
 #
 # Usage:
-#   cd Delfibot/bot && npm run tauri build -- --bundles app
-#   bash ../install.sh
+#   bash Delfibot/bot/scripts/build_app.sh   # builds sidecar + Tauri (sources the signing key)
+#   bash Delfibot/install.sh                 # installs the freshly built bundle
+#
+# Skip the sidecar rebuild when only frontend changed:
+#   bash Delfibot/bot/scripts/build_app.sh --no-sidecar
+#   bash Delfibot/install.sh
 #
 # What this does, in order:
 #   1. Ask Delfi to quit gracefully (AppleEvent), then SIGKILL backstop.
