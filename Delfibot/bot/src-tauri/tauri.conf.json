@@ -45,7 +45,8 @@
     "shortDescription": "Autonomous Polymarket prediction-market trader.",
     "longDescription": "Delfi watches Polymarket, backs the side the market itself favours on every tradeable contract, and steps aside whenever its own forecast disagrees with the price. Runs entirely on your machine.",
     "macOS": {
-      "minimumSystemVersion": "11.0"
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
     },
     "windows": {
       "wix": {

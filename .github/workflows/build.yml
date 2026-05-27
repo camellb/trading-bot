@@ -4,11 +4,18 @@ name: Build
 # and a Windows .msi/.exe per push to main and on demand. Lets us ship
 # Windows artifacts without owning a Windows machine.
 #
-# Caveats:
-#  - Neither artifact is code-signed. macOS users will hit Gatekeeper
-#    ("unidentified developer"); Windows users will see SmartScreen.
-#    Signing requires paid certs (Apple Developer ID + a Windows
-#    code-signing cert) and is intentionally deferred.
+# Code signing:
+#  - macOS: ad-hoc signed (codesign --deep --sign -). With Tauri 2's
+#    default settings the .app ends up with a linker-level signature
+#    but no _CodeSignature/CodeResources seal, which Apple Silicon
+#    Gatekeeper rejects as "Delfi is damaged and can't be opened".
+#    The macOS-only re-sign step below runs the proper deep ad-hoc
+#    sign + repackages the DMG and the updater .app.tar.gz from the
+#    sealed bundle. Result: first-launch shows the "developer cannot
+#    be verified" warning instead of "damaged" - right-click Open
+#    works and no Terminal incantation is needed.
+#  - Windows: not signed. SmartScreen will warn on first launch.
+#    Proper Authenticode signing needs a paid cert and is deferred.
 #  - The Windows binary is verified by a headless smoke test that
 #    launches the sidecar and hits /api/state. UI rendering (the Tauri
 #    webview side) is NOT exercised. That needs a real Windows
@@ -182,6 +189,78 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --bundles ${{ matrix.tauri_bundles }}
+
+      - name: macOS — properly seal the .app, rebuild DMG + updater bundle
+        # Apple Silicon Gatekeeper rejects Tauri's default macOS output
+        # as "Delfi is damaged and can't be opened" because the bundle
+        # has a linker-level ad-hoc signature on the inner Mach-O but no
+        # _CodeSignature/CodeResources seal on the bundle itself. Verified
+        # with `codesign -dv` on the v1.5.2 release asset which shows
+        # `Sealed Resources=none` and `code has no resources but signature
+        # indicates they must be present` (the exact phrasing Gatekeeper
+        # reports as "damaged").
+        #
+        # Fix: strip Tauri's broken signature and re-sign properly with
+        # `codesign --force --deep --sign -`. --deep also signs the
+        # nested PyInstaller sidecar binary at Contents/MacOS/delfi-sidecar.
+        # After re-signing the DMG and the updater tar.gz must be rebuilt
+        # from the now-sealed .app, and the tar.gz re-signed with the
+        # Tauri minisign key so the auto-updater still trusts it.
+        if: matrix.os == 'macos-latest'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          APP_DIR=src-tauri/target/release/bundle/macos
+          DMG_DIR=src-tauri/target/release/bundle/dmg
+          APP=$(find "$APP_DIR" -maxdepth 1 -name "*.app" -type d | head -1)
+          OLD_DMG=$(find "$DMG_DIR" -maxdepth 1 -name "*.dmg" | head -1 || true)
+          OLD_TAR=$(find "$APP_DIR" -maxdepth 1 -name "*.app.tar.gz" ! -name "*.sig" | head -1 || true)
+
+          echo "=== Tauri build output ==="
+          echo "  app: ${APP:-<none>}"
+          echo "  dmg: ${OLD_DMG:-<none>}"
+          echo "  tar: ${OLD_TAR:-<none>}"
+
+          if [[ -z "$APP" ]]; then
+            echo "::error::no .app produced; nothing to re-sign"
+            exit 1
+          fi
+
+          echo "=== Before re-sign ==="
+          codesign -dv "$APP" 2>&1 | grep -E 'Signature|Sealed|adhoc|linker' || true
+
+          codesign --remove-signature "$APP" 2>/dev/null || true
+          codesign --force --deep --sign - --options runtime "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "=== After re-sign ==="
+          codesign -dv "$APP" 2>&1 | grep -E 'Signature|Sealed|adhoc|linker' || true
+
+          # Rebuild DMG from the sealed .app
+          if [[ -n "$OLD_DMG" ]]; then
+            DMG_NAME=$(basename "$OLD_DMG")
+            rm -f "$OLD_DMG"
+            STAGE="$(mktemp -d)/dmg-stage"
+            mkdir -p "$STAGE"
+            cp -R "$APP" "$STAGE/"
+            ln -s /Applications "$STAGE/Applications"
+            hdiutil create -fs HFS+ -srcfolder "$STAGE" -volname "Delfi" \
+                           -format UDZO -ov -o "$DMG_DIR/$DMG_NAME"
+            echo "[dmg] rebuilt $DMG_NAME"
+          fi
+
+          # Rebuild updater bundle + re-sign with minisign key
+          if [[ -n "$OLD_TAR" && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            TAR_NAME=$(basename "$OLD_TAR")
+            rm -f "$OLD_TAR" "$OLD_TAR.sig"
+            ( cd "$APP_DIR" && tar -czf "$TAR_NAME" "$(basename "$APP")" )
+            npx --yes @tauri-apps/cli signer sign "$APP_DIR/$TAR_NAME"
+            echo "[updater] rebuilt $TAR_NAME + .sig"
+          else
+            echo "[updater] skipped (no original tar.gz or no TAURI_SIGNING_PRIVATE_KEY)"
+          fi
 
       - name: List build output
         run: |
