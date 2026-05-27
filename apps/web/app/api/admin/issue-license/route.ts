@@ -83,6 +83,13 @@ interface Body {
    *  paid one matching this email. Use when you don't have the id
    *  handy (e.g. the buyer just emailed you saying nothing arrived). */
   email?: string;
+  /** If true and a license row already exists for this session, re-send
+   *  the email using the existing blob instead of returning the
+   *  alreadyIssued no-op. Useful when (a) the buyer never received
+   *  the original email or (b) the email template was updated and we
+   *  want to push the new copy to an existing buyer. Idempotent on
+   *  the DB - we never insert a duplicate row. */
+  resend?: boolean;
 }
 
 // ---- session lookup ----------------------------------------------------
@@ -211,23 +218,66 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   // ── Idempotency: already issued? ─────────────────────────────────
+  // When `resend: true` is set we still hit the DB but use the
+  // existing blob to push a fresh email instead of bailing out.
   try {
-    const existing = await db().query<{ id: string; email: string }>(
-      `SELECT id, email FROM licenses WHERE stripe_session_id = $1 LIMIT 1`,
+    const existing = await db().query<{ id: string; email: string; blob: string }>(
+      `SELECT id, email, blob FROM licenses WHERE stripe_session_id = $1 LIMIT 1`,
       [session.id],
     );
     if (existing.rowCount && existing.rowCount > 0) {
-      console.log("[issue-license] already issued", {
-        licenseId: existing.rows[0].id,
-        sessionId: session.id,
-      });
-      return NextResponse.json({
-        ok: true,
-        alreadyIssued: true,
-        licenseId: existing.rows[0].id,
-        email: existing.rows[0].email,
-        sessionId: session.id,
-      });
+      if (!body.resend) {
+        console.log("[issue-license] already issued", {
+          licenseId: existing.rows[0].id,
+          sessionId: session.id,
+        });
+        return NextResponse.json({
+          ok: true,
+          alreadyIssued: true,
+          licenseId: existing.rows[0].id,
+          email: existing.rows[0].email,
+          sessionId: session.id,
+        });
+      }
+      // Resend path: re-send the original email with the existing blob.
+      const existingRow = existing.rows[0];
+      try {
+        const messageId = await sendLicenseEmail({
+          to:    existingRow.email,
+          blob:  existingRow.blob,
+          email: existingRow.email,
+        });
+        console.log("[issue-license] resent existing license", {
+          licenseId: existingRow.id,
+          sessionId: session.id,
+          email:     existingRow.email,
+          messageId,
+        });
+        return NextResponse.json({
+          ok: true,
+          alreadyIssued: true,
+          resent: true,
+          licenseId: existingRow.id,
+          email:     existingRow.email,
+          sessionId: session.id,
+          messageId,
+        });
+      } catch (e) {
+        console.error("[issue-license] resend email failed", {
+          licenseId: existingRow.id,
+          err: e instanceof Error ? e.message : String(e),
+        });
+        return NextResponse.json(
+          {
+            ok: false,
+            alreadyIssued: true,
+            resent: false,
+            licenseId: existingRow.id,
+            error: "resend failed; try again",
+          },
+          { status: 502 },
+        );
+      }
     }
   } catch (e) {
     console.error("[issue-license] db existence check failed", {
