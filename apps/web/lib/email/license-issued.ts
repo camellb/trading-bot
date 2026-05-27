@@ -63,8 +63,12 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
   html: string;
   text: string;
 } {
-  const macUrl = downloadUrl("mac");
-  const winUrl = downloadUrl("win");
+  // The post-purchase install path now goes through the one-line
+  // installer scripts at /install/{mac,win} (the macOS one runs
+  // curl|bash, the Windows one runs iwr|iex). Each script downloads
+  // through the proxy at /api/download/{mac,win} internally, so
+  // downloadUrl() is no longer referenced by the buyer-facing
+  // template - leaving it imported only for the admin smoke route.
   const safeBlob = escapeHtml(blob);
   const safeEmail = escapeHtml(email);
 
@@ -86,13 +90,14 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
     `--- end license ---`,
     ``,
     `Install Delfi:`,
-    `  macOS:    open Terminal and paste:`,
-    `              curl -fsSL https://delfibot.com/install/mac | bash`,
-    `  Windows:  ${winUrl}`,
     ``,
-    `The macOS installer downloads Delfi, places it in /Applications,`,
-    `clears the macOS quarantine flag (which would otherwise show a`,
-    `"Delfi is damaged" warning), and launches it for you.`,
+    `  macOS    -- open Terminal and paste:`,
+    `             curl -fsSL https://delfibot.com/install/mac | bash`,
+    ``,
+    `  Windows  -- open PowerShell and paste:`,
+    `             iwr https://delfibot.com/install/win -UseBasicParsing | iex`,
+    ``,
+    `Each command downloads Delfi, installs it, and launches it for you.`,
     ``,
     `Getting started:`,
     `  1. Open Delfi and paste your license key.`,
@@ -174,23 +179,18 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
               <p style="font-size:14px;line-height:1.65;color:#cfcabd;margin:0 0 10px 0;">
                 Open Terminal and paste:
               </p>
-              <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:12px 14px;margin:0 0 10px 0;white-space:pre-wrap;word-break:break-all;">curl -fsSL https://delfibot.com/install/mac | bash</pre>
-              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
-                The installer downloads Delfi, places it in /Applications, clears the macOS quarantine flag, and launches it for you.
-              </p>
+              <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:12px 14px;margin:0 0 24px 0;white-space:pre-wrap;word-break:break-all;">curl -fsSL https://delfibot.com/install/mac | bash</pre>
 
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 12px 0;">
                 Install on Windows
               </div>
-              <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 36px 0;">
-                <tr>
-                  <td>
-                    <a href="${escapeHtml(winUrl)}" style="display:inline-block;padding:13px 26px;background:#daaa4c;border:1px solid #daaa4c;border-radius:4px;color:#0a0a0c;text-decoration:none;font-size:13px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;">
-                      Download for Windows
-                    </a>
-                  </td>
-                </tr>
-              </table>
+              <p style="font-size:14px;line-height:1.65;color:#cfcabd;margin:0 0 10px 0;">
+                Open PowerShell and paste:
+              </p>
+              <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:12px 14px;margin:0 0 12px 0;white-space:pre-wrap;word-break:break-all;">iwr https://delfibot.com/install/win -UseBasicParsing | iex</pre>
+              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
+                Each command downloads Delfi, installs it, and launches it for you.
+              </p>
 
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 14px 0;">
                 Getting started

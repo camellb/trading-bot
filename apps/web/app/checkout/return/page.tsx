@@ -120,25 +120,23 @@ function ReturnInner() {
         </p>
 
         <p className="checkout-return-body muted">
-          Install Delfi for macOS in one step. Open Terminal and paste:
+          macOS &middot; open Terminal and paste:
         </p>
         <code className="checkout-return-cmd">
           curl -fsSL https://delfibot.com/install/mac | bash
         </code>
-        <p className="checkout-return-body muted">
-          The installer downloads Delfi, places it in /Applications,
-          and launches it for you.
-        </p>
 
-        <div className="checkout-return-downloads">
-          <a
-            className="btn-primary checkout-return-download-btn"
-            href="/api/download/win"
-            rel="noopener"
-          >
-            Download for Windows
-          </a>
-        </div>
+        <p className="checkout-return-body muted">
+          Windows &middot; open PowerShell and paste:
+        </p>
+        <code className="checkout-return-cmd">
+          iwr https://delfibot.com/install/win -UseBasicParsing | iex
+        </code>
+
+        <p className="checkout-return-body muted">
+          Each command downloads Delfi, installs it, and launches it
+          for you.
+        </p>
 
         <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes?
