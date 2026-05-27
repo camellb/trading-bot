@@ -353,8 +353,7 @@ export default function Dashboard({ state, goto }: Props) {
           <span>
             Delfi has paused. Your available cash is below the
             minimum needed to place a trade. Trading will resume
-            automatically once funds free up (a position closes or
-            you deposit more).
+            automatically once more funds are available.
           </span>
         </div>
       )}

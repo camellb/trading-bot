@@ -198,11 +198,9 @@ def _maybe_broadcast_bankroll_pause(
     try:
         from feeds.telegram_notifier import notify
         notify(
-            "💤 Delfi's evaluator paused to save tokens. Your "
-            "available cash is below the minimum needed to place a "
-            "bet. Delfi will resume automatically when more funds "
-            "are available (when a position closes or you top up "
-            "your wallet).",
+            "💤 Delfi has paused. Your available cash is below the "
+            "minimum needed to place a trade. Trading will resume "
+            "automatically once more funds are available.",
             user_id=user_id,
         )
     except Exception as exc:
