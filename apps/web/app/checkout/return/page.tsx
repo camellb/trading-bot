@@ -211,10 +211,6 @@ function ReturnInner() {
               </button>
             </div>
             <pre className="checkout-return-license-blob">{license.blob}</pre>
-            <p className="checkout-return-body muted">
-              Paste this into Delfi on first launch. Same key is in your
-              email — keep both safe.
-            </p>
           </div>
         ) : (
           <div className="checkout-return-license-pending">
@@ -222,6 +218,8 @@ function ReturnInner() {
             <span>Loading your license key…</span>
           </div>
         )}
+
+        <div className="checkout-return-section-label">Download Delfi</div>
 
         <p className="checkout-return-body muted">
           macOS &middot; open Terminal and paste:
@@ -236,11 +234,6 @@ function ReturnInner() {
         <code className="checkout-return-cmd">
           iwr https://delfibot.com/install/win -UseBasicParsing | iex
         </code>
-
-        <p className="checkout-return-body muted">
-          Each command downloads Delfi, installs it, and launches it
-          for you.
-        </p>
 
         <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes?

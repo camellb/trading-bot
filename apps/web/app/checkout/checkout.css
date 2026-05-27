@@ -484,6 +484,19 @@
   text-align: left;
 }
 
+/* Section label above the install commands. Same monospaced
+ * uppercase treatment as the "Your license" label inside the blob
+ * panel so the two surfaces read as siblings. */
+.checkout-return-section-label {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--vellum-50, #8c8675);
+  margin: 24px 0 12px;
+  text-align: left;
+}
+
 /* ── Responsive ─────────────────────────────────────────────────── */
 
 @media (max-width: 920px) {
