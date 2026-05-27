@@ -124,6 +124,41 @@ trap 'rm -rf "$TMPDIR_INST"' EXIT
 say "Clearing the macOS quarantine flag..."
 xattr -cr "$APP_PATH"
 
+# 5b. Re-sign the sidecar with PyInstaller-friendly entitlements.
+#     Without this, Apple Silicon's library validation rejects
+#     PyInstaller's extracted Python.framework on dlopen ("mapping
+#     process and mapped file (non-platform) have different Team
+#     IDs"). The three entitlements below are the documented
+#     PyInstaller-on-macOS exception set:
+#       - disable-library-validation: skip the Team ID check on
+#         dlopen so the extracted Python.framework loads
+#       - allow-unsigned-executable-memory: Python eval / ctypes
+#         pathways need executable memory regions
+#       - allow-dyld-environment-variables: PyInstaller's bootloader
+#         sets DYLD_LIBRARY_PATH so the extracted dylibs are found
+#     This re-sign is what finally makes the daemon boot on Apple
+#     Silicon under macOS Sonoma+.
+say "Applying PyInstaller-friendly entitlements to the sidecar..."
+ENT_PLIST="$TMPDIR_INST/delfi-entitlements.plist"
+cat > "$ENT_PLIST" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+codesign --force --options runtime \
+         --entitlements "$ENT_PLIST" \
+         --sign - \
+         "$APP_PATH/Contents/MacOS/delfi-sidecar"
+
 # 6. Create the UI-less sidecar sub-bundle. Without this, the
 #    launchd-managed daemon runs from /Applications/Delfi.app's main
 #    Info.plist and paints a duplicate Dock tile next to the GUI.
@@ -159,6 +194,9 @@ cat > "$SIDECAR_WRAPPER/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 rm -f "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+# Hard link the (already re-signed) sidecar binary. Since the link
+# shares the inode, the wrapper inherits the entitlements applied
+# at step 5b.
 ln "$SIDECAR_REAL" "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
 chmod 0755 "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
 

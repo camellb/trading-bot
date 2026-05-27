@@ -193,6 +193,82 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: npm run tauri build -- --bundles ${{ matrix.tauri_bundles }}
 
+      - name: macOS — sign sidecar with PyInstaller entitlements, rebuild DMG + updater
+        # Tauri's bundler runs `codesign --options runtime` whenever
+        # signingIdentity is set. That enables hardened runtime,
+        # which then enforces library validation, which then refuses
+        # to dlopen PyInstaller's extracted Python.framework with
+        # "mapping process and mapped file (non-platform) have
+        # different Team IDs" because both the sidecar and the
+        # extracted dylib are ad-hoc signed with different cdhashes.
+        # Buyer sees "Delfi could not start" forever.
+        #
+        # Fix: re-sign Contents/MacOS/delfi-sidecar with the three
+        # standard PyInstaller-on-macOS entitlements
+        # (disable-library-validation, allow-unsigned-executable-
+        # memory, allow-dyld-environment-variables). Verified on a
+        # real install that this is what gets Python.framework to
+        # load through the dlopen.
+        #
+        # Then rebuild the DMG + the updater tar.gz so both ship
+        # the entitlement-signed sidecar.
+        if: matrix.os == 'macos-latest'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          set -euo pipefail
+          APP_DIR=src-tauri/target/release/bundle/macos
+          DMG_DIR=src-tauri/target/release/bundle/dmg
+          APP=$(find "$APP_DIR" -maxdepth 1 -name "*.app" -type d | head -1)
+          OLD_DMG=$(find "$DMG_DIR" -maxdepth 1 -name "*.dmg" | head -1 || true)
+          OLD_TAR=$(find "$APP_DIR" -maxdepth 1 -name "*.app.tar.gz" ! -name "*.sig" | head -1 || true)
+          SIDECAR="$APP/Contents/MacOS/delfi-sidecar"
+          ENT="src-tauri/entitlements.plist"
+
+          if [[ ! -d "$APP" || ! -f "$SIDECAR" || ! -f "$ENT" ]]; then
+            echo "::error::missing artifact (app=$APP sidecar=$SIDECAR ent=$ENT)"
+            exit 1
+          fi
+
+          echo "=== Before re-sign ==="
+          codesign -d --entitlements - "$SIDECAR" 2>&1 | grep -E 'disable-library|allow-' || echo "  (no PyInstaller entitlements yet)"
+
+          codesign --force --options runtime \
+                   --entitlements "$ENT" \
+                   --sign - \
+                   "$SIDECAR"
+          codesign --verify --verbose=2 "$SIDECAR"
+
+          echo "=== After re-sign ==="
+          codesign -d --entitlements - "$SIDECAR" 2>&1 | grep -E 'disable-library|allow-' || true
+
+          # Rebuild DMG so the published .dmg contains the
+          # entitlement-signed sidecar (the user's drag-install path).
+          if [[ -n "$OLD_DMG" ]]; then
+            DMG_NAME=$(basename "$OLD_DMG")
+            rm -f "$OLD_DMG"
+            STAGE="$(mktemp -d)/dmg-stage"
+            mkdir -p "$STAGE"
+            cp -R "$APP" "$STAGE/"
+            ln -s /Applications "$STAGE/Applications"
+            hdiutil create -fs HFS+ -srcfolder "$STAGE" -volname "Delfi" \
+                           -format UDZO -ov -o "$DMG_DIR/$DMG_NAME"
+            echo "[dmg] rebuilt $DMG_NAME"
+          fi
+
+          # Rebuild updater tar.gz + re-sign with the Tauri minisign
+          # key so the auto-updater accepts the new bundle.
+          if [[ -n "$OLD_TAR" && -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            TAR_NAME=$(basename "$OLD_TAR")
+            rm -f "$OLD_TAR" "$OLD_TAR.sig"
+            ( cd "$APP_DIR" && tar -czf "$TAR_NAME" "$(basename "$APP")" )
+            npx --yes @tauri-apps/cli signer sign "$APP_DIR/$TAR_NAME"
+            echo "[updater] rebuilt $TAR_NAME + .sig"
+          else
+            echo "[updater] skipped (no original tar.gz or no TAURI_SIGNING_PRIVATE_KEY)"
+          fi
+
       - name: List build output
         run: |
           find src-tauri/target/release/bundle -maxdepth 3 -type f \
