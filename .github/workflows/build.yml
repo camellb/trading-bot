@@ -231,8 +231,19 @@ jobs:
           echo "=== Before re-sign ==="
           codesign -dv "$APP" 2>&1 | grep -E 'Signature|Sealed|adhoc|linker' || true
 
+          # NOTE: do NOT pass --options runtime. Hardened runtime enables
+          # library validation, which then refuses to load PyInstaller's
+          # extracted Python.framework dylib because ad-hoc signatures
+          # don't carry a Team ID (each blob is a different "no Team ID"
+          # hash, so the dylib + parent process mismatch). Result is the
+          # sidecar dies on dlopen with "code signature ... not valid for
+          # use in process: mapping process and mapped file (non-platform)
+          # have different Team IDs", Tauri never gets a port file, and
+          # the GUI shows "Delfi took too long to start". Hardened runtime
+          # is only required for Developer ID notarization (which we
+          # don't do); for ad-hoc signing it's pure foot-gun.
           codesign --remove-signature "$APP" 2>/dev/null || true
-          codesign --force --deep --sign - --options runtime "$APP"
+          codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
           echo "=== After re-sign ==="
