@@ -12,6 +12,7 @@ import {
   PMPosition,
 } from "../api";
 import { formatDateTime, getDisplayTz, timeAgo } from "../lib/format";
+import { SortableTh, SortKey, useSort } from "../components/SortableTh";
 import type { Page, SettingsTab } from "../App";
 
 /**
@@ -387,14 +388,14 @@ export default function Dashboard({ state, goto }: Props) {
           {open.length === 0 ? (
             <Empty label={loaded ? "No open positions yet." : "Loading..."} />
           ) : (
-            <PositionsTable positions={open.slice(0, 5)} />
+            <PositionsTable positions={open} />
           )}
         </section>
 
         <section className="dash-card card-activity">
           <CardHead title="Recent activity" />
           {activity.length === 0 ? (
-            <Empty label={loaded ? "No activity yet, Delfi is scanning." : "Loading..."} />
+            <Empty label={loaded ? "No activity yet." : "Loading..."} />
           ) : (
             <ActivityFeed items={activity} />
           )}
@@ -572,7 +573,49 @@ function CardHead({
   );
 }
 
+// Sort keys for the Dashboard preview table. Mirror the OpenSk
+// enum in Positions.tsx so the two tables stay in lockstep
+// visually. v1.5.13: collapsed from the bespoke pos-table CSS-grid
+// component into a real <table.table-simple> matching the
+// Positions tab 1:1 (user requested same column set, same widths,
+// same truncate-with-chevron mechanic, same expanded-row layout).
+type DashOpenSk = "market" | "category" | "side" | "size"
+                | "value"  | "pnl"      | "opened" | "closes";
+
+function dashOpenKpi(p: PMPosition, f: DashOpenSk): SortKey {
+  switch (f) {
+    case "market":   return p.question;
+    case "category": return (p.category as string | null) ?? "";
+    case "side":     return p.side;
+    case "size":     return p.cost_usd;
+    case "value": {
+      const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+        | number | null | undefined;
+      return cv != null ? Number(cv) : p.cost_usd;
+    }
+    case "pnl": {
+      const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+        | number | null | undefined;
+      return cv != null ? Number(cv) - p.cost_usd : 0;
+    }
+    case "opened": {
+      const iso = p.created_at as string | null | undefined;
+      return iso ? new Date(iso).getTime() : null;
+    }
+    case "closes": {
+      const iso = p.expected_resolution_at as string | null | undefined;
+      return iso ? new Date(iso).getTime() : null;
+    }
+  }
+}
+
+// Top-N rows shown in the Dashboard preview before the user has to
+// jump to the Positions tab. 5 keeps the dash card visually
+// balanced against the activity feed next to it.
+const DASH_OPEN_PREVIEW_LIMIT = 5;
+
 function PositionsTable({ positions }: { positions: PMPosition[] }) {
+  const sort = useSort<DashOpenSk>("size", "desc");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const toggle = (id: number) =>
     setExpanded((prev) => {
@@ -581,120 +624,164 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
       else next.add(id);
       return next;
     });
+  const sorted = useMemo(
+    () => sort.apply(positions, dashOpenKpi).slice(0, DASH_OPEN_PREVIEW_LIMIT),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [positions, sort.field, sort.dir],
+  );
   return (
-    <div className="pos-table">
-      <div className="pos-row head">
-        <div>Market</div>
-        <div>Category</div>
-        <div>Side</div>
-        <div>Cost</div>
-        <div>Value</div>
-        <div>P&amp;L</div>
-        <div>Opened</div>
-        <div>Closes</div>
-        <div />
-      </div>
-      {positions.map((p) => {
-        // Current mark-to-market value (NULL until the 60s exit-policy
-        // job stamps current_value_usd). P&L = cv - cost_usd; both
-        // render as em-dashes during the first minute after open
-        // before the daemon has marked the position.
-        const cv = (p as unknown as Record<string, unknown>).current_value_usd as
-          | number | null | undefined;
-        const havePnlMark = cv != null && p.shares > 0;
-        const valueText = havePnlMark ? `$${Number(cv).toFixed(2)}` : "—";
-        const pnlVal = havePnlMark ? (Number(cv) - p.cost_usd) : null;
-        const pnlClass = pnlVal == null ? ""
-          : pnlVal > 0 ? "profit"
-          : pnlVal < 0 ? "loss" : "";
-        const pnlText = pnlVal == null ? "—"
-          : pnlVal > 0 ? `+$${pnlVal.toFixed(2)}`
-          : pnlVal < 0 ? `-$${Math.abs(pnlVal).toFixed(2)}`
-          : "$0.00";
-        const isOpen = expanded.has(p.id);
-        const reasoning = ((p.reasoning as string | null | undefined) ?? "").trim();
-        const slug = p.slug as string | null | undefined;
-        const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
-        const closesAt = (p.expected_resolution_at as string | null | undefined) ?? null;
-        const category = (p.category as string | null | undefined) ?? null;
-        return (
-          <React.Fragment key={p.id}>
-            <div
-              className={`pos-row expandable ${isOpen ? "expanded" : ""}`}
-              onClick={() => toggle(p.id)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  toggle(p.id);
-                }
-              }}
-            >
-              <div className="pos-q">{p.question}</div>
-              <div className="pos-cat">{category ?? "-"}</div>
-              <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
-              <div className="pos-num t-num">${p.cost_usd.toFixed(2)}</div>
-              <div className="pos-num t-num">{valueText}</div>
-              <div className={`pos-num t-num ${pnlClass}`}>{pnlText}</div>
-              <div className="pos-num t-num">{timeAgo(p.created_at)}</div>
-              <div className="pos-closes t-num">{daysFromNow(closesAt)}</div>
-              <div className={`pos-chevron ${isOpen ? "open" : ""}`}>▸</div>
-            </div>
-            {isOpen && (
-              <div className="pos-detail">
-                <div className="pos-detail-grid">
-                  <div>
-                    <div className="pos-detail-kv-label">Opened</div>
-                    <div className="pos-detail-kv-val">
-                      {formatDateTime(p.created_at)}
+    <table className="table-simple">
+      <colgroup>
+        {/* Identical to the Open positions table on the Positions
+            tab. Keep these widths in sync with src/pages/Positions.tsx
+            so the user sees the same layout on both surfaces. */}
+        <col style={{ width: "44px" }} />
+        <col style={{ width: "auto" }} />
+        <col style={{ width: "10%" }} />
+        <col style={{ width: "56px" }} />
+        <col style={{ width: "72px" }} />
+        <col style={{ width: "72px" }} />
+        <col style={{ width: "72px" }} />
+        <col style={{ width: "72px" }} />
+        <col style={{ width: "72px" }} />
+        <col style={{ width: "28px" }} />
+      </colgroup>
+      <thead>
+        <tr>
+          <th style={{ textAlign: "left" }}>#</th>
+          <SortableTh field="market"   sort={sort}>Market</SortableTh>
+          <SortableTh field="category" sort={sort}>Category</SortableTh>
+          <SortableTh field="side"     sort={sort}>Side</SortableTh>
+          <SortableTh field="size"     sort={sort}>Cost</SortableTh>
+          <SortableTh field="value"    sort={sort}>Value</SortableTh>
+          <SortableTh field="pnl"      sort={sort}>P&amp;L</SortableTh>
+          <SortableTh field="opened"   sort={sort}>Opened</SortableTh>
+          <SortableTh field="closes"   sort={sort}>Closes</SortableTh>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {sorted.map((p) => {
+          const isOpen = expanded.has(p.id);
+          const reasoning = ((p.reasoning as string | null | undefined) ?? "").trim();
+          const slug = p.slug as string | null | undefined;
+          const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
+          const closesAt = (p.expected_resolution_at as string | null | undefined) ?? null;
+          const category = (p.category as string | null | undefined) ?? null;
+          const cv = (p as unknown as Record<string, unknown>).current_value_usd as
+            | number | null | undefined;
+          const haveMark = cv != null && p.shares > 0;
+          const pnl = haveMark ? (Number(cv) - p.cost_usd) : null;
+          const pnlClass =
+            pnl == null ? ""
+            : pnl > 0 ? "cell-up"
+            : pnl < 0 ? "cell-down"
+            : "";
+          return (
+            <React.Fragment key={p.id}>
+              <tr
+                className={`row-hover${isOpen ? " is-open" : ""}`}
+                onClick={() => toggle(p.id)}
+                style={{ cursor: "pointer" }}
+              >
+                <td className="mono" style={{ color: "var(--vellum-40)" }}>{p.id}</td>
+                <td className="truncate" title={p.question}>{p.question}</td>
+                <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
+                <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
+                <td className="mono">${p.cost_usd.toFixed(2)}</td>
+                <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "—"}</td>
+                <td className={`mono ${pnlClass}`}>{
+                  pnl == null ? "—"
+                  : pnl > 0 ? `+$${pnl.toFixed(2)}`
+                  : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
+                  : "$0.00"
+                }</td>
+                <td className="mono" title={p.created_at ? formatDateTime(p.created_at) : ""}>
+                  {p.created_at ? timeAgo(p.created_at) : "—"}
+                </td>
+                <td className="mono">{daysFromNow(closesAt)}</td>
+                <td className="mono" style={{ textAlign: "right" }}>
+                  <span style={{
+                    display: "inline-block",
+                    color: isOpen ? "var(--gold)" : "var(--vellum-40)",
+                    transform: isOpen ? "rotate(90deg)" : "none",
+                    transition: "transform 0.15s ease",
+                  }}>▸</span>
+                </td>
+              </tr>
+              {isOpen && (
+                <tr className="expanded-row">
+                  <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                    <div className="kv-grid" style={{ marginBottom: 14 }}>
+                      <div>
+                        <div className="kv-label">Opened</div>
+                        <div className="kv-val mono">{formatDateTime(p.created_at)}</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Closes</div>
+                        <div className="kv-val mono">{formatDateTime(closesAt)}</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Entry price</div>
+                        <div className="kv-val mono">{p.entry_price.toFixed(3)}</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Shares</div>
+                        <div className="kv-val mono">{p.shares.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Cost</div>
+                        <div className="kv-val mono">${p.cost_usd.toFixed(2)}</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Market YES %</div>
+                        <div className="kv-val mono">{
+                          Math.round((p.side === "YES" ? p.entry_price : 1 - p.entry_price) * 100)
+                        }%</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Delfi YES %</div>
+                        <div className="kv-val mono">{
+                          p.delfi_probability != null
+                            ? `${Math.round(p.delfi_probability * 100)}%`
+                            : "—"
+                        }</div>
+                      </div>
+                      <div>
+                        <div className="kv-label">Delfi confidence</div>
+                        <div className="kv-val mono">{
+                          p.confidence != null
+                            ? `${Math.round(p.confidence * 100)}%`
+                            : "—"
+                        }</div>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="pos-detail-kv-label">Closes</div>
-                    <div className="pos-detail-kv-val">
-                      {formatDateTime(closesAt)}
+                    <div className="pos-detail-reason">
+                      <div className="pos-detail-reason-label">Delfi&apos;s reasoning</div>
+                      {reasoning || "No reasoning recorded for this entry."}
                     </div>
-                  </div>
-                  <div>
-                    <div className="pos-detail-kv-label">Entry price</div>
-                    <div className="pos-detail-kv-val">{p.entry_price.toFixed(3)}</div>
-                  </div>
-                  <div>
-                    <div className="pos-detail-kv-label">Shares</div>
-                    <div className="pos-detail-kv-val">{p.shares.toFixed(2)}</div>
-                  </div>
-                  <div>
-                    <div className="pos-detail-kv-label">Cost</div>
-                    <div className="pos-detail-kv-val">${p.cost_usd.toFixed(2)}</div>
-                  </div>
-                </div>
-                <div className="pos-detail-reason">
-                  <div className="pos-detail-reason-label">Delfi&apos;s reasoning</div>
-                  {reasoning || "No reasoning recorded for this entry."}
-                </div>
-                {polyUrl && (
-                  <a
-                    className="pos-detail-link"
-                    href={polyUrl}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      // Tauri webview swallows target="_blank" - route
-                      // through the opener plugin to launch the OS browser.
-                      try { void openUrl(polyUrl); }
-                      catch { window.open(polyUrl, "_blank", "noopener,noreferrer"); }
-                    }}
-                  >
-                    View on Polymarket →
-                  </a>
-                )}
-              </div>
-            )}
-          </React.Fragment>
-        );
-      })}
-    </div>
+                    {polyUrl && (
+                      <a
+                        className="pos-detail-link"
+                        href={polyUrl}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          try { void openUrl(polyUrl); }
+                          catch { window.open(polyUrl, "_blank", "noopener,noreferrer"); }
+                        }}
+                      >
+                        View on Polymarket →
+                      </a>
+                    )}
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 

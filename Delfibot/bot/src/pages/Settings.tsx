@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { UPDATE_CHECK_EVENT } from "../components/UpdatePrompt";
 import {
   api,
   AutostartStatus,
@@ -249,7 +252,108 @@ function AppPanel() {
       <TimezonePanel />
       <LoginItemPanel />
       <AutostartPanel />
+      <UpdateCheckPanel />
     </>
+  );
+}
+
+// ── App tab: manual update check ────────────────────────────────────────
+
+/** Shows the current running version and a button to manually poll
+ *  GitHub Releases for a newer one. The same poll also runs
+ *  automatically on mount, on a 30-min interval, and on window focus
+ *  (see `src/components/UpdatePrompt.tsx`); this button exists for
+ *  the impatient case (user knows a release shipped, doesn't want
+ *  to wait for the next tick) and for the diagnostic case (user
+ *  wants to confirm the updater can reach the manifest at all).
+ *
+ *  We call `check()` locally for the result-text feedback below the
+ *  button, AND dispatch `UPDATE_CHECK_EVENT` so the global
+ *  UpdatePrompt re-runs its own check and surfaces the banner if a
+ *  newer version exists. Two calls in flight at once is harmless;
+ *  Tauri's updater plugin is idempotent.
+ */
+function UpdateCheckPanel() {
+  const [appVersion, setAppVersion] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "info" | "err"; text: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getVersion()
+      .then((v) => alive && setAppVersion(v))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const onCheck = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMsg({ kind: "info", text: "Checking for updates..." });
+    // Fire the global re-check too so the banner appears above the
+    // app shell if a newer version is found. The banner is the
+    // place the user actually clicks "Update now" - this button
+    // just kicks the check.
+    try {
+      window.dispatchEvent(new Event(UPDATE_CHECK_EVENT));
+    } catch {
+      // No-op: dispatchEvent shouldn't throw, but we don't want a
+      // dispatch failure to mask the real check result below.
+    }
+    try {
+      const u = await check();
+      if (u) {
+        setMsg({
+          kind: "ok",
+          text: `Update available: v${u.version}. See the banner at the top of the window.`,
+        });
+      } else {
+        setMsg({
+          kind: "ok",
+          text: appVersion
+            ? `You're on the latest version (v${appVersion}).`
+            : "You're on the latest version.",
+        });
+      }
+    } catch (err) {
+      setMsg({
+        kind: "err",
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Updates</h2>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Delfi checks for new versions automatically every 30 minutes
+        and whenever you switch back to this window. Use this button
+        to check right now.
+      </p>
+      <div className="notif-row">
+        <div>
+          <div className="notif-name">
+            Current version: {appVersion ? `v${appVersion}` : "Loading..."}
+          </div>
+          <div className="notif-desc">
+            {msg ? msg.text : "Click to check for a newer version."}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn small"
+          disabled={busy}
+          onClick={onCheck}
+        >
+          {busy ? "Checking..." : "Check for updates"}
+        </button>
+      </div>
+    </div>
   );
 }
 

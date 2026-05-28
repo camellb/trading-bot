@@ -241,6 +241,14 @@ export default function Positions() {
   const [error, setError] = useState<string | null>(null);
   const [expandedPos, setExpandedPos] = useState<Set<number>>(new Set());
   const [expandedEval, setExpandedEval] = useState<Set<number>>(new Set());
+  // Same chevron-driven expand pattern as Open positions, applied to
+  // Closed and Errors tables so every row in every table has a
+  // single-line truncated Market cell and a chevron to reveal the
+  // full title + detail block. Set 2026-05-28 v1.5.13 after user:
+  // "i want this mechanic to be present across CLOSED, SKIPPED and
+  // ERRORS tables".
+  const [expandedClosed, setExpandedClosed] = useState<Set<number>>(new Set());
+  const [expandedError, setExpandedError] = useState<Set<number>>(new Set());
 
   const refresh = useCallback(async () => {
     try {
@@ -371,6 +379,20 @@ export default function Positions() {
       else next.add(id);
       return next;
     });
+  const toggleClosed = (id: number) =>
+    setExpandedClosed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleError = (id: number) =>
+    setExpandedError((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   return (
     <div className="page-wrap">
@@ -414,7 +436,7 @@ export default function Positions() {
           {open.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No open positions yet. Delfi is reviewing markets, trades will appear here as they're placed."
+                ? "No open positions yet."
                 : "Loading..."}
             </div>
           ) : (
@@ -593,6 +615,15 @@ export default function Positions() {
             <table className="table-simple">
               <colgroup>
                 <col style={{ width: "44px" }} />
+                <col style={{ width: "auto" }} />
+                <col style={{ width: "10%" }} />
+                <col style={{ width: "56px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "72px" }} />
+                <col style={{ width: "92px" }} />
+                <col style={{ width: "28px" }} />
               </colgroup>
               <thead>
                 <tr>
@@ -605,6 +636,7 @@ export default function Positions() {
                   <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
                   <SortableTh field="settled"  sort={closedSort}>Closed</SortableTh>
                   <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -650,20 +682,108 @@ export default function Positions() {
                   // at cost so realized_pnl_usd is 0 and final value
                   // equals cost (shown as a tie cell, no colour).
                   const finalValue = s.cost_usd + pnl;
+                  const isOpen = expandedClosed.has(s.id);
+                  const reasoning = ((s.reasoning as string | null | undefined) ?? "").trim();
+                  const slug = s.slug as string | null | undefined;
+                  const polyUrl = slug ? `https://polymarket.com/market/${slug}` : null;
+                  const openedAt = (s.created_at as string | null | undefined) ?? null;
                   return (
-                    <tr key={s.id} className="row-hover">
-                      <td className="mono" style={{ color: "var(--vellum-40)" }}>{s.id}</td>
-                      <td>{s.question}</td>
-                      <td>{category ?? "-"}</td>
-                      <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
-                      <td className="mono">${s.cost_usd.toFixed(2)}</td>
-                      <td className="mono">${finalValue.toFixed(2)}</td>
-                      <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
-                      <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
-                        {settledAt ? timeAgo(settledAt) : "-"}
-                      </td>
-                      <td><span className={outcomeClass}>{outcomeLabel}</span></td>
-                    </tr>
+                    <React.Fragment key={s.id}>
+                      <tr
+                        className={`row-hover${isOpen ? " is-open" : ""}`}
+                        onClick={() => toggleClosed(s.id)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <td className="mono" style={{ color: "var(--vellum-40)" }}>{s.id}</td>
+                        <td className="truncate" title={s.question}>{s.question}</td>
+                        <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
+                        <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
+                        <td className="mono">${s.cost_usd.toFixed(2)}</td>
+                        <td className="mono">${finalValue.toFixed(2)}</td>
+                        <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
+                        <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
+                          {settledAt ? timeAgo(settledAt) : "-"}
+                        </td>
+                        <td><span className={outcomeClass}>{outcomeLabel}</span></td>
+                        <td className="mono" style={{ textAlign: "right" }}>
+                          <span style={{
+                            display: "inline-block",
+                            color: isOpen ? "var(--gold)" : "var(--vellum-40)",
+                            transform: isOpen ? "rotate(90deg)" : "none",
+                            transition: "transform 0.15s ease",
+                          }}>▸</span>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="expanded-row">
+                          <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                            <div className="kv-grid" style={{ marginBottom: 14 }}>
+                              <div>
+                                <div className="kv-label">Opened</div>
+                                <div className="kv-val mono">{fmtDateTime(openedAt)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Closed</div>
+                                <div className="kv-val mono">{fmtDateTime(settledAt)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Entry price</div>
+                                <div className="kv-val mono">{s.entry_price.toFixed(3)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Shares</div>
+                                <div className="kv-val mono">{s.shares.toFixed(2)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Cost</div>
+                                <div className="kv-val mono">${s.cost_usd.toFixed(2)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Final value</div>
+                                <div className="kv-val mono">${finalValue.toFixed(2)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Market YES %</div>
+                                <div className="kv-val mono">{
+                                  Math.round((s.side === "YES" ? s.entry_price : 1 - s.entry_price) * 100)
+                                }%</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Delfi YES %</div>
+                                <div className="kv-val mono">{
+                                  s.delfi_probability != null
+                                    ? `${Math.round(s.delfi_probability * 100)}%`
+                                    : "—"
+                                }</div>
+                              </div>
+                              {isClosedEarly && (
+                                <div>
+                                  <div className="kv-label">Exit reason</div>
+                                  <div className="kv-val mono">{reasonLabel}</div>
+                                </div>
+                              )}
+                            </div>
+                            <div className="pos-detail-reason">
+                              <div className="pos-detail-reason-label">Delfi&apos;s reasoning</div>
+                              {reasoning || "No reasoning recorded for this entry."}
+                            </div>
+                            {polyUrl && (
+                              <a
+                                className="pos-detail-link"
+                                href={polyUrl}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  openExternal(polyUrl);
+                                }}
+                              >
+                                View on Polymarket →
+                              </a>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -738,8 +858,8 @@ export default function Positions() {
                         style={{ cursor: "pointer" }}
                       >
                         <td className="mono" style={{ color: "var(--vellum-40)" }}>{e.id}</td>
-                        <td>{e.question}</td>
-                        <td>{e.category ?? "-"}</td>
+                        <td className="truncate" title={e.question}>{e.question}</td>
+                        <td className="truncate" title={e.category ?? ""}>{e.category ?? "-"}</td>
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className={`mono ${cfPnlClass}`}>{cfPnlText}</td>
@@ -849,7 +969,7 @@ export default function Positions() {
           {errors.length === 0 ? (
             <div className="empty-state">
               {loaded
-                ? "No order errors. Every order has been accepted by Polymarket."
+                ? "No order errors."
                 : "Loading..."}
             </div>
           ) : (
@@ -857,12 +977,17 @@ export default function Positions() {
               <colgroup>
                 {/* Market: comfortable chunk; truncates long
                     questions. Category: short tag. Reason: takes
-                    the rest, the column with real information
-                    density. When: short relative-time cell. */}
+                    the rest, single-line truncated in the collapsed
+                    view so every row is one line tall; full text
+                    appears in the expanded detail block when the
+                    user clicks the chevron. When: short relative-time
+                    cell. Chevron: 28px, matches the Open and Closed
+                    tables for visual symmetry. */}
                 <col style={{ width: "26%" }} />
                 <col style={{ width: 96 }} />
                 <col />
                 <col style={{ width: 96 }} />
+                <col style={{ width: 28 }} />
               </colgroup>
               <thead>
                 <tr>
@@ -870,6 +995,7 @@ export default function Positions() {
                   <th>Category</th>
                   <th>Reason</th>
                   <th>When</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -917,26 +1043,87 @@ export default function Positions() {
                     }
                   }
                   const categoryText = category ?? "-";
+                  const isOpen = expandedError.has(row.id);
+                  // Parsed side/size/price from the executor's
+                  // description regex above. Rendered in the
+                  // expanded detail block so the user can see what
+                  // order Polymarket actually rejected (NOT in the
+                  // collapsed row — keeps every row one line tall).
+                  const errSide = m?.[2] ?? null;
+                  const errSize = m?.[3] ?? null;
+                  const errPrice = m?.[4] ?? null;
                   return (
-                    <tr key={row.id}>
-                      <td className="truncate" title={question}>{question}</td>
-                      <td className="truncate" title={categoryText}>{categoryText}</td>
-                      <td
-                        style={{
-                          color: "var(--vellum-60)",
-                          whiteSpace: "normal",
-                          wordBreak: "break-word",
-                          overflowWrap: "anywhere",
-                          lineHeight: 1.4,
-                        }}
+                    <React.Fragment key={row.id}>
+                      <tr
+                        className={`row-hover${isOpen ? " is-open" : ""}`}
+                        onClick={() => toggleError(row.id)}
+                        style={{ cursor: "pointer" }}
                       >
-                        {reason}
-                      </td>
-                      <td className="mono" style={{ whiteSpace: "nowrap" }}
-                          title={row.timestamp ? fmtDateTime(row.timestamp) : ""}>
-                        {row.timestamp ? timeAgo(row.timestamp) : "—"}
-                      </td>
-                    </tr>
+                        <td className="truncate" title={question}>{question}</td>
+                        <td className="truncate" title={categoryText}>{categoryText}</td>
+                        <td
+                          className="truncate"
+                          style={{ color: "var(--vellum-60)" }}
+                          title={reason}
+                        >
+                          {reason}
+                        </td>
+                        <td className="mono" style={{ whiteSpace: "nowrap" }}
+                            title={row.timestamp ? fmtDateTime(row.timestamp) : ""}>
+                          {row.timestamp ? timeAgo(row.timestamp) : "—"}
+                        </td>
+                        <td className="mono" style={{ textAlign: "right" }}>
+                          <span style={{
+                            display: "inline-block",
+                            color: isOpen ? "var(--gold)" : "var(--vellum-40)",
+                            transform: isOpen ? "rotate(90deg)" : "none",
+                            transition: "transform 0.15s ease",
+                          }}>▸</span>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="expanded-row">
+                          <td colSpan={5} style={{ padding: "16px 20px 22px" }}>
+                            <div className="kv-grid" style={{ marginBottom: 14 }}>
+                              <div>
+                                <div className="kv-label">Market</div>
+                                <div className="kv-val" style={{ lineHeight: 1.4 }}>
+                                  {question}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Category</div>
+                                <div className="kv-val mono">{categoryText}</div>
+                              </div>
+                              {errSide && errSize && errPrice && (
+                                <>
+                                  <div>
+                                    <div className="kv-label">Attempted side</div>
+                                    <div className="kv-val mono">{errSide}</div>
+                                  </div>
+                                  <div>
+                                    <div className="kv-label">Attempted size</div>
+                                    <div className="kv-val mono">{errSize} shares</div>
+                                  </div>
+                                  <div>
+                                    <div className="kv-label">Attempted price</div>
+                                    <div className="kv-val mono">${errPrice}</div>
+                                  </div>
+                                </>
+                              )}
+                              <div>
+                                <div className="kv-label">When</div>
+                                <div className="kv-val mono">{fmtDateTime(row.timestamp)}</div>
+                              </div>
+                            </div>
+                            <div className="pos-detail-reason">
+                              <div className="pos-detail-reason-label">Polymarket&apos;s response</div>
+                              <div style={{ lineHeight: 1.5 }}>{reason}</div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>

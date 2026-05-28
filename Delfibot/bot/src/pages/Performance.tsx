@@ -504,8 +504,7 @@ function ArchetypeTable({ calibration }: { calibration: CalibrationReport | null
         </table>
       ) : (
         <div className="empty-state">
-          No settled trades yet. Per-archetype P&amp;L, ROI, and win rate
-          appear here once Delfi opens and resolves positions.
+          No settled trades yet.
         </div>
       )}
     </div>
@@ -580,8 +579,7 @@ function CategoryTable({ calibration }: { calibration: CalibrationReport | null 
         </table>
       ) : (
         <div className="empty-state">
-          No settled trades yet. Per-category breakdown appears here once
-          Delfi opens and resolves positions.
+          No settled trades yet.
         </div>
       )}
     </div>

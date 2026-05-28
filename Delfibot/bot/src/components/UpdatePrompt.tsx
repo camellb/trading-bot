@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { formatDate } from "../lib/format";
@@ -6,10 +6,21 @@ import { formatDate } from "../lib/format";
 /**
  * Auto-update prompt.
  *
- * On mount, asks the Tauri updater plugin whether a newer version
- * is published in `latest.json` (configured in `tauri.conf.json`).
- * If so, surfaces a non-modal banner above the app shell offering
- * "Update now" / "Later".
+ * Asks the Tauri updater plugin whether a newer version is published
+ * in `latest.json` (configured in `tauri.conf.json`). If so, surfaces
+ * a non-modal banner above the app shell offering "Update now" / "Later".
+ *
+ * The check runs:
+ *   1. Once on mount (initial launch).
+ *   2. On a 30-minute interval (catches releases shipped after launch
+ *      without forcing the user to restart the GUI).
+ *   3. When the OS window regains focus (Cmd-Tab back to Delfi).
+ *   4. On demand when the Settings page dispatches
+ *      `delfi:check-for-updates` (the manual "Check for updates"
+ *      button).
+ *
+ * "Later" stores the dismissed version. The banner stays hidden for
+ * that exact version but re-appears when a NEWER one arrives.
  *
  * Clicking Update Now:
  *   1. Hides the banner and takes over the entire viewport with a
@@ -28,6 +39,18 @@ import { formatDate } from "../lib/format";
  * latest.json, which we shouldn't show as an error to a fresh
  * user).
  */
+
+// 30 minutes between background re-checks. Long enough that the
+// GitHub API budget is comfortable even with hundreds of installs;
+// short enough that a user who leaves the GUI open all day still
+// sees a fresh release within the same workday.
+const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+
+/** Custom event the Settings page (or anything else) can fire to
+ *  force the prompt to re-poll latest.json. Kept loose-typed (no
+ *  CustomEvent payload) because the only signal is "go look again". */
+export const UPDATE_CHECK_EVENT = "delfi:check-for-updates";
+
 export function UpdatePrompt() {
   const [update, setUpdate] = useState<Update | null>(null);
   const [phase, setPhase] = useState<
@@ -35,23 +58,52 @@ export function UpdatePrompt() {
   >("idle");
   const [progress, setProgress] = useState<{ done: number; total?: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  // Track WHICH version the user dismissed. The banner stays hidden
+  // for that exact version but re-appears when latest.json advances
+  // to a newer one. Once you dismiss v1.5.13 you don't see it again
+  // until v1.5.14 exists.
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const u = await check();
-        if (!cancelled && u) setUpdate(u);
-      } catch {
-        // Silent. Most common cause is no release tagged yet
-        // (404 fetching latest.json) — not worth surfacing.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+  // Single source of truth for the check. Wrapped in useCallback so
+  // the various useEffect hooks (initial / interval / focus / event)
+  // can share one reference without re-firing on every render.
+  const runCheck = useCallback(async () => {
+    try {
+      const u = await check();
+      if (u) setUpdate(u);
+    } catch {
+      // Silent. Most common cause is no release tagged yet
+      // (404 fetching latest.json) - not worth surfacing.
+    }
   }, []);
+
+  // 1. Initial check on mount.
+  useEffect(() => {
+    runCheck();
+  }, [runCheck]);
+
+  // 2. Periodic background re-check (30 minutes). Catches releases
+  //    that ship while the GUI is open.
+  useEffect(() => {
+    const id = setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [runCheck]);
+
+  // 3. Re-check when the window regains focus. If the user Cmd-Tabs
+  //    away for a few minutes and comes back, they get a fresh
+  //    answer without waiting for the 30-min interval.
+  useEffect(() => {
+    const onFocus = () => { void runCheck(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [runCheck]);
+
+  // 4. Manual re-check trigger from the Settings page.
+  useEffect(() => {
+    const onTrigger = () => { void runCheck(); };
+    window.addEventListener(UPDATE_CHECK_EVENT, onTrigger);
+    return () => window.removeEventListener(UPDATE_CHECK_EVENT, onTrigger);
+  }, [runCheck]);
 
   const onUpdate = async () => {
     if (!update) return;
@@ -143,7 +195,7 @@ export function UpdatePrompt() {
               type="button"
               className="btn ghost small"
               onClick={() => {
-                setDismissed(true);
+                if (update?.version) setDismissedVersion(update.version);
                 setPhase("idle");
               }}
             >
@@ -157,7 +209,7 @@ export function UpdatePrompt() {
     );
   }
 
-  if (!update || dismissed) return null;
+  if (!update || update.version === dismissedVersion) return null;
 
   return (
     <div className="update-banner" role="status" aria-live="polite">
@@ -173,7 +225,7 @@ export function UpdatePrompt() {
           <button
             type="button"
             className="update-banner-btn ghost"
-            onClick={() => setDismissed(true)}
+            onClick={() => setDismissedVersion(update.version)}
           >
             Later
           </button>
