@@ -801,6 +801,12 @@ export interface LicenseStatus {
   has_key: boolean;
   last_validated_at: string | null;
   instance_id: string | null;
+  /** Best-effort human-readable label for THIS machine (macOS
+   *  ComputerName / Windows COMPUTERNAME / hostname). Surfaced in
+   *  the Settings license panel so the user can confirm "this is
+   *  the right install". Sidecars before v1.5.18 omit the field;
+   *  UI treats undefined as "this device". */
+  device_label?: string | null;
   /** Set by /api/license/deactivate when the upstream provider
    *  rejected the call but we cleared the local key anyway. UI
    *  shows it as a one-time warning toast: "your seat may still

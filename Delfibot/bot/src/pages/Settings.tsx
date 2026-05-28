@@ -8,9 +8,7 @@ import {
   api,
   AutostartStatus,
   Credentials,
-  LaunchStats,
   LicenseStatus,
-  LogTail,
   LoginItemStatus,
   NotificationsConfig,
   TelegramConfig,
@@ -171,8 +169,7 @@ function AccountPanel({
           <h2 className="panel-title">Capital</h2>
         </div>
         <p className="page-sub" style={{ marginBottom: 16 }}>
-          The starting cash Delfi treats as 100% of capital. Stake size and
-          circuit breakers are computed against this number.
+          Starting capital in Simulation mode.
         </p>
         <form className="form-row" onSubmit={save}>
           <div className="form-field">
@@ -204,8 +201,7 @@ function AccountPanel({
           <h2 className="panel-title">Simulation reset</h2>
         </div>
         <p className="page-sub" style={{ marginBottom: 16 }}>
-          Clears all simulation positions and resets the synthetic capital
-          to your starting cash. Live trading is untouched.
+          Restart simulation data.
         </p>
         {!confirm ? (
           <div className="form-actions">
@@ -330,11 +326,6 @@ function UpdateCheckPanel() {
       <div className="panel-head">
         <h2 className="panel-title">Updates</h2>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Delfi checks for new versions automatically every 30 minutes
-        and whenever you switch back to this window. Use this button
-        to check right now.
-      </p>
       <div className="notif-row">
         <div>
           <div className="notif-name">
@@ -366,8 +357,6 @@ function DiagnosticsPanel() {
       <RestartPanel />
       <SettingsExportPanel />
       <DbBackupPanel />
-      <LogsPanel />
-      <LaunchStatsPanel />
     </>
   );
 }
@@ -390,8 +379,7 @@ function HelpPanel() {
         <h2 className="panel-title">Need help</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        If something looks broken and Restart Delfi below didn't fix it,
-        email us and we'll respond.
+        If something doesn't work properly and restarting Delfi doesn't fix it, email us.
       </p>
       <div className="form-actions">
         <button type="button" className="btn small" onClick={open}>
@@ -430,16 +418,7 @@ function TimezonePanel() {
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Display timezone</h2>
-        <span className="panel-meta">
-          Currently: {tz || `system (${resolvedTz()})`}
-        </span>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Every date and time across the dashboard renders in this
-        timezone. Default is your operating system clock; pick a
-        specific zone if you want the dashboard to follow a different
-        clock than the OS (e.g. trading hours in another region).
-      </p>
       <div className="form-row">
         <div className="form-field">
           <label>Timezone</label>
@@ -531,11 +510,6 @@ function AutostartPanel() {
       <div className="panel-head">
         <h2 className="panel-title">Auto-start at login</h2>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        When on, Delfi launches automatically every time you sign in to
-        your computer. Trading resumes without you having to open the app
-        manually. Turning it off means Delfi only runs when you open it.
-      </p>
       <div className="notif-row">
         <div>
           <div className="notif-name">
@@ -630,12 +604,6 @@ function LoginItemPanel() {
       <div className="panel-head">
         <h2 className="panel-title">Open Delfi window at login</h2>
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Adds Delfi to your macOS Login Items so the dashboard window
-        opens automatically when you sign in. Independent of
-        auto-start: Delfi can run headlessly without the window
-        opening.
-      </p>
       <div className="notif-row">
         <div>
           <div className="notif-name">Open Delfi window at login</div>
@@ -767,7 +735,6 @@ function RestartPanel() {
     <div className="panel">
       <div className="panel-head">
         <h2 className="panel-title">Restart Delfi</h2>
-        <span className="panel-meta">macOS</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
         Restarts Delfi. Open positions are preserved, any
@@ -798,98 +765,6 @@ function RestartPanel() {
             Cancel
           </button>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ── Logs viewer ─────────────────────────────────────────────────────────
-
-/** Read-only tail of the daemon's stdout / stderr log files (the
- *  StandardOutPath / StandardErrorPath wired in the LaunchAgent
- *  plist). Lets the user diagnose issues without opening Terminal. */
-function LogsPanel() {
-  const [tail, setTail] = useState<LogTail | null>(null);
-  const [stream, setStream] = useState<"stdout" | "stderr">("stdout");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = async (s: "stdout" | "stderr") => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api.logs(s, 200);
-      setTail(r);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Activity log</h2>
-        <span className="panel-meta">last 200 lines</span>
-      </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        Recent activity from Delfi. The error log captures crashes
-        and warnings; the activity log shows routine operations.
-      </p>
-      <div className="form-actions" style={{ marginBottom: 12 }}>
-        <button
-          type="button"
-          className={`btn small ${stream === "stdout" ? "" : "ghost"}`}
-          onClick={() => { setStream("stdout"); load("stdout"); }}
-          disabled={busy}
-        >
-          Activity
-        </button>
-        <button
-          type="button"
-          className={`btn small ${stream === "stderr" ? "" : "ghost"}`}
-          onClick={() => { setStream("stderr"); load("stderr"); }}
-          disabled={busy}
-        >
-          Errors
-        </button>
-        <button
-          type="button"
-          className="btn ghost small"
-          onClick={() => load(stream)}
-          disabled={busy}
-        >
-          {busy ? "Loading..." : "Refresh"}
-        </button>
-      </div>
-      {error && <div className="error">{error}</div>}
-      {tail && (
-        <>
-          {tail.note && (
-            <p className="page-sub" style={{ marginBottom: 8 }}>{tail.note}</p>
-          )}
-          <pre style={{
-            background: "var(--obsidian-90, #0a0a0a)",
-            color: "var(--vellum-90, #e8e6e1)",
-            border: "1px solid var(--obsidian-80, #1a1a1a)",
-            borderRadius: 4,
-            padding: "12px 16px",
-            margin: 0,
-            maxHeight: 360,
-            overflow: "auto",
-            fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-            fontSize: 12,
-            lineHeight: 1.55,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
-          }}>
-            {tail.lines.length === 0 ? "(empty)" : tail.lines.join("\n")}
-          </pre>
-        </>
-      )}
-      {!tail && !busy && !error && (
-        <p className="page-sub">Click Activity or Errors to load.</p>
       )}
     </div>
   );
@@ -996,11 +871,9 @@ function SettingsExportPanel() {
         <h2 className="panel-title">Settings backup</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Save your risk limits, archetype multipliers, skip list, and
-        notification prefs to a portable JSON file. Use it to bootstrap
-        another machine, share a strategy with another Delfi user, or
-        roll back after experimenting. API keys, wallet keys, and
-        trade history are never included.
+        Save your risk settings to a portable JSON file. You can use
+        it to share a strategy with another Delfi user, or roll back
+        after experimenting.
       </p>
       <div className="form-actions" style={{ gap: 12 }}>
         <button
@@ -1083,11 +956,7 @@ function DbBackupPanel() {
         <h2 className="panel-title">Database backup</h2>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        Export a consistent snapshot of every position, evaluation,
-        and config row to a SQLite file you choose. Uses VACUUM INTO
-        so the backup is safe to take while Delfi is trading. Save
-        these somewhere outside the app (cloud sync folder, external
-        drive) so you can recover after a disk failure.
+        Export a snapshot of every position, evaluation, and config row.
       </p>
       <div className="form-actions">
         <button
@@ -1105,100 +974,6 @@ function DbBackupPanel() {
           {msg.text}
         </p>
       )}
-    </div>
-  );
-}
-
-// ── Launch stats ────────────────────────────────────────────────────────
-
-/** Read-only diagnostic panel surfacing what launchd thinks is
- *  going on with the daemon: current PID, total respawn count,
- *  last exit code, state. High respawn counts or a nonzero last
- *  exit code mean something's misbehaving. */
-function LaunchStatsPanel() {
-  const [stats, setStats] = useState<LaunchStats | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api.launchStats();
-      setStats(r);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  useEffect(() => { load(); }, []);
-
-  // Hide on platforms without launchd stats. macOS's launchctl `print`
-  // is the only thing surfacing these counters today; on Windows the
-  // respawn loop lives inside the Tauri shell and doesn't track them
-  // yet. Showing an empty "Stats are macOS-only" tile is worse than
-  // not showing the panel at all.
-  if (stats && stats.supported === false) {
-    return null;
-  }
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Reliability</h2>
-        <button
-          type="button"
-          className="btn ghost small"
-          onClick={load}
-          disabled={busy}
-        >
-          {busy ? "..." : "Refresh"}
-        </button>
-      </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        How Delfi has been behaving since it was installed. The run
-        count goes up every time Delfi starts (login, recovery from
-        a crash, or a manual restart). A non-zero exit code means
-        the last run ended unexpectedly.
-      </p>
-      {error && <div className="error">{error}</div>}
-      {stats && stats.supported === false && (
-        <p className="page-sub">Reliability stats are macOS-only.</p>
-      )}
-      {stats && stats.supported && (
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 24,
-          maxWidth: 720,
-        }}>
-          <Stat label="Status" value={stats.state ?? "-"} />
-          <Stat label="Total runs" value={stats.runs != null ? String(stats.runs) : "-"} />
-          <Stat
-            label="Last exit code"
-            value={stats.last_exit_code != null ? String(stats.last_exit_code) : "-"}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div style={{
-        fontSize: 11,
-        textTransform: "uppercase",
-        letterSpacing: "0.1em",
-        color: "var(--vellum-60, #888)",
-      }}>{label}</div>
-      <div style={{
-        fontSize: 22,
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-        marginTop: 4,
-      }}>{value}</div>
     </div>
   );
 }
@@ -1252,9 +1027,6 @@ function LicensePanel() {
     }
   };
 
-  const lastValidated = status?.last_validated_at
-    ? formatDateTime(status.last_validated_at)
-    : null;
 
   return (
     <div className="panel">
@@ -1263,7 +1035,7 @@ function LicensePanel() {
       </div>
       {status?.has_key ? (
         <p className="page-sub" style={{ marginBottom: 16 }}>
-          This machine is activated. Last validated {lastValidated || "never"}.
+          Activated and linked to {status.device_label || "this device"}.
         </p>
       ) : (
         <p className="page-sub" style={{ marginBottom: 16 }}>
@@ -1336,9 +1108,6 @@ function ConnectionsPanel({
   const [newsapi, setNewsapi] = useState("");
   const [cryptopanic, setCryptopanic] = useState("");
   const [gemini, setGemini] = useState("");
-  const [pmApiKey, setPmApiKey] = useState("");
-  const [pmApiSecret, setPmApiSecret] = useState("");
-  const [pmApiPass, setPmApiPass] = useState("");
   const [pmRelayerKey, setPmRelayerKey] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1351,9 +1120,6 @@ function ConnectionsPanel({
   const hasNewsapi = creds?.has_newsapi_key ?? false;
   const hasCryptopanic = creds?.has_cryptopanic_key ?? false;
   const hasGemini = (creds as Record<string, unknown> | null | undefined)?.has_gemini_key === true;
-  const hasPmApiKey  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_key === true;
-  const hasPmApiSec  = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_secret === true;
-  const hasPmApiPass = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_api_passphrase === true;
   const hasPmRelayerKey = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_relayer_api_key === true;
 
   const save = async (e: React.FormEvent) => {
@@ -1368,9 +1134,6 @@ function ConnectionsPanel({
       if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
       if (cryptopanic.trim()) payload.cryptopanic_key = cryptopanic.trim();
       if (gemini.trim())      payload.gemini_key = gemini.trim();
-      if (pmApiKey.trim())    payload.polymarket_api_key = pmApiKey.trim();
-      if (pmApiSecret.trim()) payload.polymarket_api_secret = pmApiSecret.trim();
-      if (pmApiPass.trim())   payload.polymarket_api_passphrase = pmApiPass.trim();
       if (pmRelayerKey.trim()) payload.polymarket_relayer_api_key = pmRelayerKey.trim();
       if (Object.keys(payload).length === 0) {
         setMsg({ kind: "err", text: "Nothing to save." });
@@ -1383,9 +1146,6 @@ function ConnectionsPanel({
       setNewsapi("");
       setCryptopanic("");
       setGemini("");
-      setPmApiKey("");
-      setPmApiSecret("");
-      setPmApiPass("");
       setPmRelayerKey("");
       setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
       onSaved();
@@ -1403,9 +1163,7 @@ function ConnectionsPanel({
         <span className="panel-meta">Stored in OS keychain</span>
       </div>
       <p className="page-sub" style={{ marginBottom: 16 }}>
-        All keys live in your operating system keychain. Never on disk and
-        never sent to Delfi servers. Leaving a field blank keeps the existing
-        value.
+        All keys are stored locally and are never shared with us.
       </p>
       <form className="form-row" onSubmit={save}>
         <div className="form-field">
@@ -1541,47 +1299,6 @@ function ConnectionsPanel({
             Without it, Delfi falls back to raw RSS titles (still works,
             but research is noisier). Free at aistudio.google.com.
           </p>
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket API key (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmApiKey ? "(stored)" : "leave blank to auto-derive"}
-            value={pmApiKey}
-            onChange={(e) => setPmApiKey(e.target.value)}
-          />
-          <p className="form-hint">
-            Normally Delfi derives this automatically from your private
-            key. If you&apos;ve gone through Polymarket&apos;s V2
-            account upgrade and orders keep being rejected, generate
-            a fresh key at polymarket.com &rarr; Settings &rarr;
-            Relayer API keys and paste all three fields (key + secret
-            + passphrase) here.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket API secret (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmApiSec ? "(stored)" : ""}
-            value={pmApiSecret}
-            onChange={(e) => setPmApiSecret(e.target.value)}
-          />
-        </div>
-
-        <div className="form-field">
-          <label>Polymarket API passphrase (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmApiPass ? "(stored)" : ""}
-            value={pmApiPass}
-            onChange={(e) => setPmApiPass(e.target.value)}
-          />
         </div>
 
         <div className="form-actions">

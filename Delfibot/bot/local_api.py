@@ -2314,6 +2314,15 @@ class LocalAPI:
         key = get_license_key() or ""
         meta = get_license_meta() or {}
 
+        # The human-readable label for THIS machine. The Settings
+        # license panel renders "Activated and linked to <label>" so
+        # the user can spot at a glance which install they're on.
+        # Best-effort; never raises.
+        try:
+            device_label = get_device_label()
+        except Exception:
+            device_label = None
+
         if not key:
             return {
                 "valid": False,
@@ -2322,6 +2331,7 @@ class LocalAPI:
                 "last_validated_at": None,
                 "instance_id": None,
                 "email": None,
+                "device_label": device_label,
             }
 
         result = verify_license(key)
@@ -2333,6 +2343,7 @@ class LocalAPI:
                 "last_validated_at": meta.get("last_validated_at"),
                 "instance_id": meta.get("instance_id"),
                 "email": (meta.get("payload") or {}).get("email"),
+                "device_label": device_label,
             }
 
         # Verification succeeded; refresh the cached meta so admin
@@ -2352,6 +2363,7 @@ class LocalAPI:
             "last_validated_at": refreshed["last_validated_at"],
             "instance_id": refreshed["instance_id"],
             "email": (result.payload or {}).get("email"),
+            "device_label": device_label,
         }
 
     async def _get_license_status(self, _req: web.Request) -> web.Response:
