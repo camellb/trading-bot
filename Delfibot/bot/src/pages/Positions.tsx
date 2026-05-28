@@ -67,16 +67,17 @@ function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
 // functions return the raw scalar each click should sort by - never
 // the formatted string, so "+10%" sorts after "+9%" not before it.
 
-type OpenSk    = "market" | "category" | "side" | "size"
-                | "avg"   | "now"      | "value" | "pnl"
-                | "myes"  | "dyes"     | "dconf" | "opened" | "closes";
-type ClosedSk  = "market" | "category" | "side" | "outcome"
-                | "size"  | "value"    | "pnl"  | "settled";
-type SkippedSk = "market" | "category" | "myes" | "dyes"
+type OpenSk    = "id"     | "market"   | "category" | "side" | "size"
+                | "avg"   | "now"      | "value"    | "pnl"
+                | "myes"  | "dyes"     | "dconf"    | "opened" | "closes";
+type ClosedSk  = "id"     | "market"   | "category" | "side" | "outcome"
+                | "size"  | "value"    | "pnl"      | "settled";
+type SkippedSk = "id"     | "market"   | "category" | "myes" | "dyes"
                 | "pnl"   | "closed";
 
 function openKpi(p: PMPosition, f: OpenSk): SortKey {
   switch (f) {
+    case "id":       return p.id;
     case "market":   return p.question;
     case "category": return (p.category as string | null) ?? "";
     case "side":     return p.side;
@@ -120,6 +121,7 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
 
 function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
   switch (f) {
+    case "id":       return p.id;
     case "market":   return p.question;
     case "category": return (p.category as string | null) ?? "";
     case "side":     return p.side;
@@ -214,6 +216,7 @@ function humanizePolymarketError(raw: string): string {
 
 function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
   switch (f) {
+    case "id":       return e.id;
     case "market":   return e.question;
     case "category": return e.category ?? "";
     case "myes":     return e.market_price_yes ?? null;
@@ -345,9 +348,13 @@ export default function Positions() {
   // Sort states. One per table so they're independent. Defaults
   // mirror "most recent first" or "biggest first" depending on
   // what users will scan for in that view.
-  const openSort    = useSort<OpenSk>("size", "desc");
-  const closedSort  = useSort<ClosedSk>("settled", "desc");
-  const skippedSort = useSort<SkippedSk>("closed", "desc");
+  // Default sort across every market table is the row's own id (the
+  // SQLite autoincrement). Highest id = most recently created, so a
+  // fresh open / close / skipped lands at the top of its panel without
+  // the user having to scroll. Click any other column to switch.
+  const openSort    = useSort<OpenSk>("id", "desc");
+  const closedSort  = useSort<ClosedSk>("id", "desc");
+  const skippedSort = useSort<SkippedSk>("id", "desc");
 
   const openRows = useMemo(
     () => openSort.apply(open, openKpi),
@@ -455,7 +462,7 @@ export default function Positions() {
               </colgroup>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left" }}>#</th>
+                  <SortableTh field="id"       sort={openSort}>#</SortableTh>
                   <SortableTh field="market"   sort={openSort}>Market</SortableTh>
                   <SortableTh field="category" sort={openSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={openSort}>Side</SortableTh>
@@ -627,7 +634,7 @@ export default function Positions() {
               </colgroup>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left" }}>#</th>
+                  <SortableTh field="id"       sort={closedSort}>#</SortableTh>
                   <SortableTh field="market"   sort={closedSort}>Market</SortableTh>
                   <SortableTh field="category" sort={closedSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
@@ -808,7 +815,7 @@ export default function Positions() {
               </colgroup>
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left" }}>#</th>
+                  <SortableTh field="id"        sort={skippedSort}>#</SortableTh>
                   <SortableTh field="market"    sort={skippedSort}>Market</SortableTh>
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
                   <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>

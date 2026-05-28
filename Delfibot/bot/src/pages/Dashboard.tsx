@@ -530,11 +530,12 @@ function CardHead({
 // component into a real <table.table-simple> matching the
 // Positions tab 1:1 (user requested same column set, same widths,
 // same truncate-with-chevron mechanic, same expanded-row layout).
-type DashOpenSk = "market" | "category" | "side" | "size"
-                | "value"  | "pnl"      | "opened" | "closes";
+type DashOpenSk = "id"     | "market"   | "category" | "side" | "size"
+                | "value"  | "pnl"      | "opened"   | "closes";
 
 function dashOpenKpi(p: PMPosition, f: DashOpenSk): SortKey {
   switch (f) {
+    case "id":       return p.id;
     case "market":   return p.question;
     case "category": return (p.category as string | null) ?? "";
     case "side":     return p.side;
@@ -566,7 +567,10 @@ function dashOpenKpi(p: PMPosition, f: DashOpenSk): SortKey {
 const DASH_OPEN_PREVIEW_LIMIT = 5;
 
 function PositionsTable({ positions }: { positions: PMPosition[] }) {
-  const sort = useSort<DashOpenSk>("size", "desc");
+  // Default sort = the row's own id descending so the most recently
+  // opened position lands at the top of the preview. Matches the
+  // Positions tab Open table 1:1 per the same-mechanic rule.
+  const sort = useSort<DashOpenSk>("id", "desc");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const toggle = (id: number) =>
     setExpanded((prev) => {
@@ -599,7 +603,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
       </colgroup>
       <thead>
         <tr>
-          <th style={{ textAlign: "left" }}>#</th>
+          <SortableTh field="id"       sort={sort}>#</SortableTh>
           <SortableTh field="market"   sort={sort}>Market</SortableTh>
           <SortableTh field="category" sort={sort}>Category</SortableTh>
           <SortableTh field="side"     sort={sort}>Side</SortableTh>
