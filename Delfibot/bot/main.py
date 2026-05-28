@@ -106,6 +106,7 @@ from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.executors.pool import ThreadPoolExecutor as APThreadPoolExecutor
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 import asyncio as _asyncio_module  # alias for the sync job wrappers below
 
 # Force aiohttp's DNS resolver onto a thread pool BEFORE any
@@ -1307,6 +1308,126 @@ async def main() -> None:
             pass
         return
 
+    async def _license_boot_claim_async():
+        """One-shot boot task that claims the per-licence device slot.
+
+        Why this exists separately from the revocation poll:
+
+        The revocation poll READS the slot (via /api/license/check)
+        and locks if device_match=false, but it does not CREATE the
+        slot for an already-activated user who upgrades from a
+        pre-v1.5.16 release. Without this boot-claim, an upgrader's
+        cached licence would keep working with the server slot empty
+        - which means another machine could claim it silently.
+
+        This task POSTs to /api/license/claim-device with force=false
+        once at sidecar startup. Three outcomes:
+
+          - 200 + slot was free or already ours -> we own it now.
+            Future revocation polls will see device_match=true and
+            heartbeat last_seen_at.
+
+          - 409 -> the slot is held by a different machine (e.g. user
+            already activated on Machine B before upgrading Machine A
+            to v1.5.16). Lock locally with status="device_mismatch"
+            using the same code path as the revocation poll.
+
+          - Network error / 5xx -> silent. The daily revocation poll
+            will continue to enforce the lock; we'll retry the claim
+            on the next boot.
+
+        Owner-bypass licences (id="owner-local") skip the claim - the
+        server has no row for them and would reject the UUID format.
+        """
+        blob = (get_license_key() or "").strip()
+        if not blob:
+            return  # no licence cached, nothing to claim
+        try:
+            encoded_payload = blob.split(".", 1)[0]
+            pad = (-len(encoded_payload)) % 4
+            raw = base64.urlsafe_b64decode(encoded_payload + ("=" * pad))
+            payload = _json.loads(raw)
+            license_id = payload.get("id")
+        except Exception as exc:
+            print(f"[delfi] boot_claim: payload decode failed: {exc}",
+                  file=sys.stderr, flush=True)
+            return
+        if not isinstance(license_id, str) or not license_id:
+            return
+        if license_id == "owner-local":
+            return  # owner bypass, no server slot
+
+        try:
+            from engine.device_id import get_device_id, get_device_label
+            device_id = get_device_id()
+            device_label = get_device_label()
+        except Exception as exc:
+            print(f"[delfi] boot_claim: device_id lookup failed: {exc}",
+                  file=sys.stderr, flush=True)
+            return
+
+        base_url = _os.environ.get(
+            "DELFI_LICENSE_API_BASE",
+            "https://delfibot.com/api/license",
+        )
+        url = f"{base_url}/claim-device"
+        body = {
+            "license_id":   license_id,
+            "device_id":    device_id,
+            "device_label": device_label,
+            "force":        False,
+        }
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as sess:
+                async with sess.post(url, json=body) as r:
+                    status = r.status
+                    try:
+                        resp_body = await r.json()
+                    except Exception:
+                        resp_body = {}
+        except Exception as exc:
+            print(f"[delfi] boot_claim: network error: {exc} - "
+                  "will retry on next boot or via daily check",
+                  flush=True)
+            return
+
+        if status == 200:
+            print("[delfi] boot_claim: slot claimed/heartbeated for this device",
+                  flush=True)
+            return
+
+        if status == 409:
+            other = (resp_body or {}).get("current_device_label") or "another device"
+            reason = f"This licence is currently active on {other}."
+            print(f"[delfi] boot_claim: SLOT TAKEN by '{other}'. "
+                  "Locking local install.",
+                  file=sys.stderr, flush=True)
+            try:
+                set_license_key(None)
+                set_license_meta({
+                    "status": "device_mismatch",
+                    "reason": reason,
+                    "current_device_label": other,
+                })
+            except Exception as exc:
+                print(f"[delfi] boot_claim: failed to clear local "
+                      f"license: {exc}", file=sys.stderr, flush=True)
+            try:
+                from engine.user_config import update_user_config
+                update_user_config(bot_enabled=False)
+            except Exception as exc:
+                print(f"[delfi] boot_claim: failed to disable bot: {exc}",
+                      file=sys.stderr, flush=True)
+            return
+
+        # 4xx (other than 409) / 5xx -> log and move on; the daily
+        # revocation poll continues to enforce the lock.
+        print(f"[delfi] boot_claim: HTTP {status} - {resp_body}. "
+              "Will retry on next boot.",
+              flush=True)
+
     # Wall-clock ceiling for each scheduled job. APScheduler has
     # max_instances=1 per job, so if ONE call sticks forever (e.g.
     # pycares getaddrinfo wedge in a Wikipedia fetch, observed
@@ -1734,6 +1855,23 @@ async def main() -> None:
             print(f"[delfi] weekly_summary failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_license_boot_claim():
+        """Sync wrapper for the one-shot boot claim. See
+        `_license_boot_claim_async` for the doctrine.
+        """
+        try:
+            _submit_job(
+                _bounded(
+                    _license_boot_claim_async(),
+                    timeout_s=20,
+                    label="license_boot_claim",
+                ),
+                outer_timeout_s=30,
+            )
+        except Exception as exc:
+            print(f"[delfi] license_boot_claim failed: {exc}",
+                  file=sys.stderr, flush=True)
+
     def _run_license_revocation_check():
         """Daily call to the licensing server to see if this license
         has been revoked (refund, dispute, manual admin action).
@@ -1946,6 +2084,22 @@ async def main() -> None:
         # trading within minutes rather than 12 hours.
         next_run_time=now_utc + timedelta(seconds=90),
         max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    # One-shot boot claim. Fires once at boot+30s and never again
+    # (DateTrigger). Closes the upgrade-path gap: an already-activated
+    # pre-v1.5.16 user who upgrades to v1.5.16 needs to populate the
+    # server slot for their licence, but the desktop never re-calls
+    # /api/license/activate on its own - the cached blob just verifies
+    # offline forever. This task does the claim once per process.
+    # If the slot is already held by another machine, the user gets
+    # locked here (status="device_mismatch") instead of after the
+    # 12h revocation tick.
+    scheduler.add_job(
+        _run_license_boot_claim,
+        DateTrigger(run_date=now_utc + timedelta(seconds=30)),
+        id="license_boot_claim",
+        max_instances=1, coalesce=False,
         executor="threadpool",
     )
 
