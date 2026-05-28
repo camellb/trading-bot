@@ -1732,18 +1732,29 @@ class LocalAPI:
             open_cost_basis  = float(stats.get("bot_open_cost") or 0.0)
             unrealized_pnl   = open_cost_mtm - open_cost_basis
 
-        # In LIVE mode, derive a sensible "starting capital" for this
-        # session from the equation
-        #     bankroll = starting + realized - open_cost
-        # so live_starting = bankroll - realized + open_cost. Uses
-        # the same Polymarket-derived `realized` as the headline so
-        # the Risk gauges agree with the P&L tile.
+        # In LIVE mode, derive a stable "starting capital" for this
+        # session from the identity
+        #     equity = starting + realized + unrealized
+        # so live_starting = equity - realized - unrealized
+        #                  = equity - total_pnl.
+        #
+        # The earlier formulation `bankroll - realized + open_cost`
+        # silently included unrealized P&L in the denominator
+        # (because `open_cost` is the MTM of open positions, which
+        # equals cost_basis + unrealized). That made the derived
+        # starting drift with every mark-to-market tick, and
+        # produced the user-visible bug 2026-05-28: equity drops
+        # from $40 -> $38.88 (unrealized swung -$2) while the
+        # P&L % CLIMBED from +77% to +80%, because the denominator
+        # shrank by more than the numerator. The fix below pins
+        # `starting` to the true deposit-side capital so a swing
+        # in unrealized only moves the numerator, not the
+        # denominator, and ROI tracks equity intuitively.
         if stats.get("mode") == "live":
-            open_cost = float(stats.get("open_cost") or 0.0)
-            live_starting = bankroll - realized + open_cost
+            live_starting = equity - realized - unrealized_pnl
             # Floor at $1 so the downstream gauge math (which
-            # divides by `starting`) doesn't choke when bankroll is
-            # briefly zero (e.g. mid-deposit).
+            # divides by `starting`) doesn't choke when equity is
+            # briefly zero (e.g. mid-deposit / mid-withdraw).
             starting = max(1.0, live_starting)
 
         roi = (realized / starting) if starting > 0 else None
