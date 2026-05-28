@@ -196,6 +196,14 @@ export default function App() {
   if (state && state.is_onboarded === false) {
     return (
       <LicenseGate>
+        {/* UpdatePrompt must mount here too, otherwise a user stuck
+            on the wizard can never see the auto-update banner and
+            never receives a fix that would unstick them. This was
+            the v1.5.22 trap: dataclass bug made is_onboarded always
+            false -> wizard re-shown -> UpdatePrompt unmounted ->
+            no path to v1.5.23. Fixed v1.5.23 by mounting the
+            updater on both branches. */}
+        <UpdatePrompt />
         <Onboarding state={state} creds={creds} onComplete={refresh} />
       </LicenseGate>
     );

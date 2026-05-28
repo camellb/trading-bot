@@ -161,6 +161,13 @@ class UserConfig:
     cost_assumption_override: Optional[float]   = None
     archetype_skip_list:      Tuple[str, ...]   = field(default_factory=tuple)
     archetype_stake_multipliers: Dict[str, float] = field(default_factory=dict)
+    # Per-market-volume stake multiplier. Three buckets keyed on
+    # market.volume_24h_clob: low (<$1k), mid ($1k-$10k), high (>=$10k).
+    # Empty dict falls back to V1_DEFAULT_VOLUME_TIER_MULTIPLIERS at
+    # sizer-read time. Added v1.5.21; the missing field declaration
+    # was the v1.5.21-22 bug that made get_user_config raise on every
+    # call and silently break onboarding state (caught 2026-05-28).
+    volume_tier_multipliers: Dict[str, float] = field(default_factory=dict)
 
     # Per-user time-to-resolution filter (DAYS). Days match the
     # day-based "By horizon" buckets on the Performance page so
