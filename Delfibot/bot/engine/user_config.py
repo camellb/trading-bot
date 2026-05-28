@@ -1111,6 +1111,31 @@ def ensure_default_user_config() -> None:
                 "  AND tour_completed_at IS NULL"
             ), {"uid": DEFAULT_USER_ID, "skip": skip_csv, "mult": mult_json})
 
+            # ── Backfill tour_completed_at for already-onboarded users ──
+            # 2026-05-28: the prior Onboarding wizard only stamped
+            # `tour_completed_at` when the user clicked the final "Open
+            # the dashboard" button. Any user who closed the GUI before
+            # that click (or whose request silently failed) re-saw the
+            # wizard on next launch. v1.5.22 removes the Done screen so
+            # the new code stamps the flag on Save/Skip instead, but
+            # users who got stuck mid-flight need a one-shot heal.
+            #
+            # Heuristic: a non-null wallet_address is a clear "this user
+            # has been past the wizard before" signal. wallet_address
+            # only gets written when the user types a private key in
+            # either Onboarding or Settings - on a fresh install it's
+            # NULL until the user does that. Stamping NOW unblocks
+            # those users without forcing them to re-click the wizard.
+            # Fires once per user; subsequent boots are no-ops because
+            # the WHERE clause filters on `tour_completed_at IS NULL`.
+            conn.execute(text(
+                "UPDATE user_config "
+                "SET tour_completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+                "WHERE user_id = :uid "
+                "  AND tour_completed_at IS NULL "
+                "  AND wallet_address IS NOT NULL"
+            ), {"uid": DEFAULT_USER_ID})
+
             # ── One-shot migration: global skip_market_price_bands ──────
             # The global Price band filter was dropped 2026-05-03 in
             # favour of per-archetype bands only. Copy any existing
