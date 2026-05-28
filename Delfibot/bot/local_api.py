@@ -1602,6 +1602,29 @@ class LocalAPI:
         except Exception:
             brier = {"brier": None, "resolved": 0, "total": 0}
 
+        # YES-bias: population-level "is the forecaster's mean P(YES)
+        # anchored at the actual YES rate?". Computed across all
+        # resolved evaluations (entered + skipped) for the current
+        # mode so the dashboard tile reflects the forecaster's
+        # behaviour on the bot's actual trading regime. Best-effort:
+        # any failure falls back to a zero-sample shape so the
+        # rest of the dashboard renders.
+        try:
+            yes_bias = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor,
+                lambda: calibration.get_yes_bias_report(
+                    user_id=DEFAULT_USER_ID,
+                    mode=_stats_mode,
+                ),
+            )
+        except Exception:
+            yes_bias = {
+                "n": 0,
+                "forecaster_mean_p_yes": None,
+                "actual_yes_rate":       None,
+                "bias":                  None,
+            }
+
         # Live-mode balance overlay. In simulation the synthetic
         # starting_cash is correct ("how would Delfi do with $1000?")
         # but in live we MUST show what's actually spendable on
@@ -1780,6 +1803,7 @@ class LocalAPI:
             "brier":          brier.get("brier"),
             "resolved_predictions": brier.get("resolved"),
             "total_predictions":    brier.get("total"),
+            "yes_bias":       yes_bias,
         }
         self._summary_cache = (_t.monotonic(), payload)
         return _ok(payload)

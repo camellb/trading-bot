@@ -512,6 +512,92 @@ def get_report(
         return _empty_report(source, since_days)
 
 
+# ── YES-bias report ──────────────────────────────────────────────────────────
+def get_yes_bias_report(
+    *,
+    user_id: str,
+    mode: Optional[str] = None,
+) -> dict:
+    """
+    Population-level forecaster YES-bias.
+
+    The intuition: if the forecaster is well-calibrated AND unbiased,
+    the average of its P(YES) outputs across a large sample should
+    equal the actual fraction of those markets that resolved YES.
+    A systematic gap means the forecaster's distribution of
+    probabilities is mis-anchored.
+
+    The metric is computed across ALL resolved evaluations (entered
+    AND skipped), not just entered positions, so it measures the
+    forecaster itself rather than the entered book. Invalid /
+    voided resolutions are excluded - they aren't binary outcomes
+    and would corrupt both the numerator and denominator.
+
+    Returns a dict shaped:
+        {"n":            int,            # sample size
+         "forecaster_mean_p_yes": float, # avg(delfi_probability)
+         "actual_yes_rate":       float, # frac resolved YES
+         "bias":         float}          # forecaster - actual
+
+    Bias > 0 means the forecaster systematically over-predicts YES.
+    Bias < 0 means it under-predicts YES.
+
+    Failure modes: returns an empty-shaped dict on any SQL error so
+    the caller (local_api._get_summary) never blocks the rest of the
+    dashboard on a metric outage.
+    """
+    empty = {
+        "n":                     0,
+        "forecaster_mean_p_yes": None,
+        "actual_yes_rate":       None,
+        "bias":                  None,
+    }
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            sql = """
+                SELECT
+                    COUNT(*) AS n,
+                    AVG(delfi_probability) AS mean_p_yes,
+                    AVG(
+                        CASE
+                            WHEN UPPER(settlement_outcome) = 'YES' THEN 1.0
+                            ELSE 0.0
+                        END
+                    ) AS yes_rate
+                FROM market_evaluations
+                WHERE user_id = :uid
+                  AND settlement_outcome IS NOT NULL
+                  AND UPPER(settlement_outcome) IN ('YES', 'NO')
+                  AND delfi_probability IS NOT NULL
+            """
+            params = {"uid": user_id}
+            if mode:
+                sql += " AND mode = :mode"
+                params["mode"] = mode
+            row = conn.execute(text(sql), params).fetchone()
+        if not row or row[0] is None or int(row[0]) == 0:
+            return empty
+        n = int(row[0])
+        mean_p_yes = float(row[1]) if row[1] is not None else None
+        yes_rate   = float(row[2]) if row[2] is not None else None
+        bias = (
+            (mean_p_yes - yes_rate)
+            if (mean_p_yes is not None and yes_rate is not None)
+            else None
+        )
+        return {
+            "n":                     n,
+            "forecaster_mean_p_yes": mean_p_yes,
+            "actual_yes_rate":       yes_rate,
+            "bias":                  bias,
+        }
+    except Exception as exc:
+        print(f"[calibration] get_yes_bias_report failed: {exc}",
+              file=sys.stderr)
+        return empty
+
+
 # ── Utilities ────────────────────────────────────────────────────────────────
 def conviction_to_probability(conviction: Optional[float]) -> float:
     """

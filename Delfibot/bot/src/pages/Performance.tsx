@@ -317,6 +317,47 @@ export default function Performance() {
             {summary?.brier != null ? summary.brier.toFixed(3) : "-"}
           </div>
         </div>
+        {/* YES-bias diagnostic. Across all resolved evaluations
+            (entered + skipped), is the forecaster's mean P(YES)
+            anchored at the actual YES rate? Positive bias = the
+            forecaster systematically over-predicts YES. Tile is
+            informational only - we don't show colour on the bias
+            because the "right" value depends on Delfi's filtered
+            sample, not Polymarket's universe-wide 26% base rate.
+            Below 50 resolved evaluations the metric is noisy so
+            we surface "collecting data" instead. */}
+        <div className="stat-cell">
+          <div className="stat-cell-label">YES bias</div>
+          {(() => {
+            const yb = summary?.yes_bias;
+            if (!yb || yb.n < 50 || yb.bias == null) {
+              return (
+                <>
+                  <div className="stat-cell-val t-num">-</div>
+                  <div className="stat-cell-delta">
+                    {yb && yb.n > 0
+                      ? `collecting (${yb.n} / 50)`
+                      : "collecting data"}
+                  </div>
+                </>
+              );
+            }
+            const biasPct = yb.bias * 100;
+            const sign = biasPct > 0 ? "+" : "";
+            const meanPct = (yb.forecaster_mean_p_yes ?? 0) * 100;
+            const actualPct = (yb.actual_yes_rate ?? 0) * 100;
+            return (
+              <>
+                <div className="stat-cell-val t-num">
+                  {sign}{biasPct.toFixed(1)}pp
+                </div>
+                <div className="stat-cell-delta">
+                  Forecaster {meanPct.toFixed(0)}% / Actual {actualPct.toFixed(0)}% / N {yb.n}
+                </div>
+              </>
+            );
+          })()}
+        </div>
       </div>
 
       <div className="panel">

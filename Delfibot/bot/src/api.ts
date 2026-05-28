@@ -495,6 +495,23 @@ export interface PerformanceSummary {
   brier: number | null;
   resolved_predictions: number | null;
   total_predictions: number | null;
+  /** Population-level YES-bias diagnostic. Across all resolved
+   *  evaluations (entered + skipped) in the current mode:
+   *
+   *   - n:                     sample size
+   *   - forecaster_mean_p_yes: average of the forecaster's P(YES)
+   *   - actual_yes_rate:       fraction that resolved YES
+   *   - bias:                  forecaster_mean - actual_yes_rate
+   *
+   *  Positive bias = forecaster over-predicts YES. Tile shows
+   *  "collecting data" until n >= 50. Optional on the type so the
+   *  dashboard stays compatible with sidecars before v1.5.20. */
+  yes_bias?: {
+    n: number;
+    forecaster_mean_p_yes: number | null;
+    actual_yes_rate:       number | null;
+    bias:                  number | null;
+  } | null;
 }
 
 export interface BrierTrendPoint {
