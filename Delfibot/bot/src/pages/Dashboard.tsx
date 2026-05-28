@@ -587,25 +587,22 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         <div>Market</div>
         <div>Category</div>
         <div>Side</div>
-        <div>Size</div>
-        <div>M YES %</div>
-        <div>D YES %</div>
+        <div>Cost</div>
+        <div>Value</div>
         <div>P&amp;L</div>
         <div>Opened</div>
         <div>Closes</div>
         <div />
       </div>
       {positions.map((p) => {
-        const marketYes = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
-        const mYesPct = Math.round(marketYes * 100);
-        const cp = (p.delfi_probability as number | null | undefined) ?? null;
-        const dYesPct = cp != null ? Math.round(cp * 100) : null;
-        // P&L = mark-to-market value minus cost basis. NULL during the
-        // first ~60s after open before the exit-policy job stamps
-        // current_value_usd, in which case the cell renders an em-dash.
+        // Current mark-to-market value (NULL until the 60s exit-policy
+        // job stamps current_value_usd). P&L = cv - cost_usd; both
+        // render as em-dashes during the first minute after open
+        // before the daemon has marked the position.
         const cv = (p as unknown as Record<string, unknown>).current_value_usd as
           | number | null | undefined;
         const havePnlMark = cv != null && p.shares > 0;
+        const valueText = havePnlMark ? `$${Number(cv).toFixed(2)}` : "—";
         const pnlVal = havePnlMark ? (Number(cv) - p.cost_usd) : null;
         const pnlClass = pnlVal == null ? ""
           : pnlVal > 0 ? "profit"
@@ -638,8 +635,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
               <div className="pos-cat">{category ?? "-"}</div>
               <div className={`pos-side ${p.side === "YES" ? "yes" : "no"}`}>{p.side}</div>
               <div className="pos-num t-num">${p.cost_usd.toFixed(2)}</div>
-              <div className="pos-num t-num">{mYesPct}%</div>
-              <div className="pos-num t-num">{dYesPct != null ? `${dYesPct}%` : "-"}</div>
+              <div className="pos-num t-num">{valueText}</div>
               <div className={`pos-num t-num ${pnlClass}`}>{pnlText}</div>
               <div className="pos-num t-num">{timeAgo(p.created_at)}</div>
               <div className="pos-closes t-num">{daysFromNow(closesAt)}</div>

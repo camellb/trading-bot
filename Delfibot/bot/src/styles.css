@@ -960,13 +960,13 @@ button { font: inherit; }
 
 .pos-table { display: flex; flex-direction: column; }
 .pos-row {
-  /* 10 cells: Market, Category, Side, Size, M YES, D YES, D CONF,
-     Opened, Closes, chevron. fr units shrink to fit the card width
-     (no horizontal scroll, no min-width). The Market column is
-     ellipsis-truncated when collapsed (.pos-q already nowrap); long
-     names show on hover or when expanded. */
+  /* 9 cells: Market, Category, Side, Cost, Value, P&L, Opened,
+     Closes, chevron. fr units shrink to fit the card width (no
+     horizontal scroll, no min-width). The Market column is
+     ellipsis-truncated when collapsed (.pos-q already nowrap);
+     long names show on hover or when expanded. */
   display: grid;
-  grid-template-columns: 1.6fr 0.7fr 0.4fr 0.6fr 0.6fr 0.7fr 0.7fr 0.7fr 0.7fr 24px;
+  grid-template-columns: 1.6fr 0.7fr 0.4fr 0.7fr 0.7fr 0.7fr 0.7fr 0.7fr 24px;
   gap: 10px;
   padding: 12px 0;
   align-items: center;

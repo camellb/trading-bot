@@ -71,7 +71,7 @@ type OpenSk    = "market" | "category" | "side" | "size"
                 | "avg"   | "now"      | "value" | "pnl"
                 | "myes"  | "dyes"     | "dconf" | "opened" | "closes";
 type ClosedSk  = "market" | "category" | "side" | "outcome"
-                | "size"  | "myes"     | "dyes"  | "pnl" | "settled";
+                | "size"  | "value"    | "pnl"  | "settled";
 type SkippedSk = "market" | "category" | "myes" | "dyes"
                 | "pnl"   | "closed";
 
@@ -129,8 +129,13 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
       return won ? "WON" : "LOST";
     }
     case "size":     return p.cost_usd;
-    case "myes":     return p.side === "YES" ? p.entry_price : 1 - p.entry_price;
-    case "dyes":     return (p.delfi_probability as number | null) ?? null;
+    case "value": {
+      // Final settled value = cost + realized P&L. Sorts the table
+      // by what the position is worth at close (including refunds /
+      // early exits), not by the size of the original bet.
+      const pnl = (p.realized_pnl_usd as number | null) ?? 0;
+      return p.cost_usd + pnl;
+    }
     case "pnl":      return (p.realized_pnl_usd as number | null) ?? null;
     case "settled": {
       const iso = p.settled_at as string | null | undefined;
@@ -424,7 +429,6 @@ export default function Positions() {
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
-                <col style={{ width: "72px" }} />
                 <col style={{ width: "28px" }} />
               </colgroup>
               <thead>
@@ -433,9 +437,8 @@ export default function Positions() {
                   <SortableTh field="market"   sort={openSort}>Market</SortableTh>
                   <SortableTh field="category" sort={openSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={openSort}>Side</SortableTh>
-                  <SortableTh field="size"     sort={openSort}>Size</SortableTh>
-                  <SortableTh field="myes"     sort={openSort}>M YES %</SortableTh>
-                  <SortableTh field="dyes"     sort={openSort}>D YES %</SortableTh>
+                  <SortableTh field="size"     sort={openSort}>Cost</SortableTh>
+                  <SortableTh field="value"    sort={openSort}>Value</SortableTh>
                   <SortableTh field="pnl"      sort={openSort}>P&amp;L</SortableTh>
                   <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
                   <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
@@ -464,13 +467,11 @@ export default function Positions() {
                     : pnl > 0 ? "cell-up"
                     : pnl < 0 ? "cell-down"
                     : "";
-                  // Market YES probability at entry. For YES bets the
-                  // bought-side price IS the YES probability; for NO
-                  // bets we flip (entry_price = NO price = 1 - YES).
-                  const marketYesEntry = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
-                  const mYesPct = Math.round(marketYesEntry * 100);
-                  const dCp = (p.delfi_probability as number | null | undefined) ?? null;
-                  const dYesPct = dCp != null ? Math.round(dCp * 100) : null;
+                  // Current mark-to-market value. NULL until the
+                  // exit-policy job stamps current_value_usd (~60s
+                  // after open). When NULL we render an em-dash so
+                  // the user knows the row hasn't been marked yet,
+                  // rather than showing the cost again.
                   return (
                     <React.Fragment key={p.id}>
                       <tr
@@ -483,8 +484,7 @@ export default function Positions() {
                         <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
                         <td className="mono">${p.cost_usd.toFixed(2)}</td>
-                        <td className="mono">{mYesPct}%</td>
-                        <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
+                        <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "—"}</td>
                         <td className={`mono ${pnlClass}`}>{
                           pnl == null ? "—"
                           : pnl > 0 ? `+$${pnl.toFixed(2)}`
@@ -506,7 +506,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={11} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -600,9 +600,8 @@ export default function Positions() {
                   <SortableTh field="market"   sort={closedSort}>Market</SortableTh>
                   <SortableTh field="category" sort={closedSort}>Category</SortableTh>
                   <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
-                  <SortableTh field="size"     sort={closedSort}>Size</SortableTh>
-                  <SortableTh field="myes"     sort={closedSort}>M YES %</SortableTh>
-                  <SortableTh field="dyes"     sort={closedSort}>D YES %</SortableTh>
+                  <SortableTh field="size"     sort={closedSort}>Cost</SortableTh>
+                  <SortableTh field="value"    sort={closedSort}>Value</SortableTh>
                   <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
                   <SortableTh field="settled"  sort={closedSort}>Closed</SortableTh>
                   <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
@@ -646,13 +645,11 @@ export default function Positions() {
                         ? `-$${Math.abs(pnl).toFixed(2)}`
                         : "$0.00");
                   const category = (s.category as string | null | undefined) ?? null;
-                  // Market implied probability YES at entry. entry_price is
-                  // the price paid for the chosen side, so for a NO entry
-                  // we flip it to derive the implied YES probability.
-                  const marketYes = s.side === "YES" ? s.entry_price : 1 - s.entry_price;
-                  const mYesPct = Math.round(marketYes * 100);
-                  const cp = (s.delfi_probability as number | null | undefined) ?? null;
-                  const dYesPct = cp != null ? Math.round(cp * 100) : null;
+                  // Final settled value = original cost plus realized
+                  // P&L. For invalid/voided markets the bot is refunded
+                  // at cost so realized_pnl_usd is 0 and final value
+                  // equals cost (shown as a tie cell, no colour).
+                  const finalValue = s.cost_usd + pnl;
                   return (
                     <tr key={s.id} className="row-hover">
                       <td className="mono" style={{ color: "var(--vellum-40)" }}>{s.id}</td>
@@ -660,8 +657,7 @@ export default function Positions() {
                       <td>{category ?? "-"}</td>
                       <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
                       <td className="mono">${s.cost_usd.toFixed(2)}</td>
-                      <td className="mono">{mYesPct}%</td>
-                      <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
+                      <td className="mono">${finalValue.toFixed(2)}</td>
                       <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
                       <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
                         {settledAt ? timeAgo(settledAt) : "-"}
