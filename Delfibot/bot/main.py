@@ -1203,7 +1203,22 @@ async def main() -> None:
             "DELFI_LICENSE_CHECK_URL",
             "https://delfibot.com/api/license/check",
         )
+        # v1.5.16+: we also send the device fingerprint so the server
+        # can tell us whether the activation slot still belongs to
+        # this machine. If the user force-claimed the slot on another
+        # device, the response will carry device_match=false and we
+        # treat it as a soft revoke ("license in use on another
+        # device"). Pre-v1.5.16 clients omit device_id and the server
+        # omits device_match from the response - the existing
+        # revocation behavior remains unchanged for them.
+        try:
+            from engine.device_id import get_device_id
+            device_id = get_device_id()
+        except Exception:
+            device_id = ""
         url = f"{base_url}?id={license_id}"
+        if device_id:
+            url = f"{url}&device_id={device_id}"
         try:
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=15),
@@ -1226,48 +1241,71 @@ async def main() -> None:
 
         if not isinstance(body, dict):
             return
-        if body.get("valid") is True:
-            # Stamp the meta with the latest validation timestamp so
-            # the user can see "checked X minutes ago" in Settings.
+
+        # First check: licence revoked (refund, dispute, admin action).
+        # Hard lock with the explicit revoke_reason from the server.
+        if body.get("valid") is False:
+            reason = body.get("revoke_reason") or "license revoked by issuer"
+            print(f"[delfi] revocation_check: LICENSE REVOKED - {reason}. "
+                  "Clearing local license key and disabling bot.",
+                  file=sys.stderr, flush=True)
             try:
-                meta = get_license_meta() or {}
-                from datetime import datetime as _dt, timezone as _tz
-                meta["last_validated_at"] = _dt.now(_tz.utc).isoformat()
-                meta["last_remote_check"] = "valid"
-                set_license_meta(meta)
-            except Exception:
-                pass
+                set_license_key(None)
+                set_license_meta({
+                    "status": "revoked",
+                    "reason": reason,
+                    "revoked_at": body.get("revoked_at"),
+                })
+            except Exception as exc:
+                print(f"[delfi] revocation_check: failed to clear local "
+                      f"license: {exc}", file=sys.stderr, flush=True)
+            try:
+                from engine.user_config import update_user_config
+                update_user_config(bot_enabled=False)
+            except Exception as exc:
+                print(f"[delfi] revocation_check: failed to disable bot: {exc}",
+                      file=sys.stderr, flush=True)
             return
 
-        # Revoked. Three things to stop trading:
-        #   1. Clear the license blob so /api/bot/start refuses
-        #      future toggle-on attempts (license gate).
-        #   2. Stamp meta with revoked status so the React shell
-        #      surfaces a clear "license revoked" reason on the
-        #      LicenseGate.
-        #   3. Force bot_enabled=False so an already-running bot
-        #      stops opening new positions on the next scan. The
-        #      executor reads user_config.bot_enabled each cycle.
-        reason = body.get("revoke_reason") or "license revoked by issuer"
-        print(f"[delfi] revocation_check: LICENSE REVOKED - {reason}. "
-              "Clearing local license key and disabling bot.",
-              file=sys.stderr, flush=True)
-        try:
-            set_license_key(None)
-            set_license_meta({
-                "status": "revoked",
-                "reason": reason,
-                "revoked_at": body.get("revoked_at"),
-            })
-        except Exception as exc:
-            print(f"[delfi] revocation_check: failed to clear local "
-                  f"license: {exc}", file=sys.stderr, flush=True)
-        try:
-            from engine.user_config import update_user_config
-            update_user_config(bot_enabled=False)
-        except Exception as exc:
-            print(f"[delfi] revocation_check: failed to disable bot: {exc}",
+        # Second check: licence is valid but the activation slot has
+        # been claimed by a different device. Same lock-down treatment
+        # but with a different user-visible reason so the LicenseGate
+        # can render "in use on <other device>" instead of "revoked".
+        if body.get("device_match") is False:
+            other = body.get("current_device_label") or "another device"
+            reason = f"This licence is currently active on {other}."
+            print(f"[delfi] revocation_check: DEVICE MISMATCH - slot "
+                  f"taken by '{other}'. Locking local install.",
                   file=sys.stderr, flush=True)
+            try:
+                set_license_key(None)
+                set_license_meta({
+                    "status": "device_mismatch",
+                    "reason": reason,
+                    "current_device_label": other,
+                })
+            except Exception as exc:
+                print(f"[delfi] revocation_check: failed to clear local "
+                      f"license: {exc}", file=sys.stderr, flush=True)
+            try:
+                from engine.user_config import update_user_config
+                update_user_config(bot_enabled=False)
+            except Exception as exc:
+                print(f"[delfi] revocation_check: failed to disable bot: {exc}",
+                      file=sys.stderr, flush=True)
+            return
+
+        # All good. Stamp the meta with the latest validation timestamp
+        # so the user can see "checked X minutes ago" in Settings.
+        try:
+            meta = get_license_meta() or {}
+            from datetime import datetime as _dt, timezone as _tz
+            meta["last_validated_at"] = _dt.now(_tz.utc).isoformat()
+            meta["last_remote_check"] = "valid"
+            set_license_meta(meta)
+        except Exception:
+            pass
+        return
 
     # Wall-clock ceiling for each scheduled job. APScheduler has
     # max_instances=1 per job, so if ONE call sticks forever (e.g.

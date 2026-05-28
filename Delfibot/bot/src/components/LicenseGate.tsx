@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, LicenseStatus } from "../api";
+import { api, LicenseConflictError, LicenseStatus } from "../api";
 
 /**
  * LicenseGate.
@@ -151,6 +151,30 @@ function LicenseGateScreen({
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // When the server returns 409 "another_device_active" we capture
+  // the conflict details and surface the "Sign out and use here?"
+  // confirm panel. Clicking confirm re-runs activate with force=true
+  // which overwrites the slot server-side; the old device locks
+  // itself on its next periodic license-check poll (within 24h).
+  const [conflict, setConflict] = useState<LicenseConflictError | null>(null);
+
+  const runActivate = async (cleaned: string, force: boolean) => {
+    setBusy(true);
+    setSubmitError(null);
+    try {
+      await api.activateLicense(cleaned, force ? { force: true } : {});
+      setConflict(null);
+      onActivated();
+    } catch (err) {
+      if (err instanceof LicenseConflictError) {
+        setConflict(err);
+      } else {
+        setSubmitError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -163,17 +187,77 @@ function LicenseGateScreen({
       setSubmitError("Paste your license key.");
       return;
     }
-    setBusy(true);
-    setSubmitError(null);
-    try {
-      await api.activateLicense(cleaned);
-      onActivated();
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
+    await runActivate(cleaned, false);
   };
+
+  const confirmForceTakeover = async () => {
+    if (busy) return;
+    const cleaned = key.replace(/\s+/g, "");
+    if (!cleaned) {
+      setConflict(null);
+      return;
+    }
+    await runActivate(cleaned, true);
+  };
+
+  const cancelConflict = () => {
+    if (busy) return;
+    setConflict(null);
+  };
+
+  // Conflict path: server says the licence is currently active on
+  // another device. Show a focused confirm panel instead of the
+  // paste form so the user can't paste a different key by mistake.
+  if (conflict) {
+    const where = conflict.currentDeviceLabel || "another device";
+    return (
+      <div className="license-gate">
+        <div className="license-gate-card">
+          <img src="/brand/mark.svg" alt="" className="license-gate-mark" />
+          <h1 className="license-gate-title">DELFI</h1>
+          <p className="license-gate-eyebrow">Licence already active</p>
+          <p className="license-gate-reason">
+            This licence is currently active on {where}. Each Delfi
+            licence works on one device at a time. Sign out from
+            there and activate here?
+          </p>
+          {submitError && (
+            <p className="license-gate-error">{submitError}</p>
+          )}
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              marginTop: 18,
+              flexDirection: "column",
+            }}
+          >
+            <button
+              type="button"
+              className="license-gate-submit"
+              disabled={busy}
+              onClick={confirmForceTakeover}
+            >
+              {busy ? "Activating..." : "Sign out there and use here"}
+            </button>
+            <button
+              type="button"
+              className="license-gate-submit"
+              disabled={busy}
+              onClick={cancelConflict}
+              style={{ background: "transparent", border: "1px solid var(--vellum-30, #555)" }}
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="license-gate-help">
+            The other device will sign itself out within a day, or
+            immediately if it's online when you confirm.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="license-gate">

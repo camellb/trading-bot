@@ -187,6 +187,40 @@ export function isConnectionError(msg: string | null | undefined): boolean {
   );
 }
 
+/**
+ * Thrown by `api.activateLicense` when the licence is currently
+ * claimed by a different device. The caller (LicenseGate / Settings)
+ * inspects the fields to render the "active elsewhere" prompt and,
+ * if the user confirms, re-calls `activateLicense(key, {force: true})`
+ * to kick the other device off the slot.
+ *
+ * Field semantics mirror the server response from
+ * `apps/web/app/api/license/claim-device/route.ts`:
+ *
+ *   - currentDeviceLabel: best-effort human label like "MacBook Pro"
+ *   - activatedAt: ISO timestamp the OTHER device first claimed it
+ *   - lastSeenAt:  ISO timestamp of the OTHER device's last heartbeat
+ */
+export class LicenseConflictError extends Error {
+  readonly currentDeviceLabel: string | null;
+  readonly activatedAt:        string | null;
+  readonly lastSeenAt:         string | null;
+  constructor(
+    currentDeviceLabel: string | null,
+    activatedAt:        string | null,
+    lastSeenAt:         string | null,
+  ) {
+    const where = currentDeviceLabel
+      ? `another device (${currentDeviceLabel})`
+      : "another device";
+    super(`Licence is currently active on ${where}.`);
+    this.name = "LicenseConflictError";
+    this.currentDeviceLabel = currentDeviceLabel;
+    this.activatedAt        = activatedAt;
+    this.lastSeenAt         = lastSeenAt;
+  }
+}
+
 async function request<T>(
   path: string,
   init?: RequestInit & {
@@ -875,12 +909,72 @@ export const api = {
   // to the user; they retry manually. license/status is idempotent
   // and uses the default retry path.
   license:           () => request<LicenseStatus>("/api/license/status"),
-  activateLicense:   (license_key: string) =>
-    request<LicenseStatus>("/api/license/activate", {
-      method: "POST",
-      body: JSON.stringify({ license_key }),
-      noRetry: true,
-    }),
+  /**
+   * Activate a licence and claim the per-licence device slot.
+   *
+   * Returns the new LicenseStatus on success. Throws on failure:
+   *
+   *   - On 409 "another_device_active" the thrown error is a
+   *     `LicenseConflictError` carrying the current device's label
+   *     + when it was activated. Caller (LicenseGate / Settings) can
+   *     `instanceof` check and prompt the user "this licence is
+   *     active on <device>. Sign out and use here?". If the user
+   *     confirms, call activateLicense again with `{force: true}`
+   *     which overwrites the slot.
+   *
+   *   - On any other non-200 response, throws a plain Error with
+   *     the server's `error` field as the message.
+   */
+  activateLicense:   async (
+    license_key: string,
+    opts: { force?: boolean } = {},
+  ): Promise<LicenseStatus> => {
+    const path = "/api/license/activate";
+    const p = await port();
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 30_000);
+    let res: Response;
+    try {
+      res = await fetch(`http://127.0.0.1:${p}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ license_key, force: !!opts.force }),
+        signal: ctl.signal,
+      });
+    } catch (err) {
+      clearTimeout(timer);
+      if ((err as Error)?.name === "AbortError") {
+        throw new Error(`${path}: timed out`);
+      }
+      throw new Error("Could not connect to Delfi. Please restart the app.");
+    }
+    clearTimeout(timer);
+    const text = await res.text();
+    let data: unknown;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      throw new Error(`non-JSON response from ${path}: ${text.slice(0, 200)}`);
+    }
+    if (res.status === 409) {
+      const body = (data as {
+        error?: string;
+        current_device_label?: string | null;
+        activated_at?: string | null;
+        last_seen_at?: string | null;
+      } | null) ?? {};
+      throw new LicenseConflictError(
+        body.current_device_label ?? null,
+        body.activated_at ?? null,
+        body.last_seen_at ?? null,
+      );
+    }
+    if (!res.ok) {
+      const err = (data as { error?: string } | null)?.error ?? `HTTP ${res.status}`;
+      throw new Error(`${path}: ${err}`);
+    }
+    return data as LicenseStatus;
+  },
   deactivateLicense: () =>
     request<LicenseStatus>("/api/license/deactivate", {
       method: "POST",

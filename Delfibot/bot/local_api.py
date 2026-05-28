@@ -117,6 +117,7 @@ from engine.user_config import (
     update_user_config,
     validated_update_payload,
 )
+from engine.device_id import get_device_id, get_device_label
 from engine.license import (
     fresh_meta_for,
     verify_license,
@@ -2357,15 +2358,26 @@ class LocalAPI:
         return _ok(self._license_status_payload())
 
     async def _post_license_activate(self, req: web.Request) -> web.Response:
-        """Store + verify a signed license blob.
+        """Store + verify a signed license blob, and claim the device slot.
 
         First-paste flow:
-          1. POST /api/license/activate {"license_key": "<blob>"}
+          1. POST /api/license/activate {"license_key": "<blob>",
+                                          "force": false}
           2. Sidecar verifies the Ed25519 signature offline.
-          3. On valid: store key + meta in keychain, return 200.
-          4. On invalid: return 400 with the verifier's error
-             message; do NOT store the blob (a stored bad blob
-             would just keep the gate open with no path forward).
+          3. Sidecar POSTs to https://delfibot.com/api/license/claim-device
+             with {license_id, device_id, device_label, force}.
+             - 200 -> persist key + meta locally, return 200.
+             - 409 -> licence is active on a different device. Return
+                      409 to the GUI with the conflict details. Do
+                      NOT persist the blob (no half-activated state).
+             - 4xx/5xx/network -> return 502; the user has to be
+                      online to activate. No offline-activation
+                      backdoor; that would defeat the per-device lock.
+          4. On crypto-invalid: return 400, do NOT call the server.
+
+        Owner bypass: the local owner-bypass token does NOT need to
+        claim a server slot (no real license id exists). Detect that
+        case and short-circuit straight to persisting local meta.
         """
         try:
             payload = await req.json()
@@ -2375,6 +2387,7 @@ class LocalAPI:
             return _err("body must be a JSON object", 400)
 
         key = (payload.get("license_key") or "").strip()
+        force = bool(payload.get("force"))
         if not key:
             return _err("license_key is required", 400)
 
@@ -2382,21 +2395,135 @@ class LocalAPI:
         if not result.valid:
             return _err(result.error or "license is not valid", 400)
 
+        # Owner-bypass token skips the device claim. The local payload
+        # has id="owner-local" which is not a UUID, so calling the
+        # server would 400 anyway. Persist and return.
+        license_id = (result.payload or {}).get("id") or ""
+        if license_id == "owner-local":
+            set_license_key(key)
+            set_license_meta(fresh_meta_for(result.payload or {}))
+            return _ok(self._license_status_payload())
+
+        # Real licence -> claim the slot before persisting anything.
+        claim = await self._claim_device_slot(license_id, force=force)
+        if claim.get("network_error"):
+            return _err(
+                "Could not reach the activation server. Check your "
+                "internet connection and try again.",
+                502,
+            )
+        if claim.get("status") == 409:
+            body = claim.get("body") or {}
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "another_device_active",
+                    "current_device_label": body.get("current_device_label"),
+                    "activated_at":         body.get("activated_at"),
+                    "last_seen_at":         body.get("last_seen_at"),
+                },
+                status=409,
+            )
+        if claim.get("status") != 200:
+            err = (claim.get("body") or {}).get("error") or "activation failed"
+            return _err(err, claim.get("status") or 500)
+
+        # Slot is ours. Persist locally now.
         set_license_key(key)
         set_license_meta(fresh_meta_for(result.payload or {}))
         return _ok(self._license_status_payload())
 
     async def _post_license_deactivate(self, _req: web.Request) -> web.Response:
-        """Sign this device out of its license.
+        """Sign this device out of its licence.
 
-        Under the offline Ed25519 model there is no online activation
-        slot to release; we just wipe the local keychain so the
-        LicenseGate re-shows. The same paid blob can be pasted again
-        on this or any other machine the user owns.
+        Calls the server's release-device endpoint to free the slot,
+        then wipes the local keychain so the LicenseGate re-shows.
+        Server call is best-effort: if the user is offline when they
+        hit Log out, we still wipe local state (otherwise they'd be
+        stuck in the GUI). The server slot gets cleaned up the next
+        time someone tries to claim it with force=true.
         """
+        # Best-effort server release. Don't block local logout on it.
+        try:
+            from engine.user_config import get_license_meta
+            meta = get_license_meta() or {}
+            payload = (meta.get("payload") or {})
+            license_id = payload.get("id") or ""
+            if license_id and license_id != "owner-local":
+                await self._release_device_slot(license_id)
+        except Exception:
+            # Network down, server 500, whatever - never block logout.
+            pass
+
         set_license_key(None)
         set_license_meta(None)
         return _ok(self._license_status_payload())
+
+    # ── Device-binding helpers (one-license-one-device rule) ────────────
+
+    # delfibot.com base URL. Same host as the auto-updater. Kept here
+    # so the helpers don't grow a configuration surface; if we ever
+    # move to a different domain it's a one-line change.
+    _LICENSE_API_BASE = "https://delfibot.com/api/license"
+    _LICENSE_API_TIMEOUT = 8.0  # seconds; activation should be snappy
+
+    async def _claim_device_slot(self, license_id: str, *, force: bool) -> dict:
+        """POST to /api/license/claim-device.
+
+        Returns a small dict:
+          {"network_error": True}              -> client could not reach the server
+          {"status": int, "body": dict}        -> server replied
+        """
+        try:
+            import aiohttp
+        except Exception:
+            return {"network_error": True}
+
+        url = f"{self._LICENSE_API_BASE}/claim-device"
+        body = {
+            "license_id":   license_id,
+            "device_id":    get_device_id(),
+            "device_label": get_device_label(),
+            "force":        bool(force),
+        }
+        timeout = aiohttp.ClientTimeout(total=self._LICENSE_API_TIMEOUT)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=body) as resp:
+                    try:
+                        data = await resp.json()
+                    except Exception:
+                        data = {}
+                    return {"status": resp.status, "body": data}
+        except Exception:
+            return {"network_error": True}
+
+    async def _release_device_slot(self, license_id: str) -> None:
+        """POST to /api/license/release-device. Fire-and-forget."""
+        try:
+            import aiohttp
+        except Exception:
+            return
+
+        url = f"{self._LICENSE_API_BASE}/release-device"
+        body = {
+            "license_id": license_id,
+            "device_id":  get_device_id(),
+        }
+        timeout = aiohttp.ClientTimeout(total=self._LICENSE_API_TIMEOUT)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=body) as resp:
+                    # Don't care about the result. Drain the body so
+                    # the connection returns to the pool cleanly.
+                    try:
+                        await resp.read()
+                    except Exception:
+                        pass
+        except Exception:
+            # Server unreachable. The slot will be overwritten next
+            # time someone claims with force=true; not a problem.
+            return
 
     # ── Reset simulation ────────────────────────────────────────────────
     async def _reset_simulation(self, _req: web.Request) -> web.Response:
