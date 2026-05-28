@@ -325,7 +325,10 @@ USER_CONFIG_BAND_FIELDS: Tuple[str, ...] = ()
 USER_CONFIG_DICT_BAND_FIELDS: Tuple[str, ...] = ("archetype_skip_market_price_bands",)
 
 USER_CONFIG_LIST_FIELDS: Tuple[str, ...] = ("archetype_skip_list",)
-USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = ("archetype_stake_multipliers",)
+USER_CONFIG_DICT_FIELDS: Tuple[str, ...] = (
+    "archetype_stake_multipliers",
+    "volume_tier_multipliers",
+)
 USER_CONFIG_BOOL_DICT_FIELDS: Tuple[str, ...] = ("notification_prefs",)
 USER_CONFIG_NULLABLE_FIELDS: Tuple[str, ...] = (
     "cost_assumption_override",
@@ -409,6 +412,24 @@ V1_DEFAULT_ARCHETYPE_STAKE_MULTIPLIERS: Dict[str, float] = {
     "tennis":     0.5,
 }
 
+# Volume-tier multiplier defaults. Bucketed on 24h CLOB volume USD.
+# Set 2026-05-28 from the Polymarket accuracy-page research (Brier-vs-
+# Volume chart shows lower Brier on higher-volume markets - small,
+# real-but-modest tilt toward more-liquid markets).
+V1_DEFAULT_VOLUME_TIER_MULTIPLIERS: Dict[str, float] = {
+    "low":  0.8,
+    "mid":  1.0,
+    "high": 1.1,
+}
+
+# Thresholds (USD, 24h CLOB volume) that map a market into one of the
+# three buckets. Mutating these would invalidate the meaning of the
+# user-configured multipliers, so we keep them in code, not config.
+VOLUME_TIER_LOW_THRESHOLD:  float = 1_000.0
+VOLUME_TIER_HIGH_THRESHOLD: float = 10_000.0
+
+VALID_VOLUME_TIER_KEYS: Tuple[str, ...] = ("low", "mid", "high")
+
 USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
     "base_stake_pct":
         "Baseline stake as a fraction of bankroll, before per-archetype "
@@ -439,6 +460,11 @@ USER_CONFIG_DESCRIPTIONS: dict[str, str] = {
         "Per-archetype stake multiplier applied to the flat base stake. "
         "1.0 = no adjustment, 2.0 = double-size, 0.5 = half-size. "
         "Clamped to [0.1, 10.0] per entry.",
+    "volume_tier_multipliers":
+        "Per-volume-tier stake multiplier (keys: 'low' < $1k, 'mid' "
+        "$1k-$10k, 'high' >= $10k, based on 24h CLOB volume). "
+        "Multiplied into the stake alongside the archetype "
+        "multiplier. Clamped to [0.1, 10.0] per entry.",
     "exit_policy_enabled":
         "Master switch for early-exit logic. When off, positions only "
         "close at natural market settlement.",
@@ -516,6 +542,7 @@ _PERSISTABLE_COLUMNS: frozenset[str] = frozenset({
     "cost_assumption_override",
     "archetype_skip_list",
     "archetype_stake_multipliers",
+    "volume_tier_multipliers",
     "mode",
     "starting_cash",
     "wallet_address",
@@ -1249,7 +1276,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
                 "       time_decay_enabled, time_decay_max_hours, "
                 "       time_decay_flat_band_pct, "
                 "       exit_min_time_to_resolution_minutes, "
-                "       max_stake_pct_enabled "
+                "       max_stake_pct_enabled, "
+                "       volume_tier_multipliers "
                 "FROM user_config WHERE user_id = :uid"
             ), {"uid": user_id}).fetchone()
         if row is None:
@@ -1288,6 +1316,8 @@ def get_user_config(user_id: str = DEFAULT_USER_ID) -> UserConfig:
             time_decay_flat_band_pct            = float(row[28]) if row[28] is not None else 0.10,
             exit_min_time_to_resolution_minutes = int(row[29])   if row[29] is not None else 5,
             max_stake_pct_enabled               = bool(row[30]) if row[30] is not None else False,
+            volume_tier_multipliers             = _decode_archetype_multipliers(row[31])
+                                                    if len(row) > 31 else {},
         )
     except Exception as exc:
         print(f"[user_config] get_user_config failed: {exc}", file=sys.stderr)

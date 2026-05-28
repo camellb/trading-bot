@@ -105,6 +105,27 @@ class SizingDecision:
         return d
 
 
+def _classify_volume_tier(volume_usd: Optional[float]) -> str:
+    """Map a 24h CLOB volume number to a stake-multiplier bucket.
+
+    Thresholds match `engine.user_config.VOLUME_TIER_LOW_THRESHOLD`
+    / `VOLUME_TIER_HIGH_THRESHOLD`. None / missing volume falls to
+    "mid" (neutral 1.0x default) - we don't want a stale-data row
+    to silently get the low-multiplier penalty.
+    """
+    if volume_usd is None:
+        return "mid"
+    try:
+        v = float(volume_usd)
+    except (TypeError, ValueError):
+        return "mid"
+    if v < 1_000.0:
+        return "low"
+    if v < 10_000.0:
+        return "mid"
+    return "high"
+
+
 def size_position(
     delfi_p:    float,
     confidence:  float,
@@ -113,6 +134,7 @@ def size_position(
     bankroll:    float,
     user_config,
     archetype:   Optional[str] = None,
+    volume_usd:  Optional[float] = None,
 ) -> SizingDecision:
     """
     V1 sizer. Side = market favourite. Single gate = Delfi direction
@@ -215,6 +237,27 @@ def size_position(
             arch_mult = default_for_arch
         arch_mult = max(0.1, min(10.0, arch_mult))
 
+    # ── Volume-tier stake multiplier ────────────────────────────────────────
+    # Polymarket's Brier-vs-volume chart (2026-05-28 research) shows
+    # higher-volume markets are more accurate. We absorb that as a
+    # stake dial: tilt slightly toward high-volume markets and away
+    # from thin ones. Default tier multipliers: low=0.8, mid=1.0,
+    # high=1.1 (set in V1_DEFAULT_VOLUME_TIER_MULTIPLIERS).
+    #
+    # `volume_usd` is the market's 24h CLOB volume in USD, passed by
+    # pm_analyst from `market.volume_24h_clob`. None falls back to
+    # the "mid" bucket so a missing-volume row doesn't get the low
+    # penalty.
+    from engine.user_config import V1_DEFAULT_VOLUME_TIER_MULTIPLIERS
+    vol_tier = _classify_volume_tier(volume_usd)
+    vol_mults = getattr(user_config, "volume_tier_multipliers", None) or {}
+    default_for_tier = V1_DEFAULT_VOLUME_TIER_MULTIPLIERS.get(vol_tier, 1.0)
+    try:
+        vol_mult = float(vol_mults.get(vol_tier, default_for_tier))
+    except (TypeError, ValueError):
+        vol_mult = default_for_tier
+    vol_mult = max(0.1, min(10.0, vol_mult))
+
     # ── Stake sizing (flat) ─────────────────────────────────────────────────
     base_pct = float(user_config.base_stake_pct)
     max_pct  = float(user_config.max_stake_pct)
@@ -228,7 +271,7 @@ def size_position(
     # configured cap.
     cap_enabled = bool(getattr(user_config, "max_stake_pct_enabled", False))
 
-    stake_pct = base_pct * arch_mult
+    stake_pct = base_pct * arch_mult * vol_mult
     if cap_enabled:
         stake_pct = min(stake_pct, max_pct)
 

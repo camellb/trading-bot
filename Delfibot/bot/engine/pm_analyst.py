@@ -478,6 +478,7 @@ class PMAnalyst:
             bankroll    = verdict.effective_bankroll,
             user_config = user_config,
             archetype   = archetype,
+            volume_usd  = getattr(market, "volume_24h_clob", None),
         )
         if decision.should_trade and verdict.stake_multiplier != 1.0:
             decision.stake_usd *= verdict.stake_multiplier

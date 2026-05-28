@@ -476,6 +476,21 @@ user_config = Table(
     Column("archetype_stake_multipliers",  JSON,  nullable=False,
            server_default=sa_text("'{}'")),
 
+    # Per-market-volume stake multiplier (low / mid / high buckets).
+    # Polymarket's accuracy page (2026-05-28 research) shows their
+    # Brier-vs-volume curve trends down with volume - higher-volume
+    # markets are more accurate. We absorb that as a sizing dial:
+    # stake = bankroll * base_stake_pct * archetype_mult * volume_mult.
+    # Bucketed on `market.volume_24h_clob` (24h CLOB volume USD):
+    #     low  < $1,000        -> default 0.8x
+    #     mid  $1,000-$10,000  -> default 1.0x
+    #     high >= $10,000      -> default 1.1x
+    # Stored as JSON {"low": float, "mid": float, "high": float};
+    # per-key values clamped to [0.1, 10.0] (same as archetype
+    # multipliers). Empty dict means "use V1 defaults".
+    Column("volume_tier_multipliers",      JSON,  nullable=False,
+           server_default=sa_text("'{}'")),
+
     # Per-user time-to-resolution filter, in DAYS (matches the
     # day-based "By horizon" buckets on the Performance page so
     # users think in one unit). NULL means "no constraint on this
@@ -784,6 +799,15 @@ def create_all_tables() -> None:
             conn.execute(sa_text(
                 "ALTER TABLE user_config ADD COLUMN "
                 "max_stake_pct_enabled INTEGER NOT NULL DEFAULT 0"
+            ))
+        if "volume_tier_multipliers" not in existing_user_config_cols:
+            # Added v1.5.21. Default '{}' so the sizer falls back to
+            # V1_DEFAULT_VOLUME_TIER_MULTIPLIERS on legacy rows that
+            # never had this column. Same pattern as archetype_stake_
+            # multipliers.
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "volume_tier_multipliers JSON NOT NULL DEFAULT '{}'"
             ))
 
         # ── pm_positions backfills ──────────────────────────────────────

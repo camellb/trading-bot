@@ -85,7 +85,164 @@ export default function Risk({ config, onSaved }: Props) {
       <RiskPanel config={config} onSaved={onSaved} />
       <ExitPolicyPanel config={config} onSaved={onSaved} />
       <ResolutionWindowPanel config={config} onSaved={onSaved} />
+      <VolumeTierPanel config={config} onSaved={onSaved} />
       <ArchetypePanel onSaved={onSaved} />
+    </div>
+  );
+}
+
+// ── Volume-tier stake multipliers ────────────────────────────────────────
+//
+// Three buckets keyed by the market's 24h CLOB volume in USD:
+//   low  < $1,000          default 0.8x
+//   mid  $1,000 - $10,000  default 1.0x
+//   high >= $10,000        default 1.1x
+//
+// Multiplied into the stake alongside the archetype multiplier:
+//   stake = bankroll * base_stake_pct * archetype_mult * volume_mult
+//
+// Polymarket's accuracy page (2026-05-28 research) shows higher-volume
+// markets are more accurate (Brier-vs-Volume curve trends down). The
+// defaults are a mild tilt; users can amplify or flatten the gradient
+// here.
+
+const VOLUME_TIER_DEFAULTS: Record<string, number> = {
+  low:  0.8,
+  mid:  1.0,
+  high: 1.1,
+};
+const VOLUME_TIER_BOUNDS = { min: 0.1, max: 10.0 };
+
+function VolumeTierPanel({
+  config, onSaved,
+}: {
+  config: ConfigShape | null;
+  onSaved: () => void;
+}) {
+  // The ConfigShape interface has an `[k: string]: unknown` index
+  // signature for forward-compat with sidecars that emit new fields
+  // we haven't typed yet. TS prefers the index signature over the
+  // declared `volume_tier_multipliers` shape, so we cast here.
+  const current = (config?.volume_tier_multipliers ?? {}) as Record<string, number>;
+  const value = (k: string): number =>
+    typeof current[k] === "number" ? current[k] : VOLUME_TIER_DEFAULTS[k];
+
+  // Local pending edits: only persisted on Save. Lets the user type
+  // 0.85 without each keystroke racing a server round-trip.
+  const [draft, setDraft] = useState<Record<string, string>>({
+    low:  String(value("low")),
+    mid:  String(value("mid")),
+    high: String(value("high")),
+  });
+  const [busy,  setBusy]  = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [msg,   setMsg]   = useState<string | null>(null);
+
+  // Re-sync draft whenever the config prop changes (e.g. after a
+  // successful save or an external update). Otherwise the inputs
+  // would freeze at the values entered before the last save.
+  useEffect(() => {
+    setDraft({
+      low:  String(value("low")),
+      mid:  String(value("mid")),
+      high: String(value("high")),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    (config?.volume_tier_multipliers as Record<string, number> | undefined)?.low,
+    (config?.volume_tier_multipliers as Record<string, number> | undefined)?.mid,
+    (config?.volume_tier_multipliers as Record<string, number> | undefined)?.high,
+  ]);
+
+  const save = async () => {
+    if (busy) return;
+    setError(null);
+    setMsg(null);
+    const parsed: Record<string, number> = {};
+    for (const k of ["low", "mid", "high"] as const) {
+      const raw = draft[k];
+      const n = Number(raw);
+      if (!Number.isFinite(n)) {
+        setError(`${k} must be a number`);
+        return;
+      }
+      if (n < VOLUME_TIER_BOUNDS.min || n > VOLUME_TIER_BOUNDS.max) {
+        setError(
+          `${k} must be between ${VOLUME_TIER_BOUNDS.min} and ${VOLUME_TIER_BOUNDS.max}`,
+        );
+        return;
+      }
+      parsed[k] = n;
+    }
+    setBusy(true);
+    try {
+      await api.updateConfig({
+        volume_tier_multipliers: parsed,
+      });
+      setMsg("Saved.");
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reset = () => {
+    setDraft({
+      low:  String(VOLUME_TIER_DEFAULTS.low),
+      mid:  String(VOLUME_TIER_DEFAULTS.mid),
+      high: String(VOLUME_TIER_DEFAULTS.high),
+    });
+  };
+
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Volume tier</h2>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Per-market-volume stake multiplier. Higher-volume markets are
+        historically more accurate, so the default tilts slightly
+        toward them.
+      </p>
+      <div className="form-row">
+        {(["low", "mid", "high"] as const).map((k) => {
+          const labels: Record<string, string> = {
+            low:  "Low (< $1k)",
+            mid:  "Mid ($1k - $10k)",
+            high: "High (>= $10k)",
+          };
+          return (
+            <div className="form-field" key={k}>
+              <label>{labels[k]}</label>
+              <input
+                type="number"
+                step="0.05"
+                min={VOLUME_TIER_BOUNDS.min}
+                max={VOLUME_TIER_BOUNDS.max}
+                value={draft[k]}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, [k]: e.target.value }))
+                }
+              />
+              <p className="form-hint">
+                Default {VOLUME_TIER_DEFAULTS[k]}x.
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <div className="form-actions" style={{ marginTop: 12 }}>
+        <button type="button" className="btn small" onClick={save} disabled={busy}>
+          {busy ? "Saving..." : "Save"}
+        </button>
+        <button type="button" className="btn ghost small" onClick={reset} disabled={busy}>
+          Reset to defaults
+        </button>
+        {msg && <span className="form-success">{msg}</span>}
+        {error && <span className="form-error">{error}</span>}
+      </div>
     </div>
   );
 }
