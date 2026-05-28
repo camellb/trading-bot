@@ -168,8 +168,8 @@ export default function Dashboard({ state, goto }: Props) {
   const settled = useMemo(
     () => positions.filter((p) =>
       p.status === "settled"
-      || p.status === "invalid"
-      || p.status === "closed",
+      || p.status === "closed_early"
+      || p.status === "invalid",
     ),
     [positions],
   );

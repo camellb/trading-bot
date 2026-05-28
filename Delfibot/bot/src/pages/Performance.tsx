@@ -73,12 +73,20 @@ export default function Performance() {
         api.calibration({ source: "polymarket" }),
         api.positions(500).then((r) =>
           r.positions
-            // Include 'invalid' alongside 'settled' - both are
-            // closed trades the bot actually entered. Excluding
-            // invalid (markets that resolved ambiguously, settled at
-            // 0.50) made the Performance page disagree with the
-            // dashboard's summary numbers.
-            .filter((x) => x.status === "settled" || x.status === "invalid")
+            // Include every trade the bot entered that has resolved:
+            //   settled       -> market reached natural YES/NO
+            //   closed_early  -> exit-policy sold before resolution
+            //   invalid       -> market voided, Polymarket refunded
+            // closed_early was previously missing here, which made
+            // Performance count fewer losses than the server's
+            // settled_total. Adding it is what finally makes the
+            // Dashboard win-rate (server side) and the Performance
+            // win-rate (this page) agree on a single number.
+            .filter((x) =>
+              x.status === "settled" ||
+              x.status === "closed_early" ||
+              x.status === "invalid",
+            )
             .sort((a, b) => ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1)),
         ),
         // Best-effort: an empty / failed equity_history just means
