@@ -194,6 +194,36 @@ rm -f "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
 ln "$SIDECAR_REAL" "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
 chmod 0755 "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
 
+# Re-sign the sidecar binary WITH entitlements. Tauri's release-build
+# codesign pass (run inside `npm run tauri build`) signs the embedded
+# delfi-sidecar without an --entitlements plist, dropping the
+# disable-library-validation entitlement that PyInstaller-bundled
+# Python needs to dlopen() its extracted libpython3.12.dylib. Without
+# this re-sign, launchd respawn-loops the daemon with "Failed to load
+# Python shared library... different Team IDs" in sidecar.err and the
+# port file never appears. The hard link means signing the real
+# binary signs the wrapper too (same inode), so one codesign call
+# fixes both copies. Confirmed regression-prone 2026-05-29 — every
+# Tauri rebuild + install pass needs this step.
+ENTITLEMENTS="$REPO_ROOT/Delfibot/bot/src-tauri/entitlements.plist"
+SIDECAR_DAEMON_BIN="$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
+if [[ -f "$ENTITLEMENTS" ]] && command -v codesign >/dev/null 2>&1; then
+  echo "[install] re-signing sidecar with entitlements (PyInstaller dlopen fix)..."
+  # Sign BOTH binary copies explicitly. The earlier version relied on
+  # the hard link from step above propagating the signature to the
+  # daemon wrapper, but codesign on macOS sometimes breaks hard links
+  # by writing through a temp file: result is two distinct inodes,
+  # one signed (main) and one unsigned (daemon wrapper). The daemon
+  # is the one launchd actually executes, so a missing signature
+  # there respawn-loops the daemon with "Failed to load Python
+  # shared library... different Team IDs". Sign both names to be
+  # safe regardless of inode state.
+  codesign --sign - --force --options runtime \
+    --entitlements "$ENTITLEMENTS" "$SIDECAR_REAL" 2>&1 | sed 's/^/[install]   /'
+  codesign --sign - --force --options runtime \
+    --entitlements "$ENTITLEMENTS" "$SIDECAR_DAEMON_BIN" 2>&1 | sed 's/^/[install]   /'
+fi
+
 # LaunchServices keeps a registration per *path*, not per bundle-id. Past
 # `cargo tauri build` runs (without --bundles app) generate a DMG that
 # auto-mounts under /Volumes/dmg.<rand>/, register Delfi.app from inside

@@ -973,7 +973,14 @@ def create_all_tables() -> None:
         # ALTER TABLE RENAME COLUMN since 3.25 (2018). Each rename is
         # guarded by a PRAGMA check so re-running the migration is a
         # no-op.
-        for _tbl in ("predictions", "market_evaluations", "pm_positions"):
+        # `markouts` was omitted from the original 2026-05-23 rename
+        # list. markout_tracker.py was updated to INSERT into the new
+        # column name, so existing DBs that never went through the
+        # markouts rename throw `table markouts has no column named
+        # delfi_probability` on every markout_check tick. Surfaced
+        # by audit 2026-05-29 (2 occurrences in sidecar.err). Added
+        # to the loop below; idempotent.
+        for _tbl in ("predictions", "market_evaluations", "pm_positions", "markouts"):
             _cols = {
                 r[1] for r in conn.execute(
                     sa_text(f"PRAGMA table_info({_tbl})")

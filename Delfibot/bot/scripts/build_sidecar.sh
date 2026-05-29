@@ -104,15 +104,34 @@ mkdir -p "${OUT_DIR}"
 cp "${SRC}" "${OUT_PATH}"
 chmod 0755 "${OUT_PATH}"
 
-# Ad-hoc codesign so macOS doesn't SIGKILL the binary when we copy
-# it directly into /Applications without going through a full
-# `npm run tauri build`. Without this, macOS 13+ kills the binary
+# Ad-hoc codesign WITH ENTITLEMENTS so macOS doesn't SIGKILL the binary
+# when we copy it directly into /Applications without going through a
+# full `npm run tauri build`. Without this, macOS 13+ kills the binary
 # immediately (EXC_BAD_ACCESS / Code Signature Invalid) because the
 # hash no longer matches what was recorded at last-install time.
+#
+# Entitlements (entitlements.plist) are MANDATORY here, not optional:
+# PyInstaller bundles Python by extracting libpython3.12.dylib to
+# /tmp/_MEIxxx at runtime and dlopen()ing it. That extracted dylib was
+# signed by python.org with a different Team ID than our ad-hoc parent
+# binary. With hardened runtime ON (which Tauri's release build sets)
+# and no `disable-library-validation` entitlement, macOS rejects the
+# dlopen with "code signature... not valid for use in process: mapping
+# process and mapped file (non-platform) have different Team IDs" and
+# the daemon enters a launchd respawn loop that never establishes a
+# port file. Confirmed 2026-05-29 on the v1.5.26 build: every spawn
+# attempt died at PYI-NNNN: Failed to load Python shared library.
+ENTITLEMENTS="${BOT_DIR}/src-tauri/entitlements.plist"
 if command -v codesign >/dev/null 2>&1; then
-  codesign --sign - --force "${OUT_PATH}" 2>&1 && \
-    echo "[build_sidecar] ad-hoc signed ${OUT_PATH}" || \
-    echo "[build_sidecar] codesign failed (non-fatal; full tauri build will sign)" >&2
+  if [[ -f "${ENTITLEMENTS}" ]]; then
+    codesign --sign - --force --options runtime --entitlements "${ENTITLEMENTS}" "${OUT_PATH}" 2>&1 && \
+      echo "[build_sidecar] ad-hoc signed (with entitlements) ${OUT_PATH}" || \
+      echo "[build_sidecar] codesign failed (non-fatal; full tauri build will sign)" >&2
+  else
+    codesign --sign - --force "${OUT_PATH}" 2>&1 && \
+      echo "[build_sidecar] ad-hoc signed (no entitlements) ${OUT_PATH}" || \
+      echo "[build_sidecar] codesign failed (non-fatal; full tauri build will sign)" >&2
+  fi
 fi
 
 echo "[build_sidecar] wrote ${OUT_PATH}"

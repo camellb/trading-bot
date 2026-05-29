@@ -95,6 +95,14 @@ class PolyMarket:
     # None when gamma doesn't return clobTokenIds (rare, mostly on
     # still-pending markets).
     clob_token_ids:    Optional[tuple[str, str]] = None
+    # Minimum price increment the CLOB enforces for limit orders on
+    # this market. Most Polymarket markets quote at penny ticks (0.01),
+    # but a minority (some crypto / activity-count / very-narrow
+    # markets) quote at 0.001 - placing a 0.01-tick-rounded order on
+    # one of those gets either over-paid or rejected. Source:
+    # gamma's `orderPriceMinTickSize` field. None falls back to the
+    # executor's DEFAULT_TICK_SIZE.
+    tick_size:         Optional[float] = None
 
     @property
     def days_to_end(self) -> float:
@@ -274,6 +282,14 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
             prices   = [prices[1], prices[0]]
             if clob_tokens is not None:
                 clob_tokens = (clob_tokens[1], clob_tokens[0])
+        # Parse the CLOB minimum tick size. Gamma exposes it as
+        # `orderPriceMinTickSize` (str or float). Coerce to float;
+        # None on absence so the executor falls back to its default.
+        tick_raw = m.get("orderPriceMinTickSize")
+        try:
+            tick_size_val: Optional[float] = float(tick_raw) if tick_raw is not None else None
+        except (TypeError, ValueError):
+            tick_size_val = None
         return PolyMarket(
             id             = str(m.get("id") or ""),
             condition_id   = str(m.get("conditionId") or ""),
@@ -294,6 +310,7 @@ def _as_market(m: dict) -> Optional[PolyMarket]:
             game_start_time = game_start,
             event_end_date = evt_end,
             clob_token_ids  = clob_tokens,
+            tick_size      = tick_size_val,
         )
     except Exception as exc:
         print(f"[polymarket] parse failed for {m.get('id')}: {exc}",

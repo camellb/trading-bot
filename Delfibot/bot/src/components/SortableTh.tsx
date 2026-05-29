@@ -51,7 +51,7 @@ export function useSort<F extends string>(
 
   // Click on the SAME column flips direction; click on a different
   // column resets to desc (the natural default for "show me the
-  // biggest first" — most KPI columns).
+  // biggest first" - most KPI columns).
   const setField = (f: F) => {
     if (f === field) {
       setDir((d) => (d === "asc" ? "desc" : "asc"));

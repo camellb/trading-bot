@@ -8,7 +8,7 @@ import { api, LicenseConflictError, LicenseStatus } from "../api";
  * `valid`, renders a blocking input screen ("Paste your license
  * key"). Once activation succeeds (sidecar confirmed against LS
  * /v1/licenses/validate), unmounts itself and renders the children
- * — the normal app — instead.
+ * - the normal app - instead.
  *
  * Polling: one GET /api/license/status on mount + one re-check on
  * the `delfi:license-changed` custom event (dispatched after a
@@ -17,7 +17,7 @@ import { api, LicenseConflictError, LicenseStatus } from "../api";
  *
  * If the sidecar isn't reachable yet (e.g. boot screen still
  * showing), the gate stays in its loading state. This matches the
- * existing BootScreen flow — the LicenseGate only renders inside
+ * existing BootScreen flow - the LicenseGate only renders inside
  * the connected app shell, not before sidecar ready.
  */
 

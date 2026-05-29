@@ -11,7 +11,7 @@ import { formatDate, formatDateTime } from "../lib/format";
 import { archetypeLabel } from "../lib/archetypes";
 
 /**
- * Intelligence — two tabs.
+ * Intelligence - two tabs.
  *
  *   Reviews:    50-trade narrative reports rendered as structured
  *               cards (thesis + headline grid + per-archetype +
@@ -192,7 +192,7 @@ export default function Intelligence() {
     finally { setBusyId(null); }
   };
 
-  // Build the cycle ranges so each report can show "Trades N — M".
+  // Build the cycle ranges so each report can show "Trades N - M".
   // The reports come back newest-first; the previous cycle's
   // bookmark is the one immediately after in the array.
   const reportRanges = useMemo(() => {

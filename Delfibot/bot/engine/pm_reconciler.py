@@ -932,32 +932,37 @@ def _alert_multi_outcome_skip(row: dict) -> None:
 
 
 def _alert_import(row: dict, side: str) -> None:
-    """Fire a user-visible event when the reconciler backfills a
-    position. If this fires regularly, _open_live's poll-timeout
-    behaviour is leaking - the safety net is loud about catching
-    each case so the user notices.
+    """Log a reconciler backfill to stderr for the engineer.
+
+    This is bot-internal plumbing: when `_open_live` places an order
+    but loses fill confirmation (poll timeout or transient error
+    during the post-placement poll), the reconciler later picks up
+    the position from Polymarket's `/positions` and backfills the
+    local row. The user never needs to see this - the bot owns the
+    full trade lifecycle and "manual review required" / "untracked
+    position" / "safety net caught it" language on the dashboard
+    contradicts that. See CLAUDE.md "Settled lessons" + Obsidian
+    `Delfi/50_Feedback/data_must_match_polymarket.md`.
+
+    Previously wrote a row to `event_log` that surfaced on the
+    Dashboard activity list with bot-internals copy. Removed
+    2026-05-29 after the user flagged it as a doctrine violation.
+    If the underlying `_open_live` fill-tracking gap needs the
+    engineer's attention, grep stderr for `[pm_reconciler] CANARY`
+    or for the `imported on-chain position` line emitted at the
+    call site.
     """
     title = (row.get("title") or "")[:80]
     size  = row.get("size")
     cost  = row.get("initialValue")
     redeemable = bool(row.get("redeemable"))
     state = "settled" if redeemable else "open"
-    try:
-        from db.logger import log_event
-        log_event(
-            event_type="position_reconciled",
-            severity=1,
-            description=(
-                f"Reconciler imported missing Polymarket position "
-                f"({state}): {title} {side} size={size} cost=${cost}. "
-                f"This means _open_live placed the order but lost the "
-                f"fill confirmation; the safety net caught it."
-            ),
-            source="pm_reconciler.import",
-        )
-    except Exception as exc:
-        print(f"[pm_reconciler] log_event failed: {exc}",
-              file=sys.stderr, flush=True)
+    print(
+        f"[pm_reconciler] backfilled missing position state={state} "
+        f"title={title!r} side={side} size={size} cost=${cost} "
+        f"- _open_live fill-confirmation likely timed out",
+        file=sys.stderr, flush=True,
+    )
 
 
 if __name__ == "__main__":

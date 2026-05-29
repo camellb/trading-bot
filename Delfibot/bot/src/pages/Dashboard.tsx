@@ -416,7 +416,7 @@ function DashHero({
         <div className="hero-balance-row">
           {/* Total equity is the headline. Largest number, leftmost
               position. This is what a user with multiple devices is
-              checking — "how much wealth do I have on Polymarket?". */}
+              checking - "how much wealth do I have on Polymarket?". */}
           <div className="hero-balance-cell">
             <div className="hero-balance-cell-value t-num">
               {loaded ? (
@@ -644,15 +644,15 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                 <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                 <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
                 <td className="mono">${p.cost_usd.toFixed(2)}</td>
-                <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "—"}</td>
+                <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
                 <td className={`mono ${pnlClass}`}>{
-                  pnl == null ? "—"
+                  pnl == null ? "-"
                   : pnl > 0 ? `+$${pnl.toFixed(2)}`
                   : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
                   : "$0.00"
                 }</td>
                 <td className="mono" title={p.created_at ? formatDateTime(p.created_at) : ""}>
-                  {p.created_at ? timeAgo(p.created_at) : "—"}
+                  {p.created_at ? timeAgo(p.created_at) : "-"}
                 </td>
                 <td className="mono">{daysFromNow(closesAt)}</td>
                 <td className="mono" style={{ textAlign: "right" }}>
@@ -699,7 +699,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                         <div className="kv-val mono">{
                           p.delfi_probability != null
                             ? `${Math.round(p.delfi_probability * 100)}%`
-                            : "—"
+                            : "-"
                         }</div>
                       </div>
                       <div>
@@ -707,7 +707,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                         <div className="kv-val mono">{
                           p.confidence != null
                             ? `${Math.round(p.confidence * 100)}%`
-                            : "—"
+                            : "-"
                         }</div>
                       </div>
                     </div>

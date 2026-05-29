@@ -1,7 +1,7 @@
 {
   "name": "delfi-ui",
   "private": true,
-  "version": "1.5.25",
+  "version": "1.5.27",
   "type": "module",
   "scripts": {
     "dev": "vite",

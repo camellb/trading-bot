@@ -104,7 +104,7 @@ export default function App() {
   // next scan would place real Polymarket orders.
   // Mode-switch confirmation. Both directions require a click-to-
   // confirm so an accidental click on the Sidebar's Sim/Live button
-  // can't silently flip the bot — switching INTO live starts firing
+  // can't silently flip the bot - switching INTO live starts firing
   // real Polymarket orders on the next scan, switching back to sim
   // stops them. Either is a meaningful action worth a second beat.
   const [pendingMode, setPendingMode] =

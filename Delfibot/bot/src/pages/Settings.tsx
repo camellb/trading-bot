@@ -778,7 +778,7 @@ function RestartPanel() {
  * Export / import the user's preferences as a portable JSON file.
  *
  * Use cases:
- *   1. Bootstrap a new machine in one click — export on old, import
+ *   1. Bootstrap a new machine in one click - export on old, import
  *      on new. Faster than re-clicking through every risk slider and
  *      archetype multiplier.
  *   2. Share a strategy. A user can export their tuned config and

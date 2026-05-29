@@ -61,6 +61,54 @@ POLYGON_CHAIN_ID = 137
 # Default CLOB tick size when the market doesn't specify one. Most
 # Polymarket markets quote at penny ticks.
 DEFAULT_TICK_SIZE = "0.01"
+
+
+# Tick sizes Polymarket's CLOB actually accepts. The SDK only takes
+# these specific string values for `PartialCreateOrderOptions(tick_size=)`;
+# anything else gets a 4xx from /order. List sorted finest-first so a
+# market quoting 0.0001 gets the right granularity.
+_VALID_TICK_STRINGS = ("0.0001", "0.001", "0.01", "0.1")
+
+
+def _resolve_tick_size(parsed_tick: Optional[float]) -> str:
+    """Map gamma's `orderPriceMinTickSize` (float) to the SDK's tick
+    string. Falls back to DEFAULT_TICK_SIZE on None or any value
+    outside the SDK's accepted set. Defensive: an unknown tick is
+    safer rounded to 0.01 than crashing the order placement.
+    """
+    if parsed_tick is None:
+        return DEFAULT_TICK_SIZE
+    # Match to one of the accepted strings by numeric equality with
+    # a small epsilon. Gamma's float values can have rounding noise
+    # (e.g. 0.009999... for a 0.01-tick market on some payloads).
+    for s in _VALID_TICK_STRINGS:
+        if abs(parsed_tick - float(s)) < 1e-9:
+            return s
+    return DEFAULT_TICK_SIZE
+
+
+def _quantize_to_tick(price: float, tick_str: str) -> float:
+    """Round `price` down to the nearest multiple of `tick_str`.
+
+    Uses the string tick directly (no float conversion of the tick
+    width itself) so 0.001-tick markets actually get 3-decimal
+    precision instead of the floating-point 0.0099999... drift that
+    `round(price, 2)` produces when the price came from a parsed
+    string. Output is a float because the SDK's OrderArgs(price=...)
+    expects float; the SDK quantizes internally too but rejects
+    anything off-tick.
+    """
+    try:
+        from decimal import Decimal, ROUND_HALF_UP
+        tick = Decimal(tick_str)
+        q = (Decimal(str(price)) / tick).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * tick
+        return float(q)
+    except Exception:
+        # Belt + suspenders: never let the rounding helper crash the
+        # order placement. The SDK has its own quantization that
+        # accepts the un-rounded float (with a less-friendly error
+        # message); we'd rather take that path than skip the trade.
+        return round(price, 2)
 # Order-status poll interval + timeout when waiting for a fill. Most
 # market-priced limit orders fill in under 5 seconds; budget 30s before
 # giving up and recording the order as "live but not yet filled".
@@ -1465,11 +1513,14 @@ class PMExecutor:
             return None
 
         # Limit price = the wallet's intended entry price on the chosen
-        # side. The sizer already clamped to a sensible range; we just
-        # round to the tick size to avoid the SDK rejecting the order.
-        # `decision.entry_price` is the side-specific ask; for shares
-        # the size is stake / price.
-        entry_price = round(float(decision.entry_price), 2)
+        # side. Round to the market's CLOB tick size so the SDK doesn't
+        # reject the order. Source the tick from gamma (parsed into
+        # `market.tick_size`); fall back to DEFAULT_TICK_SIZE when
+        # gamma didn't emit one (rare). Markets that quote at 0.001
+        # ticks would otherwise get over-paid or rejected if we
+        # rounded to 0.01 ticks (some crypto / activity-count markets).
+        tick_str = _resolve_tick_size(market.tick_size)
+        entry_price = _quantize_to_tick(float(decision.entry_price), tick_str)
         size_shares = round(float(decision.shares), 4)
         order_args = OrderArgs(
             token_id=token_id,
@@ -1514,7 +1565,7 @@ class PMExecutor:
         try:
             order = client.create_order(
                 order_args=order_args,
-                options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+                options=PartialCreateOrderOptions(tick_size=tick_str),
             )
             print(
                 f"[pm_executor][live] BUILT ORDER "
@@ -1535,7 +1586,7 @@ class PMExecutor:
             else:
                 resp = client.create_and_post_order(
                     order_args=order_args,
-                    options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+                    options=PartialCreateOrderOptions(tick_size=tick_str),
                     order_type=OrderType.GTC,
                 )
         except Exception as exc:
@@ -2005,13 +2056,20 @@ class PMExecutor:
         # a paper close so the dashboard accounting still moves.
         clob_order_id: Optional[str] = None
         tx_hash: Optional[str] = None
+        actual_proceeds: Optional[float] = None
+        actual_fill_size: Optional[float] = None
         if (
             row_mode == "live"
             and _live_killswitch_off()
             and clob_token_id
         ):
             try:
-                clob_order_id, tx_hash = self._place_close_order(
+                (
+                    clob_order_id,
+                    tx_hash,
+                    actual_proceeds,
+                    actual_fill_size,
+                ) = self._place_close_order(
                     token_id=clob_token_id,
                     shares=shares,
                     sell_price=float(current_bid),
@@ -2038,8 +2096,34 @@ class PMExecutor:
                     pass
                 return False
 
-        proceeds = shares * float(current_bid)
-        pnl = proceeds - cost_usd
+        # Compute proceeds + realized P&L from the ACTUAL on-chain fill
+        # when the CLOB reflected it, otherwise from intent (the
+        # historical behaviour preserved for sim mode + the live-fall-
+        # through paper-close path). Honest fill-price accounting means
+        # the dashboard's realized_pnl matches Polymarket's settled-
+        # trades feed instead of drifting by spread / partial-fill.
+        if actual_proceeds is not None and actual_fill_size is not None:
+            proceeds = float(actual_proceeds)
+            # If the SELL partially filled we'd technically still have
+            # `shares - actual_fill_size` left in the position. Today
+            # that's a rare edge case (limits at current_bid almost
+            # always full-fill on V2's tight books) and the reconciler
+            # backfill catches it. Log it loudly when it happens so we
+            # know to extend the partial-fill path before this assumption
+            # bites.
+            if abs(actual_fill_size - shares) > 0.01:
+                print(
+                    f"[pm_executor] close partial fill: intended "
+                    f"{shares} shares, filled {actual_fill_size}. "
+                    f"Position closed at the filled portion; reconciler "
+                    f"will surface any remaining open shares on the next "
+                    f"tick.",
+                    file=sys.stderr, flush=True,
+                )
+            pnl = proceeds - (cost_usd * (actual_fill_size / shares))
+        else:
+            proceeds = shares * float(current_bid)
+            pnl = proceeds - cost_usd
 
         try:
             with get_engine().begin() as conn:
@@ -2056,7 +2140,17 @@ class PMExecutor:
                     "WHERE id = :pid"
                 ), {
                     "reason": reason,
-                    "sp":     float(current_bid),
+                    # Settlement price = actual fill average when the
+                    # CLOB poll gave us one, else the intended bid we
+                    # tried to hit. Keeps the dashboard's $-figure in
+                    # sync with Polymarket's per-trade history feed.
+                    "sp":     (
+                        float(actual_proceeds) / float(actual_fill_size)
+                        if (actual_proceeds is not None
+                            and actual_fill_size is not None
+                            and actual_fill_size > 0)
+                        else float(current_bid)
+                    ),
                     "pnl":    float(pnl),
                     "oid":    clob_order_id,
                     "tx":     tx_hash,
@@ -2197,14 +2291,34 @@ class PMExecutor:
         token_id:   str,
         shares:     float,
         sell_price: float,
-    ) -> tuple[str, Optional[str]]:
+        tick_size:  Optional[float] = None,
+    ) -> tuple[str, Optional[str], Optional[float], Optional[float]]:
         """
         Submit a CLOB SELL order for `shares` of the held outcome at
-        `sell_price`. Returns (order_id, tx_hash). Raises on any
-        rejection so the caller's UPDATE is skipped.
+        `sell_price`. Returns
+            (order_id, tx_hash, actual_fill_proceeds, actual_fill_size)
+        where the last two are None when the CLOB poll didn't surface
+        a usable fill amount (caller then falls back to intent
+        accounting). Raises on any rejection so the caller's UPDATE
+        is skipped.
 
         Mirrors `_open_live`'s order construction but with side=SELL
         and reuses the same client cache + tick-size rounding.
+
+        `tick_size` should be `market.tick_size` from the gamma feed.
+        When None (caller doesn't have the market in hand) falls back
+        to DEFAULT_TICK_SIZE - safe for the ~98% of Polymarket markets
+        that quote at 0.01 ticks. The remaining 2% (some crypto /
+        activity-count) will get rejected with an off-tick error and
+        the next exit-policy tick can retry once the caller has the
+        market loaded. See `_resolve_tick_size` for the validation.
+
+        Why the last two return values matter: the SELL might fill at
+        a slightly different price than `sell_price` (the limit). The
+        caller's realized_pnl must reflect the actual proceeds, not
+        the intent. Without this the close P&L silently drifts from
+        what Polymarket shows. Source of fill is `_extract_filled_*`
+        — the same helpers _open_live uses for BUY accounting.
         """
         creds = get_active_polymarket_creds(self._user_config)
         wallet      = (creds.get("wallet_address") or "").strip()
@@ -2221,12 +2335,13 @@ class PMExecutor:
             sell_side = SELL
         except Exception:
             sell_side = "SELL"
-        price = round(float(sell_price), 2)
+        tick_str = _resolve_tick_size(tick_size)
+        price = _quantize_to_tick(float(sell_price), tick_str)
         size  = round(float(shares), 4)
         args = OrderArgs(token_id=token_id, price=price, side=sell_side, size=size)
         resp = client.create_and_post_order(
             order_args=args,
-            options=PartialCreateOrderOptions(tick_size=DEFAULT_TICK_SIZE),
+            options=PartialCreateOrderOptions(tick_size=tick_str),
             order_type=OrderType.GTC,
         )
         if not isinstance(resp, dict):
@@ -2240,7 +2355,30 @@ class PMExecutor:
             or (final.get("transactionsHashes") or [None])[0]
             or resp.get("transactionHash")
         )
-        return str(order_id), (str(tx_hash) if tx_hash else None)
+
+        # Extract actual fill size + proceeds. SELL accounting needs
+        # this to record honest realized_pnl. When _extract_filled_*
+        # returns 0 (poll didn't reflect the fill yet, partial fill,
+        # etc.) we return None and the caller falls back to intent.
+        try:
+            actual_fill_size = _extract_filled_size(final, resp)
+        except Exception:
+            actual_fill_size = 0.0
+        try:
+            actual_proceeds = _extract_filled_cost(
+                final, resp, actual_fill_size,
+                fallback_price=price,
+                client=client, order_id=str(order_id),
+            ) if actual_fill_size > 0 else 0.0
+        except Exception:
+            actual_proceeds = 0.0
+
+        return (
+            str(order_id),
+            (str(tx_hash) if tx_hash else None),
+            (float(actual_proceeds) if actual_proceeds > 0 else None),
+            (float(actual_fill_size) if actual_fill_size > 0 else None),
+        )
 
     # ── Backfill counterfactual P&L on an already-closed-early row ──────────
     def backfill_counterfactual_pnl(

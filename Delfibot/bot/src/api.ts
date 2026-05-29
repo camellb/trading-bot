@@ -348,7 +348,7 @@ export interface BotState {
   wallet_address: string | null;
   is_onboarded: boolean;
   /** Currently in live mode AND has the credentials needed to trade.
-   *  Gated on `mode === 'live'` — useful for the sizer, useless for
+   *  Gated on `mode === 'live'` - useful for the sizer, useless for
    *  "can the user switch to live from sim" UI gating (chicken and
    *  egg). For that, use `live_creds_ready` below. */
   can_trade_live: boolean;
@@ -434,7 +434,7 @@ export interface PMPosition {
   current_value_usd?: number | null;
   // Exit-policy fields. NULL on natural settlements.
   // `close_reason` is one of 'take_profit' | 'stop_loss' | 'time_decay'.
-  // `counterfactual_pnl_usd` is hold-PnL minus exit-PnL — positive
+  // `counterfactual_pnl_usd` is hold-PnL minus exit-PnL - positive
   // means the exit was premature; negative means it dodged a loss.
   closed_at?: string | null;
   close_reason?: string | null;
@@ -477,6 +477,10 @@ export interface PerformanceSummary {
   position_value: number | null;
   settled_total: number | null;
   settled_wins: number | null;
+  /** Settled losers count. Server-side aggregate from
+   *  pm_executor.get_portfolio_stats(); the dashboards previously
+   *  recomputed this client-side, which drifted under stale fetches. */
+  settled_losses: number | null;
   /** Total skipped evaluations for this user (server-side aggregate
    *  over the full market_evaluations table, not the limited
    *  /api/evaluations feed). Used by both the Dashboard summary tile
@@ -678,7 +682,7 @@ export interface LearningReport {
    *  footer). Kept for back-compat; the structured `data` field below
    *  is what the redesigned UI renders. */
   summary_user: string | null;
-  /** Structured cycle data — headline / lifetime / per-archetype /
+  /** Structured cycle data - headline / lifetime / per-archetype /
    *  calibration / top wins+losses / verdict. Drives the polished
    *  review-card layout. Null on rows written before the API exposed
    *  the column. */
@@ -1045,7 +1049,7 @@ export const api = {
       body: JSON.stringify({ dest_path }),
     }),
 
-  // Settings backup / restore. Preferences only — credentials,
+  // Settings backup / restore. Preferences only - credentials,
   // positions, and learning state are explicitly excluded so the
   // file is safe to share (no key material) and small enough to
   // bootstrap a new machine in one click.
@@ -1114,7 +1118,7 @@ export const api = {
   },
 
   // Telegram. Save persists, Test probes (never persists). Test
-  // accepts an optional override of (bot_token, chat_id) — when the
+  // accepts an optional override of (bot_token, chat_id) - when the
   // form fields are empty, the sidecar falls back to the saved values
   // so "Save then Test" works without having to re-paste the token.
   telegram:        () => request<TelegramConfig>("/api/config/telegram"),

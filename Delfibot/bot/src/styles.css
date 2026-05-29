@@ -1811,7 +1811,7 @@ button { font: inherit; }
 }
 
 /* Calibration explainer paragraph (allowed because it carries info,
-   not decorative — see 50_Feedback/no_filler_subheadlines.md). */
+   not decorative - see 50_Feedback/no_filler_subheadlines.md). */
 .review-cal-help {
   font-size: 13px; line-height: 1.5;
   color: var(--vellum-60);
@@ -2290,7 +2290,7 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
 /* `.boot` is the first-launch splash and lives where the entire
  * app would be (replaces .app-shell while booting). When the same
  * splash is reused mid-session for an auto-update or a daemon
- * restart, .app-shell is still in the DOM behind it — so we
+ * restart, .app-shell is still in the DOM behind it - so we
  * promote it to a fixed-positioned overlay covering the window. */
 .boot.update-busy {
   position: fixed;
@@ -2304,7 +2304,14 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   font-size: 56px;
   letter-spacing: 0.18em;
   font-weight: 500;
-  color: var(--gold);
+  /* Vellum instead of gold so the title doesn't haze into the
+   * surrounding obsidian under screen-capture JPEG compression or
+   * webview subpixel anti-aliasing. The earlier gold treatment
+   * read as a warm halo on screenshots; user flagged it as a
+   * "weird yellow glow" 2026-05-29. The .boot-progress thumb (the
+   * other gold element on this surface) is desaturated below for
+   * the same reason. */
+  color: var(--vellum);
 }
 .boot-status {
   margin: 0;
@@ -2339,7 +2346,10 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   position: absolute;
   top: 0; left: 0; bottom: 0;
   width: 30%;
-  background: var(--gold);
+  /* Vellum instead of gold to match the desaturated title (see
+   * .boot h1 comment above). The animated thumb on a 200x1 track
+   * read as a bright amber smear under screen capture. */
+  background: var(--vellum);
   animation: boot-slide 1.6s var(--ease) infinite;
 }
 @keyframes boot-slide {

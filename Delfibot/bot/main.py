@@ -25,6 +25,7 @@ app-data directory (db.engine).
 from __future__ import annotations
 
 import asyncio
+import base64
 import faulthandler
 import os
 import signal
@@ -99,6 +100,54 @@ def _install_crash_log() -> None:
 
 
 _install_crash_log()
+
+
+# Force OpenSSL to use certifi's CA bundle. PyInstaller-bundled Python on
+# macOS ships no usable trust store: ssl.create_default_context() returns
+# a context with zero CA roots, and aiohttp's TCPConnector (which uses
+# that default context when no ssl_context is passed) then fails every
+# HTTPS handshake with "unable to get local issuer certificate". The
+# Anthropic Python SDK is not affected because httpx loads certifi
+# explicitly; aiohttp does not. py-clob-client (also aiohttp-based) is
+# affected the same way.
+#
+# Confirmed 2026-05-29 after the bot stopped evaluating for ~24 hours:
+# every gamma-api.polymarket.com call, every research page fetch, and
+# every CLOB /auth/api-key request SSL-failed while LLM calls kept
+# working. 39,111 cumulative SSL_VERIFY_FAILED errors in sidecar.err
+# pointing at multiple hosts (gamma-api, bls.gov, federalreserve.gov,
+# tennis365, etc.).
+#
+# Setting SSL_CERT_FILE + REQUESTS_CA_BUNDLE before any HTTPS-using
+# library imports is the cleanest fix. OpenSSL reads SSL_CERT_FILE on
+# first default-context creation, so aiohttp, requests, urllib, and
+# py-clob-client all share one trust root path with zero per-call
+# plumbing changes downstream.
+try:
+    import certifi as _certifi_bootstrap  # noqa: E402
+    _ca_path = _certifi_bootstrap.where()
+    if _ca_path and os.path.exists(_ca_path):
+        os.environ.setdefault("SSL_CERT_FILE", _ca_path)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_path)
+        # Belt-and-suspenders: ssl.create_default_context() ignores
+        # SSL_CERT_FILE on some PyInstaller-bundled OpenSSL builds
+        # (the default_verify_paths are baked into the dylib at compile
+        # time and point at non-existent paths). Monkey-patch the
+        # constructor so every default context picks up certifi roots.
+        import ssl as _ssl_for_certifi  # noqa: E402
+        _orig_create_default = _ssl_for_certifi.create_default_context
+        def _certifi_default_context(*args, **kwargs):
+            ctx = _orig_create_default(*args, **kwargs)
+            try:
+                ctx.load_verify_locations(cafile=_ca_path)
+            except Exception:
+                pass
+            return ctx
+        _ssl_for_certifi.create_default_context = _certifi_default_context
+except Exception:
+    # certifi not bundled (dev mode against system Python): the host's
+    # default trust store works fine. Skip silently.
+    pass
 
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1339,6 +1388,14 @@ async def main() -> None:
         Owner-bypass licences (id="owner-local") skip the claim - the
         server has no row for them and would reject the UUID format.
         """
+        # `_json` alias kept for symmetry with the sibling function at
+        # line ~1225 that uses the same `import json as _json` pattern
+        # to avoid colliding with any top-level `json` symbol. Without
+        # this import the boot-claim fired `name '_json' is not defined`
+        # every boot (5+ occurrences in sidecar.err, surfaced by audit
+        # 2026-05-29) - the same regression class as the missing
+        # `import base64` we fixed earlier today.
+        import json as _json
         blob = (get_license_key() or "").strip()
         if not blob:
             return  # no licence cached, nothing to claim

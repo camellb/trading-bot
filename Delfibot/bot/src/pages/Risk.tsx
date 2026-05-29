@@ -31,7 +31,7 @@ const BOUNDS = {
   drawdown_halt_pct:     [0.01,  1.00] as const,
   streak_cooldown_losses:[2,     10]   as const,
   dry_powder_reserve_pct:[0.10,  0.40] as const,
-  // Exit policy — mirrors USER_CONFIG_BOUNDS in engine/user_config.py.
+  // Exit policy - mirrors USER_CONFIG_BOUNDS in engine/user_config.py.
   take_profit_threshold_pct:           [0.05, 5.00] as const,   // 5% - 500%
   stop_loss_threshold_pct:             [0.05, 0.95] as const,   // 5% - 95% loss
   stop_loss_min_time_remaining_pct:    [0.00, 0.95] as const,   // 0% - 95%
@@ -258,7 +258,7 @@ function VolumeTierPanel({
 // All three rules share a universal safety floor
 // (`exit_min_time_to_resolution_minutes`) that holds any open
 // position when the market is within N minutes of natural settlement
-// — the spread + Polymarket fees eat the marginal value of selling
+// - the spread + Polymarket fees eat the marginal value of selling
 // that close to resolution.
 
 function ExitPolicyPanel({
@@ -283,7 +283,7 @@ function ExitPolicyPanel({
   const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Same single-shot sync pattern as RiskPanel — avoid clobbering
+  // Same single-shot sync pattern as RiskPanel - avoid clobbering
   // typed-but-unsaved values on every 5s App.tsx poll.
   const syncedRef = useRef(false);
   useEffect(() => {

@@ -1805,6 +1805,7 @@ class LocalAPI:
             "bot_open_cost":  stats.get("bot_open_cost"),
             "settled_total":  stats.get("settled_total"),
             "settled_wins":   stats.get("settled_wins"),
+            "settled_losses": stats.get("settled_losses"),
             "skipped_total":  stats.get("skipped_total"),
             "win_rate":       stats.get("win_rate"),
             "realized_pnl":   realized,

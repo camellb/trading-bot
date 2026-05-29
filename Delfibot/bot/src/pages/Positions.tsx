@@ -48,7 +48,7 @@ function daysFromNow(iso: string | null | undefined): string {
   // window runs (typically 2-12 hours), then funds are released.
   // The bot's resolver checks every 60s and settles the row
   // automatically once Polymarket flips `closed: true`. Until
-  // then the position stays open and earns no extra P&L — it's
+  // then the position stays open and earns no extra P&L - it's
   // just waiting on the oracle. "settling" reads clearer than
   // "resolving"; the latter sounded instantaneous to users.
   if (t - Date.now() <= 0) return "settling";
@@ -173,7 +173,7 @@ function humanizePolymarketError(raw: string): string {
       `minimum. Raise the stake to clear the floor.`
     );
   }
-  // Insufficient balance — raw uints in 6-decimal USDC:
+  // Insufficient balance - raw uints in 6-decimal USDC:
   //   "balance: 8101422, order amount: 21684640"
   const bal = raw.match(
     /balance:\s*(\d+),\s*order amount:\s*(\d+)/i
@@ -187,7 +187,7 @@ function humanizePolymarketError(raw: string): string {
     );
   }
   // Signer mismatch (should never appear post-SDK-1.0.1 but kept as
-  // a safety belt — if Polymarket ever regresses the api-key
+  // a safety belt - if Polymarket ever regresses the api-key
   // binding, the message stays human):
   if (/signer address has to be the address of the API KEY/i.test(raw)) {
     return (
@@ -513,15 +513,15 @@ export default function Positions() {
                         <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
                         <td className="mono">${p.cost_usd.toFixed(2)}</td>
-                        <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "—"}</td>
+                        <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
                         <td className={`mono ${pnlClass}`}>{
-                          pnl == null ? "—"
+                          pnl == null ? "-"
                           : pnl > 0 ? `+$${pnl.toFixed(2)}`
                           : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
                           : "$0.00"
                         }</td>
                         <td className="mono" title={p.created_at ? fmtDateTime(p.created_at) : ""}>
-                          {p.created_at ? timeAgo(p.created_at) : "—"}
+                          {p.created_at ? timeAgo(p.created_at) : "-"}
                         </td>
                         <td className="mono">{daysFromNow(closesAt)}</td>
                         <td className="mono" style={{ textAlign: "right" }}>
@@ -568,7 +568,7 @@ export default function Positions() {
                                 <div className="kv-val mono">{
                                   p.delfi_probability != null
                                     ? `${Math.round(p.delfi_probability * 100)}%`
-                                    : "—"
+                                    : "-"
                                 }</div>
                               </div>
                               <div>
@@ -576,7 +576,7 @@ export default function Positions() {
                                 <div className="kv-val mono">{
                                   p.confidence != null
                                     ? `${Math.round(p.confidence * 100)}%`
-                                    : "—"
+                                    : "-"
                                 }</div>
                               </div>
                             </div>
@@ -760,7 +760,7 @@ export default function Positions() {
                                 <div className="kv-val mono">{
                                   s.delfi_probability != null
                                     ? `${Math.round(s.delfi_probability * 100)}%`
-                                    : "—"
+                                    : "-"
                                 }</div>
                               </div>
                               {isClosedEarly && (
@@ -839,7 +839,7 @@ export default function Positions() {
                   const cfPnlClass = cfPnl == null ? ""
                     : cfPnl > 0 ? "cell-up"
                     : cfPnl < 0 ? "cell-down" : "";
-                  const cfPnlText = cfPnl == null ? "—"
+                  const cfPnlText = cfPnl == null ? "-"
                     : cfPnl > 0 ? `+$${cfPnl.toFixed(2)}`
                     : cfPnl < 0 ? `-$${Math.abs(cfPnl).toFixed(2)}`
                     : "$0.00";
@@ -871,7 +871,7 @@ export default function Positions() {
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
                         <td className={`mono ${cfPnlClass}`}>{cfPnlText}</td>
                         <td className="mono" title={resolvedAt ? fmtDateTime(resolvedAt) : ""}>
-                          {resolvedAt ? timeAgo(resolvedAt) : "—"}
+                          {resolvedAt ? timeAgo(resolvedAt) : "-"}
                         </td>
                         <td>
                           {(() => {
@@ -1015,7 +1015,7 @@ export default function Positions() {
                   const m = desc.match(
                     /^Order rejected on '(.+?)':\s*(\S+)\s+([\d.]+)@\$([\d.]+)\.\s*(.*)$/
                   );
-                  const question = m?.[1] ?? "—";
+                  const question = m?.[1] ?? "-";
                   // side/size/price are still parsed out of the
                   // description regex so they can be surfaced if we
                   // want richer error rendering later (e.g. in an
@@ -1055,7 +1055,7 @@ export default function Positions() {
                   // description regex above. Rendered in the
                   // expanded detail block so the user can see what
                   // order Polymarket actually rejected (NOT in the
-                  // collapsed row — keeps every row one line tall).
+                  // collapsed row - keeps every row one line tall).
                   const errSide = m?.[2] ?? null;
                   const errSize = m?.[3] ?? null;
                   const errPrice = m?.[4] ?? null;
@@ -1077,7 +1077,7 @@ export default function Positions() {
                         </td>
                         <td className="mono" style={{ whiteSpace: "nowrap" }}
                             title={row.timestamp ? fmtDateTime(row.timestamp) : ""}>
-                          {row.timestamp ? timeAgo(row.timestamp) : "—"}
+                          {row.timestamp ? timeAgo(row.timestamp) : "-"}
                         </td>
                         <td className="mono" style={{ textAlign: "right" }}>
                           <span style={{
