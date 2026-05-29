@@ -728,13 +728,33 @@ export interface VersusMarketReport {
     delfi_on_disagree: number | null;
     market_on_disagree: number | null;
   };
+  skip_breakdown: Record<string, number>;
+  disagreement_routing: {
+    doctrine_veto: number;
+    other_skip: number;
+    taken_anyway: number;
+  };
   counterfactual: {
     notional_per_bet_usd: number;
-    n_bets: number;
-    actual_usd: number;
-    backed_forecast_usd: number;
-    followed_market_usd: number;
-    filter_saved_usd: number;
+    /** All settled disagreements (wide context). */
+    n_bets_all: number;
+    actual_usd_all: number;
+    backed_forecast_usd_all: number;
+    followed_market_usd_all: number;
+    /** Net $ that skipping saved vs backing the forecast (positive
+     *  = filter helped by avoiding bad forecaster bets). */
+    vs_back_forecast_all: number;
+    /** Net $ that skipping saved vs blindly following the market
+     *  favourite (negative = doctrine cost us market wins). */
+    vs_follow_market_all: number;
+    /** Doctrine-only subset: skip_reason contained "Delfi
+     *  disagrees with the market". The narrow comparison that
+     *  isolates the V1 filter's actual contribution. */
+    n_bets_doctrine: number;
+    backed_forecast_usd_doctrine: number;
+    followed_market_usd_doctrine: number;
+    vs_back_forecast_doctrine: number;
+    vs_follow_market_doctrine: number;
   };
   verdict: {
     label: string;

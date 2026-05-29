@@ -2117,10 +2117,24 @@ class LocalAPI:
                 # market has resolved. Includes BOTH taken trades
                 # (recommendation BUY_YES/BUY_NO) and skipped ones
                 # (recommendation SKIP).
+                #
+                # CRITICAL: settlement_outcome lives on TWO tables.
+                # For skipped evaluations, `market_evaluations.
+                # settlement_outcome` is written by pm_resolve_skipped
+                # when the market resolves. For TAKEN trades the
+                # outcome is written to `pm_positions.settlement_outcome`
+                # and `market_evaluations.settlement_outcome` stays
+                # NULL. v1.5.30 filtered on me.settlement_outcome only,
+                # which silently dropped every taken+settled row from
+                # the analysis (n_taken=0 looked like the bot never
+                # traded). v1.5.31 COALESCEs from both sources.
                 rows = conn.execute(text(
                     "SELECT me.id, me.market_price_yes, "
                     "       me.delfi_probability, me.recommendation, "
-                    "       me.settlement_outcome, me.skip_reason, "
+                    "       COALESCE(me.settlement_outcome, "
+                    "                pm.settlement_outcome) "
+                    "         AS settlement_outcome, "
+                    "       me.skip_reason, "
                     "       me.market_archetype, me.question, "
                     "       me.evaluated_at, "
                     "       pm.realized_pnl_usd, pm.cost_usd, "
@@ -2130,7 +2144,9 @@ class LocalAPI:
                     "  ON pm.id = me.pm_position_id "
                     "WHERE me.user_id = :uid "
                     "  AND me.mode = :m "
-                    "  AND me.settlement_outcome IN ('YES','NO') "
+                    "  AND COALESCE(me.settlement_outcome, "
+                    "               pm.settlement_outcome) "
+                    "      IN ('YES','NO') "
                     "  AND me.market_price_yes IS NOT NULL "
                     "  AND me.delfi_probability IS NOT NULL "
                     "ORDER BY me.evaluated_at DESC"
@@ -2147,6 +2163,25 @@ class LocalAPI:
 
         rows = data["rows"]
 
+        # Classify skip_reason text into a small set of buckets so
+        # the user can see WHY each skipped row was skipped. The
+        # V1-doctrine veto ("Delfi disagrees with the market") is
+        # the one this tab is really about. Archetype/budget/research
+        # skips fire regardless of agreement and dilute the verdict.
+        def _classify_skip(reason: Optional[str]) -> str:
+            if not reason:
+                return "other"
+            r = reason.lower()
+            if "delfi disagrees" in r:
+                return "doctrine_veto"
+            if "research is about a different" in r or "research mismatch" in r:
+                return "research_mismatch"
+            if "platform minimum" in r or "bankroll" in r:
+                return "budget"
+            if "archetype" in r or "skip list" in r:
+                return "archetype_skip"
+            return "other"
+
         # Aggregate counters.
         n_total = len(rows)
         n_taken = 0
@@ -2155,6 +2190,16 @@ class LocalAPI:
         n_disagreed = 0
         n_delfi_right_on_disagree = 0
         n_market_right_on_disagree = 0
+        skip_breakdown: dict[str, int] = {}
+        # Disagreement subset further split by why we skipped.
+        n_disagree_doctrine = 0
+        n_disagree_other_skip = 0
+        n_disagree_taken = 0
+        # Counterfactual focused on doctrine-vetoes only (the
+        # subset where the V1 filter ACTUALLY fired).
+        cf_doctrine_backed_forecast = 0.0
+        cf_doctrine_followed_market = 0.0
+        cf_doctrine_n = 0
 
         # Brier accumulators.
         brier_delfi_sum = 0.0
@@ -2204,6 +2249,7 @@ class LocalAPI:
             disagree = market_pick != delfi_pick
 
             # Taken vs skipped.
+            skip_bucket: Optional[str] = None
             if rec in ("BUY_YES", "BUY_NO"):
                 n_taken += 1
                 pnl = r["realized_pnl_usd"]
@@ -2211,6 +2257,10 @@ class LocalAPI:
                     actual_taken_pnl += float(pnl)
             else:
                 n_skipped += 1
+                skip_bucket = _classify_skip(r["skip_reason"])
+                skip_breakdown[skip_bucket] = (
+                    skip_breakdown.get(skip_bucket, 0) + 1
+                )
 
             if disagree:
                 n_disagreed += 1
@@ -2224,6 +2274,16 @@ class LocalAPI:
                 if market_pick == outcome:
                     n_market_right_on_disagree += 1
 
+                # Track WHY this disagreement got skipped (or
+                # whether it slipped through as a taken trade,
+                # which V1 doctrine shouldn't allow).
+                if rec in ("BUY_YES", "BUY_NO"):
+                    n_disagree_taken += 1
+                elif skip_bucket == "doctrine_veto":
+                    n_disagree_doctrine += 1
+                else:
+                    n_disagree_other_skip += 1
+
                 # Counterfactual at $1 notional.
                 # Entry price on YOUR chosen side = side's quoted
                 # price. If you pick YES, you pay `mkt` per share;
@@ -2231,19 +2291,33 @@ class LocalAPI:
                 # notional = 1/price shares.
                 price_forecast = mkt if delfi_pick == "YES" else (1.0 - mkt)
                 price_market = mkt if market_pick == "YES" else (1.0 - mkt)
+                cf_pf_delta = 0.0
+                cf_fm_delta = 0.0
                 if price_forecast > 0:
-                    if delfi_pick == outcome:
-                        cf_backed_forecast += (1.0 / price_forecast) - 1.0
-                    else:
-                        cf_backed_forecast += -1.0
+                    cf_pf_delta = (
+                        (1.0 / price_forecast) - 1.0
+                        if delfi_pick == outcome else -1.0
+                    )
+                    cf_backed_forecast += cf_pf_delta
                 if price_market > 0:
-                    if market_pick == outcome:
-                        cf_followed_market += (1.0 / price_market) - 1.0
-                    else:
-                        cf_followed_market += -1.0
+                    cf_fm_delta = (
+                        (1.0 / price_market) - 1.0
+                        if market_pick == outcome else -1.0
+                    )
+                    cf_followed_market += cf_fm_delta
                 # cf_actual stays 0 — when the doctrine fires on a
                 # disagreement, we skip, so we neither paid nor
                 # collected anything.
+
+                # Doctrine-veto-only counterfactual: the subset
+                # where the V1 filter ACTUALLY made the decision.
+                # archetype/budget/research skips don't count
+                # toward "is the doctrine helping" because the
+                # row would have been skipped regardless.
+                if skip_bucket == "doctrine_veto":
+                    cf_doctrine_n += 1
+                    cf_doctrine_backed_forecast += cf_pf_delta
+                    cf_doctrine_followed_market += cf_fm_delta
 
                 # Recent list.
                 if len(recent_disagree) < 12:
@@ -2300,27 +2374,64 @@ class LocalAPI:
         # Sort by sample size (most data first).
         by_archetype.sort(key=lambda x: x["n_disagreed"], reverse=True)
 
-        # Verdict: did the filter help (vs ignoring it and betting
-        # every market favourite)? `delta_vs_market` is how much
-        # better Delfi's actual strategy (skip-on-disagree) did
-        # versus a strategy that ignores the forecast filter. On
-        # the disagreement subset specifically: actual is $0,
-        # ignoring would have been `cf_followed_market`. So
-        # `filter_saved = 0 - cf_followed_market`.
-        filter_saved = -cf_followed_market
+        # Verdict has TWO benchmarks. Both matter; they tell
+        # different sides of the same story.
+        #
+        # vs_back_forecast = what we GAINED by NOT backing the
+        #   forecaster (the V1 filter's intended job: stop us
+        #   from betting on a known anti-signal). actual is $0,
+        #   backing forecast would have been cf_backed_forecast,
+        #   so saved = 0 - cf_backed_forecast.
+        #
+        # vs_follow_market = what we LOST by skipping market
+        #   wins (the doctrine's downside: when Delfi disagrees,
+        #   we walk away even though the market is right ~81% of
+        #   the time on this dataset). actual is $0, blindly
+        #   following market would have been cf_followed_market,
+        #   so saved = 0 - cf_followed_market (negative means
+        #   we missed wins).
+        #
+        # Computed against ALL disagreements (the wider-context
+        # comparison the v1.5.30 verdict was using) AND against
+        # doctrine-vetoes only (the narrower "is the actual filter
+        # firing well" comparison).
+        vs_back_forecast_all = -cf_backed_forecast
+        vs_follow_market_all = -cf_followed_market
+        vs_back_forecast_doctrine = -cf_doctrine_backed_forecast
+        vs_follow_market_doctrine = -cf_doctrine_followed_market
 
-        if n_disagreed >= 5:
-            if filter_saved > 0.5:
-                verdict_label = "Filter helping"
-                verdict_tone = "profit"
-            elif filter_saved < -0.5:
-                verdict_label = "Filter hurting"
-                verdict_tone = "ember"
-            else:
-                verdict_label = "Filter neutral"
-                verdict_tone = "neutral"
-        else:
+        # Headline verdict: prioritise the doctrine-only subset
+        # because that's where the V1 filter actually decided.
+        # Sample size gate: need >=5 doctrine-vetoes to call it.
+        decisive_n = cf_doctrine_n if cf_doctrine_n >= 5 else n_disagreed
+        decisive_vs_market = (
+            vs_follow_market_doctrine if cf_doctrine_n >= 5
+            else vs_follow_market_all
+        )
+        decisive_vs_forecast = (
+            vs_back_forecast_doctrine if cf_doctrine_n >= 5
+            else vs_back_forecast_all
+        )
+
+        if decisive_n < 5:
             verdict_label = "Insufficient data"
+            verdict_tone = "neutral"
+        elif decisive_vs_market < -0.5 and decisive_vs_forecast > 0.5:
+            # Classic V1-doctrine tradeoff in action: filter is
+            # avoiding bad forecaster bets BUT costing us market
+            # wins. The market signal is stronger than the
+            # forecaster signal on disagreements, so the filter
+            # is mostly costing money.
+            verdict_label = "Doctrine too cautious"
+            verdict_tone = "ember"
+        elif decisive_vs_market < -0.5:
+            verdict_label = "Filter costing market wins"
+            verdict_tone = "ember"
+        elif decisive_vs_forecast > 0.5:
+            verdict_label = "Filter saving us from bad forecasts"
+            verdict_tone = "profit"
+        else:
+            verdict_label = "Filter neutral"
             verdict_tone = "neutral"
 
         payload = {
@@ -2361,13 +2472,36 @@ class LocalAPI:
                     if brier_disagree_n > 0 else None
                 ),
             },
+            "skip_breakdown": skip_breakdown,
+            "disagreement_routing": {
+                "doctrine_veto": n_disagree_doctrine,
+                "other_skip": n_disagree_other_skip,
+                "taken_anyway": n_disagree_taken,
+            },
             "counterfactual": {
                 "notional_per_bet_usd": 1.0,
-                "n_bets": n_disagreed,
-                "actual_usd": round(cf_actual, 4),
-                "backed_forecast_usd": round(cf_backed_forecast, 4),
-                "followed_market_usd": round(cf_followed_market, 4),
-                "filter_saved_usd": round(filter_saved, 4),
+                # Wide context: every settled disagreement.
+                "n_bets_all": n_disagreed,
+                "actual_usd_all": round(cf_actual, 4),
+                "backed_forecast_usd_all": round(cf_backed_forecast, 4),
+                "followed_market_usd_all": round(cf_followed_market, 4),
+                "vs_back_forecast_all": round(vs_back_forecast_all, 4),
+                "vs_follow_market_all": round(vs_follow_market_all, 4),
+                # Doctrine-only: where the V1 filter actually
+                # fired (skip_reason "Delfi disagrees with the
+                # market"). Other skip reasons (archetype, budget,
+                # research mismatch) would have skipped these
+                # rows regardless of forecaster opinion, so they
+                # don't reflect on the filter.
+                "n_bets_doctrine": cf_doctrine_n,
+                "backed_forecast_usd_doctrine":
+                    round(cf_doctrine_backed_forecast, 4),
+                "followed_market_usd_doctrine":
+                    round(cf_doctrine_followed_market, 4),
+                "vs_back_forecast_doctrine":
+                    round(vs_back_forecast_doctrine, 4),
+                "vs_follow_market_doctrine":
+                    round(vs_follow_market_doctrine, 4),
             },
             "verdict": {
                 "label": verdict_label,

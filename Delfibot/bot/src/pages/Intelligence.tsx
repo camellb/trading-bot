@@ -373,34 +373,63 @@ function VersusMarketPane({ data }: { data: VersusMarketReport | null }) {
           {data.verdict.label.toUpperCase()}
         </div>
         <div className="versus-verdict-headline">
-          {cf.filter_saved_usd >= 0 ? (
-            <>
-              Skipping disagreements saved{" "}
-              <span className="profit">${cf.filter_saved_usd.toFixed(2)}</span>
-              {" "}per $1 staked over {cf.n_bets} bets
-            </>
-          ) : (
-            <>
-              Skipping disagreements cost{" "}
-              <span className="ember">${Math.abs(cf.filter_saved_usd).toFixed(2)}</span>
-              {" "}per $1 staked over {cf.n_bets} bets
-            </>
-          )}
+          Market was right{" "}
+          <span className="versus-emphasis">{fmtPct(sb.market_win_rate)}</span>
+          {" "}of the time Delfi disagreed ({sb.market_right} of{" "}
+          {sb.n_disagreed} settled disagreements)
         </div>
         <div className="versus-verdict-sub">
-          Across {data.n_total_settled_evals} settled evaluations,
-          Delfi and the market agreed{" "}
-          {fmtPct(data.agreement_rate)} of the time. The {data.n_disagreed}{" "}
-          disagreements are where the forecaster&apos;s veto matters.
+          On the {cf.n_bets_doctrine > 0 ? cf.n_bets_doctrine : cf.n_bets_all}{" "}
+          {cf.n_bets_doctrine > 0
+            ? "disagreements the V1 doctrine vetoed"
+            : "settled disagreements"},
+          following the market favourite instead of skipping would have
+          netted{" "}
+          <span className={
+            (cf.n_bets_doctrine > 0
+              ? cf.followed_market_usd_doctrine
+              : cf.followed_market_usd_all) >= 0 ? "profit" : "ember"}>
+            {fmtUsdSigned(cf.n_bets_doctrine > 0
+              ? cf.followed_market_usd_doctrine
+              : cf.followed_market_usd_all)}
+          </span>{" "}per $1 staked. Backing Delfi&apos;s forecast instead
+          would have netted{" "}
+          <span className={
+            (cf.n_bets_doctrine > 0
+              ? cf.backed_forecast_usd_doctrine
+              : cf.backed_forecast_usd_all) >= 0 ? "profit" : "ember"}>
+            {fmtUsdSigned(cf.n_bets_doctrine > 0
+              ? cf.backed_forecast_usd_doctrine
+              : cf.backed_forecast_usd_all)}
+          </span>.
         </div>
       </section>
 
       {/* 2. Top stat row */}
       <section className="versus-grid">
-        <StatCell label="Settled evaluations" value={String(data.n_total_settled_evals)} />
-        <StatCell label="Taken" value={String(data.n_taken)} sub={`actual P&L ${fmtUsdSigned(data.actual_taken_pnl_usd)}`} />
-        <StatCell label="Skipped" value={String(data.n_skipped)} />
-        <StatCell label="Disagreements" value={String(data.n_disagreed)} sub={`${fmtPct(data.agreement_rate ?? 0, 1)} agreement`} />
+        <StatCell
+          label="Settled evaluations"
+          value={String(data.n_total_settled_evals)}
+        />
+        <StatCell
+          label="Taken"
+          value={String(data.n_taken)}
+          sub={`actual P&L ${fmtUsdSigned(data.actual_taken_pnl_usd)}`}
+        />
+        <StatCell
+          label="Skipped"
+          value={String(data.n_skipped)}
+          sub={
+            data.skip_breakdown.doctrine_veto != null
+              ? `${data.skip_breakdown.doctrine_veto ?? 0} doctrine vetoes`
+              : undefined
+          }
+        />
+        <StatCell
+          label="Disagreements"
+          value={String(data.n_disagreed)}
+          sub={`${fmtPct(data.agreement_rate ?? 0, 1)} agreement`}
+        />
       </section>
 
       {/* 3. Scoreboard */}
@@ -431,46 +460,108 @@ function VersusMarketPane({ data }: { data: VersusMarketReport | null }) {
         </div>
       </section>
 
-      {/* 4. Counterfactual P&L */}
+      {/* 4. Counterfactual P&L - doctrine-only subset (the V1 filter) */}
+      {cf.n_bets_doctrine > 0 && (
+        <section className="versus-card">
+          <h3 className="versus-card-title">
+            Counterfactual on doctrine vetoes
+          </h3>
+          <p className="versus-card-sub">
+            The {cf.n_bets_doctrine} settled disagreements where the V1
+            filter actually fired (skip_reason: &quot;Delfi disagrees
+            with the market&quot;). At $1 notional per bet, what each
+            strategy would have netted on this subset.
+          </p>
+          <div className="versus-cf-grid">
+            <CounterfactualRow
+              label="Skip (current doctrine)"
+              usd={0}
+              isActive
+            />
+            <CounterfactualRow
+              label="Back the forecast"
+              usd={cf.backed_forecast_usd_doctrine}
+            />
+            <CounterfactualRow
+              label="Follow the market favourite"
+              usd={cf.followed_market_usd_doctrine}
+            />
+          </div>
+          <div className="versus-cf-footer">
+            vs back-the-forecast: skipping{" "}
+            {cf.vs_back_forecast_doctrine >= 0 ? "saved " : "cost "}
+            <span className={cf.vs_back_forecast_doctrine >= 0 ? "profit" : "ember"}>
+              {fmtUsdSigned(cf.vs_back_forecast_doctrine)}
+            </span>
+            . vs follow-market: skipping{" "}
+            {cf.vs_follow_market_doctrine >= 0 ? "saved " : "cost "}
+            <span className={cf.vs_follow_market_doctrine >= 0 ? "profit" : "ember"}>
+              {fmtUsdSigned(cf.vs_follow_market_doctrine)}
+            </span>
+            .
+          </div>
+        </section>
+      )}
+
+      {/* 4b. Counterfactual P&L - all disagreements (wide context) */}
       <section className="versus-card">
         <h3 className="versus-card-title">
-          Counterfactual P&L on disagreements
+          Counterfactual on all settled disagreements
         </h3>
         <p className="versus-card-sub">
-          At $1 notional per bet across {cf.n_bets} settled
-          disagreements, what each strategy would have netted.
+          Across all {cf.n_bets_all} settled markets where Delfi and the
+          market priced opposite sides of 50% (includes archetype/budget/
+          research skips, not only doctrine vetoes).
         </p>
         <div className="versus-cf-grid">
           <CounterfactualRow
-            label="Skip (what Delfi does)"
-            usd={cf.actual_usd}
+            label="Skip"
+            usd={cf.actual_usd_all}
             isActive
           />
           <CounterfactualRow
             label="Back the forecast"
-            usd={cf.backed_forecast_usd}
+            usd={cf.backed_forecast_usd_all}
           />
           <CounterfactualRow
             label="Follow the market favourite"
-            usd={cf.followed_market_usd}
+            usd={cf.followed_market_usd_all}
           />
         </div>
-        <div className="versus-cf-footer">
-          {cf.filter_saved_usd >= 0 ? (
-            <>
-              Net: skipping these {cf.n_bets} bets saved{" "}
-              <span className="profit">{fmtUsdSigned(cf.filter_saved_usd)}</span>
-              {" "}vs blindly following the market favourite.
-            </>
-          ) : (
-            <>
-              Net: skipping these {cf.n_bets} bets cost{" "}
-              <span className="ember">{fmtUsdSigned(cf.filter_saved_usd)}</span>
-              {" "}vs blindly following the market favourite.
-            </>
-          )}
-        </div>
       </section>
+
+      {/* 4c. Skip-reason breakdown */}
+      {Object.keys(data.skip_breakdown).length > 0 && (
+        <section className="versus-card">
+          <h3 className="versus-card-title">Why we skipped</h3>
+          <p className="versus-card-sub">
+            Of the {data.n_skipped} settled skipped markets, the reason
+            recorded at evaluation time.
+          </p>
+          <table className="versus-table">
+            <thead>
+              <tr>
+                <th>Reason</th>
+                <th className="num">Count</th>
+                <th className="num">% of skips</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(data.skip_breakdown)
+                .sort(([, a], [, b]) => b - a)
+                .map(([reason, count]) => (
+                  <tr key={reason}>
+                    <td>{skipReasonLabel(reason)}</td>
+                    <td className="num">{count}</td>
+                    <td className="num">
+                      {fmtPct(count / Math.max(1, data.n_skipped))}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       {/* 5. Brier comparison */}
       <section className="versus-card">
@@ -594,6 +685,17 @@ function VersusMarketPane({ data }: { data: VersusMarketReport | null }) {
       )}
     </div>
   );
+}
+
+function skipReasonLabel(key: string): string {
+  switch (key) {
+    case "doctrine_veto":     return "Delfi disagreed with market";
+    case "budget":            return "Insufficient bankroll";
+    case "research_mismatch": return "Research about a different edition";
+    case "archetype_skip":    return "Archetype skip list";
+    case "other":             return "Other";
+    default:                  return key.replace(/_/g, " ");
+  }
 }
 
 function StatCell({

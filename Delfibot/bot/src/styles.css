@@ -2777,6 +2777,11 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
 }
 .versus-verdict-headline .profit { color: var(--profit); }
 .versus-verdict-headline .ember  { color: var(--ember); }
+.versus-emphasis {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--gold);
+}
 .versus-verdict-sub {
   font-size: 13px;
   color: var(--vellum-60);
