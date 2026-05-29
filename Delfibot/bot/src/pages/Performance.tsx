@@ -127,20 +127,75 @@ export default function Performance() {
     });
   }, [closed, range]);
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // CANONICAL WIN/LOSS ALGORITHM - DO NOT WRITE ANOTHER VARIANT
+  // ═══════════════════════════════════════════════════════════════════════
+  // SINGLE SOURCE OF TRUTH lives on the server in
+  //   pm_executor.get_portfolio_stats() lines ~961-971:
+  //     wins   = COUNT WHERE status IN ('settled','closed_early')
+  //                          AND realized_pnl_usd > 0
+  //     losses = COUNT WHERE status IN ('settled','closed_early')
+  //                          AND realized_pnl_usd < 0
+  //     win_rate = wins / (wins + losses)
+  //
+  // Same algorithm in main.py daily/weekly summaries (1795-1796, 1874-1875)
+  // and engine/diagnostics.py (~862). Reproduce ONLY when scoping by a
+  // user-selected date range, and reproduce IT EXACTLY: status in
+  // (settled, closed_early), pnl-sign based, no settlement_outcome
+  // filter.
+  //
+  // History of why this comment exists: the earlier client-side loop
+  // skipped any row where `settlement_outcome == null`, which excluded
+  // every closed_early row because those don't have a natural outcome
+  // (we sold out before the market resolved). That made Performance
+  // show 25W/10L while Dashboard (server) showed 25W/11L for the same
+  // ledger. User flagged this as "WHY THE FUCK THIS KEEPS FUCKING
+  // BREAKING" 2026-05-29. Settled doctrine in CLAUDE.md: "We don't
+  // use different ways to calculate the same number in different
+  // places. IT MUST BE ALWAYS THE FUCKING SAME."
+  //
+  // Topline KPIs for "All time" range read summary.* directly so they
+  // come from the server's own computation. Range-scoped counts (30d,
+  // 7d) reproduce the canonical algorithm here because /api/summary
+  // is all-time only.
+
   const filteredStats = useMemo(() => {
+    // All-time range: defer to the server's authoritative values.
+    // No client-side recomputation -> no opportunity for drift.
+    if (range === "all" && summary) {
+      const wins = Number(summary.settled_wins ?? 0);
+      const losses = Number(summary.settled_losses ?? 0);
+      const trades = Number(summary.settled_total ?? wins + losses);
+      const totalPnl = Number(summary.realized_pnl ?? summary.total_pnl ?? 0);
+      // ROI on BANKROLL per CLAUDE.md doctrine.
+      const starting = summary.starting_cash ?? 0;
+      const roi = starting > 0 ? (totalPnl / starting) * 100 : 0;
+      const winRate = (summary.win_rate ?? 0) * 100;
+      // totalCost is only needed for cost-basis ROI which we don't
+      // display; computing it from the filtered list keeps the prop
+      // shape stable without affecting the headline numbers.
+      let totalCost = 0;
+      for (const r of filtered) totalCost += r.cost_usd ?? 0;
+      return { trades, wins, losses, totalPnl, totalCost, winRate, roi };
+    }
+
+    // Range-scoped (30d / 7d): reproduce the CANONICAL ALGORITHM.
+    // Must match pm_executor.get_portfolio_stats(): row IS counted
+    // iff status IN (settled, closed_early) AND realized_pnl_usd is
+    // present. settlement_outcome is IGNORED (closed_early rows have
+    // null outcome because we sold before natural resolution; that's
+    // not a reason to exclude them). Invalids are kept in the trade
+    // count but excluded from win rate per server logic.
     let trades = 0, wins = 0, losses = 0, totalPnl = 0, totalCost = 0;
     for (const r of filtered) {
-      const pnl = (r.realized_pnl_usd as number | null | undefined) ?? 0;
-      const outcome = r.settlement_outcome as string | null | undefined;
-      if (outcome == null) continue;
+      const status = r.status as string | null | undefined;
+      const pnl = r.realized_pnl_usd as number | null | undefined;
+      // Only settled / closed_early count as "closed trades" for this
+      // tab. invalid markets are refunded and don't represent a real
+      // bet outcome.
+      if (status !== "settled" && status !== "closed_early") continue;
+      if (pnl == null) continue;
       trades++;
-      // Win/loss determined by realized P&L sign - matches the
-      // server's pm_executor.get_portfolio_stats() so the Dashboard
-      // and Performance page agree on a single win-rate number.
-      // Break-even trades (pnl === 0) and invalid/voided markets
-      // (refunded at the entry price, so pnl ~= 0) count toward
-      // `trades` for the closed-trade total but are excluded from
-      // both numerator and denominator of the win rate.
       if (pnl > 0) wins++;
       else if (pnl < 0) losses++;
       totalPnl += pnl;
@@ -148,15 +203,10 @@ export default function Performance() {
     }
     const settled = wins + losses;
     const winRate = settled > 0 ? (wins / settled) * 100 : 0;
-    // ROI on BANKROLL, not on cost - matches CLAUDE.md doctrine
-    // ("Maximize ROI on bankroll across all trades") and the
-    // dashboard's `pnl/starting * 100` calculation. The cost-based
-    // ROI used to display +21% while the dashboard showed +2.24%
-    // for the same trades, which was confusing.
     const starting = summary?.starting_cash ?? 0;
     const roi = starting > 0 ? (totalPnl / starting) * 100 : 0;
     return { trades, wins, losses, totalPnl, totalCost, winRate, roi };
-  }, [filtered, summary]);
+  }, [filtered, summary, range]);
 
   const equitySeries = useMemo(() => {
     // Same strategy as Dashboard.tsx: full historical back-step

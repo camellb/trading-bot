@@ -24,6 +24,29 @@ Delfi is a character as much as a system. The dashboard feels alive because it i
 
 Win rate, ROI, and Brier score are computed **only on predictions the bot actually entered** (i.e. resolved positions with a real or simulated fill). Skipped evaluations never enter these metrics. A skip is not a loss and not a win; it is a non-event. Every dashboard number, Telegram report, learning-cycle input, and go-live gate must use this "resolved-positions-only" definition so the numbers reflect the bot's real performance.
 
+### RULE #1 — Data consistency. Single source of truth. ABSOLUTE.
+
+**The same number MUST be the same number on every surface that shows it.** Dashboard win rate == Performance win rate == Telegram win rate == review-report win rate. No exceptions, no off-by-one, no "well our formula here is different". If two surfaces disagree, exactly one of them has the bug; fix the one that diverges from the canonical algorithm.
+
+The canonical algorithm for closed-trade counts lives in **`pm_executor.get_portfolio_stats()`** (lines ~961-971). Reproduce ONLY when the surface needs a date-range filter that the server doesn't compute, and reproduce IT EXACTLY:
+
+```
+wins   = COUNT(pm_positions) WHERE status IN ('settled', 'closed_early')
+                               AND realized_pnl_usd > 0
+losses = COUNT(pm_positions) WHERE status IN ('settled', 'closed_early')
+                               AND realized_pnl_usd < 0
+trades = COUNT(pm_positions) WHERE status IN ('settled', 'closed_early', 'invalid')
+win_rate = wins / (wins + losses)
+```
+
+Rules:
+- `closed_early` rows ALWAYS count toward wins/losses by `realized_pnl_usd` sign. The SELL realized a P&L; that's a real outcome. NEVER filter by `settlement_outcome IS NOT NULL` (closed_early rows have null outcome because we sold before natural resolution; excluding them was the recurring drift bug, 2026-05-29).
+- `invalid` rows are auto-refunded by Polymarket. They count toward `trades` (the user took the bet) but are excluded from win rate denominator.
+- Break-even (`realized_pnl_usd == 0`) is neither a win nor a loss. Counts toward trades, excluded from win rate.
+- For range-scoped views (30 days, 7 days), reproduce the same algorithm client-side with the date filter applied to `settled_at`.
+
+History: this rule was etched 2026-05-29 after the user flagged Performance page showing 25W/10L while Dashboard showed 25W/11L for the same ledger. The cause was a client-side `settlement_outcome IS NULL` filter that excluded `closed_early` rows. Adding `settled_losses` to `/api/summary` (v1.5.27) gave Performance an authoritative server value to consume for All-Time — the page now reads `summary.settled_*` directly when range is "all" and only reproduces the algorithm for date-range filters. **Same algorithm, two implementations, exactly one canonical source.** A divergence is a regression; fix it at the divergent site, not by adding a third variant.
+
 ## Tech stack & where things live
 
 Single deployable: a Tauri 2 desktop app that bundles a Python sidecar. Everything runs on the user's machine. No website, no server-side bot, no Supabase. The repo root holds `Delfibot/` (active) + `docs/` + `SITEMAP.md` + `LAUNCH_CHECKLIST.md` + `.github/workflows/build.yml`. Pre-pivot SaaS scaffolding (apps/, ops/, packages/) was deleted 2026-05-19.
