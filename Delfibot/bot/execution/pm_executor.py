@@ -813,10 +813,21 @@ class PMExecutor:
         user's own history.
         """
         # LIVE mode: read the wallet directly. No DB adjustment.
-        if (
-            self._user_config.mode == "live"
-            and self._view_mode_override is None
-        ):
+        # `self.mode` is the effective mode (view_mode_override when
+        # set, otherwise user_config.mode). The earlier condition
+        # required `view_mode_override is None`, which meant a
+        # view-scoped executor constructed by close_position_early
+        # to fetch live-position stats (e.g. `PMExecutor(uid,
+        # view_mode_override='live')`) would FALL THROUGH to the SIM
+        # formula and produce hybrid garbage: $1000 sim starting cash +
+        # live realized PnL - live open cost. The Telegram closed_early
+        # message for position #363 read "Balance $981 / Equity $1019 /
+        # Mode: Live" while the user's actual live equity was ~$40
+        # (2026-05-29 incident). Using `self.mode` here means a view-
+        # scoped live executor probes the wallet just like a configured-
+        # live one would. The wallet probe has its own fallback when
+        # creds are absent (last-known balance or 0.0).
+        if self.mode == "live":
             try:
                 from engine.user_config import get_user_polymarket_creds
                 from feeds.polymarket_wallet import (
@@ -2063,6 +2074,32 @@ class PMExecutor:
             and _live_killswitch_off()
             and clob_token_id
         ):
+            # Pre-flight: skip the SELL submission entirely if there's
+            # already an active SELL order on the CLOB for this token.
+            # Without this guard the exit policy fires every 60s, places
+            # a fresh SELL every time, and Polymarket's matcher rejects
+            # subsequent attempts with `not enough balance / allowance`
+            # because all position-shares are locked in the FIRST LIVE
+            # order. That cascade fired 47 Telegram notifications on
+            # the same position 2026-05-29 (Bitcoin $72,500 dip
+            # stop-loss). Returning False from this branch means: don't
+            # update the DB row, don't emit a Telegram alert, don't
+            # punish the API - just wait for the existing order to
+            # fill or get cancelled.
+            #
+            # CLOB query is best-effort. If it fails we fall through to
+            # the SELL submission (the original behaviour) so a CLOB
+            # outage can't permanently block exits. The downstream
+            # error path is unchanged when that happens.
+            if self._token_has_open_sell(clob_token_id):
+                print(
+                    f"[pm_executor] close_position_early: pos "
+                    f"#{position_id} ({reason}) skipped - CLOB still "
+                    f"has an active SELL on token "
+                    f"{clob_token_id[:14]}... Waiting for fill.",
+                    file=sys.stderr, flush=True,
+                )
+                return False
             try:
                 (
                     clob_order_id,
@@ -2284,6 +2321,59 @@ class PMExecutor:
                   f"{exc}", file=sys.stderr)
 
         return True
+
+    def _token_has_open_sell(self, token_id: str) -> bool:
+        """Return True iff the CLOB already has an active SELL order
+        from this wallet on `token_id`.
+
+        Used by `close_position_early` as a pre-flight to avoid the
+        retry storm where every 60s exit-policy tick submits a fresh
+        SELL even though the previous one is still LIVE. Polymarket's
+        matcher refuses subsequent submissions with `not enough
+        balance / allowance` because all shares are locked in the
+        first LIVE order, and the resulting `order_error` events
+        spam Telegram (47 messages on a single position 2026-05-29).
+
+        Best-effort: a CLOB outage or unexpected response shape
+        returns False so the caller falls through to the actual SELL
+        submission (the prior unconditional behaviour). The downside
+        of a false-negative is one extra rejection; the downside of
+        a false-positive (claiming we have an order when we don't)
+        would be a position stuck open forever, so we lean toward
+        "submit if uncertain".
+        """
+        creds = get_active_polymarket_creds(self._user_config)
+        wallet      = (creds.get("wallet_address") or "").strip()
+        private_key = (creds.get("private_key")    or "").strip()
+        if not wallet or not private_key or not token_id:
+            return False
+        try:
+            client = _get_clob_client(wallet, private_key)
+            if client is None:
+                return False
+            orders = client.get_open_orders()  # type: ignore[union-attr]
+        except Exception as exc:
+            print(
+                f"[pm_executor] _token_has_open_sell: CLOB query "
+                f"failed for token {token_id[:14]}...: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            return False
+        if not isinstance(orders, list):
+            return False
+        for o in orders:
+            if not isinstance(o, dict):
+                continue
+            # CLOB response uses `asset_id` for the token (the SDK
+            # normalises across the v1/v2 spelling). Side comes
+            # uppercase as 'BUY' / 'SELL'. We only block on SELLs;
+            # a stray BUY on the same token is the opposite direction
+            # and wouldn't conflict with our SELL.
+            asset = str(o.get("asset_id") or o.get("token_id") or "")
+            side  = str(o.get("side") or "").upper()
+            if asset == token_id and side == "SELL":
+                return True
+        return False
 
     def _place_close_order(
         self,
