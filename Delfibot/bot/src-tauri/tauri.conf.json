@@ -1,16 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Delfi",
-  "version": "1.5.27",
+  "version": "1.5.28",
   "identifier": "com.delfi.desktop",
-
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
-
   "app": {
     "withGlobalTauri": false,
     "windows": [
@@ -29,11 +27,12 @@
       "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
-
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/delfi-sidecar"],
+    "externalBin": [
+      "binaries/delfi-sidecar"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -55,7 +54,6 @@
     },
     "createUpdaterArtifacts": true
   },
-
   "plugins": {
     "updater": {
       "endpoints": [

@@ -2133,6 +2133,38 @@ class PMExecutor:
                     pass
                 return False
 
+        # Live mode + SELL placed but fill NOT confirmed = leave the
+        # position open. Same return-False semantics as the
+        # exception path above. The bug this guards against: prior
+        # versions flipped the DB to `closed_early` as soon as
+        # _place_close_order returned an order_id, even if the SELL
+        # sat LIVE on the orderbook without matching. Result was
+        # ghost-closed rows: bot thought position was closed, but
+        # on Polymarket it was still open and bleeding. 2026-05-29
+        # incident: 4 positions stranded this way (#350 Trump,
+        # #353 Mariners, #359 Gen.G, #363 BTC dip). The bot's
+        # exit policy stopped firing because DB said the row was
+        # done; user lost money silently. Doctrine: "the bot owns
+        # the entire trade lifecycle" (CLAUDE.md). A SELL that
+        # didn't fill isn't a closed trade.
+        #
+        # When this guard returns False, the next exit-policy tick
+        # (60s later) re-evaluates the position. The
+        # _token_has_open_sell pre-flight detects the existing LIVE
+        # SELL and skips the duplicate submission. The position
+        # stays in active management; if the existing SELL fills
+        # we'll capture it via _open_live's on-chain-position
+        # lookup path on the next reconcile pass.
+        if row_mode == "live" and actual_fill_size is None:
+            print(
+                f"[pm_executor] close_position_early: pos #{position_id} "
+                f"SELL placed (order={clob_order_id[:14] if clob_order_id else '?'}...) "
+                f"but fill not confirmed within poll deadline. DB left as "
+                f"'open'; next exit-policy tick will check.",
+                file=sys.stderr, flush=True,
+            )
+            return False
+
         # Compute proceeds + realized P&L from the ACTUAL on-chain fill
         # when the CLOB reflected it, otherwise from intent (the
         # historical behaviour preserved for sim mode + the live-fall-
@@ -2361,6 +2393,9 @@ class PMExecutor:
             return False
         if not isinstance(orders, list):
             return False
+        import time as _time
+        now_unix = _time.time()
+        stale_seconds = 300.0  # 5 minutes
         for o in orders:
             if not isinstance(o, dict):
                 continue
@@ -2371,8 +2406,53 @@ class PMExecutor:
             # and wouldn't conflict with our SELL.
             asset = str(o.get("asset_id") or o.get("token_id") or "")
             side  = str(o.get("side") or "").upper()
-            if asset == token_id and side == "SELL":
-                return True
+            if asset != token_id or side != "SELL":
+                continue
+            # Stale-order recovery. If the SELL has been LIVE for more
+            # than 5 minutes with zero fills, the limit price is no
+            # longer hitting the book - cancel it so the caller can
+            # re-submit at the current bid. Without this, a user with
+            # a stop-loss that placed a SELL at a now-stale price
+            # would wait FOREVER for it to match while the market
+            # walks away. 2026-05-29 incident: position #350 SELL
+            # placed at $0.35, market moved to $0.34, our order
+            # never matched, bot kept skipping because the SELL
+            # was "still LIVE", user kept losing money.
+            #
+            # Heuristic: only cancel if the order is BOTH old AND
+            # zero-filled. A partially-filled order should run to
+            # completion; the remaining slice is presumably matching
+            # at the right level.
+            try:
+                created_at = o.get("created_at")
+                size_matched = float(o.get("size_matched") or 0)
+                if created_at is not None and size_matched == 0:
+                    age = now_unix - float(created_at)
+                    if age > stale_seconds:
+                        oid = str(o.get("id") or "")
+                        if oid:
+                            try:
+                                client.cancel_orders([oid])  # type: ignore[union-attr]
+                                print(
+                                    f"[pm_executor] _token_has_open_sell: "
+                                    f"cancelled stale SELL on token "
+                                    f"{token_id[:14]}... (age={age:.0f}s, "
+                                    f"price=${o.get('price')}, "
+                                    f"order={oid[:14]}...). Caller will "
+                                    f"submit a fresh SELL at the current bid.",
+                                    file=sys.stderr, flush=True,
+                                )
+                                continue  # treat as no open SELL
+                            except Exception as cexc:
+                                print(
+                                    f"[pm_executor] _token_has_open_sell: "
+                                    f"stale-cancel failed for {oid[:14]}...: "
+                                    f"{cexc}. Treating as still-live.",
+                                    file=sys.stderr, flush=True,
+                                )
+            except Exception:
+                pass
+            return True
         return False
 
     def _place_close_order(
