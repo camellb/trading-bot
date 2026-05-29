@@ -70,6 +70,21 @@ Single deployable: a Tauri 2 desktop app that bundles a Python sidecar. Everythi
 
 ## How code reaches production
 
+### RULE — No local-only commits. Push every commit immediately. Tag releases. ABSOLUTE.
+
+**The user does NOT want code sitting on the local machine.** Every commit gets pushed the same turn it's made. If the work is meant to be a release (the version was bumped, or the user said "ship it" / "make it live"), the sequence is:
+
+1. `git push origin <branch>` — push the working branch to origin
+2. `git push origin <branch>:main` (or merge to main locally and push) — promote to the canonical branch so users on the auto-updater see it
+3. `git tag -a vX.Y.Z <commit> -m "..."` — annotated tag at the commit
+4. `git push origin vX.Y.Z` — tag push triggers `.github/workflows/build.yml` → cross-compiles macOS + Windows → auto-publishes to GitHub Releases → installed apps' Tauri auto-updater fetches the new `latest.json` and prompts users to upgrade
+
+Reaching step 4 is what closes the loop on "the new version is live". Stopping at step 1 leaves users on the prior release with the bugs we just fixed. **Anything short of pushing + tagging is incomplete work** when the change is meant to ship.
+
+Settled 2026-05-29 after the user said "fucking push it. I don't want anything just local. Write it fucking down somewhere, we are preparing the app to go live." This is part of the same hygiene as RULE #1 (data consistency): we don't accumulate divergence between what's local, what's on the canonical branch, and what users are running. Three places, one truth, all current.
+
+### Build + publish steps
+
 There is no remote infrastructure. To ship a new version:
 
 1. `cd Delfibot/bot && ./scripts/build_sidecar.sh` — PyInstaller bundles the sidecar.
