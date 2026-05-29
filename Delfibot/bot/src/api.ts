@@ -689,99 +689,6 @@ export interface LearningReport {
   data: ReportData | null;
 }
 
-/** Backs the Intelligence "Versus Market" tab. The endpoint walks
- *  every settled evaluation in the user's current mode and reports:
- *
- *   - Agreement breakdown (Delfi vs market favourite, taken/skipped)
- *   - Scoreboard on the disagreement subset (who was right more often)
- *   - Brier comparison (forecaster vs raw market price)
- *   - Counterfactual P&L on $1 notional per bet across all
- *     settled disagreements (skip vs back-the-forecast vs follow-market)
- *   - Per-archetype breakdown where >=3 disagreements exist
- *   - Last 12 disagreements with winner labels
- *
- *  V1 doctrine ("follow the market, use the forecast as a filter")
- *  means agreement is the default. The disagreement subset is the
- *  one that answers "is the filter actually helping us?"
- */
-export interface VersusMarketReport {
-  mode: string;
-  n_total_settled_evals: number;
-  n_taken: number;
-  n_skipped: number;
-  n_agreed: number;
-  n_disagreed: number;
-  agreement_rate: number | null;
-  actual_taken_pnl_usd: number;
-  scoreboard: {
-    n_disagreed: number;
-    delfi_right: number;
-    market_right: number;
-    delfi_win_rate: number | null;
-    market_win_rate: number | null;
-  };
-  brier: {
-    n: number;
-    delfi: number | null;
-    market: number | null;
-    n_disagree: number;
-    delfi_on_disagree: number | null;
-    market_on_disagree: number | null;
-  };
-  skip_breakdown: Record<string, number>;
-  disagreement_routing: {
-    doctrine_veto: number;
-    other_skip: number;
-    taken_anyway: number;
-  };
-  counterfactual: {
-    notional_per_bet_usd: number;
-    /** All settled disagreements (wide context). */
-    n_bets_all: number;
-    actual_usd_all: number;
-    backed_forecast_usd_all: number;
-    followed_market_usd_all: number;
-    /** Net $ that skipping saved vs backing the forecast (positive
-     *  = filter helped by avoiding bad forecaster bets). */
-    vs_back_forecast_all: number;
-    /** Net $ that skipping saved vs blindly following the market
-     *  favourite (negative = doctrine cost us market wins). */
-    vs_follow_market_all: number;
-    /** Doctrine-only subset: skip_reason contained "Delfi
-     *  disagrees with the market". The narrow comparison that
-     *  isolates the V1 filter's actual contribution. */
-    n_bets_doctrine: number;
-    backed_forecast_usd_doctrine: number;
-    followed_market_usd_doctrine: number;
-    vs_back_forecast_doctrine: number;
-    vs_follow_market_doctrine: number;
-  };
-  verdict: {
-    label: string;
-    tone: "profit" | "ember" | "neutral";
-  };
-  by_archetype: Array<{
-    archetype: string;
-    n_total: number;
-    n_agreed: number;
-    n_disagreed: number;
-    n_delfi_right_on_disagree: number;
-    n_market_right_on_disagree: number;
-  }>;
-  recent_disagreements: Array<{
-    id: number;
-    question: string;
-    archetype: string;
-    market_p_yes: number;
-    delfi_p_yes: number;
-    market_pick: "YES" | "NO";
-    delfi_pick: "YES" | "NO";
-    outcome: "YES" | "NO";
-    winner: "delfi" | "market" | "tie";
-    taken: boolean;
-    evaluated_at: string;
-  }>;
-}
 
 export interface ArchetypeEntry {
   id: string;
@@ -1018,8 +925,6 @@ export const api = {
     }),
   learningReports: (limit = 10) =>
     request<{ reports: LearningReport[] }>(`/api/learning-reports?limit=${limit}`),
-  versusMarket: () =>
-    request<VersusMarketReport>("/api/intelligence/versus-market"),
 
   // Archetypes
   archetypes: () => request<ArchetypeCatalogue>("/api/archetypes"),
