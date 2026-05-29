@@ -2732,3 +2732,325 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
 .page-wrap.narrow {
   max-width: 960px;
 }
+
+/* ════════════════════════════════════════════════════════════════
+   INTELLIGENCE - VERSUS MARKET TAB
+   Doctrine-side comparison: did the V1 forecast-as-filter help?
+   ════════════════════════════════════════════════════════════════ */
+
+.versus-pane {
+  display: grid;
+  gap: 18px;
+  margin-top: 4px;
+}
+
+/* 1. Verdict card */
+.versus-verdict {
+  padding: 22px 24px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+  background: rgba(255, 255, 255, 0.02);
+}
+.versus-verdict.tone-profit {
+  border-color: var(--profit-line);
+  background: var(--profit-dim);
+}
+.versus-verdict.tone-ember {
+  border-color: var(--ember-line);
+  background: var(--ember-dim);
+}
+.versus-verdict-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--vellum-60);
+  margin-bottom: 10px;
+}
+.versus-verdict.tone-profit .versus-verdict-label { color: var(--profit); }
+.versus-verdict.tone-ember  .versus-verdict-label { color: var(--ember); }
+.versus-verdict-headline {
+  font-family: var(--font-display);
+  font-size: 22px;
+  color: var(--vellum);
+  line-height: 1.35;
+  margin-bottom: 8px;
+}
+.versus-verdict-headline .profit { color: var(--profit); }
+.versus-verdict-headline .ember  { color: var(--ember); }
+.versus-verdict-sub {
+  font-size: 13px;
+  color: var(--vellum-60);
+  line-height: 1.55;
+}
+
+/* 2. Top stat row */
+.versus-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .versus-grid { grid-template-columns: repeat(2, 1fr); }
+}
+.versus-stat {
+  padding: 14px 16px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+  background: rgba(255, 255, 255, 0.02);
+}
+.versus-stat-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  color: var(--vellum-60);
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.versus-stat-value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  color: var(--vellum);
+}
+.versus-stat-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vellum-40);
+  margin-top: 4px;
+}
+
+/* Shared card wrapper for the lower sections. */
+.versus-card {
+  padding: 18px 20px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+  background: rgba(255, 255, 255, 0.02);
+}
+.versus-card-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  color: var(--vellum);
+  margin: 0 0 4px 0;
+}
+.versus-card-sub {
+  font-size: 12px;
+  color: var(--vellum-60);
+  margin: 0 0 14px 0;
+  line-height: 1.55;
+}
+
+/* 3. Scoreboard (Delfi vs Market side-by-side) */
+.versus-vs-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+}
+.versus-vs-cell {
+  padding: 18px 16px;
+  text-align: center;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+}
+.versus-vs-cell.delfi  { border-color: var(--gold-line);   background: var(--gold-dim); }
+.versus-vs-cell.market { border-color: var(--teal-line);   background: var(--teal-dim); }
+.versus-vs-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.versus-vs-cell.delfi  .versus-vs-name { color: var(--gold); }
+.versus-vs-cell.market .versus-vs-name { color: var(--teal); }
+.versus-vs-rate {
+  font-family: var(--font-display);
+  font-size: 32px;
+  color: var(--vellum);
+}
+.versus-vs-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vellum-60);
+  margin-top: 4px;
+}
+.versus-vs-divider {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: var(--vellum-40);
+}
+
+/* 4. Counterfactual rows */
+.versus-cf-grid {
+  display: grid;
+  gap: 8px;
+}
+.versus-cf-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+}
+.versus-cf-row.active {
+  border-color: var(--gold-line);
+  background: var(--gold-dim);
+}
+.versus-cf-label {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--vellum);
+}
+.versus-cf-pill {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--gold-dim);
+  color: var(--gold);
+  border: 1px solid var(--gold-line);
+}
+.versus-cf-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+.versus-cf-value.profit  { color: var(--profit); }
+.versus-cf-value.ember   { color: var(--ember); }
+.versus-cf-value.neutral { color: var(--vellum); }
+.versus-cf-footer {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--vellum-10);
+  font-size: 12px;
+  color: var(--vellum-60);
+  line-height: 1.55;
+}
+.versus-cf-footer .profit { color: var(--profit); }
+.versus-cf-footer .ember  { color: var(--ember); }
+
+/* 5. Brier comparison */
+.versus-brier-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.versus-brier-cell {
+  padding: 14px 16px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+  position: relative;
+}
+.versus-brier-cell.winning {
+  border-color: var(--profit-line);
+  background: var(--profit-dim);
+}
+.versus-brier-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--vellum-60);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.versus-brier-value {
+  font-family: var(--font-display);
+  font-size: 24px;
+  color: var(--vellum);
+}
+.versus-brier-n {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vellum-40);
+  margin-top: 2px;
+}
+.versus-brier-pill {
+  position: absolute;
+  top: 12px; right: 12px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--profit-dim);
+  color: var(--profit);
+  border: 1px solid var(--profit-line);
+}
+
+/* 6. Per-archetype table */
+.versus-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.versus-table th, .versus-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--vellum-10);
+  text-align: left;
+}
+.versus-table th {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--vellum-60);
+  text-transform: uppercase;
+}
+.versus-table td.num, .versus-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.versus-table td.num.profit { color: var(--profit); }
+.versus-table td.num.ember  { color: var(--ember); }
+.versus-table tbody tr:last-child td { border-bottom: 0; }
+
+/* 7. Recent disagreements list */
+.versus-recent {
+  list-style: none;
+  margin: 0; padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.versus-recent-row {
+  padding: 12px 14px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-1);
+}
+.versus-recent-q {
+  font-size: 13px;
+  color: var(--vellum);
+  margin-bottom: 6px;
+  line-height: 1.45;
+}
+.versus-recent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vellum-60);
+  align-items: center;
+}
+.versus-recent-arch {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--vellum-10);
+}
+.versus-recent-prices { color: var(--vellum-60); }
+.versus-recent-outcome { color: var(--vellum-60); }
+.versus-winner {
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.12em;
+}
+.versus-winner.delfi  { background: var(--gold-dim);   color: var(--gold);   border: 1px solid var(--gold-line); }
+.versus-winner.market { background: var(--teal-dim);   color: var(--teal);   border: 1px solid var(--teal-line); }
+.versus-winner.tie    { background: var(--vellum-10);  color: var(--vellum-60); }
+.versus-taken {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--ember-dim);
+  color: var(--ember);
+  border: 1px solid var(--ember-line);
+  letter-spacing: 0.18em;
+}

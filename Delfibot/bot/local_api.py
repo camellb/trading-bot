@@ -472,6 +472,10 @@ class LocalAPI:
         app.router.add_post("/api/suggestions/{suggestion_id}/snooze",
                             self._snooze_suggestion)
         app.router.add_get("/api/learning-reports", self._get_learning_reports)
+        # Intelligence "Versus Market" tab — forecast vs market favourite
+        # scoreboard on every settled evaluation (taken + skipped).
+        app.router.add_get("/api/intelligence/versus-market",
+                            self._get_versus_market)
 
         # Archetypes (the per-archetype Settings UX)
         app.router.add_get("/api/archetypes",       self._get_archetypes)
@@ -2076,6 +2080,303 @@ class LocalAPI:
 
     async def _snooze_suggestion(self, req: web.Request) -> web.Response:
         return await self._suggestion_action(req, snooze_suggestion)
+
+    async def _get_versus_market(self, _req: web.Request) -> web.Response:
+        """Forecast vs market favourite scoreboard.
+
+        V1 doctrine ("follow the market, use the forecast as a filter")
+        means the bot only ever bets the market favourite, and skips
+        when its forecast disagrees. So the question every user asks
+        sooner or later is: "Is the filter actually helping?" This
+        endpoint answers it.
+
+        Pulls every settled evaluation in the user's current mode and
+        computes:
+
+          - Agreement breakdown (taken vs skipped-due-to-disagreement)
+          - Scoreboard on disagreements: who was right more often
+          - Brier comparison: Delfi's forecast vs the raw market price
+          - Counterfactual P&L on disagreements at $1 notional per bet:
+              * actual_pnl_disagree:       $0 (we skipped them all)
+              * pnl_if_backed_forecast:    you'd have entered Delfi's
+                                           side at market price
+              * pnl_if_followed_market:    you'd have entered the
+                                           market favourite's side
+            All in `units` of $1 notional per trade so they're
+            comparable across modes and stake sizes.
+          - Per-archetype scoreboard (where >=3 settled disagreements)
+          - Recent disagreements (last 12, for context)
+        """
+        current_mode = (
+            (await self._offload(get_user_config)).mode or "simulation"
+        )
+
+        def _query() -> dict:
+            with get_engine().begin() as conn:
+                # All settled evaluations: those whose underlying
+                # market has resolved. Includes BOTH taken trades
+                # (recommendation BUY_YES/BUY_NO) and skipped ones
+                # (recommendation SKIP).
+                rows = conn.execute(text(
+                    "SELECT me.id, me.market_price_yes, "
+                    "       me.delfi_probability, me.recommendation, "
+                    "       me.settlement_outcome, me.skip_reason, "
+                    "       me.market_archetype, me.question, "
+                    "       me.evaluated_at, "
+                    "       pm.realized_pnl_usd, pm.cost_usd, "
+                    "       pm.side, pm.entry_price "
+                    "FROM market_evaluations me "
+                    "LEFT JOIN pm_positions pm "
+                    "  ON pm.id = me.pm_position_id "
+                    "WHERE me.user_id = :uid "
+                    "  AND me.mode = :m "
+                    "  AND me.settlement_outcome IN ('YES','NO') "
+                    "  AND me.market_price_yes IS NOT NULL "
+                    "  AND me.delfi_probability IS NOT NULL "
+                    "ORDER BY me.evaluated_at DESC"
+                ), {"uid": DEFAULT_USER_ID, "m": current_mode}).fetchall()
+
+                return {"rows": [dict(r._mapping) for r in rows]}
+
+        try:
+            data = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, _query,
+            )
+        except Exception as exc:
+            return _err(f"versus-market query failed: {exc}", 500)
+
+        rows = data["rows"]
+
+        # Aggregate counters.
+        n_total = len(rows)
+        n_taken = 0
+        n_skipped = 0
+        n_agreed = 0
+        n_disagreed = 0
+        n_delfi_right_on_disagree = 0
+        n_market_right_on_disagree = 0
+
+        # Brier accumulators.
+        brier_delfi_sum = 0.0
+        brier_market_sum = 0.0
+        brier_n = 0
+        brier_delfi_disagree_sum = 0.0
+        brier_market_disagree_sum = 0.0
+        brier_disagree_n = 0
+
+        # Counterfactual P&L accumulators (across DISAGREEMENT
+        # settled rows only; agreement rows don't contribute to
+        # the counterfactual because the doctrine and the
+        # alternative would have bet the same side).
+        # $1 notional per trade. Payout if your side wins is
+        # $1/price, cost is $1; net = ($1/price - $1) if right
+        # else -$1.
+        cf_actual = 0.0       # what we actually did on disagree (skip = 0)
+        cf_backed_forecast = 0.0
+        cf_followed_market = 0.0
+
+        # Actual P&L on TAKEN settled trades (real dollars).
+        actual_taken_pnl = 0.0
+
+        # Per-archetype scoreboard.
+        per_arch: dict[str, dict] = {}
+
+        # Recent disagreements (max 12, newest first; rows are
+        # already ordered DESC by evaluated_at).
+        recent_disagree: list[dict] = []
+
+        for r in rows:
+            mkt = float(r["market_price_yes"])
+            delfi = float(r["delfi_probability"])
+            outcome = r["settlement_outcome"]  # 'YES' or 'NO'
+            o_int = 1 if outcome == "YES" else 0
+            rec = (r["recommendation"] or "").upper()
+            arch = r["market_archetype"] or "unknown"
+
+            # Brier inputs (always YES-side probability).
+            brier_delfi_sum += (delfi - o_int) ** 2
+            brier_market_sum += (mkt - o_int) ** 2
+            brier_n += 1
+
+            # Picks.
+            market_pick = "YES" if mkt >= 0.50 else "NO"
+            delfi_pick = "YES" if delfi >= 0.50 else "NO"
+            disagree = market_pick != delfi_pick
+
+            # Taken vs skipped.
+            if rec in ("BUY_YES", "BUY_NO"):
+                n_taken += 1
+                pnl = r["realized_pnl_usd"]
+                if pnl is not None:
+                    actual_taken_pnl += float(pnl)
+            else:
+                n_skipped += 1
+
+            if disagree:
+                n_disagreed += 1
+                brier_delfi_disagree_sum += (delfi - o_int) ** 2
+                brier_market_disagree_sum += (mkt - o_int) ** 2
+                brier_disagree_n += 1
+
+                # Who was right.
+                if delfi_pick == outcome:
+                    n_delfi_right_on_disagree += 1
+                if market_pick == outcome:
+                    n_market_right_on_disagree += 1
+
+                # Counterfactual at $1 notional.
+                # Entry price on YOUR chosen side = side's quoted
+                # price. If you pick YES, you pay `mkt` per share;
+                # if you pick NO, you pay `1 - mkt` per share. $1
+                # notional = 1/price shares.
+                price_forecast = mkt if delfi_pick == "YES" else (1.0 - mkt)
+                price_market = mkt if market_pick == "YES" else (1.0 - mkt)
+                if price_forecast > 0:
+                    if delfi_pick == outcome:
+                        cf_backed_forecast += (1.0 / price_forecast) - 1.0
+                    else:
+                        cf_backed_forecast += -1.0
+                if price_market > 0:
+                    if market_pick == outcome:
+                        cf_followed_market += (1.0 / price_market) - 1.0
+                    else:
+                        cf_followed_market += -1.0
+                # cf_actual stays 0 — when the doctrine fires on a
+                # disagreement, we skip, so we neither paid nor
+                # collected anything.
+
+                # Recent list.
+                if len(recent_disagree) < 12:
+                    if delfi_pick == outcome and market_pick != outcome:
+                        winner = "delfi"
+                    elif market_pick == outcome and delfi_pick != outcome:
+                        winner = "market"
+                    else:
+                        winner = "tie"
+                    recent_disagree.append({
+                        "id": int(r["id"]),
+                        "question": r["question"],
+                        "archetype": arch,
+                        "market_p_yes": mkt,
+                        "delfi_p_yes": delfi,
+                        "market_pick": market_pick,
+                        "delfi_pick": delfi_pick,
+                        "outcome": outcome,
+                        "winner": winner,
+                        "taken": rec in ("BUY_YES", "BUY_NO"),
+                        "evaluated_at": iso_utc(r["evaluated_at"]),
+                    })
+            else:
+                n_agreed += 1
+
+            # Per-archetype rollup (every row contributes to its
+            # archetype's totals; the disagree subset uses its
+            # own counters).
+            a = per_arch.setdefault(arch, {
+                "archetype": arch,
+                "n_total": 0,
+                "n_agreed": 0,
+                "n_disagreed": 0,
+                "n_delfi_right_on_disagree": 0,
+                "n_market_right_on_disagree": 0,
+            })
+            a["n_total"] += 1
+            if disagree:
+                a["n_disagreed"] += 1
+                if delfi_pick == outcome:
+                    a["n_delfi_right_on_disagree"] += 1
+                if market_pick == outcome:
+                    a["n_market_right_on_disagree"] += 1
+            else:
+                a["n_agreed"] += 1
+
+        def _safe_div(num: float, den: float) -> Optional[float]:
+            return (num / den) if den > 0 else None
+
+        # Only surface archetypes with enough disagreement signal.
+        by_archetype = [
+            a for a in per_arch.values() if a["n_disagreed"] >= 3
+        ]
+        # Sort by sample size (most data first).
+        by_archetype.sort(key=lambda x: x["n_disagreed"], reverse=True)
+
+        # Verdict: did the filter help (vs ignoring it and betting
+        # every market favourite)? `delta_vs_market` is how much
+        # better Delfi's actual strategy (skip-on-disagree) did
+        # versus a strategy that ignores the forecast filter. On
+        # the disagreement subset specifically: actual is $0,
+        # ignoring would have been `cf_followed_market`. So
+        # `filter_saved = 0 - cf_followed_market`.
+        filter_saved = -cf_followed_market
+
+        if n_disagreed >= 5:
+            if filter_saved > 0.5:
+                verdict_label = "Filter helping"
+                verdict_tone = "profit"
+            elif filter_saved < -0.5:
+                verdict_label = "Filter hurting"
+                verdict_tone = "ember"
+            else:
+                verdict_label = "Filter neutral"
+                verdict_tone = "neutral"
+        else:
+            verdict_label = "Insufficient data"
+            verdict_tone = "neutral"
+
+        payload = {
+            "mode": current_mode,
+            "n_total_settled_evals": n_total,
+            "n_taken": n_taken,
+            "n_skipped": n_skipped,
+            "n_agreed": n_agreed,
+            "n_disagreed": n_disagreed,
+            "agreement_rate": _safe_div(n_agreed, n_total),
+            "actual_taken_pnl_usd": round(actual_taken_pnl, 4),
+            "scoreboard": {
+                "n_disagreed": n_disagreed,
+                "delfi_right": n_delfi_right_on_disagree,
+                "market_right": n_market_right_on_disagree,
+                "delfi_win_rate":
+                    _safe_div(n_delfi_right_on_disagree, n_disagreed),
+                "market_win_rate":
+                    _safe_div(n_market_right_on_disagree, n_disagreed),
+            },
+            "brier": {
+                "n": brier_n,
+                "delfi": (
+                    round(brier_delfi_sum / brier_n, 4)
+                    if brier_n > 0 else None
+                ),
+                "market": (
+                    round(brier_market_sum / brier_n, 4)
+                    if brier_n > 0 else None
+                ),
+                "n_disagree": brier_disagree_n,
+                "delfi_on_disagree": (
+                    round(brier_delfi_disagree_sum / brier_disagree_n, 4)
+                    if brier_disagree_n > 0 else None
+                ),
+                "market_on_disagree": (
+                    round(brier_market_disagree_sum / brier_disagree_n, 4)
+                    if brier_disagree_n > 0 else None
+                ),
+            },
+            "counterfactual": {
+                "notional_per_bet_usd": 1.0,
+                "n_bets": n_disagreed,
+                "actual_usd": round(cf_actual, 4),
+                "backed_forecast_usd": round(cf_backed_forecast, 4),
+                "followed_market_usd": round(cf_followed_market, 4),
+                "filter_saved_usd": round(filter_saved, 4),
+            },
+            "verdict": {
+                "label": verdict_label,
+                "tone": verdict_tone,
+            },
+            "by_archetype": by_archetype,
+            "recent_disagreements": recent_disagree,
+        }
+        return _ok(payload)
 
     async def _get_learning_reports(self, req: web.Request) -> web.Response:
         """50-trade narrative reviews. Single-user, so no admin gate.

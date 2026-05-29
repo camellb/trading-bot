@@ -689,6 +689,80 @@ export interface LearningReport {
   data: ReportData | null;
 }
 
+/** Backs the Intelligence "Versus Market" tab. The endpoint walks
+ *  every settled evaluation in the user's current mode and reports:
+ *
+ *   - Agreement breakdown (Delfi vs market favourite, taken/skipped)
+ *   - Scoreboard on the disagreement subset (who was right more often)
+ *   - Brier comparison (forecaster vs raw market price)
+ *   - Counterfactual P&L on $1 notional per bet across all
+ *     settled disagreements (skip vs back-the-forecast vs follow-market)
+ *   - Per-archetype breakdown where >=3 disagreements exist
+ *   - Last 12 disagreements with winner labels
+ *
+ *  V1 doctrine ("follow the market, use the forecast as a filter")
+ *  means agreement is the default. The disagreement subset is the
+ *  one that answers "is the filter actually helping us?"
+ */
+export interface VersusMarketReport {
+  mode: string;
+  n_total_settled_evals: number;
+  n_taken: number;
+  n_skipped: number;
+  n_agreed: number;
+  n_disagreed: number;
+  agreement_rate: number | null;
+  actual_taken_pnl_usd: number;
+  scoreboard: {
+    n_disagreed: number;
+    delfi_right: number;
+    market_right: number;
+    delfi_win_rate: number | null;
+    market_win_rate: number | null;
+  };
+  brier: {
+    n: number;
+    delfi: number | null;
+    market: number | null;
+    n_disagree: number;
+    delfi_on_disagree: number | null;
+    market_on_disagree: number | null;
+  };
+  counterfactual: {
+    notional_per_bet_usd: number;
+    n_bets: number;
+    actual_usd: number;
+    backed_forecast_usd: number;
+    followed_market_usd: number;
+    filter_saved_usd: number;
+  };
+  verdict: {
+    label: string;
+    tone: "profit" | "ember" | "neutral";
+  };
+  by_archetype: Array<{
+    archetype: string;
+    n_total: number;
+    n_agreed: number;
+    n_disagreed: number;
+    n_delfi_right_on_disagree: number;
+    n_market_right_on_disagree: number;
+  }>;
+  recent_disagreements: Array<{
+    id: number;
+    question: string;
+    archetype: string;
+    market_p_yes: number;
+    delfi_p_yes: number;
+    market_pick: "YES" | "NO";
+    delfi_pick: "YES" | "NO";
+    outcome: "YES" | "NO";
+    winner: "delfi" | "market" | "tie";
+    taken: boolean;
+    evaluated_at: string;
+  }>;
+}
+
 export interface ArchetypeEntry {
   id: string;
   label: string;
@@ -924,6 +998,8 @@ export const api = {
     }),
   learningReports: (limit = 10) =>
     request<{ reports: LearningReport[] }>(`/api/learning-reports?limit=${limit}`),
+  versusMarket: () =>
+    request<VersusMarketReport>("/api/intelligence/versus-market"),
 
   // Archetypes
   archetypes: () => request<ArchetypeCatalogue>("/api/archetypes"),

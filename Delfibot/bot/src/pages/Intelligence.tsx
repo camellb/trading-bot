@@ -6,6 +6,7 @@ import {
   PendingSuggestion,
   ReportArchetypeRow,
   ReportPosition,
+  VersusMarketReport,
 } from "../api";
 import { formatDate, formatDateTime } from "../lib/format";
 import { archetypeLabel } from "../lib/archetypes";
@@ -114,12 +115,13 @@ function SuggestionDiff({ s }: { s: PendingSuggestion }) {
   );
 }
 
-type Tab = "reviews" | "proposals";
+type Tab = "reviews" | "proposals" | "versus";
 
 export default function Intelligence() {
   const [reports, setReports]         = useState<LearningReport[] | null>(null);
   const [suggestions, setSuggestions] = useState<PendingSuggestion[] | null>(null);
   const [history, setHistory]         = useState<PendingSuggestion[] | null>(null);
+  const [versus, setVersus]           = useState<VersusMarketReport | null>(null);
   const [error, setError]             = useState<string | null>(null);
   const [busyId, setBusyId]           = useState<number | null>(null);
   const [tab, setTab]                 = useState<Tab>("reviews");
@@ -127,14 +129,16 @@ export default function Intelligence() {
 
   const refresh = useCallback(async () => {
     try {
-      const [r1, r2, r3] = await Promise.all([
+      const [r1, r2, r3, r4] = await Promise.all([
         api.learningReports(20).then((x) => x.reports),
         api.suggestions().then((x) => x.suggestions),
         api.suggestionsHistory(20).then((x) => x.suggestions),
+        api.versusMarket().catch(() => null as VersusMarketReport | null),
       ]);
       setReports(r1);
       setSuggestions(r2);
       setHistory(r3);
+      setVersus(r4);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -269,6 +273,18 @@ export default function Intelligence() {
               </span>
             )}
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "versus"}
+            className={`intel-tab ${tab === "versus" ? "active" : ""}`}
+            onClick={() => setTab("versus")}
+          >
+            Versus Market
+            {versus && versus.n_disagreed > 0 && (
+              <span className="intel-tab-badge">{versus.n_disagreed}</span>
+            )}
+          </button>
         </div>
       )}
 
@@ -293,6 +309,339 @@ export default function Intelligence() {
           onSkip={skip}
         />
       )}
+
+      {loaded && hasAnything && tab === "versus" && (
+        <VersusMarketPane data={versus} />
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────── Versus Market tab ────────────────────────────
+ *
+ * V1 doctrine: Delfi follows the market favourite and only skips when
+ * its forecast disagrees with the market. This pane answers the
+ * question that follows naturally from that doctrine — "is the
+ * forecaster's veto actually helping us, or has it been costing us
+ * money?" — by walking every settled evaluation and scoring both
+ * sides.
+ *
+ * Layout:
+ *
+ *   1. Verdict card (filter helping / hurting / neutral, + $ saved)
+ *   2. Top stat row (totals + scoreboard on disagreements)
+ *   3. Counterfactual P&L grid (skip vs back-forecast vs follow-market)
+ *   4. Brier comparison (Delfi vs market, all + disagreement-subset)
+ *   5. Per-archetype scoreboard (only archetypes with >=3 disagreements)
+ *   6. Recent disagreements table (last 12, with winner badge)
+ */
+function VersusMarketPane({ data }: { data: VersusMarketReport | null }) {
+  if (data == null) {
+    return (
+      <div className="intel-empty-soft">
+        Loading the disagreement scoreboard…
+      </div>
+    );
+  }
+
+  if (data.n_disagreed === 0) {
+    return (
+      <section className="intel-empty">
+        <div className="intel-empty-pill">NOTHING TO COMPARE YET</div>
+        <h2 className="intel-empty-head">
+          Delfi hasn&apos;t disagreed with the market on a settled trade yet
+        </h2>
+        <p className="intel-empty-body">
+          V1 doctrine: Delfi follows the market favourite, skips when
+          its forecast points the other way. This tab fills in as
+          markets resolve where the forecaster and the market priced
+          opposite sides of 50%.
+        </p>
+      </section>
+    );
+  }
+
+  const sb = data.scoreboard;
+  const cf = data.counterfactual;
+  const b  = data.brier;
+
+  return (
+    <div className="versus-pane">
+      {/* 1. Verdict card */}
+      <section className={`versus-verdict tone-${data.verdict.tone}`}>
+        <div className="versus-verdict-label">
+          {data.verdict.label.toUpperCase()}
+        </div>
+        <div className="versus-verdict-headline">
+          {cf.filter_saved_usd >= 0 ? (
+            <>
+              Skipping disagreements saved{" "}
+              <span className="profit">${cf.filter_saved_usd.toFixed(2)}</span>
+              {" "}per $1 staked over {cf.n_bets} bets
+            </>
+          ) : (
+            <>
+              Skipping disagreements cost{" "}
+              <span className="ember">${Math.abs(cf.filter_saved_usd).toFixed(2)}</span>
+              {" "}per $1 staked over {cf.n_bets} bets
+            </>
+          )}
+        </div>
+        <div className="versus-verdict-sub">
+          Across {data.n_total_settled_evals} settled evaluations,
+          Delfi and the market agreed{" "}
+          {fmtPct(data.agreement_rate)} of the time. The {data.n_disagreed}{" "}
+          disagreements are where the forecaster&apos;s veto matters.
+        </div>
+      </section>
+
+      {/* 2. Top stat row */}
+      <section className="versus-grid">
+        <StatCell label="Settled evaluations" value={String(data.n_total_settled_evals)} />
+        <StatCell label="Taken" value={String(data.n_taken)} sub={`actual P&L ${fmtUsdSigned(data.actual_taken_pnl_usd)}`} />
+        <StatCell label="Skipped" value={String(data.n_skipped)} />
+        <StatCell label="Disagreements" value={String(data.n_disagreed)} sub={`${fmtPct(data.agreement_rate ?? 0, 1)} agreement`} />
+      </section>
+
+      {/* 3. Scoreboard */}
+      <section className="versus-card">
+        <h3 className="versus-card-title">
+          When they disagreed, who was right?
+        </h3>
+        <p className="versus-card-sub">
+          Of the {sb.n_disagreed} settled markets where Delfi&apos;s
+          forecast pointed away from the market favourite.
+        </p>
+        <div className="versus-vs-row">
+          <div className="versus-vs-cell delfi">
+            <div className="versus-vs-name">Delfi</div>
+            <div className="versus-vs-rate">{fmtPct(sb.delfi_win_rate)}</div>
+            <div className="versus-vs-count">
+              {sb.delfi_right} of {sb.n_disagreed}
+            </div>
+          </div>
+          <div className="versus-vs-divider">vs</div>
+          <div className="versus-vs-cell market">
+            <div className="versus-vs-name">Market</div>
+            <div className="versus-vs-rate">{fmtPct(sb.market_win_rate)}</div>
+            <div className="versus-vs-count">
+              {sb.market_right} of {sb.n_disagreed}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* 4. Counterfactual P&L */}
+      <section className="versus-card">
+        <h3 className="versus-card-title">
+          Counterfactual P&L on disagreements
+        </h3>
+        <p className="versus-card-sub">
+          At $1 notional per bet across {cf.n_bets} settled
+          disagreements, what each strategy would have netted.
+        </p>
+        <div className="versus-cf-grid">
+          <CounterfactualRow
+            label="Skip (what Delfi does)"
+            usd={cf.actual_usd}
+            isActive
+          />
+          <CounterfactualRow
+            label="Back the forecast"
+            usd={cf.backed_forecast_usd}
+          />
+          <CounterfactualRow
+            label="Follow the market favourite"
+            usd={cf.followed_market_usd}
+          />
+        </div>
+        <div className="versus-cf-footer">
+          {cf.filter_saved_usd >= 0 ? (
+            <>
+              Net: skipping these {cf.n_bets} bets saved{" "}
+              <span className="profit">{fmtUsdSigned(cf.filter_saved_usd)}</span>
+              {" "}vs blindly following the market favourite.
+            </>
+          ) : (
+            <>
+              Net: skipping these {cf.n_bets} bets cost{" "}
+              <span className="ember">{fmtUsdSigned(cf.filter_saved_usd)}</span>
+              {" "}vs blindly following the market favourite.
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* 5. Brier comparison */}
+      <section className="versus-card">
+        <h3 className="versus-card-title">Forecaster calibration</h3>
+        <p className="versus-card-sub">
+          Brier score is the average squared distance between the
+          predicted YES-probability and the actual outcome. Lower is
+          better. 0.25 is a coin flip.
+        </p>
+        <div className="versus-brier-grid">
+          <BrierCell
+            label="Delfi (all settled)"
+            value={b.delfi}
+            n={b.n}
+            comparison={b.market}
+          />
+          <BrierCell
+            label="Market (all settled)"
+            value={b.market}
+            n={b.n}
+            comparison={b.delfi}
+          />
+          <BrierCell
+            label="Delfi (disagreements)"
+            value={b.delfi_on_disagree}
+            n={b.n_disagree}
+            comparison={b.market_on_disagree}
+          />
+          <BrierCell
+            label="Market (disagreements)"
+            value={b.market_on_disagree}
+            n={b.n_disagree}
+            comparison={b.delfi_on_disagree}
+          />
+        </div>
+      </section>
+
+      {/* 6. By archetype */}
+      {data.by_archetype.length > 0 && (
+        <section className="versus-card">
+          <h3 className="versus-card-title">By archetype</h3>
+          <p className="versus-card-sub">
+            Archetypes with at least 3 settled disagreements. Win rate
+            is computed on the disagreement subset only.
+          </p>
+          <table className="versus-table">
+            <thead>
+              <tr>
+                <th>Archetype</th>
+                <th className="num">Disagreed</th>
+                <th className="num">Delfi right</th>
+                <th className="num">Market right</th>
+                <th className="num">Edge</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.by_archetype.map((a) => {
+                const delfiRate = a.n_disagreed > 0
+                  ? a.n_delfi_right_on_disagree / a.n_disagreed
+                  : 0;
+                const marketRate = a.n_disagreed > 0
+                  ? a.n_market_right_on_disagree / a.n_disagreed
+                  : 0;
+                const edge = delfiRate - marketRate;
+                return (
+                  <tr key={a.archetype}>
+                    <td>{archetypeLabel(a.archetype)}</td>
+                    <td className="num">{a.n_disagreed}</td>
+                    <td className="num">
+                      {a.n_delfi_right_on_disagree} ({fmtPct(delfiRate)})
+                    </td>
+                    <td className="num">
+                      {a.n_market_right_on_disagree} ({fmtPct(marketRate)})
+                    </td>
+                    <td className={`num ${edge > 0 ? "profit" : edge < 0 ? "ember" : ""}`}>
+                      {edge >= 0 ? "+" : ""}{(edge * 100).toFixed(1)} pts
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {/* 7. Recent disagreements */}
+      {data.recent_disagreements.length > 0 && (
+        <section className="versus-card">
+          <h3 className="versus-card-title">Recent disagreements</h3>
+          <p className="versus-card-sub">
+            Most recent {data.recent_disagreements.length} settled
+            markets where Delfi and the market pointed opposite sides
+            of 50%.
+          </p>
+          <ul className="versus-recent">
+            {data.recent_disagreements.map((r) => (
+              <li key={r.id} className="versus-recent-row">
+                <div className="versus-recent-q">{r.question}</div>
+                <div className="versus-recent-meta">
+                  <span className="versus-recent-arch">
+                    {archetypeLabel(r.archetype)}
+                  </span>
+                  <span className="versus-recent-prices">
+                    Delfi {fmtPct(r.delfi_p_yes)} YES vs Market{" "}
+                    {fmtPct(r.market_p_yes)} YES
+                  </span>
+                  <span className="versus-recent-outcome">
+                    Resolved {r.outcome}
+                  </span>
+                  <span className={`versus-winner ${r.winner}`}>
+                    {r.winner === "delfi"  && "Delfi right"}
+                    {r.winner === "market" && "Market right"}
+                    {r.winner === "tie"    && "Tie"}
+                  </span>
+                  {r.taken && <span className="versus-taken">TAKEN</span>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function StatCell({
+  label, value, sub,
+}: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="versus-stat">
+      <div className="versus-stat-label">{label}</div>
+      <div className="versus-stat-value">{value}</div>
+      {sub && <div className="versus-stat-sub">{sub}</div>}
+    </div>
+  );
+}
+
+function CounterfactualRow({
+  label, usd, isActive = false,
+}: { label: string; usd: number; isActive?: boolean }) {
+  const tone = usd > 0 ? "profit" : usd < 0 ? "ember" : "neutral";
+  return (
+    <div className={`versus-cf-row ${isActive ? "active" : ""}`}>
+      <div className="versus-cf-label">
+        {label}
+        {isActive && <span className="versus-cf-pill">CURRENT</span>}
+      </div>
+      <div className={`versus-cf-value ${tone}`}>
+        {fmtUsdSigned(usd)}
+      </div>
+    </div>
+  );
+}
+
+function BrierCell({
+  label, value, n, comparison,
+}: {
+  label: string;
+  value: number | null;
+  n: number;
+  comparison: number | null;
+}) {
+  // Lower Brier is better, so the side with the lower value
+  // gets the "better" pill.
+  const better = value != null && comparison != null && value < comparison;
+  return (
+    <div className={`versus-brier-cell ${better ? "winning" : ""}`}>
+      <div className="versus-brier-label">{label}</div>
+      <div className="versus-brier-value">{fmtBrier(value)}</div>
+      <div className="versus-brier-n">n={n}</div>
+      {better && <div className="versus-brier-pill">BETTER</div>}
     </div>
   );
 }
