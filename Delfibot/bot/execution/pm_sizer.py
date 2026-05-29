@@ -1,48 +1,59 @@
 """
-Polymarket position sizer - V1 doctrine: follow the market, use the
-forecast as a filter.
+Polymarket position sizer - V2 doctrine: ALWAYS follow the market
+favourite. The forecaster informs sizing per-archetype over time but
+does NOT gate entry.
 
-Locked 2026-04-27. Replaces the V0 "two gates + confidence softener"
-sizer after a 250-trade simulation backtest showed V0 lost 3.53% ROI
-while a market-default baseline made 4.89%. Full evidence:
-`memory/doctrine_back_the_forecast.md`.
+V2 locked 2026-05-30. Replaces V1 ("follow the market, use the
+forecast as a filter") after the Versus Market analysis showed the
+V1 disagreement veto cost +$80 across 115 settled disagreement bets
+on the user's live install ($3 synthetic stake). Strategy comparison
+across 381 settled live evaluations:
+    A. V1 status quo (skip on Delfi disagreement):   +$10.52
+    B. V2 (drop veto, keep archetype/budget gates):  +$91.11
+    C. Follow market on every settled eval:         +$104.47
+    D. Back the forecast (V0, rejected 2026-04-27): -$236.52
+V2 = strategy B. Adds the 115 forecast-vetoed bets, keeps every other
+guard intact.
+
+Why not back the forecast? It's still anti-signal on disagreements
+(-$76.18 at $1 notional). V0 stays rejected. The forecaster has signal
+in aggregate calibration, just not enough to override the market on
+any specific trade. Per-archetype multipliers continue to encode the
+forecaster's archetype-level signal.
 
 Side selection
-    Side is the market favourite, period. The forecaster does NOT pick
-    the side. If `ask_yes >= 0.50` we buy YES at `ask_yes`; otherwise we
-    buy NO at `ask_no` (which equals `1 - ask_yes` to within Polymarket's
-    rounding).
+    Side is the market favourite, period. If `ask_yes >= 0.50` we buy
+    YES at `ask_yes`; otherwise we buy NO at `ask_no` (which equals
+    `1 - ask_yes` to within Polymarket's rounding).
 
-Gate (single, only skip path)
-    Delfi direction agreement: `delfi_p` and `market_p_yes` must lie on
-    the same side of 0.50. If they don't, skip. That is the entire skip
-    logic in V1.
+Gates that remain
+    - archetype_skip_list: hard skip per user config (default skips
+      sports_other, hockey, cricket).
+    - archetype price bands: per-archetype `(lo, hi)` bands in
+      market_p_yes space; skip if the favourite price is inside any
+      band.
+    - max_stake_pct cap (when max_stake_pct_enabled = True).
+    - Polymarket platform minimum: max($1, 5 * price).
 
 Sizing
-    Flat. `stake = bankroll * base_stake_pct * archetype_multiplier`.
-    Confidence is no longer a sizing input - on the V0 sample, high-
+    Flat. `stake = bankroll * base_stake_pct * archetype_multiplier *
+                   volume_tier_multiplier`.
+    Confidence is not a sizing input - on the V0 sample, high-
     confidence Delfi picks won 52.9% while low-confidence picks won
-    67.6%, so the V0 softener was loading more dollars onto worse
-    trades.
+    67.6%, so the softener was loading more dollars onto worse trades.
 
-Archetype overrides (preserved from V0)
+Archetype overrides (preserved from V0 and V1)
     archetype_skip_list: hard skip; the trade never opens.
     archetype_stake_multipliers[archetype]: multiplied into the stake,
     clamped [0.1, 10.0]. 1.0 (or missing key) = no adjustment.
 
-Final stake = bankroll * base_stake_pct * archetype_mult, capped at
-bankroll * max_stake_pct, with an absolute $2 minimum (same as V0).
-
 What was deliberately removed
-    - min_p_win gate (the market favourite is by definition >= 0.50, so a
-      0.55 floor would just clip the 0.50-0.55 band, which was profitable
-      on the backtest at +15.2% ROI).
-    - Confidence softener (anti-correlated with hit rate on the V0
-      sample).
-    - High-confidence override and mean rule (V0's two-mode side
-      selector). The market picks the side now.
-    - Gate 3 (min expected return) was removed in V0 and stays removed
-      under V1.
+    V2 dropped:
+    - Delfi direction-agreement veto. See in-line comment at the
+      ex-gate site for the audit-trail evidence.
+    V1 dropped (preserved here):
+    - min_p_win gate, confidence softener, high-confidence override,
+      mean rule, min-expected-return gate.
 """
 
 from __future__ import annotations
@@ -158,17 +169,19 @@ def size_position(
     else:
         side, entry, p_win = "NO", an, 1.0 - market_p_yes
 
-    # ── Gate: Delfi direction agreement ─────────────────────────────────────
-    # The forecaster's only job in V1 is to veto trades where it disagrees
-    # with the market's pick. Both probabilities must land on the same side
-    # of 0.50.
-    if (cp - 0.50) * (market_p_yes - 0.50) < 0:
-        return _skip(
-            cp, cf,
-            f"Delfi disagrees with the market "
-            f"(delfi_p={cp:.2f}, market_p_yes={market_p_yes:.2f})",
-            side=side, entry=entry, p_win=p_win,
-        )
+    # ── V1 direction-agreement gate: REMOVED in V2 doctrine (2026-05-30) ────
+    # V1 doctrine vetoed trades when delfi_p and market_p_yes landed on
+    # opposite sides of 0.50. The Versus Market analysis on the user's live
+    # install showed that veto was costing money: 115 settled disagreements
+    # the V1 filter declined would have netted +$26.86 at $1 notional per
+    # bet (and +$80.59 at the bot's actual $3 stake) had we just taken the
+    # market favourite. The forecaster IS anti-signal on disagreements
+    # (backing it lost more), but the right reaction is to ignore the
+    # forecaster on those rows, not to skip the market. V2 doctrine:
+    # "always follow the market favourite; the forecaster does not gate
+    # entry." force_skip from polymarket_evaluator (research-mismatch case)
+    # still applies as an independent safety. See CLAUDE.md "Settled
+    # lessons" + v1.5.32 commit.
 
     # ─────────────────────────────────────────────────────────────────
     # GATE: per-archetype disabled market-price bands

@@ -113,19 +113,42 @@ These are not style preferences. Violations will be rejected.
 
 ## The core principle. Simple on purpose
 
-**Follow the market. Use the forecast as a filter.**
+**Always follow the market. The forecaster does not gate entry.**
 
-Delfi bets the side the market favours (the side with implied probability >= 0.50). The forecaster's job is the veto: if it disagrees with the market's pick, skip the trade. The forecaster does not pick the side, does not size the stake, and does not override the market's price.
+Delfi bets the side the market favours (the side with implied probability >= 0.50). The forecaster shapes per-archetype multipliers and the skip list, but does NOT veto individual trades.
 
-This is the V1 doctrine, locked 2026-04-27. It replaces the prior "back the forecast" doctrine after a 250-trade simulation-mode counterfactual showed the prior architecture was systematically losing money to a market-default baseline (V0 actual: -3.53% ROI; V1 selected: +14.47% ROI on the same trades). Authoritative numbers and the rejected alternatives live in `memory/doctrine_back_the_forecast.md`; never invent or reset them from this document.
+This is the V2 doctrine, locked 2026-05-30. It replaces the V1 "use the forecast as a filter" doctrine after a Versus Market analysis on 381 settled live evaluations showed:
 
-The single operational gate that lives in code:
+| Strategy                                              | Net @ $3 stake | n   |
+|-------------------------------------------------------|----------------|-----|
+| V0 - back the forecast                                | -$236.52       | 278 |
+| V1 - skip when Delfi disagrees                        | +$10.52        | 34  |
+| **V2 - always follow market (this doctrine)**         | **+$91.11**    | 149 |
+| Follow market on EVERY settled eval (no skip list)    | +$104.47       | 278 |
 
-1. **Delfi direction agreement** — `claude_p_yes` and `market_p_yes` must be on the same side of 0.50; otherwise skip.
+V2 = "always take the market favourite, keep the archetype/budget/price-band/research-mismatch gates." Adds 115 forecast-vetoed bets to V1, gives +$80 over the same window. The marginal +$13 from also trading archetype-skipped markets isn't worth weakening multiple guards in one ship.
 
-There are no other gates. `min_p_win`, the confidence softener, and the historical "minimum expected return" gate are all retired. The market favourite is by definition >= 0.50, so a `min_p_win` filter would just clip the most-profitable narrow-favourite band; the confidence softener was empirically anti-signal (high-confidence Delfi picks won 52.9%, low-confidence won 67.6%); the EV gate was retired in V0 and stays banned in V1 because it silenced positive-EV heavy favourites.
+Why not V0? It's still anti-signal on disagreements (-$76.18 at $1 notional). Backing the forecaster lost more than skipping. The forecaster has aggregate-calibration signal but it does NOT have signal at any specific trade level. Per-archetype multipliers continue to encode the forecaster's archetype-level information.
 
-Sizing is flat and scaled only by per-archetype multipliers (default 1.0 for unknown archetypes; specific defaults `basketball: 1.5`, `tennis: 0.5`). Skip list is a hard skip (default `sports_other`, `hockey`, `cricket`). Both lists are user-editable in the dashboard. Simple sizing keeps variance per trade low so the portfolio learns fast.
+Authoritative numbers and the rejected alternatives live in `memory/doctrine_back_the_forecast.md`; never invent or reset them from this document.
+
+Gates that still apply (in code):
+
+1. **Archetype skip list** - hard skip per user config (default `sports_other`, `hockey`, `cricket`).
+2. **Archetype price bands** - per-archetype `(lo, hi)` market-price bands; skip if favourite price is inside any band.
+3. **max_stake_pct cap** (when `max_stake_pct_enabled = True`).
+4. **Platform minimum** - Polymarket V2 CLOB requires `max($1, 5 * price)` per order.
+5. **`force_skip`** - `polymarket_evaluator` sets this when `same_event_verified=no` (research is about a different event/edition than the market); independent of the sizer.
+
+What is GONE (V2 removed):
+
+- **Delfi direction-agreement veto** - the V1 gate that skipped when `(claude_p_yes - 0.50) * (market_p_yes - 0.50) < 0`. Removed because the audit showed it cost +$80 across 115 live disagreements.
+
+What stayed gone (V1 -> V2 carryover):
+
+- `min_p_win`, confidence softener, high-confidence override, mean rule, min-expected-return gate.
+
+Sizing is still flat and archetype-multiplied (default 1.0 for unknown archetypes; specific defaults `basketball: 1.5`, `tennis: 0.5`). Skip list still a hard skip (default `sports_other`, `hockey`, `cricket`). Both lists user-editable in the dashboard. Simple sizing keeps variance per trade low so the portfolio learns fast.
 
 ## Risk management
 
