@@ -1732,30 +1732,75 @@ class LocalAPI:
             open_cost_basis  = float(stats.get("bot_open_cost") or 0.0)
             unrealized_pnl   = open_cost_mtm - open_cost_basis
 
-        # In LIVE mode, derive a stable "starting capital" for this
-        # session from the identity
-        #     equity = starting + realized + unrealized
-        # so live_starting = equity - realized - unrealized
-        #                  = equity - total_pnl.
+        # LIVE-mode starting capital: PINNED via the user_config
+        # `live_starting_cash` column. Snapshot once, read forever.
         #
-        # The earlier formulation `bankroll - realized + open_cost`
-        # silently included unrealized P&L in the denominator
-        # (because `open_cost` is the MTM of open positions, which
-        # equals cost_basis + unrealized). That made the derived
-        # starting drift with every mark-to-market tick, and
-        # produced the user-visible bug 2026-05-28: equity drops
-        # from $40 -> $38.88 (unrealized swung -$2) while the
-        # P&L % CLIMBED from +77% to +80%, because the denominator
-        # shrank by more than the numerator. The fix below pins
-        # `starting` to the true deposit-side capital so a swing
-        # in unrealized only moves the numerator, not the
-        # denominator, and ROI tracks equity intuitively.
+        # The intent of the prior v1.5.25 patch was right - "starting"
+        # should be the user's deposit-side capital, invariant of
+        # mark-to-market swings - but the implementation just RE-DERIVED
+        # `equity - realized - unrealized` on every call. Every closed
+        # trade nudged that derivation by the spread/fee delta between
+        # our wallet accounting and Polymarket's PnL fields, so ROI
+        # climbed as the user LOST money (denominator shrank faster
+        # than numerator). 2026-05-29 incident: equity $40.54 @
+        # +99.27% became $38.07 @ +110.38% after position #350 closed
+        # for a $2.47 loss. User flagged it (again).
+        #
+        # Fix: pin starting to a stored value. On the FIRST call where
+        # we have a usable equity + total_pnl pair, snapshot
+        # `live_starting = equity - total_pnl` and write it to
+        # `user_config.live_starting_cash`. All subsequent calls read
+        # the column directly; the value never moves again unless a
+        # Settings reset path explicitly nullifies it (e.g. when the
+        # user deposits more capital and wants to rebaseline).
         if stats.get("mode") == "live":
-            live_starting = equity - realized - unrealized_pnl
-            # Floor at $1 so the downstream gauge math (which
-            # divides by `starting`) doesn't choke when equity is
-            # briefly zero (e.g. mid-deposit / mid-withdraw).
-            starting = max(1.0, live_starting)
+            stored: Optional[float] = None
+            try:
+                with get_engine().begin() as conn:
+                    row = conn.execute(text(
+                        "SELECT live_starting_cash FROM user_config "
+                        "WHERE user_id = :uid"
+                    ), {"uid": "local"}).fetchone()
+                    if row is not None and row[0] is not None:
+                        try:
+                            stored = float(row[0])
+                        except (TypeError, ValueError):
+                            stored = None
+            except Exception as exc:
+                # If the column doesn't exist yet (race against
+                # migrate_schema) just fall through to the derived
+                # baseline this tick. Next call will hit the column.
+                print(f"[summary] live_starting_cash read failed: {exc}",
+                      file=sys.stderr, flush=True)
+
+            if stored is not None and stored > 0:
+                starting = stored
+            else:
+                # First observation OR a previous one was unusable.
+                # Snapshot `equity - total_pnl` (= deposit-side capital
+                # per the equity = starting + realized + unrealized
+                # identity) and persist. Floor at $1 so a degenerate
+                # equity=0 boot doesn't pin a near-zero baseline.
+                snapshot = max(1.0, equity - realized - unrealized_pnl)
+                starting = snapshot
+                try:
+                    with get_engine().begin() as conn:
+                        conn.execute(text(
+                            "UPDATE user_config "
+                            "SET live_starting_cash = :v "
+                            "WHERE user_id = :uid"
+                        ), {"v": float(snapshot), "uid": "local"})
+                    print(
+                        f"[summary] snapshotted live_starting_cash="
+                        f"${snapshot:.4f} for user='local' (equity="
+                        f"${equity:.4f}, realized=${realized:.4f}, "
+                        f"unrealized=${unrealized_pnl:.4f}). ROI denominator "
+                        f"is now PINNED to this value.",
+                        file=sys.stderr, flush=True,
+                    )
+                except Exception as exc:
+                    print(f"[summary] live_starting_cash write failed: {exc}",
+                          file=sys.stderr, flush=True)
 
         roi = (realized / starting) if starting > 0 else None
         # Total P&L source-of-truth:

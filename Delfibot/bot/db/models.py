@@ -810,6 +810,33 @@ def create_all_tables() -> None:
                 "volume_tier_multipliers JSON NOT NULL DEFAULT '{}'"
             ))
 
+        if "live_starting_cash" not in existing_user_config_cols:
+            # Added v1.5.29. Snapshots the user's live-mode deposit-side
+            # capital ONCE, the first time /api/summary observes a usable
+            # equity + total_pnl pair in live mode. Subsequent /api/summary
+            # calls read this column unchanged so ROI's denominator stays
+            # PINNED while P&L moves.
+            #
+            # Without this column the live "starting_cash" was recomputed
+            # every tick as `equity - realized - unrealized`. Each closed
+            # trade nudged that derivation by the spread/fee delta between
+            # our wallet accounting and Polymarket's PnL fields, so ROI
+            # silently climbed as the user LOST money (denominator shrank
+            # faster than numerator). 2026-05-29 incident: equity $40.54
+            # @ +99.27% became $38.07 @ +110.38% after position #350 closed
+            # for a $2.47 loss; the user lost $2.47 of equity and ROI went
+            # UP 11 percentage points. This column is the stable anchor
+            # so that can never happen again.
+            #
+            # NULL = "haven't snapshotted yet". The /api/summary handler
+            # populates it once and treats it as immutable from there. A
+            # future Settings page can expose a manual reset / recalibrate
+            # for users who deposit additional capital.
+            conn.execute(sa_text(
+                "ALTER TABLE user_config ADD COLUMN "
+                "live_starting_cash REAL"
+            ))
+
         # ── pm_positions backfills ──────────────────────────────────────
         # Same PRAGMA-probe pattern as the user_config block above. Adds
         # any column that exists in the metadata definition but not in
