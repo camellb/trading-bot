@@ -268,7 +268,17 @@ def _get_clob_client(wallet_address: str, private_key: str):
         )
     else:
         seed = ClobClient(**seed_kwargs)
-        creds = seed.create_or_derive_api_key()
+        # Try derive FIRST, fall back to create only on first-time
+        # setup. The SDK's `create_or_derive_api_key()` tries create
+        # first, which 400s on every steady-state call (the account
+        # already has creds) and pollutes the log. See
+        # feeds/polymarket_wallet.py `_derive_or_create_api_key` for
+        # the full rationale.
+        try:
+            existing = seed.derive_api_key()
+            creds = existing if (existing and getattr(existing, "api_key", None)) else seed.create_api_key()
+        except Exception:
+            creds = seed.create_api_key()
     client_kwargs = dict(seed_kwargs)
     client_kwargs["creds"] = creds
     client = ClobClient(**client_kwargs)

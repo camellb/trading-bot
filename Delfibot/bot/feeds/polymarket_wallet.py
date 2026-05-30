@@ -431,12 +431,44 @@ def _build_clob_client(
                 file=sys.stderr,
             )
 
-    creds = seed.create_or_derive_api_key()
+    creds = _derive_or_create_api_key(seed)
     client_kwargs = dict(seed_kwargs)
     client_kwargs["creds"] = creds
     client = ClobClient(**client_kwargs)
     _CLOB_CLIENT_CACHE[cache_key] = client
     return client
+
+
+def _derive_or_create_api_key(seed):
+    """Polymarket api-key acquisition that won't spam 400s on the log.
+
+    Inverts the order of the SDK's `create_or_derive_api_key()`. The
+    SDK calls `create_api_key()` first, catches the exception when the
+    account already has creds (server returns 400 "Could not create api
+    key"), then falls back to `derive_api_key()`. The fallback works -
+    the returned creds are valid - but the SDK's HTTP layer logs the
+    400 unconditionally BEFORE the fallback runs, polluting stderr
+    with one "[py_clob_client_v2] request error status=400 ... Could
+    not create api key" line per probe. Over 12 hours of running we
+    accumulated ~400 such lines on a healthy account, drowning out
+    real errors in the log.
+
+    In steady state EVERY account this bot ever runs against has
+    existing creds (the bot needed them to place its first order). So
+    derive will succeed silently. We only need create on first-ever
+    setup, and that's a one-shot.
+
+    Returns the same `ApiCreds` shape as `create_or_derive_api_key()`.
+    """
+    try:
+        existing = seed.derive_api_key()
+        if existing and getattr(existing, "api_key", None):
+            return existing
+    except Exception:
+        # No existing creds OR transient network failure. Fall through
+        # to create_api_key — first-time setup case.
+        pass
+    return seed.create_api_key()
 
 
 def _derive_poly_proxy(eoa: str) -> str:
