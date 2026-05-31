@@ -30,7 +30,7 @@ const BOUNDS = {
   weekly_loss_limit_pct: [0.01,  1.00] as const,
   drawdown_halt_pct:     [0.01,  1.00] as const,
   streak_cooldown_losses:[2,     10]   as const,
-  dry_powder_reserve_pct:[0.10,  0.40] as const,
+  dry_powder_reserve_pct:[0.00,  0.40] as const,
   // Exit policy - mirrors USER_CONFIG_BOUNDS in engine/user_config.py.
   take_profit_threshold_pct:           [0.05, 5.00] as const,   // 5% - 500%
   stop_loss_threshold_pct:             [0.05, 0.95] as const,   // 5% - 95% loss

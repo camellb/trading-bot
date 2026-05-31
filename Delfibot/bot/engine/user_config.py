@@ -296,7 +296,7 @@ USER_CONFIG_BOUNDS: dict[str, Tuple[float, float]] = {
     "weekly_loss_limit_pct":         (0.01, 1.00),
     "drawdown_halt_pct":             (0.01, 1.00),
     "streak_cooldown_losses":        (2, 10),
-    "dry_powder_reserve_pct":        (0.10, 0.40),
+    "dry_powder_reserve_pct":        (0.00, 0.40),
     "cost_assumption_override":      (0.0, 0.10),
     "starting_cash":                 (10.0, 100_000.0),
     # Time-to-resolution bounds in DAYS. Floor is 1 (a market
