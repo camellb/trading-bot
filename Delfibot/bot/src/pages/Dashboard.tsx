@@ -172,27 +172,49 @@ export default function Dashboard({ state, goto }: Props) {
   );
 
   // Range-scoped settled list. "all" returns everything; "30d"/"7d"
-  // restricts to rows whose settled_at lands within the window. Used
-  // for both the period-scoped KPIs below AND the equity-history
-  // back-step inside equitySeries. Mirrors Performance.filtered.
+  // restricts to rows whose end-of-trade timestamp lands within the
+  // window. Used for both the period-scoped KPIs below AND the
+  // equity-history back-step inside equitySeries.
+  //
+  // Timestamp = settled_at ?? closed_at. Settled rows have settled_at
+  // populated. closed_early rows may have only closed_at (e.g. when
+  // the user manually sells a position before resolution, or when the
+  // bot exits via stop-loss / take-profit). Filtering on settled_at
+  // alone silently dropped manually-closed rows from windowed views
+  // even when the window covered every trade (incident 2026-06-01:
+  // #354 manually closed, all-time count 42 vs 30d count 41).
   const filteredSettled = useMemo(() => {
     if (range === "all") return settled;
     const cutoff = Date.now() - RANGE_DAYS[range] * 86_400_000;
     return settled.filter((r) => {
-      const ts = r.settled_at as string | null | undefined;
+      const settledAt = r.settled_at as string | null | undefined;
+      const closedAt  = (r as unknown as Record<string, unknown>).closed_at as
+        | string | null | undefined;
+      const ts = settledAt ?? closedAt;
       if (!ts) return false;
       const t = Date.parse(ts);
       return Number.isFinite(t) && t >= cutoff;
     });
   }, [settled, range]);
 
-  // Period-scoped KPIs for the hero. "all" defers to summary.* so the
-  // numbers come from the server (RULE #1 single source of truth).
-  // "30d"/"7d" reproduces the canonical algorithm exactly per the
-  // doctrine in pm_executor.get_portfolio_stats() and the
-  // Performance page's filteredStats.
+  // When the window covers every settled row (typical for new
+  // accounts whose entire history fits inside 30d), windowed KPIs
+  // SHOULD equal all-time KPIs. To enforce that exactly, we treat
+  // "covers all" the same as "all" - same code path, no rounding
+  // delta from re-summing realized_pnl vs the server's number. The
+  // user's complaint that surfaced this: "shouldn't all time and 30
+  // day have the same data at the moment? I literally started on
+  // 18th May, which was barely 2 weeks ago."
+  const coversAll = filteredSettled.length === settled.length;
+  const effectiveRange: Range = (range === "all" || coversAll) ? "all" : range;
+
+  // Period-scoped KPIs for the hero. "all" (or coversAll) defers to
+  // summary.* so the numbers come from the server (RULE #1 single
+  // source of truth). "30d"/"7d" with partial window reproduces the
+  // canonical algorithm exactly per the doctrine in
+  // pm_executor.get_portfolio_stats() and Performance.filteredStats.
   const filteredStats = useMemo(() => {
-    if (range === "all") {
+    if (effectiveRange === "all") {
       // Defer to server-authoritative all-time numbers. P&L still
       // uses realized + unrealized via the totalPnl branch below.
       return {
@@ -218,7 +240,7 @@ export default function Dashboard({ state, goto }: Props) {
       winRate: settledN > 0 ? wins / settledN : null,
       realizedPnl,
     };
-  }, [filteredSettled, summary, range]);
+  }, [filteredSettled, summary, effectiveRange]);
 
   // Equity time-series for the dashboard chart.
   //
@@ -278,6 +300,11 @@ export default function Dashboard({ state, goto }: Props) {
       );
     } else {
       anchorTs = "";
+      // Note: this branch only fires when there are zero snapshots
+      // in the window. range here uses the raw user choice (not
+      // effectiveRange) because "covers all" applies to the filtered
+      // settled list, not to the snapshot pool which may legitimately
+      // have older points outside the window the user picked.
       anchorEquity = range === "all"
         ? (summary?.equity ?? summary?.starting_cash ?? 0)
         : (summary?.starting_cash ?? 0);
@@ -335,14 +362,14 @@ export default function Dashboard({ state, goto }: Props) {
   // which would require a separate snapshot at the window start.)
   const realizedOnly = summary?.realized_pnl ?? 0;
   const totalPnl     = summary?.total_pnl ?? null;
-  const pnl = range === "all"
+  const pnl = effectiveRange === "all"
     ? (totalPnl != null ? Number(totalPnl) : realizedOnly)
     : filteredStats.realizedPnl;
   const pnlPct = starting > 0 ? (pnl / starting) * 100 : 0;
-  const winRate = range === "all"
+  const winRate = effectiveRange === "all"
     ? (summary?.win_rate ?? null)
     : filteredStats.winRate;
-  const closed = range === "all"
+  const closed = effectiveRange === "all"
     ? (summary?.settled_total ?? 0)
     : filteredStats.trades;
 

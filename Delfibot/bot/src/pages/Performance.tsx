@@ -121,8 +121,16 @@ export default function Performance() {
     if (range === "all") return closed;
     const cutoff = Date.now() - RANGE_DAYS[range] * 86_400_000;
     return closed.filter((p) => {
-      if (!p.settled_at) return false;
-      const t = new Date(p.settled_at).getTime();
+      // settled_at OR closed_at: closed_early rows (manual sells,
+      // stop-loss exits) carry only closed_at. settled_at-only
+      // filtering silently dropped those from windowed counts even
+      // when the window covered every trade (incident 2026-06-01:
+      // #354 manually closed left 30d count at 41 vs server's 42).
+      const ts = (p.settled_at as string | null | undefined)
+        ?? ((p as unknown as Record<string, unknown>).closed_at as
+            string | null | undefined);
+      if (!ts) return false;
+      const t = new Date(ts).getTime();
       return Number.isFinite(t) && t >= cutoff;
     });
   }, [closed, range]);
