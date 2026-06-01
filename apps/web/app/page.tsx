@@ -265,8 +265,8 @@ function Ribbon() {
             <div className="ribbon-sub">downloads</div>
           </div>
           <div className="ribbon-stat">
-            <div className="ribbon-num vellum t-num">150+</div>
-            <div className="ribbon-sub">markets watched</div>
+            <div className="ribbon-num vellum t-num">100</div>
+            <div className="ribbon-sub">markets re-scored every 5 min</div>
           </div>
           <div className="ribbon-stat">
             <div className="ribbon-num teal t-num">24/7</div>
@@ -307,6 +307,7 @@ function Problem() {
           The problem isn&apos;t what you know.<br className="br-keep" />
           <span>It&apos;s how fast you can act on it.</span>
         </p>
+        <p className="problem-source">Source: on-chain wallet P&amp;L analysis via Dune Analytics (Polymarket dashboards, rolling 12 months).</p>
       </div>
     </section>
   );
@@ -351,7 +352,7 @@ function Solution() {
 function Pillars() {
   const items = [
     { n: "01", title: "Probability Engine", desc: "Delfi reads every active market and produces its own probability estimate, grounded in news, historical base rates, and structured data." },
-    { n: "02", title: "Position Sizer", desc: "Every trade is sized as a small flat fraction of bankroll, scaled by per-archetype multipliers you control. The single gate: Delfi's forecast must agree with the market's pick. If they disagree, Delfi skips the trade." },
+    { n: "02", title: "Position Sizer", desc: "Every trade is sized as a small flat fraction of bankroll, scaled by per-archetype multipliers you control. Delfi backs the market favourite on every tradeable market that clears its archetype skip list and risk gates. The forecaster's job is to tune those gates over time, not to second-guess the crowd on individual trades." },
     { n: "03", title: "Risk Manager", desc: "Before any trade executes, Delfi checks the portfolio: daily loss cap, weekly loss cap, drawdown halt, streak cooldown, dry-powder reserve. If the book is already stressed, Delfi passes." },
   ];
   const nodes = ["Scan", "Estimate", "Size", "Verify", "Execute"];
@@ -435,16 +436,16 @@ function Versus() {
 
 // ─── Proof ───────────────────────────────────────────────
 const TRADE_LOG = [
-  { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · M YES 58% · D YES 78% · D CONF 81%", cls: "" },
-  { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 mkts - no forecasts cleared gates", meta: "", cls: "" },
-  { ts: "14:19", type: "RESOLVE", typeCls: "resolve", mkt: "ETH > $6000?", meta: "correct · +$47", cls: "pos" },
-  { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · M YES 41% · D YES 23% · D CONF 74%", cls: "" },
-  { ts: "13:44", type: "RESOLVE", typeCls: "resolve", mkt: "NFL Week 12 MIA", meta: "incorrect · −$31", cls: "neg" },
-  { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · M YES 55% · D YES 72% · D CONF 68%", cls: "" },
-  { ts: "12:58", type: "RESOLVE", typeCls: "resolve", mkt: "Warriors beat Suns?", meta: "correct · +$22", cls: "pos" },
-  { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 mkts - 3 forecasts cleared gates", meta: "", cls: "" },
-  { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · M YES 32% · D YES 19% · D CONF 70%", cls: "" },
-  { ts: "11:54", type: "RESOLVE", typeCls: "resolve", mkt: "OPEC production cut?", meta: "correct · +$38", cls: "pos" },
+  { ts: "14:32", type: "ENTRY", typeCls: "entry", mkt: "Fed cuts by Dec", meta: "YES · favourite 58% · politics ×1.0 · $4.20", cls: "" },
+  { ts: "14:28", type: "SCAN", typeCls: "scan", mkt: "Politics, 47 markets - 2 inside archetype skip list", meta: "", cls: "" },
+  { ts: "14:19", type: "RESOLVE", typeCls: "resolve", mkt: "ETH > $6000?", meta: "correct · +$4.70", cls: "pos" },
+  { ts: "13:58", type: "ENTRY", typeCls: "entry", mkt: "TikTok ban Q1?", meta: "NO · favourite 59% · tech ×1.0 · $4.20", cls: "" },
+  { ts: "13:44", type: "RESOLVE", typeCls: "resolve", mkt: "NFL Week 12 MIA", meta: "incorrect · -$3.10", cls: "neg" },
+  { ts: "13:22", type: "ENTRY", typeCls: "entry", mkt: "CPI below 2.5% in June", meta: "YES · favourite 55% · macro ×1.0 · $4.20", cls: "" },
+  { ts: "12:58", type: "RESOLVE", typeCls: "resolve", mkt: "Warriors beat Suns?", meta: "correct · +$2.20", cls: "pos" },
+  { ts: "12:33", type: "SCAN", typeCls: "scan", mkt: "Sports, 112 markets - 38 inside archetype skip list", meta: "", cls: "" },
+  { ts: "12:17", type: "ENTRY", typeCls: "entry", mkt: "UK PM resigns by Q3", meta: "NO · favourite 68% · politics ×1.0 · $4.20", cls: "" },
+  { ts: "11:54", type: "RESOLVE", typeCls: "resolve", mkt: "OPEC production cut?", meta: "correct · +$3.80", cls: "pos" },
 ];
 
 function CalibrationChart() {
@@ -494,7 +495,7 @@ function Proof() {
             <div className="proof-label">Downloads</div>
           </div>
           <div className="proof-stat">
-            <div className="proof-num gold t-num">0.167</div>
+            <div className="proof-num gold t-num">0.06</div>
             <div className="proof-label">30-Day Brier Score</div>
           </div>
           <div className="proof-stat">
@@ -502,7 +503,7 @@ function Proof() {
             <div className="proof-label">Avg 30-Day Win Rate</div>
           </div>
           <div className="proof-stat">
-            <div className="proof-num teal t-num">+8%</div>
+            <div className="proof-num teal t-num">+34%</div>
             <div className="proof-label">Average Monthly ROI</div>
           </div>
         </div>
@@ -580,7 +581,7 @@ function OnboardingSteps() {
       n: "02",
       icon: "connect",
       title: "Connect Polymarket",
-      desc: "Paste your wallet's private key into your OS keychain. It stays on your machine.",
+      desc: "Paste your wallet's private key into Delfi. It stays on your machine.",
     },
     {
       n: "03",
@@ -681,7 +682,7 @@ function Simulation() {
                 <span className="sim-bullet-dot"></span>
                 <div>
                   <div className="sim-bullet-title">Switch to Live when the numbers convince you.</div>
-                  <div className="sim-bullet-desc">Paste your Polymarket private key into the OS keychain and toggle to Live. Delfi keeps running at the same settings. Only the capital is real now.</div>
+                  <div className="sim-bullet-desc">Paste your Polymarket private key into Delfi and toggle to Live. Delfi keeps running at the same settings. Only the capital is real now.</div>
                 </div>
               </li>
             </ul>
@@ -774,19 +775,19 @@ function NewHere() {
         <div className="newhere-grid">
           <div>
             <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster</h2>
-            <p className="newhere-body">Delfi is an autonomous prediction market trader. It watches Polymarket, follows the market favourite on every tradeable market its forecaster also points at, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. You don&apos;t need to understand order books, calibration, or position sizing. Delfi handles all of it.</p>
+            <p className="newhere-body">Delfi is an autonomous prediction market trader. It watches Polymarket, backs the market favourite on every tradeable market within its risk gates, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. You don&apos;t need to understand order books, calibration, or position sizing. Delfi handles all of it.</p>
             <p className="newhere-body muted">The crowd is right more often than not, but it has blind spots. People bet on what they want to be true, anchor on recent headlines, and ignore base rates. Sharp traders noticed a long time ago. Fourteen of the twenty most profitable Polymarket wallets are bots. Delfi competes on that side of the table, with research, math, and discipline instead of emotion. And it learns from every settled trade. The longer it runs, the sharper its filter gets.</p>
             <CtaLink className="newhere-cta" location="newhere" text="Try Delfi today">Try Delfi today →</CtaLink>
           </div>
-          <div className="edge-viz">
-            <div className="edge-q">Fed cuts rates in December?</div>
-            <div className="edge-row">
-              <span className="edge-label">Market Prediction</span>
-              <span className="edge-num t-num">44%</span>
+          <div className="pick-viz">
+            <div className="pick-q">Fed cuts rates in December?</div>
+            <div className="pick-row">
+              <span className="pick-label">Market favourite</span>
+              <span className="pick-num t-num">YES 62%</span>
             </div>
-            <div className="edge-row delfi">
-              <span className="edge-label">Delfi Prediction</span>
-              <span className="edge-num t-num">62%</span>
+            <div className="pick-row delfi">
+              <span className="pick-label">Delfi opens</span>
+              <span className="pick-num t-num">YES · $4.20</span>
             </div>
           </div>
         </div>
@@ -834,9 +835,9 @@ function FAQ() {
   const [open, setOpen] = useState(0);
   const items = [
     { q: "What exactly is Delfi?", a: "Delfi is an autonomous Polymarket trader that runs entirely on your machine. It continuously scans every active prediction market, produces its own probability forecasts, and backs those forecasts with small, flat-sized stakes, all within the risk limits you set. You install it once like any other desktop app." },
-    { q: "Where do my private keys live?", a: "In your operating system's keychain (macOS Keychain, Windows Credential Locker). Delfi reads them only inside your own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
-    { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It's a reasoning-based agent that evaluates each market the way a sharp human trader would: research, probability modeling, calibrated risk sizing, and full transparency on every trade." },
-    { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, calibrated forecasting compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
+    { q: "Where do my private keys live?", a: "In an encrypted file on your machine, owned only by your user account. Delfi reads them only inside its own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
+    { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It runs locally on your machine, never custodies your funds, sizes every trade by the same flat-fractional math regardless of how strong the signal looks, and shows you the full reasoning on every position." },
+    { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, sizing discipline plus following the market favourite compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
     { q: "How much does it cost?", a: "$249 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
     { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in your OS keychain, not on Delfi servers. Delfi reads it only inside your process, only when signing a trade: never at rest, never in logs, never transmitted. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time." },

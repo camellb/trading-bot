@@ -300,6 +300,11 @@ html, body { scroll-behavior: smooth; }
   color: var(--vellum-60); max-width: 640px; margin: 0 auto;
   line-height: 1.45; letter-spacing: -0.005em;
 }
+.problem-source {
+  font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.04em; color: var(--vellum-40);
+  text-align: center; margin-top: 24px;
+}
 
 /* ─── Solution - 4 cards ─── */
 .solution { border-top: 1px solid var(--vellum-10); }
@@ -746,20 +751,19 @@ html, body { scroll-behavior: smooth; }
   transition: border-color 0.18s ease;
 }
 .newhere-cta:hover { border-color: var(--gold); }
-.edge-viz {
+.pick-viz {
   border: 1px solid var(--vellum-10); border-radius: 4px;
   background: var(--obsidian-raise); padding: 32px;
   display: flex; flex-direction: column; gap: 24px;
 }
-.edge-row { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; background: var(--obsidian); border: 1px solid var(--vellum-10); border-radius: 4px; }
-.edge-row.delfi { border-color: var(--gold-line); background: rgba(212,175,55,0.03); }
-.edge-label { font-family: var(--font-body); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--vellum-60); }
-.edge-num { font-family: var(--font-mono); font-size: 28px; color: var(--vellum); font-feature-settings: "tnum"; letter-spacing: -0.02em; }
-.edge-row.delfi .edge-num { color: var(--gold); }
-.edge-q { font-family: var(--font-display); font-size: 16px; color: var(--vellum); margin-bottom: 20px; font-weight: 400; letter-spacing: -0.005em; line-height: 1.4; }
-.edge-gap { text-align: center; padding: 8px; }
-.edge-gap-label { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.22em; color: var(--teal); text-transform: uppercase; }
-.edge-gap-arrow { font-family: var(--font-mono); color: var(--teal); font-size: 18px; margin: 4px 0; }
+.pick-row { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; background: var(--obsidian); border: 1px solid var(--vellum-10); border-radius: 4px; }
+.pick-row.delfi { border-color: var(--gold-line); background: rgba(212,175,55,0.03); }
+.pick-label { font-family: var(--font-body); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--vellum-60); }
+.pick-num { font-family: var(--font-mono); font-size: 28px; color: var(--vellum); font-feature-settings: "tnum"; letter-spacing: -0.02em; }
+.pick-row.delfi .pick-num { color: var(--gold); }
+.pick-q { font-family: var(--font-display); font-size: 16px; color: var(--vellum); margin-bottom: 20px; font-weight: 400; letter-spacing: -0.005em; line-height: 1.4; }
+/* .edge-gap* rules removed 2026-06-01 with the V2 doctrine rewrite of
+   the NewHere "Delfi-vs-market" visual. No JSX consumer remained. */
 
 /* ─── Testimonials ─── */
 .testimonials { border-top: 1px solid var(--vellum-10); background: var(--obsidian-sink); }
@@ -1073,10 +1077,10 @@ html, body { scroll-behavior: smooth; }
   .newhere-grid { gap: 40px; }
   .newhere-head { font-size: 32px; margin: 14px 0 18px; }
   .newhere-body { font-size: 15px; }
-  .edge-viz { padding: 22px; gap: 18px; }
-  .edge-row { padding: 14px 16px; }
-  .edge-num { font-size: 22px; }
-  .edge-q { font-size: 14px; }
+  .pick-viz { padding: 22px; gap: 18px; }
+  .pick-row { padding: 14px 16px; }
+  .pick-num { font-size: 22px; }
+  .pick-q { font-size: 14px; }
 
   /* Testimonials */
   .test-grid { gap: 16px; }
