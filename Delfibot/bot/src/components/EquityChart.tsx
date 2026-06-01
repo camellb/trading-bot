@@ -59,6 +59,13 @@ export function EquityChart({
   // Brier values live in [0,1] so the natural span is small; pass a
   // smaller floor (e.g. 0.01) to keep movement visible.
   minSpan = 1,
+  // When true and the series spans calendar time, overlay a dashed
+  // linear-regression best-fit line and a "+$X.XX/day" label in the
+  // top-right. Used on the Dashboard + Performance equity charts to
+  // surface the average $/day growth rate visually. Off by default so
+  // non-equity callers (Brier trend) don't render a meaningless dollar
+  // slope.
+  showTrend = false,
 }: {
   series: { ts: string; v: number }[];
   height?: number;
@@ -68,6 +75,7 @@ export function EquityChart({
   fillColor?: string;
   lowerIsBetter?: boolean;
   minSpan?: number;
+  showTrend?: boolean;
 }) {
   const [hoverI, setHoverI] = useState<number | null>(null);
 
@@ -109,6 +117,38 @@ export function EquityChart({
   const sxByTime = (i: number) =>
     PAD_L + (INNER_W * (tsMs[i] - minTs)) / timeSpan;
   const sx = useTime ? sxByTime : sxByIndex;
+
+  // Linear regression on (tsMs - minTs, v). Only computed when the
+  // caller asked for the overlay AND the series is time-based with
+  // a non-degenerate span. The slope `m` is in $/ms; converting to
+  // $/day via × 86_400_000 gives the human-readable rate.
+  let trend: {
+    y0: number;       // fitted equity at minTs
+    yN: number;       // fitted equity at maxTs
+    perDay: number;   // slope in $/day
+  } | null = null;
+  if (showTrend && useTime && series.length >= 2) {
+    const n = series.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (let i = 0; i < n; i++) {
+      const x = tsMs[i] - minTs;
+      const y = ys[i];
+      sumX += x;
+      sumY += y;
+      sumXY += x * y;
+      sumXX += x * x;
+    }
+    const denom = n * sumXX - sumX * sumX;
+    if (denom > 0) {
+      const m = (n * sumXY - sumX * sumY) / denom;
+      const b = (sumY - m * sumX) / n;
+      trend = {
+        y0: b,
+        yN: b + m * timeSpan,
+        perDay: m * 86_400_000,
+      };
+    }
+  }
 
   const sy = (v: number) =>
     PAD_T + INNER_H - (INNER_H * (v - minY)) / (maxY - minY);
@@ -226,6 +266,37 @@ export function EquityChart({
         {/* Equity area + line. */}
         <path d={area} fill={fill} />
         <path d={d} fill="none" stroke={stroke} strokeWidth="1.6" />
+
+        {/* Linear-trend overlay. Dashed gold line through the regression
+            fit, with a small "+$X.XX/day" label anchored to the right
+            edge so it doesn't fight with the y-axis labels on the
+            left. Only renders when showTrend prop is set AND the
+            regression converged (denom > 0 - all timestamps distinct). */}
+        {trend && (
+          <g>
+            <line
+              x1={sx(0)}
+              y1={sy(trend.y0)}
+              x2={PAD_L + INNER_W}
+              y2={sy(trend.yN)}
+              stroke="#daaa4c"
+              strokeWidth="1.5"
+              strokeDasharray="6 4"
+              strokeOpacity="0.85"
+            />
+            <text
+              x={W - PAD_R - 4}
+              y={PAD_T + 14}
+              fontSize="11"
+              fill="#daaa4c"
+              textAnchor="end"
+              fontFamily="var(--font-mono)"
+              opacity="0.95"
+            >
+              {`${trend.perDay >= 0 ? "+" : "-"}${fmtUsd(Math.abs(trend.perDay))}/day`}
+            </text>
+          </g>
+        )}
 
         {/* X-axis date labels. */}
         {xTickEntries.map(({ x, ts }, k) => (

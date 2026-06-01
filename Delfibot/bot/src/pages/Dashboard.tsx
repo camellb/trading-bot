@@ -484,7 +484,7 @@ function DashHero({
           <div className="hero-chart-label">Equity history</div>
         </div>
         {equitySeries.length >= 2 ? (
-          <EquityChart series={equitySeries} />
+          <EquityChart series={equitySeries} showTrend />
         ) : (
           <div className="hero-chart-placeholder">
             Daily snapshots will appear here as trades settle.

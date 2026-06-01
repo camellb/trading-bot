@@ -382,7 +382,7 @@ export default function Performance() {
             {loaded ? "No equity history yet. The curve fills in as the daemon records snapshots (every ~10 min) and Delfi settles its first trades." : "Loading..."}
           </div>
         ) : (
-          <EquityChart series={equitySeries} />
+          <EquityChart series={equitySeries} showTrend />
         )}
       </div>
 
