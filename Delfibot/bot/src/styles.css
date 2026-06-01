@@ -2304,14 +2304,14 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   font-size: 56px;
   letter-spacing: 0.18em;
   font-weight: 500;
-  /* Vellum instead of gold so the title doesn't haze into the
-   * surrounding obsidian under screen-capture JPEG compression or
-   * webview subpixel anti-aliasing. The earlier gold treatment
-   * read as a warm halo on screenshots; user flagged it as a
-   * "weird yellow glow" 2026-05-29. The .boot-progress thumb (the
-   * other gold element on this surface) is desaturated below for
-   * the same reason. */
-  color: var(--vellum);
+  /* GOLD per user reversal 2026-06-01: "why is delfi text in white?"
+   * The 2026-05-29 vellum treatment was chosen after the user flagged
+   * a "weird yellow glow" on the gold title, but the user has now
+   * decided the brand-correct gold is the right call and the prior
+   * halo was acceptable. The .boot-progress thumb below stays vellum
+   * (separate rationale - a 1px-tall amber track smeared on screen
+   * capture even when the title looked fine). */
+  color: var(--gold);
 }
 .boot-status {
   margin: 0;
