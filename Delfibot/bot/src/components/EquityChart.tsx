@@ -118,35 +118,57 @@ export function EquityChart({
     PAD_L + (INNER_W * (tsMs[i] - minTs)) / timeSpan;
   const sx = useTime ? sxByTime : sxByIndex;
 
-  // Linear regression on (tsMs - minTs, v). Only computed when the
-  // caller asked for the overlay AND the series is time-based with
-  // a non-degenerate span. The slope `m` is in $/ms; converting to
-  // $/day via × 86_400_000 gives the human-readable rate.
+  // Linear regression on (tsMs - minTs, v). Computes whenever the
+  // caller asked for the overlay - does NOT require useTime, because
+  // a series with a single bad timestamp (e.g. a closed position
+  // with null settled_at, common at the start of Dashboard's
+  // synthesized equitySeries) flips useTime to false even though
+  // the remaining 100+ points have valid times. Filter to valid
+  // (tsMs, y) pairs only, then regress. The slope `m` is in $/ms;
+  // converting to $/day via × 86_400_000 gives the human-readable rate.
   let trend: {
-    y0: number;       // fitted equity at minTs
+    y0: number;       // fitted equity at minTs (of valid subset)
     yN: number;       // fitted equity at maxTs
     perDay: number;   // slope in $/day
+    validMinTs: number;
+    validMaxTs: number;
   } | null = null;
-  if (showTrend && useTime && series.length >= 2) {
-    const n = series.length;
-    let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-    for (let i = 0; i < n; i++) {
-      const x = tsMs[i] - minTs;
+  if (showTrend && series.length >= 2) {
+    // Collect valid (x, y) pairs - skip points whose timestamp
+    // didn't parse or whose value is non-finite.
+    const valid: Array<{ x: number; y: number }> = [];
+    let vMinTs = Infinity, vMaxTs = -Infinity;
+    for (let i = 0; i < series.length; i++) {
+      const t = tsMs[i];
       const y = ys[i];
-      sumX += x;
-      sumY += y;
-      sumXY += x * y;
-      sumXX += x * x;
+      if (Number.isFinite(t) && Number.isFinite(y)) {
+        valid.push({ x: t, y });
+        if (t < vMinTs) vMinTs = t;
+        if (t > vMaxTs) vMaxTs = t;
+      }
     }
-    const denom = n * sumXX - sumX * sumX;
-    if (denom > 0) {
-      const m = (n * sumXY - sumX * sumY) / denom;
-      const b = (sumY - m * sumX) / n;
-      trend = {
-        y0: b,
-        yN: b + m * timeSpan,
-        perDay: m * 86_400_000,
-      };
+    if (valid.length >= 2 && vMaxTs > vMinTs) {
+      const n = valid.length;
+      let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+      for (const p of valid) {
+        const x = p.x - vMinTs;
+        sumX += x;
+        sumY += p.y;
+        sumXY += x * p.y;
+        sumXX += x * x;
+      }
+      const denom = n * sumXX - sumX * sumX;
+      if (denom > 0) {
+        const m = (n * sumXY - sumX * sumY) / denom;
+        const b = (sumY - m * sumX) / n;
+        trend = {
+          y0: b,
+          yN: b + m * (vMaxTs - vMinTs),
+          perDay: m * 86_400_000,
+          validMinTs: vMinTs,
+          validMaxTs: vMaxTs,
+        };
+      }
     }
   }
 
@@ -272,17 +294,27 @@ export function EquityChart({
             edge so it doesn't fight with the y-axis labels on the
             left. Only renders when showTrend prop is set AND the
             regression converged (denom > 0 - all timestamps distinct). */}
-        {trend && (
+        {trend && (() => {
+          // Map the trend's first and last valid-timestamp pixels
+          // using the same X projection the curve uses, falling back
+          // to chart edges when useTime is off.
+          const x1 = useTime
+            ? PAD_L + (INNER_W * (trend.validMinTs - minTs)) / Math.max(1, timeSpan)
+            : PAD_L;
+          const x2 = useTime
+            ? PAD_L + (INNER_W * (trend.validMaxTs - minTs)) / Math.max(1, timeSpan)
+            : PAD_L + INNER_W;
+          return (
           <g>
             <line
-              x1={sx(0)}
+              x1={x1}
               y1={sy(trend.y0)}
-              x2={PAD_L + INNER_W}
+              x2={x2}
               y2={sy(trend.yN)}
               stroke="#daaa4c"
-              strokeWidth="1.5"
+              strokeWidth="2"
               strokeDasharray="6 4"
-              strokeOpacity="0.85"
+              strokeOpacity="1"
             />
             <text
               x={W - PAD_R - 4}
@@ -291,12 +323,13 @@ export function EquityChart({
               fill="#daaa4c"
               textAnchor="end"
               fontFamily="var(--font-mono)"
-              opacity="0.95"
+              opacity="1"
             >
               {`${trend.perDay >= 0 ? "+" : "-"}${fmtUsd(Math.abs(trend.perDay))}/day`}
             </text>
           </g>
-        )}
+          );
+        })()}
 
         {/* X-axis date labels. */}
         {xTickEntries.map(({ x, ts }, k) => (
