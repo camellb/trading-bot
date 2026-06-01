@@ -647,9 +647,20 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                 <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
                 <td className={`mono ${pnlClass}`}>{
                   pnl == null ? "-"
-                  : pnl > 0 ? `+$${pnl.toFixed(2)}`
-                  : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
-                  : "$0.00"
+                  : (() => {
+                      const pct = p.cost_usd > 0 ? (pnl / p.cost_usd) * 100 : 0;
+                      const dol = pnl > 0
+                        ? `+$${pnl.toFixed(2)}`
+                        : pnl < 0
+                          ? `-$${Math.abs(pnl).toFixed(2)}`
+                          : "$0.00";
+                      const pctStr = pct > 0
+                        ? `+${pct.toFixed(1)}%`
+                        : pct < 0
+                          ? `${pct.toFixed(1)}%`
+                          : "0.0%";
+                      return `${dol} (${pctStr})`;
+                    })()
                 }</td>
                 <td className="mono" title={p.created_at ? formatDateTime(p.created_at) : ""}>
                   {p.created_at ? timeAgo(p.created_at) : "-"}

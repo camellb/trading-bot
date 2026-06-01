@@ -516,9 +516,20 @@ export default function Positions() {
                         <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
                         <td className={`mono ${pnlClass}`}>{
                           pnl == null ? "-"
-                          : pnl > 0 ? `+$${pnl.toFixed(2)}`
-                          : pnl < 0 ? `-$${Math.abs(pnl).toFixed(2)}`
-                          : "$0.00"
+                          : (() => {
+                              const pct = p.cost_usd > 0 ? (pnl / p.cost_usd) * 100 : 0;
+                              const dol = pnl > 0
+                                ? `+$${pnl.toFixed(2)}`
+                                : pnl < 0
+                                  ? `-$${Math.abs(pnl).toFixed(2)}`
+                                  : "$0.00";
+                              const pctStr = pct > 0
+                                ? `+${pct.toFixed(1)}%`
+                                : pct < 0
+                                  ? `${pct.toFixed(1)}%`
+                                  : "0.0%";
+                              return `${dol} (${pctStr})`;
+                            })()
                         }</td>
                         <td className="mono" title={p.created_at ? fmtDateTime(p.created_at) : ""}>
                           {p.created_at ? timeAgo(p.created_at) : "-"}
@@ -678,11 +689,17 @@ export default function Positions() {
                   const pnlCellClass = pnl > 0
                     ? "cell-up"
                     : (pnl < 0 ? "cell-down" : "");
+                  const pnlPct = s.cost_usd > 0 ? (pnl / s.cost_usd) * 100 : 0;
+                  const pnlPctStr = pnlPct > 0
+                    ? `+${pnlPct.toFixed(1)}%`
+                    : (pnlPct < 0
+                        ? `${pnlPct.toFixed(1)}%`
+                        : "0.0%");
                   const pnlText = pnl > 0
-                    ? `+$${pnl.toFixed(2)}`
+                    ? `+$${pnl.toFixed(2)} (${pnlPctStr})`
                     : (pnl < 0
-                        ? `-$${Math.abs(pnl).toFixed(2)}`
-                        : "$0.00");
+                        ? `-$${Math.abs(pnl).toFixed(2)} (${pnlPctStr})`
+                        : `$0.00 (${pnlPctStr})`);
                   const category = (s.category as string | null | undefined) ?? null;
                   // Final settled value = original cost plus realized
                   // P&L. For invalid/voided markets the bot is refunded
