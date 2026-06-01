@@ -645,7 +645,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
                 <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
                 <td className="mono">${p.cost_usd.toFixed(2)}</td>
                 <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
-                <td className={`mono ${pnlClass}`}>{
+                <td className={`mono ${pnlClass}`} style={{ whiteSpace: "nowrap" }}>{
                   pnl == null ? "-"
                   : (() => {
                       const pct = p.cost_usd > 0 ? (pnl / p.cost_usd) * 100 : 0;

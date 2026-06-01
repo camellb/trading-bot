@@ -514,7 +514,7 @@ export default function Positions() {
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
                         <td className="mono">${p.cost_usd.toFixed(2)}</td>
                         <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
-                        <td className={`mono ${pnlClass}`}>{
+                        <td className={`mono ${pnlClass}`} style={{ whiteSpace: "nowrap" }}>{
                           pnl == null ? "-"
                           : (() => {
                               const pct = p.cost_usd > 0 ? (pnl / p.cost_usd) * 100 : 0;
@@ -724,7 +724,7 @@ export default function Positions() {
                         <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
                         <td className="mono">${s.cost_usd.toFixed(2)}</td>
                         <td className="mono">${finalValue.toFixed(2)}</td>
-                        <td className={`mono ${pnlCellClass}`}>{pnlText}</td>
+                        <td className={`mono ${pnlCellClass}`} style={{ whiteSpace: "nowrap" }}>{pnlText}</td>
                         <td className="mono" title={settledAt ? fmtDateTime(settledAt) : ""}>
                           {settledAt ? timeAgo(settledAt) : "-"}
                         </td>
