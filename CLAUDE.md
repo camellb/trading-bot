@@ -216,6 +216,28 @@ As this conversation grows, older context gets compressed and you lose details. 
 
 The vault lives at `/Users/macmini/Documents/Obsidian Vault/Delfi/`. Read `START_HERE.md` first on any new session - it indexes the rest. The vault is your operational brain. The repo `CLAUDE.md` (this file) is the doctrine source-of-truth in git. The auto-memory at `~/.claude/projects/.../memory/MEMORY.md` is the cross-session rule index. These three should agree; if they conflict, the most recent date wins and you update the other two.
 
+### THE HARD RULE — log every prompt, every action
+
+Set 2026-05-28 after the user explicitly demanded it: *"Every single action you run must be documented under the same day so you know exactly what was done and when, what change was made etc. And then you could retrack it going back through the log files."* and *"if you had a complete amnesia you would be able to just read through this obsidian and know everything you knew before."*
+
+This is non-negotiable:
+
+1. **On every new user prompt** — open `20_Sessions/YYYY-MM-DD.md` (today's date) and append a section that records the prompt verbatim, your interpretation, the steps you intend to take, and (after acting) the actual commits / files touched / outcome. One section per prompt minimum.
+
+2. **On every tool call that changes the world** (commits, pushes, releases, DB writes, Vercel deploys, env-var changes, server-side script executions) — append a one-line entry to today's session log with the timestamp, the action, and the result.
+
+3. **On every recurring failure or "I forgot how this worked" moment** — write or update a `60_Playbook/` SOP so the next session never re-discovers it. The user does NOT want to re-litigate. Old failure modes ALWAYS resurface in a new session unless they're written down.
+
+4. **On every user-enforced rule or correction** — new file in `50_Feedback/` AND a one-line link in `00_Core/doctrine.md`. If the user has already said it once, the rule lives in the vault from now on.
+
+5. **End of session sweep** — before you reply with "done" on any non-trivial unit of work, the vault must reflect it: session log appended, decisions filed if any, todos moved.
+
+The session log is append-only. Sections within a day go in chronological order. Do NOT delete entries — if something turned out wrong, append a correction with the new info. Future-you reads the file top to bottom to understand the day; deleting confuses that history.
+
+Do not skip this because the context is tight, the user is impatient, or the task is "too small." A 30-second appended bullet survives compression; a complex chain of reasoning held in head does not. The cost of forgetting (re-litigating, breaking trust, re-introducing fixed bugs) dominates the cost of logging every time.
+
+If you find yourself thinking "I'll write this up after I finish" — STOP and write the entry first. Every session where I deferred logging ended in a regression or a contradiction.
+
 ### Folder routing (where things go)
 
 - `00_Core/` - rules that don't move. Doctrine, tech stack. Edit cautiously.
