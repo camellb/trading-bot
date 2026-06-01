@@ -596,7 +596,7 @@ function PositionsTable({ positions }: { positions: PMPosition[] }) {
         <col style={{ width: "56px" }} />
         <col style={{ width: "72px" }} />
         <col style={{ width: "72px" }} />
-        <col style={{ width: "72px" }} />
+        <col style={{ width: "150px" }} />
         <col style={{ width: "72px" }} />
         <col style={{ width: "72px" }} />
         <col style={{ width: "28px" }} />

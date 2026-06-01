@@ -455,7 +455,7 @@ export default function Positions() {
                 <col style={{ width: "56px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
-                <col style={{ width: "72px" }} />
+                <col style={{ width: "150px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "28px" }} />
@@ -638,7 +638,7 @@ export default function Positions() {
                 <col style={{ width: "56px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "72px" }} />
-                <col style={{ width: "72px" }} />
+                <col style={{ width: "150px" }} />
                 <col style={{ width: "72px" }} />
                 <col style={{ width: "92px" }} />
                 <col style={{ width: "28px" }} />
