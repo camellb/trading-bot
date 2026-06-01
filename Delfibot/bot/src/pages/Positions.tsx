@@ -73,7 +73,7 @@ type OpenSk    = "id"     | "market"   | "category" | "side" | "size"
 type ClosedSk  = "id"     | "market"   | "category" | "side" | "outcome"
                 | "size"  | "value"    | "pnl"      | "settled";
 type SkippedSk = "id"     | "market"   | "category" | "myes" | "dyes"
-                | "pnl"   | "closed";
+                | "closed";
 
 function openKpi(p: PMPosition, f: OpenSk): SortKey {
   switch (f) {
@@ -221,7 +221,6 @@ function skippedKpi(e: MarketEvaluation, f: SkippedSk): SortKey {
     case "category": return e.category ?? "";
     case "myes":     return e.market_price_yes ?? null;
     case "dyes":     return e.delfi_probability ?? null;
-    case "pnl":      return (e.resolved_pnl_usd as number | null | undefined) ?? null;
     case "closed": {
       const iso = (e.resolved_at as string | null | undefined) ?? null;
       return iso ? new Date(iso).getTime() : null;
@@ -837,7 +836,6 @@ export default function Positions() {
                   <SortableTh field="category"  sort={skippedSort}>Category</SortableTh>
                   <SortableTh field="myes"      sort={skippedSort}>M YES %</SortableTh>
                   <SortableTh field="dyes"      sort={skippedSort}>D YES %</SortableTh>
-                  <SortableTh field="pnl"       sort={skippedSort}>P&amp;L</SortableTh>
                   <SortableTh field="closed"    sort={skippedSort}>Closed</SortableTh>
                   <th>Outcome</th>
                   <th style={{ width: 28 }} />
@@ -848,18 +846,11 @@ export default function Positions() {
                   const isOpen = expandedEval.has(e.id);
                   const dYesPct = e.delfi_probability != null ? Math.round(e.delfi_probability * 100) : null;
                   const mYesPct = e.market_price_yes != null ? Math.round(e.market_price_yes * 100) : null;
-                  // Counterfactual P&L the bot WOULD have made at a $5
-                  // stake had it not skipped (joined from predictions
-                  // via /api/evaluations). NULL while the market is
-                  // still trading; rendered as "-" in that case.
-                  const cfPnl = (e.resolved_pnl_usd as number | null | undefined) ?? null;
-                  const cfPnlClass = cfPnl == null ? ""
-                    : cfPnl > 0 ? "cell-up"
-                    : cfPnl < 0 ? "cell-down" : "";
-                  const cfPnlText = cfPnl == null ? "-"
-                    : cfPnl > 0 ? `+$${cfPnl.toFixed(2)}`
-                    : cfPnl < 0 ? `-$${Math.abs(cfPnl).toFixed(2)}`
-                    : "$0.00";
+                  // No P&L column on this table. Skipped = we never placed
+                  // the trade, so there is no real money outcome to show.
+                  // The counterfactual `resolved_pnl_usd` ($5-stake
+                  // hypothetical) still gets logged for diagnostics but
+                  // isn't a user-facing number.
                   const resolvedAt = (e.resolved_at as string | null | undefined) ?? null;
                   const reasoning = (e.reasoning ?? "").trim();
                   // Explicit decision-path reason ("Delfi disagrees with
@@ -886,7 +877,6 @@ export default function Positions() {
                         <td className="truncate" title={e.category ?? ""}>{e.category ?? "-"}</td>
                         <td className="mono">{mYesPct != null ? `${mYesPct}%` : "-"}</td>
                         <td className="mono">{dYesPct != null ? `${dYesPct}%` : "-"}</td>
-                        <td className={`mono ${cfPnlClass}`}>{cfPnlText}</td>
                         <td className="mono" title={resolvedAt ? fmtDateTime(resolvedAt) : ""}>
                           {resolvedAt ? timeAgo(resolvedAt) : "-"}
                         </td>
@@ -918,7 +908,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={9} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {skipReason ? (
