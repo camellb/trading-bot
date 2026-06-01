@@ -280,6 +280,14 @@ class PMAnalyst:
                     # keyword extractor misses the opponent and pulls
                     # research about the wrong game.
                     event_slug=getattr(market, "event_slug", None),
+                    # Resolution description is the highest-fidelity
+                    # event identifier we have. Without it the keyword
+                    # extractor falls back to the question alone and
+                    # produces queries like "AL vs WE LoL" that match
+                    # adjacent series instead of the SPECIFIC game.
+                    # Set 2026-06-01 after off-event skips on LoL 1504,
+                    # GOAT 1486, Musk 1484.
+                    description=getattr(market, "description", None),
                 ),
                 timeout=30,
             )
@@ -431,44 +439,25 @@ class PMAnalyst:
                 evaluation=evaluation, prediction_id=prediction_id,
             )
 
-        # Hard skip backstop: when the evaluator set
-        # MarketEvaluation.force_skip = True (today only used by the
-        # same_event_verified=no branch), refuse to call the sizer.
-        # This defends against the boundary case where the sizer's
-        # direction-agreement gate's strict `< 0` test produces 0
-        # (market_p_yes exactly 0.50) and would otherwise let the
-        # trade through. force_skip is the unconditional source of
-        # truth: no clever sizing math can override it.
-        #
-        # Persist the SKIP row BEFORE returning. The evaluator's
-        # force_skip is the dominant skip path in steady state
-        # (typically same_event_verified=no on sports markets where
-        # research returned placeholder content). Until 2026-05-20
-        # these never reached market_evaluations and the Dashboard's
-        # Recent Activity feed stayed empty for hours while the bot
-        # was scanning normally.
-        if getattr(evaluation, "force_skip", False):
-            _log_market_evaluation(
-                market=market, evaluation=evaluation, decision=None,
-                research_sources=research.sources,
-                prediction_id=prediction_id, recommendation="SKIP",
-                market_archetype=archetype,
-                user_id=user_id, mode=user_config.mode,
-                skip_reason=(
-                    evaluation.reasoning_short
-                    or "Research returned by the fetcher does not describe "
-                       "this specific event/edition - cannot forecast without "
-                       "on-event evidence."
-                ),
-            )
-            return AnalysisOutcome(
-                market_id=market.id, question=q,
-                status="SKIP_EVALUATOR",
-                detail=evaluation.reasoning_short
-                       or "Evaluator returned a hard skip "
-                          "(research does not match this market).",
-                evaluation=evaluation, prediction_id=prediction_id,
-            )
+        # The force_skip branch that lived here historically (the
+        # evaluator's `same_event_verified=no` -> hard skip path) was
+        # removed in v1.5.45 per doctrine: research mismatch is NOT a
+        # valid user-visible skip reason. The fix lives upstream in two
+        # places:
+        #   1. research/fetcher.py + pm_analyst.py now pass
+        #      market.description into the keyword extractor so the
+        #      retrieval targets the right event (bulletproofing).
+        #   2. engine/polymarket_evaluator.py no longer sets
+        #      force_skip=True on off-event research; it produces a
+        #      calibrated estimate anchored on the description + base
+        #      rates instead (no refusal).
+        # The MarketEvaluation.force_skip field is kept on the
+        # dataclass for forward compatibility but has no live writer.
+        # If a future change reintroduces a force-skip path, the
+        # handler must be added back HERE alongside doctrine-compliant
+        # skip_reason copy. Do not paper this over with "research is
+        # off-event" phrasing - that pattern is banned per the user's
+        # 2026-06-01 directive.
 
         decision = size_position(
             delfi_p    = evaluation.probability_yes,

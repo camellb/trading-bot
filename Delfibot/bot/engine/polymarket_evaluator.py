@@ -47,13 +47,17 @@ def _system_prompt() -> str:
         f"reasoning and set confidence LOW. "
         f"SAME-EVENT CHECK (do this FIRST, before forecasting): The user "
         f"prompt includes an EVENT CONTEXT block stating the market's exact "
-        f"date and event. Many research snippets describe DIFFERENT editions "
-        f"of the same recurring event (e.g. last year's tournament, prior "
-        f"election cycles, earlier games in a series). Before you forecast, "
-        f"verify that the research is about the SAME event the market asks "
-        f"about. If most evidence describes a different edition / date / "
-        f"matchup, set `same_event_verified` to 'no' and return a low "
-        f"confidence skip - do NOT fabricate a forecast from off-event data. "
+        f"date and event, and a Resolution description block from "
+        f"Polymarket that is the AUTHORITATIVE event identifier. Many "
+        f"research snippets describe DIFFERENT editions of the same "
+        f"recurring event (e.g. last year's tournament, prior election "
+        f"cycles, earlier games in a series). The market description tells "
+        f"you exactly which edition this is - use it. If the research "
+        f"section is sparse or off-target, anchor your forecast on the "
+        f"description + market context + base rates, lower confidence, and "
+        f"keep your reasoning honest about what you do and do not know. "
+        f"Do NOT skip; do NOT fabricate. Produce your best calibrated "
+        f"estimate. "
         f"SOURCE QUALITY: research snippets are tagged [tier-A: domain] or "
         f"[tier-B: domain]. Tier-A sources are league-official, "
         f"authoritative newsrooms (Reuters/AP/BBC), reference stats sites, "
@@ -144,14 +148,8 @@ def _system_prompt() -> str:
         f"reject inconsistent outputs entirely and skip the trade rather "
         f"than risk acting on incoherent reasoning. "
         f"Output STRICT JSON only - no markdown fence, no prose before/after. "
-        f"Schema (output fields IN THIS ORDER; same_event_verified comes "
-        f"FIRST so you commit to the evidence check before producing a "
-        f"probability): "
-        f"{{\"same_event_verified\":\"yes|partial|no\", "
-        f"\"same_event_note\":\"<=120 char one-sentence justification of "
-        f"the verification value, naming the specific evidence-vs-market "
-        f"mismatch if any\", "
-        f"\"probability_yes\":0..1, \"confidence\":0..1, "
+        f"Schema: "
+        f"{{\"probability_yes\":0..1, \"confidence\":0..1, "
         f"\"reasoning_direction\":\"YES|NO\", "
         f"\"category\":\"macro|geopolitics|politics|crypto|tech|sports|entertainment|science|other\", "
         f"\"key_factors\":[\"short factor with inline source domain\",...], "
@@ -281,63 +279,24 @@ class PolymarketEvaluator:
         if len(reasoning_short_raw) > 140:
             reasoning_short_raw = reasoning_short_raw[:137].rstrip() + "..."
 
-        # ── Same-event verification gate ────────────────────────────────
-        # The forecaster outputs `same_event_verified` BEFORE the
-        # probability so the model commits to the evidence check
-        # before producing a number. When the model reports the
-        # research is about a DIFFERENT event/edition, force a low-
-        # confidence skip — the JSON's `same_event_note` is surfaced
-        # in the user-facing reasoning so the skip is intelligible.
-        sev_raw = str(obj.get("same_event_verified") or "").strip().lower()
-        if sev_raw == "no":
-            note = str(obj.get("same_event_note") or "").strip()
-            print(
-                f"[polymarket_eval] same_event_verified=no on "
-                f"{market.id} — skipping. note={note[:160]!r}",
-                file=sys.stderr,
-            )
-            # Force delfi_p to land on the OPPOSITE side of 0.50 from
-            # the market favourite so the sizer's direction-agreement
-            # gate actually trips a SKIP.
-            #
-            # Earlier wiring set `probability_yes = market.yes_price`
-            # on the (incorrect) theory that "match the market = no
-            # signal = no trade". But the V1 gate is
-            # `(delfi_p - 0.50) * (market_p - 0.50) < 0` —
-            # "DIFFERENT sides of 0.50". Equality satisfies "SAME
-            # side", so the gate didn't fire and the position opened
-            # anyway. Real example 2026-05-18: Arsenal -2.5 spread
-            # at 0.495 paired with research about a different match
-            # (Champions League semifinal vs Atletico, not Premier
-            # League vs Burnley). Evaluator emitted same_event=no,
-            # set delfi_p=0.495=market, sizer accepted the
-            # direction match, bot opened a $2.52 NO position on a
-            # market its own research didn't describe. User-reported
-            # "It shows skipped but it's live on Polymarket".
-            market_p_yes = float(market.yes_price)
-            forced_p_yes = 0.49 if market_p_yes >= 0.50 else 0.51
-            return MarketEvaluation(
-                market_id       = market.id,
-                probability_yes = forced_p_yes,
-                confidence      = 0.10,
-                # Hard backstop: even if the direction-agreement gate
-                # fails to skip (e.g. market_p_yes is exactly 0.50 so
-                # the gate's `< 0` test produces 0), pm_analyst sees
-                # force_skip=True and refuses to call the sizer.
-                force_skip      = True,
-                category        = str(obj.get("category") or "other")[:40],
-                key_factors     = ["evidence_off_event"],
-                reasoning       = (
-                    f"Skipped: the research available does not describe "
-                    f"this specific event/edition. {note}"
-                )[:4000],
-                raw             = raw,
-                reasoning_short = (
-                    "Skipped: research is about a different edition/date "
-                    "than this market."
-                )[:140],
-            )
-
+        # ── Off-event research handling (DOCTRINE 2026-06-01) ──────────
+        # Removed: the same_event_verified=no -> force_skip gate.
+        # User doctrine: "research on wrong event is not a fucking
+        # option, it simply cant be a fucking reason for skip - the
+        # research simply cant be fucking wrong." The fix is two-pronged:
+        #   1. Bulletproof retrieval: pass market.description to the
+        #      keyword extractor so DDG queries hit the right event
+        #      (research/fetcher.py + pm_analyst.py).
+        #   2. No user-visible skip on research mismatch: even when the
+        #      retrieved snippets don't match the event, the bot trades
+        #      V2 default (follow the market favourite). The forecaster
+        #      anchors on the authoritative Polymarket description +
+        #      base rates and produces a calibrated estimate rather
+        #      than refusing the call.
+        # The prior gate produced user-visible reasoning like "Skipped:
+        # research is about a different edition/date than this market"
+        # which is unacceptable copy for a paid product.
+        #
         # ── Reasoning-vs-probability consistency gate ───────────────────
         # The forecaster has a documented failure mode where the prose
         # argues one side and the probability lands on the other. Real
@@ -419,8 +378,11 @@ class PolymarketEvaluator:
             "OUTSIDE this window (e.g. prior editions of the same "
             "tournament, prior election cycles, last year's stats) is "
             "HISTORICAL CONTEXT ONLY. It must NOT drive your forecast "
-            "of how THIS market resolves. If the bulk of the research "
-            "describes a different edition, set same_event_verified='no'.\n"
+            "of how THIS market resolves. If the research is sparse or "
+            "off-target, anchor on the Resolution description below "
+            "(which is the AUTHORITATIVE event identifier from "
+            "Polymarket) plus base rates, and lower your confidence. "
+            "Never refuse the forecast.\n"
         )
 
         desc = market.description.strip()

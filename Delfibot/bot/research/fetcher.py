@@ -1630,6 +1630,7 @@ async def fetch_research(
     days_to_resolution:  Optional[float] = None,
     resolution_date:     Optional[datetime] = None,
     event_slug:          Optional[str] = None,
+    description:         Optional[str] = None,
 ) -> ResearchBundle:
     """
     Build a research bundle for a market question. Safe to call on the hot
@@ -1647,18 +1648,39 @@ async def fetch_research(
     (-5.5)" under an event slug that carries the matchup + date), passing
     the slug lets the keyword extractor see the full context and avoids
     research about the wrong game.
+
+    `description` is the resolution description from Polymarket gamma. It
+    is the highest-fidelity event identifier we have - Polymarket writes
+    these to be unambiguous ("This market resolves YES if Anyone's
+    Legend wins game 2 of their LPL 2026 Spring Playoff against Team WE
+    on June 1, 2026..."). Passing it into the keyword extractor lets the
+    DDG query target the exact event, not adjacent ones. Set 2026-06-01
+    after the user flagged off-event skips ("research is about a
+    different edition"): the slug alone wasn't enough; the description's
+    full event sentence forces the extractor to disambiguate edition,
+    date range, and tournament identity.
     """
     bundle = ResearchBundle(question=question)
 
-    # Enrich the question with the parent-event slug when present. The
-    # raw slug ("nba-sas-okc-2026-05-20") is intelligible to the LLM
-    # keyword extractor, which parses out the league, opponents, and
-    # date. This is the difference between "Thunder" matching the next
+    # Enrich the question with the parent-event slug AND the resolution
+    # description when present. The raw slug
+    # ("nba-sas-okc-2026-05-20") and the description sentence together
+    # give the LLM keyword extractor an unambiguous event identifier.
+    # This is the difference between "Thunder" matching the next
     # Thunder game on the schedule (often wrong) vs the SPECIFIC
-    # game the market is asking about.
+    # game the market is asking about. Cap the description so the
+    # extractor prompt stays bounded - the first ~1200 chars contain
+    # the resolution sentence, which is the only part we strictly
+    # need for disambiguation.
     extractor_question = question
+    if description:
+        desc_trim = description.strip()
+        if len(desc_trim) > 1200:
+            desc_trim = desc_trim[:1200] + "..."
+        if desc_trim:
+            extractor_question = f"{extractor_question}\n\n[description: {desc_trim}]"
     if event_slug:
-        extractor_question = f"{question} [event: {event_slug}]"
+        extractor_question = f"{extractor_question} [event: {event_slug}]"
 
     # 0. Gemini-powered keyword extraction (domain-aware, replaces regex).
     detected_event_name: Optional[str] = None

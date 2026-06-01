@@ -546,6 +546,19 @@ export default function Positions() {
                       {isOpen && (
                         <tr className="expanded-row">
                           <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                            {/* Full market title - the row cell above
+                                truncates at the Market column width. */}
+                            <div
+                              style={{
+                                color: "var(--vellum-90)",
+                                fontWeight: 600,
+                                fontSize: "1.02em",
+                                lineHeight: 1.4,
+                                marginBottom: 14,
+                              }}
+                            >
+                              {p.question}
+                            </div>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -740,6 +753,19 @@ export default function Positions() {
                       {isOpen && (
                         <tr className="expanded-row">
                           <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                            {/* Full market title - the row cell above
+                                truncates at the Market column width. */}
+                            <div
+                              style={{
+                                color: "var(--vellum-90)",
+                                fontWeight: 600,
+                                fontSize: "1.02em",
+                                lineHeight: 1.4,
+                                marginBottom: 14,
+                              }}
+                            >
+                              {s.question}
+                            </div>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -909,6 +935,25 @@ export default function Positions() {
                       {isOpen && (
                         <tr className="expanded-row">
                           <td colSpan={8} style={{ padding: "16px 20px 22px" }}>
+                            {/* Full market title at the top - the table
+                                row above truncates with ellipsis at the
+                                column width; on the expanded panel the
+                                user wants the complete question text
+                                visible. Set 2026-06-01 with user
+                                directive: "the full title should be
+                                visible once you click and unwrap the
+                                section". */}
+                            <div
+                              style={{
+                                color: "var(--vellum-90)",
+                                fontWeight: 600,
+                                fontSize: "1.02em",
+                                lineHeight: 1.4,
+                                marginBottom: 14,
+                              }}
+                            >
+                              {e.question}
+                            </div>
                             <div className="pos-detail-reason">
                               <div className="pos-detail-reason-label">Why Delfi skipped</div>
                               {skipReason ? (
