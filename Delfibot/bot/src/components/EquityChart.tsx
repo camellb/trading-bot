@@ -66,6 +66,14 @@ export function EquityChart({
   // non-equity callers (Brier trend) don't render a meaningless dollar
   // slope.
   showTrend = false,
+  // Override the green/red tint. When provided, the chart's stroke +
+  // fill follow this sign instead of the lastV-vs-firstV heuristic.
+  // The Dashboard + Performance pages pass the headline P&L sign
+  // here so the chart can never disagree with the displayed P&L.
+  // Set 2026-06-01 after 7-day view rendered red while +$0.95 P&L
+  // showed green, because an early outlier spike pushed firstV
+  // above lastV even though the trend was up.
+  positive: positiveOverride,
 }: {
   series: { ts: string; v: number }[];
   height?: number;
@@ -76,6 +84,7 @@ export function EquityChart({
   lowerIsBetter?: boolean;
   minSpan?: number;
   showTrend?: boolean;
+  positive?: boolean;
 }) {
   const [hoverI, setHoverI] = useState<number | null>(null);
 
@@ -180,7 +189,13 @@ export function EquityChart({
   const firstV = series[0].v;
   // "Positive" = series moved in the user-good direction. For equity
   // that's last >= first; for Brier (lower is better) it's last <= first.
-  const positive = lowerIsBetter ? lastV <= firstV : lastV >= firstV;
+  // Caller-provided override takes precedence so the Dashboard can
+  // align the chart tint with the headline P&L sign exactly (no
+  // chance of disagreement on windows where an early outlier
+  // snapshot puts firstV above lastV).
+  const positive = positiveOverride !== undefined
+    ? positiveOverride
+    : (lowerIsBetter ? lastV <= firstV : lastV >= firstV);
   const stroke = strokeColor ?? (positive ? "var(--profit)" : "var(--ember)");
   const fill = fillColor ?? (positive ? "rgba(75,255,161,0.08)" : "rgba(255,77,61,0.08)");
   const area = `${d} L${sx(series.length - 1)},${PAD_T + INNER_H} L${sx(0)},${PAD_T + INNER_H} Z`;

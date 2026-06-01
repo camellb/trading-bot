@@ -348,7 +348,6 @@ export default function Dashboard({ state, goto }: Props) {
     [evaluations, open, settled],
   );
 
-  const mode = (state?.mode as "simulation" | "live") ?? "simulation";
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? 0;
   // Headline P&L semantics:
@@ -449,7 +448,6 @@ export default function Dashboard({ state, goto }: Props) {
       )}
 
       <DashHero
-        mode={mode}
         bankroll={bankroll}
         lockedCapital={lockedCapital}
         totalEquity={totalEquity}
@@ -497,13 +495,12 @@ export default function Dashboard({ state, goto }: Props) {
 }
 
 function DashHero({
-  mode, bankroll, lockedCapital, totalEquity,
+  bankroll, lockedCapital, totalEquity,
   realizedPnl, realizedPct, winRate,
   closedTrades, openTrades, skippedTrades,
   equitySeries, loaded,
   range, setRange,
 }: {
-  mode: string;
   bankroll: number;
   lockedCapital: number;
   totalEquity: number;
@@ -518,7 +515,6 @@ function DashHero({
   range: Range;
   setRange: (r: Range) => void;
 }) {
-  const isSim = mode === "simulation";
   const pnlSign = realizedPnl > 0 ? "+" : realizedPnl < 0 ? "-" : "";
   const pctSign = realizedPct > 0 ? "+" : realizedPct < 0 ? "-" : "";
   const pnlTone = !loaded ? "" : realizedPnl > 0 ? "profit" : realizedPnl < 0 ? "loss" : "";
@@ -540,9 +536,6 @@ function DashHero({
                 {r.label}
               </button>
             ))}
-            <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
-              {isSim ? "Simulation" : "Live"}
-            </div>
           </div>
         </div>
         <div className="hero-balance-row">
@@ -616,7 +609,11 @@ function DashHero({
           <div className="hero-chart-label">Equity history</div>
         </div>
         {equitySeries.length >= 2 ? (
-          <EquityChart series={equitySeries} showTrend />
+          <EquityChart
+            series={equitySeries}
+            showTrend
+            positive={realizedPnl >= 0}
+          />
         ) : (
           <div className="hero-chart-placeholder">
             Daily snapshots will appear here as trades settle.
