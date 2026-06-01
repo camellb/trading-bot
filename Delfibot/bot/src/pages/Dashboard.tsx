@@ -34,6 +34,16 @@ interface Props {
   goto: (p: Page, tab?: SettingsTab) => void;
 }
 
+// Same Range type + chip vocabulary as the Performance page so the
+// two surfaces feel like one product. Mirrors src/pages/Performance.tsx.
+type Range = "all" | "30d" | "7d";
+const RANGES: { id: Range; label: string }[] = [
+  { id: "all", label: "All time" },
+  { id: "30d", label: "30 days" },
+  { id: "7d",  label: "7 days" },
+];
+const RANGE_DAYS: Record<Exclude<Range, "all">, number> = { "30d": 30, "7d": 7 };
+
 type Tone = "gold" | "muted" | "teal" | "profit" | "ember";
 type ActivityItem = {
   t: string;
@@ -93,6 +103,12 @@ export default function Dashboard({ state, goto }: Props) {
   const [evaluations, setEvaluations] = useState<MarketEvaluation[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Timeframe filter - mirrors Performance. Scopes the closed-trade
+  // KPIs (P&L, Win Rate, Closed Trades) and the equity-history chart
+  // to the selected window. Total equity / Cash / Locked capital /
+  // Open trades stay current-state because they're snapshot values,
+  // not period-aggregates.
+  const [range, setRange] = useState<Range>("all");
   // Periodic (bankroll, open_cost, equity) snapshots recorded by the
   // daemon every ~10 min. When the curve has >=2 snapshots we plot
   // them directly so deposits show as real step-ups; under that
@@ -155,6 +171,55 @@ export default function Dashboard({ state, goto }: Props) {
     [positions],
   );
 
+  // Range-scoped settled list. "all" returns everything; "30d"/"7d"
+  // restricts to rows whose settled_at lands within the window. Used
+  // for both the period-scoped KPIs below AND the equity-history
+  // back-step inside equitySeries. Mirrors Performance.filtered.
+  const filteredSettled = useMemo(() => {
+    if (range === "all") return settled;
+    const cutoff = Date.now() - RANGE_DAYS[range] * 86_400_000;
+    return settled.filter((r) => {
+      const ts = r.settled_at as string | null | undefined;
+      if (!ts) return false;
+      const t = Date.parse(ts);
+      return Number.isFinite(t) && t >= cutoff;
+    });
+  }, [settled, range]);
+
+  // Period-scoped KPIs for the hero. "all" defers to summary.* so the
+  // numbers come from the server (RULE #1 single source of truth).
+  // "30d"/"7d" reproduces the canonical algorithm exactly per the
+  // doctrine in pm_executor.get_portfolio_stats() and the
+  // Performance page's filteredStats.
+  const filteredStats = useMemo(() => {
+    if (range === "all") {
+      // Defer to server-authoritative all-time numbers. P&L still
+      // uses realized + unrealized via the totalPnl branch below.
+      return {
+        trades: Number(summary?.settled_total ?? 0),
+        winRate: summary?.win_rate ?? null,
+        realizedPnl: Number(summary?.realized_pnl ?? 0),
+      };
+    }
+    let trades = 0, wins = 0, losses = 0, realizedPnl = 0;
+    for (const r of filteredSettled) {
+      const status = r.status as string | null | undefined;
+      const pnl = r.realized_pnl_usd as number | null | undefined;
+      if (status !== "settled" && status !== "closed_early") continue;
+      if (pnl == null) continue;
+      trades++;
+      if (pnl > 0) wins++;
+      else if (pnl < 0) losses++;
+      realizedPnl += pnl;
+    }
+    const settledN = wins + losses;
+    return {
+      trades,
+      winRate: settledN > 0 ? wins / settledN : null,
+      realizedPnl,
+    };
+  }, [filteredSettled, summary, range]);
+
   // Equity time-series for the dashboard chart.
   //
   // Strategy: ALWAYS show the full historical curve back to the
@@ -180,11 +245,23 @@ export default function Dashboard({ state, goto }: Props) {
   //
   // Same logic mirrored in Performance.tsx.
   const equitySeries = useMemo(() => {
-    if (settled.length === 0 && equitySnapshots.length === 0) {
+    // Same back-step strategy as before, but the snapshot pool and
+    // the settled-trade pool are both clipped to the selected range
+    // when the user picks 30d/7d. Mirrors Performance.equitySeries.
+    if (filteredSettled.length === 0 && equitySnapshots.length === 0) {
       return [] as { ts: string; v: number }[];
     }
 
-    const sorted = [...settled].sort((a, b) =>
+    let snapshotPool = equitySnapshots;
+    if (range !== "all") {
+      const cutoffMs = Date.now() - RANGE_DAYS[range] * 86_400_000;
+      snapshotPool = snapshotPool.filter((s) => {
+        const t = Date.parse(s.ts);
+        return Number.isFinite(t) && t >= cutoffMs;
+      });
+    }
+
+    const sorted = [...filteredSettled].sort((a, b) =>
       ((a.settled_at ?? "") < (b.settled_at ?? "") ? -1 : 1),
     );
 
@@ -192,8 +269,8 @@ export default function Dashboard({ state, goto }: Props) {
     let anchorTs: string;
     let anchorEquity: number;
     let beforeAnchor: typeof sorted;
-    if (equitySnapshots.length > 0) {
-      const firstSnap = equitySnapshots[0];
+    if (snapshotPool.length > 0) {
+      const firstSnap = snapshotPool[0];
       anchorTs = firstSnap.ts;
       anchorEquity = firstSnap.equity;
       beforeAnchor = sorted.filter((r) =>
@@ -201,7 +278,9 @@ export default function Dashboard({ state, goto }: Props) {
       );
     } else {
       anchorTs = "";
-      anchorEquity = summary?.equity ?? summary?.starting_cash ?? 0;
+      anchorEquity = range === "all"
+        ? (summary?.equity ?? summary?.starting_cash ?? 0)
+        : (summary?.starting_cash ?? 0);
       beforeAnchor = sorted;
     }
 
@@ -230,12 +309,12 @@ export default function Dashboard({ state, goto }: Props) {
     // Append real snapshots after the historical portion. The first
     // snapshot's equity equals the back-step's last value, so the
     // curve transitions smoothly.
-    const snapshotPoints = equitySnapshots.map((s) => ({
+    const snapshotPoints = snapshotPool.map((s) => ({
       ts: s.ts, v: s.equity,
     }));
 
     return [...historical, ...snapshotPoints];
-  }, [summary, settled, equitySnapshots]);
+  }, [summary, filteredSettled, equitySnapshots, range]);
 
   const activity = useMemo(
     () => buildActivity(evaluations, open, settled),
@@ -245,18 +324,27 @@ export default function Dashboard({ state, goto }: Props) {
   const mode = (state?.mode as "simulation" | "live") ?? "simulation";
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? 0;
-  // Headline P&L = realized + unrealized. Matches the semantics of
-  // Polymarket's "All-Time Profit/Loss" tile, which always includes
-  // the MTM gain/loss on currently-open positions. The summary
-  // endpoint computes this server-side from `open_cost - bot_open_cost`
-  // (= data-api MTM minus DB cost basis) + realized_pnl. Older
-  // sidecars without total_pnl fall back to realized-only.
+  // Headline P&L semantics:
+  //   range = all  -> realized + unrealized (matches Polymarket's
+  //                   "All-Time Profit/Loss" tile and the doctrine)
+  //   range = 30d/7d -> realized only from filtered settled trades
+  //                     (unrealized is current-state, not period-scoped)
+  // The pnlPct denominator stays pinned to starting_cash for both modes
+  // so a user comparing "All time +110%" to "7 day +30%" reads the same
+  // baseline both ways. (Different from "7d return on 7d starting"
+  // which would require a separate snapshot at the window start.)
   const realizedOnly = summary?.realized_pnl ?? 0;
   const totalPnl     = summary?.total_pnl ?? null;
-  const pnl    = totalPnl != null ? Number(totalPnl) : realizedOnly;
+  const pnl = range === "all"
+    ? (totalPnl != null ? Number(totalPnl) : realizedOnly)
+    : filteredStats.realizedPnl;
   const pnlPct = starting > 0 ? (pnl / starting) * 100 : 0;
-  const winRate = summary?.win_rate ?? null;
-  const closed = summary?.settled_total ?? 0;
+  const winRate = range === "all"
+    ? (summary?.win_rate ?? null)
+    : filteredStats.winRate;
+  const closed = range === "all"
+    ? (summary?.settled_total ?? 0)
+    : filteredStats.trades;
 
   // Source the totals from /api/summary, NOT from the limit-50
   // positions array. The positions endpoint is paginated (capped at
@@ -346,6 +434,8 @@ export default function Dashboard({ state, goto }: Props) {
         skippedTrades={skippedTrades}
         equitySeries={equitySeries}
         loaded={loaded}
+        range={range}
+        setRange={setRange}
       />
 
       <div className="dash-grid">
@@ -384,6 +474,7 @@ function DashHero({
   realizedPnl, realizedPct, winRate,
   closedTrades, openTrades, skippedTrades,
   equitySeries, loaded,
+  range, setRange,
 }: {
   mode: string;
   bankroll: number;
@@ -397,6 +488,8 @@ function DashHero({
   skippedTrades: number;
   equitySeries: { ts: string; v: number }[];
   loaded: boolean;
+  range: Range;
+  setRange: (r: Range) => void;
 }) {
   const isSim = mode === "simulation";
   const pnlSign = realizedPnl > 0 ? "+" : realizedPnl < 0 ? "-" : "";
@@ -409,8 +502,20 @@ function DashHero({
       <div className="hero-balance">
         <div className="hero-balance-head">
           <div className="hero-balance-label">Total equity</div>
-          <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
-            {isSim ? "Simulation" : "Live"}
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {RANGES.map((r) => (
+              <button
+                key={r.id}
+                type="button"
+                className={`chip ${range === r.id ? "on" : ""}`}
+                onClick={() => setRange(r.id)}
+              >
+                {r.label}
+              </button>
+            ))}
+            <div className={`hero-balance-mode ${isSim ? "sim" : "live"}`}>
+              {isSim ? "Simulation" : "Live"}
+            </div>
           </div>
         </div>
         <div className="hero-balance-row">
