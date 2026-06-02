@@ -92,12 +92,11 @@ function CtaLink({
   location: string;
   className: string;
   children: React.ReactNode;
-  /** Plain-text label for analytics. Defaults to "Try it today" for
-   *  back-compat. Pass the visible text when it differs from the
-   *  default. */
+  /** Plain-text label for analytics. Defaults to "Get Delfi". Pass
+   *  the visible text when it differs from the default. */
   text?: string;
 }) {
-  const ctaText = text ?? "Try it today";
+  const ctaText = text ?? "Get Delfi";
   return (
     <a
       className={className}
@@ -201,6 +200,11 @@ function TopNav() {
             <span className="wordmark-text">DELFI</span>
           </Link>
         </div>
+        <div className="nav-center">
+          <a className="nav-link" href="#how">How it works</a>
+          <a className="nav-link" href="#demo">Demo</a>
+          <a className="nav-link" href="#pricing">Pricing</a>
+        </div>
         <div className="nav-right">
           <CtaLink className="btn-primary" location="topnav" text="Get Delfi">Get Delfi</CtaLink>
         </div>
@@ -225,7 +229,7 @@ function Hero() {
           Self-improving autonomous Polymarket bot<br />that trades for you 24/7.
         </p>
         <div className="hero-ctas">
-          <CtaLink className="btn-primary" location="hero" text="Try It Today">Try It Today</CtaLink>
+          <CtaLink className="btn-primary" location="hero" text="Get Delfi">Get Delfi</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
         <HeroPress />
@@ -592,7 +596,7 @@ function Platforms() {
           </div>
         </div>
         <div className="platforms-cta-wrap">
-          <CtaLink className="btn-primary" location="platforms" text="Try Delfi today">Try Delfi today</CtaLink>
+          <CtaLink className="btn-primary" location="platforms" text="Get Delfi">Get Delfi</CtaLink>
         </div>
       </div>
     </section>
@@ -603,7 +607,7 @@ function Platforms() {
 function Simulation() {
   const [live, setLive] = useState(false);
   return (
-    <section className="section sim" data-screen-label="08.5 Simulation">
+    <section className="section sim" id="demo" data-screen-label="08.5 Simulation">
       <div className="container">
         <div className="sec-head">
           <h2 className="t-display-l balanced">Try Delfi without risking a cent</h2>
@@ -634,7 +638,7 @@ function Simulation() {
                 </div>
               </li>
             </ul>
-            <CtaLink className="sim-cta" location="sim" text="Try Delfi today">Try Delfi today →</CtaLink>
+            <CtaLink className="sim-cta" location="sim" text="Get Delfi">Get Delfi →</CtaLink>
           </div>
 
           <div className="sim-mock" aria-hidden="true">
@@ -725,7 +729,7 @@ function NewHere() {
             <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster</h2>
             <p className="newhere-body">Delfi is an autonomous prediction market trader. It watches Polymarket, backs the market favourite on every tradeable market within its risk gates, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. You don&apos;t need to understand order books, calibration, or position sizing. Delfi handles all of it.</p>
             <p className="newhere-body muted">The crowd is right more often than not, but it has blind spots. People bet on what they want to be true, anchor on recent headlines, and ignore base rates. Sharp traders noticed a long time ago. Fourteen of the twenty most profitable Polymarket wallets are bots. Delfi competes on that side of the table, with research, math, and discipline instead of emotion. And it learns from every settled trade. The longer it runs, the sharper its filter gets.</p>
-            <CtaLink className="newhere-cta" location="newhere" text="Try Delfi today">Try Delfi today →</CtaLink>
+            <CtaLink className="newhere-cta" location="newhere" text="Get Delfi">Get Delfi →</CtaLink>
           </div>
           <div className="pick-viz">
             <div className="pick-q">Fed cuts rates in December?</div>
@@ -821,12 +825,12 @@ function FAQ() {
 // ─── Final CTA ────────────────────────────────────────────
 function FinalCTA() {
   return (
-    <section className="final-cta" data-screen-label="12 Final CTA">
+    <section className="final-cta" id="pricing" data-screen-label="12 Final CTA">
       <div className="quantum-grid" />
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <p className="final-sub">$249 once. All future updates included.</p>
-        <CtaLink className="btn-primary large" location="final" text="Try Delfi today">Try Delfi today</CtaLink>
+        <CtaLink className="btn-primary large" location="final" text="Get Delfi">Get Delfi</CtaLink>
       </div>
     </section>
   );

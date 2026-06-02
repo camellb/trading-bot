@@ -164,6 +164,53 @@
   letter-spacing: -0.005em;
 }
 
+/* ── Money-back guarantee callout ─────────────────────────────── */
+/* Promoted from the trust-icon row to its own block so the buyer
+   sees the safety net at the moment of maximum anxiety. The icon
+   row above stays for compact reassurance; this block does the
+   heavy lifting of "you can back out, no friction". */
+
+.checkout-guarantee {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 16px 18px;
+  border: 1px solid var(--gold-line, rgba(212,175,55,0.35));
+  border-radius: 6px;
+  background: rgba(212,175,55,0.04);
+}
+.checkout-guarantee-shield {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--gold, #daaa4c);
+}
+.checkout-guarantee-shield svg { width: 22px; height: 22px; }
+.checkout-guarantee-body { flex: 1; }
+.checkout-guarantee-head {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--vellum);
+  letter-spacing: -0.005em;
+  margin-bottom: 4px;
+}
+.checkout-guarantee-text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--vellum-60, rgba(232,228,216,0.6));
+  margin: 0;
+}
+.checkout-guarantee-text a {
+  color: var(--gold, #daaa4c);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(212,175,55,0.3);
+}
+.checkout-guarantee-text a:hover { border-bottom-color: var(--gold, #daaa4c); }
+
 /* ── Right column: Stripe iframe wrapper ───────────────────────── */
 
 .checkout-stripe-wrap {

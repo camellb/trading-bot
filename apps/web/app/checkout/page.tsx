@@ -144,15 +144,6 @@ export default function CheckoutPage() {
             </li>
             <li className="checkout-trust-row">
               <span className="checkout-trust-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 12a9 9 0 1 0 3-6.7"/>
-                  <path d="M3 4v5h5"/>
-                </svg>
-              </span>
-              <span className="checkout-trust-label">14-day refund</span>
-            </li>
-            <li className="checkout-trust-row">
-              <span className="checkout-trust-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round">
                   <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/>
                 </svg>
@@ -160,6 +151,21 @@ export default function CheckoutPage() {
               <span className="checkout-trust-label">Instant delivery</span>
             </li>
           </ul>
+
+          <div className="checkout-guarantee">
+            <div className="checkout-guarantee-shield" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3 4 6v6c0 4.5 3.2 8.3 8 9 4.8-.7 8-4.5 8-9V6l-8-3z"/>
+                <path d="M9 12l2 2 4-4"/>
+              </svg>
+            </div>
+            <div className="checkout-guarantee-body">
+              <div className="checkout-guarantee-head">14-day money-back guarantee</div>
+              <p className="checkout-guarantee-text">
+                No questions, no forms. Email <a href="mailto:info@delfibot.com">info@delfibot.com</a> from the address you bought with and you&apos;re refunded.
+              </p>
+            </div>
+          </div>
 
           <div className="checkout-next">
             <div className="checkout-next-eyebrow">After you pay</div>

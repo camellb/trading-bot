@@ -77,7 +77,21 @@ html, body { scroll-behavior: smooth; }
   transition: color var(--dur-base) var(--ease); white-space: nowrap;
 }
 .nav-links a:hover { color: var(--vellum); }
+.nav-center {
+  display: flex; gap: 32px; align-items: center;
+  position: absolute; left: 50%; transform: translateX(-50%);
+}
+.nav-link {
+  font-family: var(--font-body); font-size: 12px; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--vellum-60); text-decoration: none;
+  transition: color var(--dur-base) var(--ease); white-space: nowrap;
+}
+.nav-link:hover { color: var(--vellum); }
 .nav-right { display:flex; gap: 20px; align-items: center; }
+.nav-inner { position: relative; }
+@media (max-width: 820px) {
+  .nav-center { display: none; }
+}
 .nav-login {
   font-family: var(--font-body); font-size: 12px; letter-spacing: 0.16em;
   text-transform: uppercase; color: var(--vellum); text-decoration: none;
