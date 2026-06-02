@@ -502,44 +502,6 @@ function CustodyPromise() {
   );
 }
 
-// ─── Platforms (macOS + Windows) ─────────────────────────
-function Platforms() {
-  return (
-    <section className="section platforms" id="platforms" data-screen-label="07.6 Platforms">
-      <div className="container">
-        <div className="sec-head">
-          <h2 className="t-display-l balanced">Available for macOS<br />and Windows</h2>
-        </div>
-        <div className="platforms-grid">
-          <div className="platform-card is-info">
-            <div className="platform-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.6 12.6c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9-.7 0-1.9-.8-3.1-.8-1.6 0-3.1.9-3.9 2.4-1.7 2.9-.4 7.2 1.2 9.5.8 1.1 1.7 2.4 2.9 2.4 1.2 0 1.6-.8 3-.8s1.8.8 3 .8 2-1.2 2.8-2.3c.9-1.3 1.2-2.6 1.2-2.7 0 0-2.3-.9-2.3-3.6zM14.4 5.7c.6-.7 1-1.7.9-2.7-.9.1-2 .6-2.6 1.3-.6.6-1.1 1.6-.9 2.6.9.1 1.9-.5 2.6-1.2z"/></svg>
-            </div>
-            <div className="platform-body">
-              <div className="platform-name">macOS</div>
-              <div className="platform-detail">Apple Silicon. M1, M2, M3, M4.</div>
-              <div className="platform-arch">arm64 · .dmg</div>
-            </div>
-          </div>
-          <div className="platform-card is-info">
-            <div className="platform-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5L11 4v8H3V5.5zm0 13L11 20v-8H3v6.5zM12 4l9-1.5V12h-9V4zm0 16l9 1.5V12h-9v8z"/></svg>
-            </div>
-            <div className="platform-body">
-              <div className="platform-name">Windows</div>
-              <div className="platform-detail">Windows 10 and 11.</div>
-              <div className="platform-arch">x64 · .msi</div>
-            </div>
-          </div>
-        </div>
-        <div className="platforms-cta-wrap">
-          <CtaLink className="btn-primary" location="platforms" text="Get Delfi">Get Delfi</CtaLink>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 // ─── Simulation Mode ─────────────────────────────────────
 function Simulation() {
   const [live, setLive] = useState(false);
@@ -851,9 +813,8 @@ export default function HomePage() {
       <CustodyPromise />
       <Simulation />
       <Testimonials />
-      <Platforms />
-      <FAQ />
       <FinalCTA />
+      <FAQ />
       <Footer />
     </>
   );
