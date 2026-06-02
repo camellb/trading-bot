@@ -382,7 +382,7 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
         <h1>DELFI</h1>
         <p className="boot-status">Restarting Delfi</p>
         <p className="boot-detail">
-          The bot keeps trading. We&apos;re just bouncing the daemon and reconnecting.
+          Don&apos;t worry, your positions are safe and sound.
         </p>
         <div className="boot-progress" aria-hidden="true" />
       </div>
@@ -454,7 +454,7 @@ function BootScreen({ error }: { error: string | null }) {
         <h1>DELFI</h1>
         <p className="boot-status">Restarting Delfi</p>
         <p className="boot-detail">
-          The bot keeps trading. We&apos;re just bouncing the daemon and reconnecting.
+          Don&apos;t worry, your positions are safe and sound.
         </p>
         <div className="boot-progress" aria-hidden="true" />
       </div>

@@ -708,7 +708,7 @@ function RestartPanel() {
         </p>
         <p className="boot-detail">
           {phase === "restarting"
-            ? "The bot keeps trading. We're just bouncing the daemon and reconnecting."
+            ? "Don't worry, your positions are safe and sound."
             : (error ?? "Something went wrong.")}
         </p>
         {phase === "error" ? (
