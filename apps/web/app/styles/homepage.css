@@ -238,44 +238,21 @@ html, body { scroll-behavior: smooth; }
   animation: breath 3s var(--ease) infinite;
 }
 
-/* ─── Social proof ribbon ─── */
-.ribbon {
-  border-top: 1px solid var(--vellum-05);
-  border-bottom: 1px solid var(--vellum-05);
-  background: var(--obsidian-sink);
-  padding: 28px 0;
-}
-.ribbon-inner {
-  max-width: 1200px; margin: 0 auto; padding: 0 24px;
-  display: flex; flex-direction: column; gap: 28px;
-}
-.ribbon-press { width: 100%; text-align: center; }
-.ribbon-press .ribbon-label { text-align: center; margin-bottom: 18px; }
-.press-row { display: flex; gap: 48px; flex-wrap: wrap; align-items: center; justify-content: space-between; width: 100%; }
-.ribbon-stats {
+/* ─── Hero stats (merged in from the old Ribbon section) ─── */
+.hero-stats {
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0;
-  width: 100%;
+  width: 100%; max-width: 720px; margin: 40px 0 32px;
 }
-.ribbon-label {
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.22em;
-  text-transform: uppercase; color: var(--vellum-40); margin-bottom: 14px;
-}
-.press-row { display: flex; gap: 32px; flex-wrap: wrap; align-items: center; }
-.press-item {
-  font-family: var(--font-display); font-size: 17px;
-  letter-spacing: 0.18em; color: rgba(232,228,216,0.32);
-  text-transform: uppercase; font-weight: 400;
-}
-.ribbon-stat { text-align: center; }
-.ribbon-stat + .ribbon-stat { border-left: 1px solid var(--vellum-10); }
-.ribbon-num {
-  font-family: var(--font-display); font-size: 32px;
+.hero-stat { text-align: center; }
+.hero-stat + .hero-stat { border-left: 1px solid var(--vellum-10); }
+.hero-stat-num {
+  font-family: var(--font-display); font-size: 26px;
   font-weight: 400; line-height: 1; margin-bottom: 6px; letter-spacing: -0.02em;
 }
-.ribbon-num.gold { color: var(--gold); }
-.ribbon-num.vellum { color: var(--vellum); }
-.ribbon-sub {
-  font-family: var(--font-body); font-size: 12px;
+.hero-stat-num.gold { color: var(--gold); }
+.hero-stat-num.vellum { color: var(--vellum); }
+.hero-stat-sub {
+  font-family: var(--font-body); font-size: 11px;
   color: var(--vellum-60); letter-spacing: 0.04em;
 }
 
@@ -314,30 +291,6 @@ html, body { scroll-behavior: smooth; }
   color: var(--vellum-60); max-width: 640px; margin: 0 auto;
   line-height: 1.45; letter-spacing: -0.005em;
 }
-
-/* ─── Solution - 4 cards ─── */
-.solution { border-top: 1px solid var(--vellum-10); }
-.solution-grid {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px;
-  max-width: 1100px; margin: 0 auto;
-}
-.sol-card {
-  border: 1px solid var(--vellum-10); background: var(--obsidian-raise);
-  padding: 36px; border-radius: 4px;
-  transition: border-color var(--dur-base) var(--ease);
-}
-.sol-card:hover { border-color: var(--border-hover); }
-.sol-icon {
-  width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
-  color: var(--teal); background: var(--teal-dim);
-  border: 1px solid var(--teal-line); border-radius: 4px; margin-bottom: 24px;
-}
-.sol-icon svg { width: 20px; height: 20px; stroke-linecap: round; stroke-linejoin: round; }
-.sol-title {
-  font-family: var(--font-display); font-size: 22px; color: var(--vellum);
-  margin: 0 0 14px; letter-spacing: -0.01em; font-weight: 400;
-}
-.sol-desc { font-family: var(--font-body); font-size: 14px; line-height: 1.68; color: var(--vellum-60); margin: 0; }
 
 /* ─── Pillars ─── */
 .pillars { border-top: 1px solid var(--vellum-10); background: var(--obsidian-sink); }
@@ -735,39 +688,6 @@ html, body { scroll-behavior: smooth; }
   margin-top: 4px;
 }
 
-/* ─── New here ─── */
-.newhere { border-top: 1px solid var(--vellum-10); }
-.newhere-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 80px; align-items: center; }
-.newhere-head { font-family: var(--font-display); font-size: 48px; color: var(--vellum); letter-spacing: -0.02em; font-weight: 400; margin: 20px 0 24px; line-height: 1.1; }
-.newhere-body { font-family: var(--font-body); font-size: 16px; line-height: 1.68; color: var(--vellum); margin: 0 0 18px; }
-.newhere-body.muted { color: var(--vellum-60); }
-/* Mirror .sim-cta so both inline gold CTAs on the marketing page
-   read with the same visual language: mono caps + gold underline
-   instead of title-case body text. */
-.newhere-cta {
-  display: inline-flex; align-items: center; gap: 8px;
-  margin-top: 20px;
-  font-family: var(--font-mono); font-size: 13px;
-  letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--gold); text-decoration: none;
-  border-bottom: 1px solid var(--gold-line, rgba(212,175,55,0.3));
-  padding-bottom: 4px;
-  transition: border-color 0.18s ease;
-}
-.newhere-cta:hover { border-color: var(--gold); }
-.pick-viz {
-  border: 1px solid var(--vellum-10); border-radius: 4px;
-  background: var(--obsidian-raise); padding: 32px;
-  display: flex; flex-direction: column; gap: 24px;
-}
-.pick-row { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; background: var(--obsidian); border: 1px solid var(--vellum-10); border-radius: 4px; }
-.pick-row.delfi { border-color: var(--gold-line); background: rgba(212,175,55,0.03); }
-.pick-label { font-family: var(--font-body); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--vellum-60); }
-.pick-num { font-family: var(--font-mono); font-size: 28px; color: var(--vellum); font-feature-settings: "tnum"; letter-spacing: -0.02em; }
-.pick-row.delfi .pick-num { color: var(--gold); }
-.pick-q { font-family: var(--font-display); font-size: 16px; color: var(--vellum); margin-bottom: 20px; font-weight: 400; letter-spacing: -0.005em; line-height: 1.4; }
-/* .edge-gap* rules removed 2026-06-01 with the V2 doctrine rewrite of
-   the NewHere "Delfi-vs-market" visual. No JSX consumer remained. */
 
 /* ─── Testimonials ─── */
 .testimonials { border-top: 1px solid var(--vellum-10); background: var(--obsidian-sink); }
@@ -935,18 +855,14 @@ html, body { scroll-behavior: smooth; }
   .nav-links { display: none; }
   .section { padding: 96px 0; }
   .problem-stats { grid-template-columns: 1fr; gap: 16px; }
-  .solution-grid { grid-template-columns: 1fr; }
   .pillars-grid { grid-template-columns: 1fr; gap: 40px; }
   .proof-stats { grid-template-columns: repeat(2, 1fr); gap: 24px; }
   .proof-grid { grid-template-columns: 1fr; }
-  .newhere-grid { grid-template-columns: 1fr; gap: 48px; }
   .sim-grid { grid-template-columns: 1fr; gap: 48px; }
   .test-grid { grid-template-columns: 1fr; }
-  .ribbon-inner { gap: 20px; }
-  /* keep the three stats on one row on tablet/mobile */
-  .ribbon-stats { grid-template-columns: repeat(3, 1fr); gap: 0; }
-  .ribbon-stat + .ribbon-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
-  .press-row { justify-content: center; gap: 24px; }
+  /* keep the three hero stats on one row on tablet/mobile */
+  .hero-stats { grid-template-columns: repeat(3, 1fr); gap: 0; }
+  .hero-stat + .hero-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
   .foot-main { grid-template-columns: 1fr; gap: 48px; }
   .foot-bottom { flex-direction: column; align-items: flex-start; }
   .foot-risk { text-align: left; }
@@ -1005,16 +921,12 @@ html, body { scroll-behavior: smooth; }
   }
   .hero-scroll { display: none; }
 
-  /* Ribbon — three stats on one row */
-  .ribbon { padding: 22px 0; }
-  .ribbon-inner { gap: 18px; padding: 0 16px; }
-  .ribbon-stats { grid-template-columns: repeat(3, 1fr); gap: 0; }
-  .ribbon-stat { padding: 0 8px; }
-  .ribbon-stat + .ribbon-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
-  .ribbon-num { font-size: 22px !important; margin-bottom: 6px; letter-spacing: -0.015em; }
-  .ribbon-sub { font-size: 10px; letter-spacing: 0.02em; line-height: 1.3; }
-  .press-row { gap: 18px; justify-content: center; }
-  .press-item { font-size: 13px; letter-spacing: 0.14em; }
+  /* Hero stats — three stats on one row */
+  .hero-stats { grid-template-columns: repeat(3, 1fr); gap: 0; margin: 28px 0 24px; }
+  .hero-stat { padding: 0 8px; }
+  .hero-stat + .hero-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
+  .hero-stat-num { font-size: 20px !important; margin-bottom: 6px; letter-spacing: -0.015em; }
+  .hero-stat-sub { font-size: 10px; letter-spacing: 0.02em; line-height: 1.3; }
 
   /* Problem */
   .problem-head { font-size: 28px !important; line-height: 1.18; letter-spacing: -0.02em; }
@@ -1024,13 +936,6 @@ html, body { scroll-behavior: smooth; }
   .problem-num { font-size: 34px; margin-bottom: 12px; }
   .problem-label { font-size: 13px; max-width: 28ch; }
   .problem-close { font-size: 16px; line-height: 1.5; }
-
-  /* Solution — icon, title and copy horizontally centered on mobile */
-  .solution-grid { gap: 14px; }
-  .sol-card { padding: 24px; text-align: center; }
-  .sol-icon { width: 36px; height: 36px; margin: 0 auto 16px; }
-  .sol-title { font-size: 19px; margin-bottom: 10px; }
-  .sol-desc { font-size: 13.5px; }
 
   /* Pillars */
   .pillars-head { font-size: 28px !important; line-height: 1.18; letter-spacing: -0.02em; }
@@ -1076,15 +981,6 @@ html, body { scroll-behavior: smooth; }
   .sim-card-foot { grid-template-columns: 1fr; gap: 8px; }
   .sim-foot-text { font-size: 12.5px; }
 
-  /* New here */
-  .newhere-grid { gap: 40px; }
-  .newhere-head { font-size: 32px; margin: 14px 0 18px; }
-  .newhere-body { font-size: 15px; }
-  .pick-viz { padding: 22px; gap: 18px; }
-  .pick-row { padding: 14px 16px; }
-  .pick-num { font-size: 22px; }
-  .pick-q { font-size: 14px; }
-
   /* Testimonials */
   .test-grid { gap: 16px; }
   .test-card { padding: 28px 22px; }
@@ -1118,12 +1014,10 @@ html, body { scroll-behavior: smooth; }
   .hero-head { font-size: 42px; letter-spacing: -0.025em; }
   .hero-sub { font-size: 14.5px; }
   .problem-num { font-size: 30px; }
-  .ribbon-num { font-size: 19px !important; }
-  .ribbon-sub { font-size: 9.5px; letter-spacing: 0; }
-  .ribbon-stat { padding: 0 4px; }
+  .hero-stat-num { font-size: 17px !important; }
+  .hero-stat-sub { font-size: 9.5px; letter-spacing: 0; }
+  .hero-stat { padding: 0 4px; }
   .proof-num { font-size: 32px; }
-  .newhere-head { font-size: 28px; }
-  .sol-card { padding: 20px; }
   .test-card { padding: 24px 20px; }
   .sim-card-row { grid-template-columns: 1fr 1fr; row-gap: 14px; }
   .sim-card-cell:nth-child(2) { border-right: none; }

@@ -232,6 +232,20 @@ function Hero() {
           <CtaLink className="btn-primary" location="hero" text="Get Delfi">Get Delfi</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
+        <div className="hero-stats" aria-label="Social proof">
+          <div className="hero-stat">
+            <div className="hero-stat-num gold t-num">11,500+</div>
+            <div className="hero-stat-sub">downloads</div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-stat-num vellum t-num">100</div>
+            <div className="hero-stat-sub">markets re-scored every 5 min</div>
+          </div>
+          <div className="hero-stat">
+            <div className="hero-stat-num teal t-num">24/7</div>
+            <div className="hero-stat-sub">autonomous</div>
+          </div>
+        </div>
         <HeroPress />
       </div>
     </section>
@@ -255,30 +269,6 @@ function HeroPress() {
         </div>
       </div>
     </div>
-  );
-}
-
-// ─── Social proof ribbon (stats only) ────────────────────
-function Ribbon() {
-  return (
-    <section className="ribbon" aria-label="Social proof">
-      <div className="ribbon-inner">
-        <div className="ribbon-stats">
-          <div className="ribbon-stat">
-            <div className="ribbon-num gold t-num">11,500+</div>
-            <div className="ribbon-sub">downloads</div>
-          </div>
-          <div className="ribbon-stat">
-            <div className="ribbon-num vellum t-num">100</div>
-            <div className="ribbon-sub">markets re-scored every 5 min</div>
-          </div>
-          <div className="ribbon-stat">
-            <div className="ribbon-num teal t-num">24/7</div>
-            <div className="ribbon-sub">autonomous</div>
-          </div>
-        </div>
-      </div>
-    </section>
   );
 }
 
@@ -311,41 +301,6 @@ function Problem() {
           The problem isn&apos;t what you know.<br className="br-keep" />
           <span>It&apos;s how fast you can act on it.</span>
         </p>
-      </div>
-    </section>
-  );
-}
-
-// ─── Solution (4 cards) ──────────────────────────────────
-const SOL_ICONS: Record<string, React.ReactElement> = {
-  brain: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 3a3 3 0 0 0-3 3v.5a3 3 0 0 0-2 5.5v1a3 3 0 0 0 3 3 3 3 0 0 0 3 3V3z"/><path d="M15 3a3 3 0 0 1 3 3v.5a3 3 0 0 1 2 5.5v1a3 3 0 0 1-3 3 3 3 0 0 1-3 3V3z"/></svg>,
-  shield: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 3 4 6v6c0 4.5 3.2 8.3 8 9 4.8-.7 8-4.5 8-9V6l-8-3z"/><path d="M9 12l2 2 4-4"/></svg>,
-  cycle: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M21 12a9 9 0 0 1-15.5 6.3"/><path d="M3 12a9 9 0 0 1 15.5-6.3"/><path d="M21 4v5h-5M3 20v-5h5"/></svg>,
-  eye: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>,
-};
-function Solution() {
-  const cards = [
-    { icon: "brain", title: "Thinks", desc: "Reads the news. Checks historical base rates. Weighs structured data. Produces its own probability estimate for every market." },
-    { icon: "shield", title: "Calculates", desc: "Flat fractional position sizing, scaled by per-archetype tuning you control. Drawdown circuit breakers, daily and weekly loss caps. Never over-exposed. Never emotional." },
-    { icon: "cycle", title: "Learns", desc: "Tracks its own accuracy by category and Brier score. Every 50 resolved trades it proposes calibrations for you to approve. Delfi gets sharper the longer it runs." },
-    { icon: "eye", title: "Explains", desc: "Every trade comes with its full reasoning: the probability estimate, the research sources, the gates it cleared, and the risk logic. You see what Delfi saw. You see why it traded." },
-  ];
-  return (
-    <section className="section solution" data-screen-label="05 Solution">
-      <div className="container">
-        <div className="sec-head">
-          <h2 className="t-display-l balanced">An agent with four minds.</h2>
-          <p>Everything a good trader does. Running for you, on your machine, 24/7.</p>
-        </div>
-        <div className="solution-grid">
-          {cards.map((c) => (
-            <div className="sol-card" key={c.title}>
-              <div className="sol-icon">{SOL_ICONS[c.icon]}</div>
-              <h3 className="sol-title">{c.title}</h3>
-              <p className="sol-desc">{c.desc}</p>
-            </div>
-          ))}
-        </div>
       </div>
     </section>
   );
@@ -719,34 +674,6 @@ function Simulation() {
   );
 }
 
-// ─── New here ────────────────────────────────────────────
-function NewHere() {
-  return (
-    <section className="section newhere" data-screen-label="09 New Here">
-      <div className="container">
-        <div className="newhere-grid">
-          <div>
-            <h2 className="newhere-head balanced">Delfi turns anyone into a probabilistic forecaster</h2>
-            <p className="newhere-body">Delfi is an autonomous prediction market trader. It watches Polymarket, backs the market favourite on every tradeable market within its risk gates, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. You don&apos;t need to understand order books, calibration, or position sizing. Delfi handles all of it.</p>
-            <p className="newhere-body muted">The crowd is right more often than not, but it has blind spots. People bet on what they want to be true, anchor on recent headlines, and ignore base rates. Sharp traders noticed a long time ago. Fourteen of the twenty most profitable Polymarket wallets are bots. Delfi competes on that side of the table, with research, math, and discipline instead of emotion. And it learns from every settled trade. The longer it runs, the sharper its filter gets.</p>
-            <CtaLink className="newhere-cta" location="newhere" text="Get Delfi">Get Delfi →</CtaLink>
-          </div>
-          <div className="pick-viz">
-            <div className="pick-q">Fed cuts rates in December?</div>
-            <div className="pick-row">
-              <span className="pick-label">Market favourite</span>
-              <span className="pick-num t-num">YES 62%</span>
-            </div>
-            <div className="pick-row delfi">
-              <span className="pick-label">Delfi opens</span>
-              <span className="pick-num t-num">YES · $4.20</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
 
 // ─── Testimonials ─────────────────────────────────────────
 function Testimonials() {
@@ -921,15 +848,12 @@ export default function HomePage() {
     <>
       <TopNav />
       <Hero />
-      <Ribbon />
       <Problem />
-      <Solution />
       <Pillars />
       <Versus />
       <Proof />
       <CustodyPromise />
       <Simulation />
-      <NewHere />
       <Testimonials />
       <Platforms />
       <FAQ />
