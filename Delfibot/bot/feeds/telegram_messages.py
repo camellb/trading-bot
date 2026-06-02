@@ -158,6 +158,43 @@ def order_rejected(
     )
 
 
+# ── 2b'. Early-exit SELL REJECTED (live-only) ───────────────────────────────
+def early_exit_failed(
+    *,
+    question: str,
+    side: str,
+    sell_price: float,
+    error_text: str,
+    mode: str | None = None,
+) -> str:
+    """Polymarket rejected the SELL the exit policy tried to place.
+
+    Mirrors the Order-rejected card used for BUY-side rejections so
+    every rejection in Telegram looks the same. The user already saw
+    the BUY-side template shipped earlier; this is the matching SELL
+    surface, used when stop-loss / take-profit / time-decay tries to
+    close a live position and Polymarket bounces the order.
+
+    Note: only fires for genuine API rejections the caller could not
+    auto-recover. The common drift case ("not enough balance /
+    allowance" because the shares are no longer in the wallet) is
+    reconciled silently in pm_executor.close_position_early and never
+    reaches this template, per the doctrine "the bot owns the entire
+    trade lifecycle" (CLAUDE.md).
+    """
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    return (
+        f"⚠️ <b>Early exit failed</b>\n"
+        f"{_clip(question, MAX_QUESTION_NEW_POSITION)}\n"
+        f"\n"
+        f"Bet: {side}\n"
+        f"Trying to close at: ${sell_price:.3f}\n"
+        f"\n"
+        f"Reason: {_clip(error_text, 300)}\n"
+        f"Mode: {mode_label}"
+    )
+
+
 # ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
 def early_exit_win(
     *,

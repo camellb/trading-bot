@@ -2122,22 +2122,143 @@ class PMExecutor:
                     sell_price=float(current_bid),
                 )
             except Exception as exc:
-                # Order placement failure is NOT silent - we surface it
-                # but we DO NOT update the row. The next exit-policy
-                # tick can retry. Returning False means the caller skips
-                # the Telegram notification.
+                # Order placement failure path. Two distinct sub-cases:
+                #
+                # (A) The "not enough balance / allowance" rejection.
+                #     Means: at the moment the matcher checked, the
+                #     wallet did NOT hold the conditional-token shares
+                #     this row claims it owns. Either the user closed
+                #     the position off-book on polymarket.com, or a
+                #     prior SELL filled and we never captured it. The
+                #     position is genuinely gone; the bot just hasn't
+                #     learned that yet. Re-fetch the on-chain position
+                #     via Polymarket's data-api and reconcile the DB
+                #     silently. Per CLAUDE.md doctrine "the bot owns
+                #     the entire trade lifecycle" we do NOT push to
+                #     Telegram or the activity feed - shoving "manage
+                #     on polymarket.com" at the user is BANNED. The
+                #     engineer audit goes to stderr.
+                #
+                # (B) Any other rejection (post-only, network, signer
+                #     mismatch, etc.). Surface to the user with the
+                #     formatted Early-exit failed card so Telegram
+                #     matches the visual spec of the other event
+                #     cards (new_position, order_rejected,
+                #     early_exit_win/loss, settled_win/loss). The raw
+                #     PolyApiException text is no longer pushed as a
+                #     bare string; the card carries the same info in
+                #     the standard layout the user already approved.
+                err_msg = str(exc)
+                low = err_msg.lower()
+                is_balance_drift = (
+                    "not enough balance" in low
+                    or "balance is not enough" in low
+                    or "allowance" in low
+                )
+                if is_balance_drift:
+                    # Tristate probe: distinguish "API said no shares"
+                    # from "API call failed". Only the first warrants
+                    # silent reconciliation; the second must fall
+                    # through to the user-visible Telegram so a
+                    # data-api outage cannot mass-close real positions.
+                    creds = get_active_polymarket_creds(self._user_config)
+                    wallet = (creds.get("wallet_address") or "").strip()
+                    probe_state = "unknown"
+                    if wallet and condition_id:
+                        try:
+                            import requests as _r
+                            _resp = _r.get(
+                                "https://data-api.polymarket.com/positions",
+                                params={
+                                    "user": wallet,
+                                    "sizeThreshold": "0.01",
+                                    "limit": "200",
+                                },
+                                headers={"User-Agent": "delfibot/1.0 close_reconcile"},
+                                timeout=10,
+                            )
+                            if _resp.status_code == 200:
+                                _rows = _resp.json()
+                                if isinstance(_rows, list):
+                                    target_cond = condition_id.lower()
+                                    target_idx = 0 if side.upper() == "YES" else 1
+                                    probe_state = "absent"
+                                    for _row in _rows:
+                                        _cid = (_row.get("conditionId") or "").lower()
+                                        _idx = _row.get("outcomeIndex")
+                                        _sz  = float(_row.get("size") or 0.0)
+                                        if _cid == target_cond and _idx == target_idx and _sz > 0.01:
+                                            probe_state = "present"
+                                            break
+                        except Exception as _probe_exc:
+                            print(
+                                f"[pm_executor] reconcile probe failed for "
+                                f"pos #{position_id}: {_probe_exc}",
+                                file=sys.stderr,
+                            )
+                    if probe_state == "absent":
+                        # Confirmed: no shares on-chain for this
+                        # (condition_id, side). Reconcile silently.
+                        print(
+                            f"[pm_executor] close_position_early: pos "
+                            f"#{position_id} ({question[:80]!r}) has no "
+                            f"on-chain shares for condition_id="
+                            f"{condition_id[:14]}... side={side}. "
+                            f"Reconciling DB row to closed_early "
+                            f"(reason=reconciled_no_shares).",
+                            file=sys.stderr, flush=True,
+                        )
+                        try:
+                            with get_engine().begin() as conn:
+                                conn.execute(text(
+                                    "UPDATE pm_positions SET "
+                                    "  status           = 'closed_early', "
+                                    "  closed_at        = CURRENT_TIMESTAMP, "
+                                    "  settled_at       = CURRENT_TIMESTAMP, "
+                                    "  close_reason     = 'reconciled_no_shares', "
+                                    "  realized_pnl_usd = 0.0 "
+                                    "WHERE id = :pid AND user_id = :uid"
+                                ), {"pid": position_id, "uid": self.user_id})
+                        except Exception as upd_exc:
+                            print(
+                                f"[pm_executor] reconcile UPDATE failed for "
+                                f"pos #{position_id}: {upd_exc}",
+                                file=sys.stderr,
+                            )
+                        return False  # No Telegram, no event_log row.
+                    # probe_state is "present" or "unknown". "present"
+                    # = shares ARE on-chain but the matcher still bounced
+                    # (partial-fill drift or transient state). "unknown"
+                    # = data-api lookup failed; we err on the side of NOT
+                    # mass-closing real positions during an API outage.
+                    # Either way, fall through to the formatted Telegram
+                    # so the user sees the rejection.
+
                 print(f"[pm_executor] close_position_early SELL failed for "
                       f"pos {position_id}: {exc}", file=sys.stderr)
                 try:
                     from db.logger import log_event
+                    from feeds import telegram_messages as _tm
+                    description = (
+                        f"Early-exit SELL rejected on "
+                        f"'{question[:120]}': {err_msg[:300]}"
+                    )
+                    try:
+                        telegram_html = _tm.early_exit_failed(
+                            question=question or "(unknown market)",
+                            side=side,
+                            sell_price=float(current_bid),
+                            error_text=err_msg[:300],
+                            mode=self.trading_mode,
+                        )
+                    except Exception:
+                        telegram_html = None
                     log_event(
                         event_type="order_error",
                         severity=2,
-                        description=(
-                            f"Early-exit SELL rejected on "
-                            f"'{question[:120]}': {str(exc)[:300]}"
-                        ),
+                        description=description,
                         source="pm_executor.close_position_early",
+                        telegram_html=telegram_html,
                     )
                 except Exception:
                     pass
