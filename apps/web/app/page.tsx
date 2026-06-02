@@ -232,20 +232,6 @@ function Hero() {
           <CtaLink className="btn-primary" location="hero" text="Get Delfi">Get Delfi</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
-        <div className="hero-stats" aria-label="Social proof">
-          <div className="hero-stat">
-            <div className="hero-stat-num gold t-num">11,500+</div>
-            <div className="hero-stat-sub">downloads</div>
-          </div>
-          <div className="hero-stat">
-            <div className="hero-stat-num vellum t-num">100</div>
-            <div className="hero-stat-sub">markets re-scored every 5 min</div>
-          </div>
-          <div className="hero-stat">
-            <div className="hero-stat-num teal t-num">24/7</div>
-            <div className="hero-stat-sub">autonomous</div>
-          </div>
-        </div>
         <HeroPress />
       </div>
     </section>

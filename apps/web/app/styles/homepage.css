@@ -238,24 +238,6 @@ html, body { scroll-behavior: smooth; }
   animation: breath 3s var(--ease) infinite;
 }
 
-/* ─── Hero stats (merged in from the old Ribbon section) ─── */
-.hero-stats {
-  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0;
-  width: 100%; max-width: 720px; margin: 40px 0 32px;
-}
-.hero-stat { text-align: center; }
-.hero-stat + .hero-stat { border-left: 1px solid var(--vellum-10); }
-.hero-stat-num {
-  font-family: var(--font-display); font-size: 26px;
-  font-weight: 400; line-height: 1; margin-bottom: 6px; letter-spacing: -0.02em;
-}
-.hero-stat-num.gold { color: var(--gold); }
-.hero-stat-num.vellum { color: var(--vellum); }
-.hero-stat-sub {
-  font-family: var(--font-body); font-size: 11px;
-  color: var(--vellum-60); letter-spacing: 0.04em;
-}
-
 /* ─── Sections ─── */
 .section { padding: 128px 0; position: relative; }
 .sec-head { text-align: center; margin-bottom: 64px; max-width: 780px; margin-left: auto; margin-right: auto; }
@@ -855,9 +837,6 @@ html, body { scroll-behavior: smooth; }
   .proof-grid { grid-template-columns: 1fr; }
   .sim-grid { grid-template-columns: 1fr; gap: 48px; }
   .test-grid { grid-template-columns: 1fr; }
-  /* keep the three hero stats on one row on tablet/mobile */
-  .hero-stats { grid-template-columns: repeat(3, 1fr); gap: 0; }
-  .hero-stat + .hero-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
   .foot-main { grid-template-columns: 1fr; gap: 48px; }
   .foot-bottom { flex-direction: column; align-items: flex-start; }
   .foot-risk { text-align: left; }
@@ -915,13 +894,6 @@ html, body { scroll-behavior: smooth; }
     display: none;
   }
   .hero-scroll { display: none; }
-
-  /* Hero stats — three stats on one row */
-  .hero-stats { grid-template-columns: repeat(3, 1fr); gap: 0; margin: 28px 0 24px; }
-  .hero-stat { padding: 0 8px; }
-  .hero-stat + .hero-stat { border-left: 1px solid var(--vellum-10); border-top: none; padding-top: 0; }
-  .hero-stat-num { font-size: 20px !important; margin-bottom: 6px; letter-spacing: -0.015em; }
-  .hero-stat-sub { font-size: 10px; letter-spacing: 0.02em; line-height: 1.3; }
 
   /* Problem */
   .problem-head { font-size: 28px !important; line-height: 1.18; letter-spacing: -0.02em; }
@@ -1008,9 +980,6 @@ html, body { scroll-behavior: smooth; }
   .hero-head { font-size: 42px; letter-spacing: -0.025em; }
   .hero-sub { font-size: 14.5px; }
   .problem-num { font-size: 30px; }
-  .hero-stat-num { font-size: 17px !important; }
-  .hero-stat-sub { font-size: 9.5px; letter-spacing: 0; }
-  .hero-stat { padding: 0 4px; }
   .proof-num { font-size: 32px; }
   .test-card { padding: 24px 20px; }
   .sim-card-row { grid-template-columns: 1fr 1fr; row-gap: 14px; }
