@@ -340,7 +340,28 @@ export default function Dashboard({ state, goto }: Props) {
       ts: s.ts, v: s.equity,
     }));
 
-    return [...historical, ...snapshotPoints];
+    const baseSeries = [...historical, ...snapshotPoints];
+
+    // Append a live "now" point so the chart line tracks the live
+    // equity shown in the hero. equity_snapshots are written every
+    // ~10 min by the daemon's APScheduler job, but the hero updates
+    // on every /api/summary poll (60s) using the wallet probe + open
+    // position market drift. Without this append the chart trails
+    // the headline by up to 10 minutes. Set 2026-06-02 after user
+    // flagged "looks like the chart line doesnt update in real time".
+    const liveEquity = summary?.equity;
+    if (typeof liveEquity === "number" && liveEquity > 0 && baseSeries.length > 0) {
+      const lastPoint = baseSeries[baseSeries.length - 1];
+      const lastTs = Date.parse(lastPoint.ts);
+      const now = Date.now();
+      const stale = !Number.isFinite(lastTs) || (now - lastTs) > 30_000;
+      const valueChanged = Math.abs(lastPoint.v - liveEquity) > 0.005;
+      if (stale || valueChanged) {
+        baseSeries.push({ ts: new Date(now).toISOString(), v: liveEquity });
+      }
+    }
+
+    return baseSeries;
   }, [summary, filteredSettled, equitySnapshots, range]);
 
   const activity = useMemo(

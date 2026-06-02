@@ -282,7 +282,24 @@ export default function Performance() {
       ts: s.ts, v: s.equity,
     }));
 
-    return [...historical, ...snapshotPoints];
+    const baseSeries = [...historical, ...snapshotPoints];
+
+    // Append a live "now" point so the chart tracks live equity
+    // between 10-minute snapshot writes. Same fix as Dashboard.tsx
+    // equitySeries - see that file for the long-form rationale.
+    const liveEquity = summary?.equity;
+    if (typeof liveEquity === "number" && liveEquity > 0 && baseSeries.length > 0) {
+      const lastPoint = baseSeries[baseSeries.length - 1];
+      const lastTs = Date.parse(lastPoint.ts);
+      const now = Date.now();
+      const stale = !Number.isFinite(lastTs) || (now - lastTs) > 30_000;
+      const valueChanged = Math.abs(lastPoint.v - liveEquity) > 0.005;
+      if (stale || valueChanged) {
+        baseSeries.push({ ts: new Date(now).toISOString(), v: liveEquity });
+      }
+    }
+
+    return baseSeries;
   }, [summary, filtered, range, equitySnapshots]);
 
   return (
