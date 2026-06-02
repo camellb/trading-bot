@@ -754,6 +754,77 @@ html, body { scroll-behavior: smooth; }
 }
 .final-note { font-family: var(--font-body); font-size: 12px; color: var(--vellum-40); margin-top: 24px; letter-spacing: 0.02em; }
 
+/* ─── Pricing card (FinalCTA) ─── */
+.price-card {
+  max-width: 480px;
+  margin: 40px auto 0;
+  padding: 36px 40px 32px;
+  background: var(--obsidian-raise);
+  border: 1px solid var(--gold-line, rgba(212,175,55,0.35));
+  border-radius: 8px;
+  text-align: left;
+}
+.price-card-price {
+  font-family: var(--font-display);
+  font-size: 56px;
+  line-height: 1;
+  color: var(--gold);
+  letter-spacing: -0.02em;
+  text-align: center;
+}
+.price-card-tagline {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--vellum-60);
+  text-align: center;
+  margin-top: 8px;
+  margin-bottom: 28px;
+}
+.price-card-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.price-card-list li {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--vellum);
+  padding-left: 26px;
+  position: relative;
+}
+.price-card-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 14px;
+  height: 9px;
+  border-left: 2px solid var(--teal, #6fd5c8);
+  border-bottom: 2px solid var(--teal, #6fd5c8);
+  transform: rotate(-45deg);
+}
+.price-card-cta {
+  display: block;
+  text-align: center;
+  margin: 0 auto;
+}
+.price-card-guarantee {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--vellum-60);
+  text-align: center;
+  margin-top: 20px;
+}
+@media (max-width: 600px) {
+  .price-card { padding: 28px 24px; }
+  .price-card-price { font-size: 44px; }
+  .price-card-list li { font-size: 14px; }
+}
+
 /* ─── Footer ─── */
 .site-footer {
   border-top: 1px solid var(--vellum-10);

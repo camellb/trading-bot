@@ -110,6 +110,7 @@ These are not style preferences. Violations will be rejected.
 - **"edge" / "edge-hunting"**: use "forecast", "prediction", or "calibration".
 - **"shadow"**: use "simulation" everywhere (code constants, DB values, env var values, UI, docs).
 - **Em dashes (—)** are banned in all copy (user-facing UI, Telegram messages, marketing copy, docs, READMEs, code comments, docstrings). Use a hyphen, a period, a comma, a colon, or parentheses instead. No exceptions.
+- **AI-clever marketing copy is banned.** Use the exact boring phrases buyers have already seen on every other SaaS pricing page: "24/7 automated trading", "Lifetime access", "One-time payment", "Free updates", "Non-custodial", "14-day money-back guarantee", "Get [Product]". Do NOT write rhythmic three-clause structures, callbacks, subverted standard phrases, or poetic reframings. If a line of copy feels designed, it is wrong. The boring version is the right version. See `Obsidian/Delfi/50_Feedback/use_boring_copy.md` for the test (4 questions) and rejected examples. User-enforced 2026-06-02.
 
 ## The core principle. Simple on purpose
 

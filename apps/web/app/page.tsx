@@ -738,8 +738,22 @@ function FinalCTA() {
       <div className="quantum-grid" />
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
-        <p className="final-sub">$249 once. All future updates included.</p>
-        <CtaLink className="btn-primary large" location="final" text="Get Delfi">Get Delfi</CtaLink>
+        <div className="price-card">
+          <div className="price-card-price">$249</div>
+          <div className="price-card-tagline">One-time payment. Lifetime access.</div>
+          <ul className="price-card-list">
+            <li>24/7 automated trading on Polymarket</li>
+            <li>macOS and Windows</li>
+            <li>Non-custodial: your keys never leave your computer</li>
+            <li>Full trade history and reasoning</li>
+            <li>Free lifetime updates</li>
+            <li>Telegram notifications</li>
+          </ul>
+          <CtaLink className="btn-primary large price-card-cta" location="final" text="Get Delfi">
+            Get Delfi
+          </CtaLink>
+          <div className="price-card-guarantee">14-day money-back guarantee</div>
+        </div>
       </div>
     </section>
   );
