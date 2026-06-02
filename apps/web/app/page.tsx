@@ -307,7 +307,6 @@ function Problem() {
           The problem isn&apos;t what you know.<br className="br-keep" />
           <span>It&apos;s how fast you can act on it.</span>
         </p>
-        <p className="problem-source">Source: on-chain wallet P&amp;L analysis via Dune Analytics (Polymarket dashboards, rolling 12 months).</p>
       </div>
     </section>
   );
@@ -428,7 +427,6 @@ function Versus() {
             </tbody>
           </table>
         </div>
-        <p className="vs-foot">Delfi is the only Polymarket trader that combines deep reasoning with institutional risk math while leaving custody entirely with you. Everything else is a subset.</p>
       </div>
     </section>
   );
@@ -557,56 +555,6 @@ function CustodyPromise() {
             <li><span className="custody-tick">✓</span> We never know which trades you make.</li>
             <li><span className="custody-tick">✓</span> We could go offline tomorrow and your bot would keep running.</li>
           </ul>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-// ─── Three-step onboarding ───────────────────────────────
-const STEP_ICONS: Record<string, React.ReactElement> = {
-  install: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 4v12"/><path d="m6 12 6 6 6-6"/><path d="M4 20h16"/></svg>,
-  connect: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="14" r="2"/><path d="m9.5 12.5 6-6"/><path d="m13 5 5 5-2 2-5-5z"/><path d="m17 9 3-3-2-2-3 3"/></svg>,
-  trade: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 18h18"/><path d="m6 14 4-4 3 3 5-7"/><circle cx="18" cy="6" r="1.5" fill="currentColor"/></svg>,
-};
-function OnboardingSteps() {
-  const steps = [
-    {
-      n: "01",
-      icon: "install",
-      title: "Install Delfi",
-      desc: "Download for macOS or Windows. Activate with the license key from your inbox.",
-    },
-    {
-      n: "02",
-      icon: "connect",
-      title: "Connect Polymarket",
-      desc: "Paste your wallet's private key into Delfi. It stays on your machine.",
-    },
-    {
-      n: "03",
-      icon: "trade",
-      title: "Let it trade",
-      desc: "Delfi watches every market, trades when its forecast clears every gate, and shows you the reasoning behind every position.",
-    },
-  ];
-  return (
-    <section className="section onboarding-steps" data-screen-label="07.7 Steps">
-      <div className="container">
-        <div className="sec-head">
-          <h2 className="t-display-l balanced">Three steps to your first trade</h2>
-        </div>
-        <div className="steps-grid">
-          {steps.map((s) => (
-            <div className="step-card" key={s.n}>
-              <div className="step-card-head">
-                <div className="step-icon">{STEP_ICONS[s.icon]}</div>
-                <div className="step-num t-num">{s.n}</div>
-              </div>
-              <h3 className="step-title">{s.title}</h3>
-              <p className="step-desc">{s.desc}</p>
-            </div>
-          ))}
         </div>
       </div>
     </section>
@@ -978,7 +926,6 @@ export default function HomePage() {
       <CustodyPromise />
       <Simulation />
       <NewHere />
-      <OnboardingSteps />
       <Testimonials />
       <Platforms />
       <FAQ />
