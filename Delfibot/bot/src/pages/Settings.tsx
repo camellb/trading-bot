@@ -1341,7 +1341,7 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   },
   risk_event: {
     title: "Risk alerts",
-    description: "Circuit breaker trips: daily loss cap, drawdown halt, or streak cooldown.",
+    description: "Circuit breaker trips: daily loss limit, maximum drawdown, or consecutive loss cooldown.",
   },
   bot_status: {
     title: "Bot status changes",

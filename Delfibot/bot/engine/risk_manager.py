@@ -93,14 +93,14 @@ def evaluate(
         if drawdown >= user_config.drawdown_halt_pct:
             return RiskVerdict(
                 halt_reason=(
-                    f"drawdown {drawdown*100:.1f}% >= halt threshold "
+                    f"drawdown {drawdown*100:.1f}% >= maximum drawdown "
                     f"{user_config.drawdown_halt_pct*100:.0f}% "
                     f"(equity ${effective_equity:.2f} vs "
                     f"starting ${starting_cash:.2f})"
                 ),
                 effective_bankroll=0.0,
                 stake_multiplier=0.0,
-                notes="drawdown halt engaged - manual review required",
+                notes="maximum drawdown reached - manual review required",
             )
 
     # Gross exposure cap. Total cost of open positions vs
@@ -118,7 +118,7 @@ def evaluate(
             ),
             effective_bankroll=0.0,
             stake_multiplier=0.0,
-            notes="gross exposure cap reached - close positions or raise dry powder reserve",
+            notes="gross exposure cap reached - close positions or lower reserve cash",
         )
 
     # Daily loss limit.

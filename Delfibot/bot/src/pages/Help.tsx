@@ -636,20 +636,20 @@ function Troubleshooting() {
           <p>
             The most common cause is sizing math falling under the
             Polymarket platform minimum (every order must clear $1
-            and 5 shares). Open <strong>Risk controls &rarr; Sizing
-            and limits</strong> and check:
+            and 5 shares). Open <strong>Risk controls &rarr; Bet sizing
+            and risk limits</strong> and check:
           </p>
           <ul>
             <li>
-              <strong>Max stake hard cap</strong>: at small live
+              <strong>Strict maximum bet size</strong>: at small live
               bankrolls (under roughly $50) leave this off. The
               sizer bumps each order to whatever Polymarket accepts.
             </li>
             <li>
-              <strong>Base stake</strong>: base stake &times;
+              <strong>Default bet size</strong>: default bet size &times;
               bankroll has to clear the minimum at the
-              favourite&apos;s price. At $10 bankroll and 2% base,
-              base stake is $0.20, under the platform minimum.
+              favourite&apos;s price. At $10 bankroll and 2%, the
+              default stake is $0.20, under the platform minimum.
             </li>
             <li>
               <strong>Archetype skip list</strong>: open Risk and

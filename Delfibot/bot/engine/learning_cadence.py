@@ -195,7 +195,7 @@ def propose_suggestions(stats: dict, current: UserConfig,
                 proposed_value=proposed,
                 evidence=(
                     f"Peak drawdown over last {n} trades: {peak_dd*100:.1f}%. "
-                    f"Reducing max_stake_pct from {current.max_stake_pct*100:.1f}% "
+                    f"Reducing Maximum bet size from {current.max_stake_pct*100:.1f}% "
                     f"to {proposed*100:.1f}% limits single-trade risk."
                 ),
                 proposal_metadata={
@@ -836,18 +836,18 @@ def _propose_base_stake(diag: dict,
         proposed = min(hi, round(currently * 1.5, 4))
         rationale = (
             f"Aggregate ROI {roi*100:+.1f}% over {n} settled trades and "
-            f"peak drawdown {peak_dd*100:.1f}% is well below the halt at "
-            f"{drawdown_halt*100:.0f}%. Size up base stake to compound "
-            f"faster while keeping risk reserves intact."
+            f"peak drawdown {peak_dd*100:.1f}% is well below Maximum "
+            f"drawdown at {drawdown_halt*100:.0f}%. Size up Default bet "
+            f"size to compound faster while keeping risk reserves intact."
         )
     elif roi <= -0.05 and peak_dd >= drawdown_halt * 0.60:
         # Negative ROI + heating drawdown -> size down.
         proposed = max(lo, round(currently * 0.6, 4))
         rationale = (
             f"Aggregate ROI {roi*100:+.1f}% over {n} settled trades and "
-            f"peak drawdown {peak_dd*100:.1f}% is approaching the halt at "
-            f"{drawdown_halt*100:.0f}%. Shrink base stake to slow the "
-            f"bleed."
+            f"peak drawdown {peak_dd*100:.1f}% is approaching Maximum "
+            f"drawdown at {drawdown_halt*100:.0f}%. Shrink Default bet "
+            f"size to slow the bleed."
         )
     if proposed is None or abs(proposed - currently) < 0.002:
         return out
@@ -1080,24 +1080,26 @@ def _propose_drawdown_halt(diag: dict,
     proposed: Optional[float] = None
     rationale = ""
     if peak_dd >= currently * 0.85:
-        # Peak drawdown is uncomfortably close to the halt threshold.
+        # Peak drawdown is uncomfortably close to Maximum drawdown.
         # Tighten so the brake fires sooner next time.
         proposed = max(lo, round(currently * 0.75, 4))
         rationale = (
             f"Peak drawdown {peak_dd*100:.1f}% over {n} settled trades "
-            f"sits at {peak_dd/currently*100:.0f}% of the halt at "
-            f"{currently*100:.0f}%. Tighten the halt to {proposed*100:.0f}% "
-            f"so the brake fires before drawdown gets this close again."
+            f"sits at {peak_dd/currently*100:.0f}% of Maximum drawdown at "
+            f"{currently*100:.0f}%. Tighten Maximum drawdown to "
+            f"{proposed*100:.0f}% so the brake fires before drawdown "
+            f"gets this close again."
         )
     elif peak_dd <= currently * 0.40:
-        # Drawdown rarely approaches the halt. Loosen to free up
+        # Drawdown rarely approaches Maximum drawdown. Loosen to free up
         # tolerance for normal variance.
         proposed = min(hi, round(currently * 1.25, 4))
         rationale = (
             f"Peak drawdown {peak_dd*100:.1f}% over {n} settled trades "
-            f"is only {peak_dd/currently*100:.0f}% of the halt at "
-            f"{currently*100:.0f}%. Loosen the halt to {proposed*100:.0f}% "
-            f"since the current setting clips variance the bot can absorb."
+            f"is only {peak_dd/currently*100:.0f}% of Maximum drawdown at "
+            f"{currently*100:.0f}%. Loosen Maximum drawdown to "
+            f"{proposed*100:.0f}% since the current setting clips "
+            f"variance the bot can absorb."
         )
     if proposed is None or abs(proposed - currently) < 0.02:
         return out

@@ -709,9 +709,18 @@ function SuggestionCard({
   );
 }
 
+// Canonical user-facing labels. MUST match the input labels on the
+// Risk page (Risk.tsx) one-to-one. The Risk page is the source of
+// truth for risk-param vocabulary across the app.
 const PARAM_LABELS: Record<string, string> = {
-  max_stake_pct:               "Max stake (% of bankroll)",
-  base_stake_pct:              "Base stake (% of bankroll)",
+  base_stake_pct:              "Default bet size",
+  max_stake_pct:               "Maximum bet size",
+  max_stake_pct_enabled:       "Strict maximum bet size",
+  daily_loss_limit_pct:        "Daily loss limit",
+  weekly_loss_limit_pct:       "Weekly loss limit",
+  drawdown_halt_pct:           "Maximum drawdown",
+  streak_cooldown_losses:      "Consecutive loss cooldown",
+  dry_powder_reserve_pct:      "Reserve cash",
   archetype_skip_list:         "Archetype skip list",
   archetype_stake_multipliers: "Archetype stake multiplier",
   cost_assumption_override:    "Trading cost assumption",
