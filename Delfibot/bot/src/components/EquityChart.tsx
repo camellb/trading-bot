@@ -361,6 +361,47 @@ export function EquityChart({
           </text>
         ))}
 
+        {/* Live "now" marker - pulsing dot at the rightmost point so
+            the user can SEE that the chart is alive. The chart already
+            appends a live "now" point on every 15s summary poll, but
+            on an 8-day x-axis the sub-pixel shift is imperceptible.
+            The pulse gives the eye something to lock onto. Gated on
+            showTrend so non-equity callers (Brier) don't get it. */}
+        {showTrend && (
+          <g>
+            <circle
+              cx={sx(series.length - 1)}
+              cy={sy(lastV)}
+              r="3"
+              fill={stroke}
+            />
+            <circle
+              cx={sx(series.length - 1)}
+              cy={sy(lastV)}
+              r="3"
+              fill="none"
+              stroke={stroke}
+              strokeWidth="1.5"
+              opacity="0.7"
+            >
+              <animate
+                attributeName="r"
+                from="3"
+                to="10"
+                dur="1.4s"
+                repeatCount="indefinite"
+              />
+              <animate
+                attributeName="opacity"
+                from="0.7"
+                to="0"
+                dur="1.4s"
+                repeatCount="indefinite"
+              />
+            </circle>
+          </g>
+        )}
+
         {/* Hover indicator. Drawn LAST so it sits on top. */}
         {hoverI != null && (
           <g>
