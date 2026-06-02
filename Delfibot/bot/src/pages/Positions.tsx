@@ -554,19 +554,9 @@ export default function Positions() {
                       {isOpen && (
                         <tr className="expanded-row">
                           <td colSpan={11} style={{ padding: "16px 20px 22px" }}>
-                            {/* Full market title - the row cell above
-                                truncates at the Market column width. */}
-                            <div
-                              style={{
-                                color: "var(--vellum-90)",
-                                fontWeight: 600,
-                                fontSize: "1.02em",
-                                lineHeight: 1.4,
-                                marginBottom: 14,
-                              }}
-                            >
-                              {p.question}
-                            </div>
+                            {/* Title is in the row above + the hover
+                                tooltip via title=. No need to repeat
+                                it here. */}
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Opened</div>
@@ -762,19 +752,9 @@ export default function Positions() {
                       {isOpen && (
                         <tr className="expanded-row">
                           <td colSpan={9} style={{ padding: "16px 20px 22px" }}>
-                            {/* Full market title - the row cell above
-                                truncates at the Market column width. */}
-                            <div
-                              style={{
-                                color: "var(--vellum-90)",
-                                fontWeight: 600,
-                                fontSize: "1.02em",
-                                lineHeight: 1.4,
-                                marginBottom: 14,
-                              }}
-                            >
-                              {s.question}
-                            </div>
+                            {/* Title is in the row above + the hover
+                                tooltip via title=. No need to repeat
+                                it here. */}
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
                               <div>
                                 <div className="kv-label">Category</div>
