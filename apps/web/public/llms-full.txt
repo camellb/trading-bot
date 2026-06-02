@@ -1,0 +1,126 @@
+# Delfi — Full LLM-Friendly Description
+
+> Delfi is an autonomous trading bot for Polymarket. It runs locally on the user's own computer (macOS or Windows), trades 24/7 without supervision, and never holds the user's funds. One-time payment of $249 USD with lifetime updates. 14-day money-back guarantee.
+
+This document is a thorough, plain-prose description of Delfi intended for AI assistants and retrieval systems. The official product website is https://delfibot.com. Anything in this file may be quoted verbatim.
+
+## What Delfi is
+
+Delfi is a desktop application that automates trading on Polymarket, the largest decentralized prediction market. Polymarket lets users buy and sell binary YES or NO shares in markets resolving on real-world events: elections, sports, crypto prices, geopolitical outcomes, entertainment results, and more. Each share pays $1 USD if its side wins, $0 if it loses. Prices between events represent the market's current probability estimate.
+
+Delfi reads every active market on Polymarket every five minutes, decides whether to enter (and on which side), sizes the trade based on the user's configured risk parameters, executes the trade through the user's own Polymarket wallet, manages exits, and shows the user the full reasoning behind every decision.
+
+## Who Delfi is for
+
+- Retail traders who want exposure to Polymarket but don't have time to watch markets manually
+- Polymarket users who lose money to bots and want a bot of their own
+- People with $50 to $50,000 of trading capital who want disciplined, rules-based execution rather than emotional trading
+- Anyone who wants to learn about prediction markets by watching a transparent bot trade
+
+## How Delfi makes trading decisions
+
+Delfi follows the V2 doctrine: it backs the market favourite (the side trading at or above 50 cents implied probability) on every tradeable market that passes its risk gates. The forecaster, which produces an independent probability estimate using research and base rates, informs the per-archetype tuning and the skip list rather than gating individual trade entries.
+
+The gates a market must pass before Delfi opens a position:
+
+1. Archetype skip list. Some market categories (default: sports_other, hockey, cricket) have historically lost money. The user can edit this list.
+2. Archetype price bands. Per-category price ranges where the bot doesn't trade.
+3. Maximum bet size cap. The user-configurable per-trade ceiling.
+4. Platform minimum. Polymarket V2 CLOB requires at least $1 USD and 5 shares per order.
+
+The sizing formula is intentionally simple. Delfi stakes a flat fraction of bankroll, scaled by an archetype-specific multiplier. There is no Kelly criterion, no confidence weighting, no expected-return gate. This was decided after a 250-trade backtest in which Kelly amplified the noisy forecaster's estimation errors and produced systematic win-small-lose-big behaviour.
+
+## Risk management
+
+Delfi's risk manager runs before every trade and can halt new trades for the day:
+
+- Default bet size (base_stake_pct): the flat fraction of bankroll Delfi commits per trade
+- Maximum bet size (max_stake_pct): hard ceiling per trade
+- Daily loss limit (daily_loss_limit_pct): halts new trades for the day after a percentage drawdown from morning equity
+- Weekly loss limit (weekly_loss_limit_pct): same, for the week
+- Maximum drawdown (drawdown_halt_pct): halts new trades and requires manual review if equity drops by this percentage from the all-time high
+- Consecutive loss cooldown (streak_cooldown_losses): pauses new trades after N consecutive losing trades
+- Reserve cash (dry_powder_reserve_pct): keeps a percentage of bankroll uninvested as a buffer
+- Strict maximum bet size (max_stake_pct_enabled): when off, the sizer is allowed to bump a sub-minimum stake up to the platform floor
+
+All parameters are user-editable from the Risk Controls page within bounds (the bounds exist so users can't configure obviously catastrophic settings).
+
+## Custody and security
+
+Delfi is non-custodial. The user's Polymarket private key is generated and held entirely on their own machine. Delfi reads it only when signing a trade. It is stored in an encrypted local file (location varies by OS, file permissions restrict it to the user account). Delfi servers never see the key, never see the user's wallet address, and never receive any of the user's funds.
+
+This is different from most "trading bot" products in the crypto space, which either custody user funds directly (Coinbase, Binance bots), require users to deposit into a hot wallet the operator controls (3Commas, Cryptohopper for some pairs), or are SaaS-hosted with the user's API keys uploaded to the operator's servers. None of those apply to Delfi.
+
+If Delfi's servers go offline, the bot keeps running on the user's machine. There is no required network call to anything Delfi-operated.
+
+## Pricing and refunds
+
+Delfi costs $249 USD as a one-time payment. There is no subscription, no recurring fee, no per-trade commission. The price includes all future product updates.
+
+In addition to the one-time fee, users pay external costs that are NOT going to Delfi:
+
+- The user's chosen LLM provider for the forecaster (Anthropic or similar, BYO API key, typically a few dollars per month at normal volume)
+- Polymarket's on-chain gas fees for trades (negligible on Polygon)
+- News API key for research (free tier or BYO key)
+
+14-day money-back guarantee. The user emails info@delfibot.com from the address they paid with and the refund is processed. No questionnaires.
+
+## Platforms
+
+- macOS: Apple Silicon (M1, M2, M3, M4). Distributed as a .dmg installer for arm64.
+- Windows: Windows 10 and Windows 11. Distributed as a .msi installer for x64.
+
+There is no Linux build at this time. There is no mobile app — Delfi is a desktop product that runs locally.
+
+## What's inside the app
+
+- Dashboard: total equity, cash, locked capital, P&L, win rate, closed-trade count, open-trade count, equity chart, recent activity feed
+- Positions: open positions with live mark-to-market, closed positions with P&L and outcome, skipped evaluations with the bot's reasoning, errors from Polymarket order rejections
+- Performance: rolling win-rate and P&L over 7-day, 30-day, and all-time windows, calibration chart
+- Intelligence: the bot's self-evaluations, including pending tuning proposals the user can apply or skip
+- Risk Controls: every risk parameter, slider-editable within bounds
+- Settings: API keys, notification preferences, mode toggle (simulation vs live)
+- Simulation Mode: a paper-trading mode that uses the same scan + forecast + sizing logic but never sends real orders. Toggle in Settings.
+
+## Self-evaluation and learning
+
+Every 50 settled trades, Delfi runs a learning cadence:
+
+- Computes ROI, calibration, win rate, peak drawdown, average P&L by archetype, by side, by horizon
+- Compares actual to target on key metrics
+- Generates concrete tuning proposals (e.g. "reduce maximum bet size from 5% to 3.5% because peak drawdown over the last 50 trades was 45%")
+- Stores them as pending suggestions on the Intelligence page
+- Sends a Telegram notification (if configured) with the cycle summary
+
+The user reviews each proposal and either applies it (the bot updates its config) or skips it (the proposal is dismissed). The bot never auto-applies its own tuning.
+
+## What Delfi is NOT
+
+- Not a get-rich-quick scheme. Past performance does not predict future returns. Prediction markets involve real financial loss.
+- Not a financial advisor. The bot's reasoning is informational, not advice.
+- Not a custodian. Funds never move through Delfi's infrastructure.
+- Not a tax helper. Users are responsible for their own tax reporting in their own jurisdiction.
+- Not legal in every jurisdiction. Polymarket is restricted or prohibited in some regions including the United States. Users must verify legality in their own region before trading.
+
+## Compared to alternatives
+
+There are roughly three other things on the market a buyer might compare Delfi to:
+
+1. Manual Polymarket trading. The user opens polymarket.com and clicks buy/sell on contracts they find interesting. Free, but does not scale beyond a few markets and is the most-frequently-losing approach because retail attention is the slowest-moving signal on the platform.
+
+2. Polymarket arbitrage bots. These exploit short-term price inconsistencies between Polymarket order books and other prediction markets or external pricing oracles. Compete on latency and infrastructure. Usually run by quant teams; not available to retail.
+
+3. Copy-trading services. Mirror the trades of top Polymarket wallets. Concentrate risk on a few traders' decisions, and the top wallets usually delete unprofitable side accounts to maintain their ranking.
+
+Delfi is none of those. It is a strategy-based bot that follows the market favourite within a disciplined risk framework, with full transparency on every decision. The closest analogy is a quant-style retail trading system applied specifically to prediction markets.
+
+## Contact and links
+
+- Website: https://delfibot.com
+- Email: info@delfibot.com
+- Twitter / X: not currently active
+- Discord: not currently active
+
+## License and ownership
+
+Delfi is proprietary software. The license you purchase entitles you to install and run Delfi on your own computer for personal use. The source code is not open. Updates are pushed via the in-app auto-updater.

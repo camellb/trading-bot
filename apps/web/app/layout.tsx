@@ -6,8 +6,66 @@ import { consentRequiredForCountry } from "@/lib/regions";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Delfi - The future is no longer a guess",
-  description: "The first autonomous, self-improving forecasting AI agent for Polymarket.",
+  metadataBase: new URL("https://delfibot.com"),
+  title: {
+    default: "Delfi - Autonomous Polymarket Trading Bot",
+    template: "%s - Delfi",
+  },
+  description:
+    "Autonomous trading bot for Polymarket. Trades 24/7 on your computer. Non-custodial: keys never leave your machine. $249 one-time payment, lifetime updates. macOS and Windows.",
+  keywords: [
+    "polymarket bot",
+    "polymarket trading bot",
+    "polymarket automation",
+    "polymarket automated trading",
+    "prediction market bot",
+    "prediction market trading",
+    "non-custodial trading bot",
+    "polymarket strategy",
+    "polymarket arbitrage",
+    "automated prediction markets",
+  ],
+  authors: [{ name: "Delfi" }],
+  creator: "Delfi",
+  publisher: "Delfi",
+  category: "finance",
+  alternates: {
+    canonical: "/",
+  },
+  openGraph: {
+    type: "website",
+    url: "https://delfibot.com/",
+    siteName: "Delfi",
+    title: "Delfi - Autonomous Polymarket Trading Bot",
+    description:
+      "Trades Polymarket 24/7 on your computer. Non-custodial. $249 one-time payment with lifetime updates. macOS and Windows.",
+    images: [
+      {
+        url: "/brand/oracle-hero.jpg",
+        width: 1200,
+        height: 630,
+        alt: "Delfi - Autonomous Polymarket Trading Bot",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Delfi - Autonomous Polymarket Trading Bot",
+    description:
+      "Trades Polymarket 24/7. Non-custodial. $249 one-time payment with lifetime updates.",
+    images: ["/brand/oracle-hero.jpg"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-snippet": -1,
+      "max-image-preview": "large",
+      "max-video-preview": -1,
+    },
+  },
   icons: {
     icon: [
       { url: "/brand/mark.svg", type: "image/svg+xml" },

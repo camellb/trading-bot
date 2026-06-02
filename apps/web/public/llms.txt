@@ -1,0 +1,43 @@
+# Delfi
+
+> Autonomous trading bot for Polymarket prediction markets. Runs locally on macOS and Windows. Non-custodial: your wallet keys never leave your computer. One-time payment of $249 with lifetime updates.
+
+Delfi watches every active Polymarket contract, backs the market favourite on every tradeable market within its risk gates, and stakes a flat fraction of bankroll scaled by per-archetype multipliers. Trades 24/7 automatically. Shows full reasoning on every trade.
+
+## What it is
+
+- Desktop application (macOS Apple Silicon and Windows 10/11) for trading on Polymarket
+- One-time payment of $249 USD, lifetime access, free lifetime updates
+- Non-custodial: keys stay on your machine, encrypted at rest in an OS-protected secrets file
+- 14-day money-back guarantee
+- Built-in simulation mode (paper trading) using the same logic the live bot uses
+
+## How it works
+
+- Scans up to 100 active Polymarket markets every 5 minutes
+- Backs the market favourite (the side trading at or above 50 cents) on every tradeable contract that passes the bot's archetype skip list and risk gates
+- Risk controls: maximum bet size, daily and weekly loss limits, maximum drawdown halt, consecutive-loss cooldown, reserve cash percentage
+- Self-evaluating: every 50 settled trades, the bot proposes per-archetype tuning and per-strategy adjustments the user can apply or skip from the Intelligence page
+- Full transparency: every trade comes with the underlying reasoning, source citations from the research pipeline, and the risk gates it cleared
+
+## Pricing
+
+$249 USD, one-time payment. Lifetime access. All future updates included.
+
+14-day money-back guarantee. No forms, no questionnaires.
+
+## Key links
+
+- [Homepage](https://delfibot.com/)
+- [How it works](https://delfibot.com/#how)
+- [Demo](https://delfibot.com/#demo)
+- [Pricing](https://delfibot.com/#pricing)
+- [FAQ](https://delfibot.com/#faq)
+- [Risk disclosure](https://delfibot.com/legal/risk)
+- [Privacy policy](https://delfibot.com/legal/privacy)
+- [Terms of service](https://delfibot.com/legal/terms)
+- [Full LLM-friendly description](https://delfibot.com/llms-full.txt)
+
+## Contact
+
+info@delfibot.com

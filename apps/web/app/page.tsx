@@ -799,11 +799,147 @@ function AnimatedPipeline({ nodes }: { nodes: string[] }) {
   );
 }
 
+// ─── JSON-LD structured data ──────────────────────────────
+// Three schema.org blocks for LLM + search engine ingestion:
+//   1. SoftwareApplication: app-store-style metadata (name, price,
+//      OS, category). Cited by ChatGPT, Claude, Perplexity when
+//      users ask "best polymarket bot" / "polymarket automation tool".
+//   2. Organization: entity signal so Delfi is recognized as a
+//      distinct brand, not a generic phrase.
+//   3. FAQPage: every FAQ item below as Question + Answer. Lets
+//      LLMs and Google directly surface "Where do my keys live?",
+//      "How much does it cost?", etc. without paraphrasing badly.
+//
+// Kept in sync with the visible FAQ. If you change the FAQ copy,
+// update FAQ_JSONLD here too.
+
+const SOFTWARE_JSONLD = {
+  "@context":       "https://schema.org",
+  "@type":          "SoftwareApplication",
+  "name":           "Delfi",
+  "applicationCategory": "FinanceApplication",
+  "operatingSystem": "macOS, Windows",
+  "description":
+    "Autonomous trading bot for Polymarket. Runs on your computer. Non-custodial: keys never leave your machine. Trades 24/7 with full reasoning on every position.",
+  "url":            "https://delfibot.com/",
+  "image":          "https://delfibot.com/brand/oracle-hero.jpg",
+  "offers": {
+    "@type":         "Offer",
+    "price":         "249",
+    "priceCurrency": "USD",
+    "availability":  "https://schema.org/InStock",
+    "url":           "https://delfibot.com/#pricing",
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name":  "Delfi",
+    "url":   "https://delfibot.com/",
+    "email": "info@delfibot.com",
+  },
+  "softwareVersion": "1.5",
+  "downloadUrl":     "https://delfibot.com/#pricing",
+};
+
+const ORGANIZATION_JSONLD = {
+  "@context": "https://schema.org",
+  "@type":    "Organization",
+  "name":     "Delfi",
+  "url":      "https://delfibot.com/",
+  "logo":     "https://delfibot.com/brand/mark.svg",
+  "email":    "info@delfibot.com",
+  "description":
+    "Delfi builds an autonomous, non-custodial trading bot for Polymarket prediction markets.",
+  "sameAs": [],
+};
+
+const FAQ_JSONLD = {
+  "@context": "https://schema.org",
+  "@type":    "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name":  "What exactly is Delfi?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "Delfi is an autonomous Polymarket trader that runs entirely on your machine. It continuously scans every active prediction market, produces its own probability forecasts, and backs those forecasts with small, flat-sized stakes, all within the risk limits you set. You install it once like any other desktop app.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "Where do my private keys live?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "In an encrypted file on your machine, owned only by your user account. Delfi reads them only inside its own process; they never travel to any server we control. We can't see your wallet address even if we wanted to.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "How is this different from other Polymarket bots?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "Most Polymarket bots are either arbitrage scanners, copy-trading tools, or basic momentum systems. Delfi is none of those. It runs locally on your machine, never custodies your funds, sizes every trade by the same flat-fractional math regardless of how strong the signal looks, and shows you the full reasoning on every position.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "What happens if Delfi is wrong?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "You lose money on that trade. Delfi is probabilistic, not psychic. Over hundreds of trades, sizing discipline plus following the market favourite compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "How much does it cost?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "$249 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "Do I need a Polymarket account first?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "Is my money safe?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in an encrypted file on your machine, not on Delfi servers. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time.",
+      },
+    },
+    {
+      "@type": "Question",
+      "name":  "What's the refund policy?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text":  "14 days from purchase, as long as you haven't activated your license on any machine. Once activated, the digital good is delivered and the purchase is final. Email info@delfibot.com from the address used at checkout to request a refund within the eligibility window.",
+      },
+    },
+  ],
+};
+
 // ─── Page ────────────────────────────────────────────────
 export default function HomePage() {
   useScrollDepthTracking();
   return (
     <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(SOFTWARE_JSONLD) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(ORGANIZATION_JSONLD) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(FAQ_JSONLD) }}
+      />
       <TopNav />
       <Hero />
       <Problem />
