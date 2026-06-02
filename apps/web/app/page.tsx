@@ -202,8 +202,9 @@ function TopNav() {
         </div>
         <div className="nav-center">
           <a className="nav-link" href="#how">How it works</a>
-          <a className="nav-link" href="#demo">Demo</a>
+          <a className="nav-link" href="#performance">Performance</a>
           <a className="nav-link" href="#pricing">Pricing</a>
+          <a className="nav-link" href="#faq">FAQs</a>
         </div>
         <div className="nav-right">
           <CtaLink className="btn-primary" location="topnav" text="Get Delfi">Get Delfi</CtaLink>
@@ -422,7 +423,7 @@ function CalibrationChart() {
 function Proof() {
   const loop = [...TRADE_LOG, ...TRADE_LOG];
   return (
-    <section className="section proof" id="proof" data-screen-label="08 Proof">
+    <section className="section proof" id="performance" data-screen-label="08 Proof">
       <div className="container">
         <div className="sec-head">
           <h2 className="t-display-l balanced proof-head">Sharper than the crowd.<br className="br-keep" /> Measurably.</h2>
