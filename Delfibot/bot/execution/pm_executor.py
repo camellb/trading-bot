@@ -2362,6 +2362,21 @@ class PMExecutor:
             print(f"[pm_executor] close_position_early event log failed: "
                   f"{exc}", file=sys.stderr)
 
+        # Trade-volume learning cadence. Same hook the natural
+        # settlement path fires (settle_position); without it the
+        # cadence counter only saw trades that resolved on-chain
+        # and never the ones we closed early (manual sell, stop-loss,
+        # take-profit). A user trading mostly via early exits could
+        # cross the 50-trade threshold without ever triggering a
+        # review. Fixed 2026-06-02 alongside the closed_early count
+        # fix in learning_cadence._count_settled_trades.
+        try:
+            from engine.learning_cadence import maybe_run_learning_cycle
+            maybe_run_learning_cycle(user_id=self.user_id, mode=self.trading_mode)
+        except Exception as exc:
+            print(f"[pm_executor] learning_cadence hook failed (close_early): "
+                  f"{exc}", file=sys.stderr)
+
         return True
 
     def _token_has_open_sell(self, token_id: str) -> bool:

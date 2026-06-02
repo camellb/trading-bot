@@ -78,6 +78,7 @@ from engine.learning_cadence import (
     apply_suggestion,
     list_pending_suggestions,
     list_resolved_suggestions,
+    maybe_run_learning_cycle,
     skip_suggestion,
     snooze_suggestion,
 )
@@ -472,6 +473,13 @@ class LocalAPI:
         app.router.add_post("/api/suggestions/{suggestion_id}/snooze",
                             self._snooze_suggestion)
         app.router.add_get("/api/learning-reports", self._get_learning_reports)
+        # Manual trigger for the learning cadence. Normally fires
+        # automatically inside settle_position / close_position_early
+        # once the 50-trade threshold crosses; this endpoint lets a
+        # user run it on demand (overdue review after a fix, or just
+        # "review now" curiosity). Added 2026-06-02 alongside the
+        # cadence-count fix.
+        app.router.add_post("/api/learning/run-now", self._post_learning_run_now)
 
         # Archetypes (the per-archetype Settings UX)
         app.router.add_get("/api/archetypes",       self._get_archetypes)
@@ -2104,6 +2112,31 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to list learning reports: {exc}", 500)
         return _ok({"reports": rows})
+
+    async def _post_learning_run_now(self, _req: web.Request) -> web.Response:
+        """Manually trigger the learning cadence for the user's current
+        trading mode. Returns the same status dict the settlement hook
+        gets back.
+
+        Useful when (a) the threshold gate is crossed but no settlement
+        has happened recently to fire the hook, or (b) the user just
+        wants a fresh review on demand.
+        """
+        try:
+            cfg = await self._offload(get_user_config)
+            mode = cfg.mode or "simulation"
+        except Exception as exc:
+            return _err(f"could not read user_config: {exc}", 500)
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor,
+                lambda: maybe_run_learning_cycle(
+                    user_id=DEFAULT_USER_ID, mode=mode,
+                ),
+            )
+        except Exception as exc:
+            return _err(f"learning cycle failed: {exc}", 500)
+        return _ok(result)
 
     # ── Archetype catalogue ──────────────────────────────────────────────
     async def _get_archetypes(self, _req: web.Request) -> web.Response:

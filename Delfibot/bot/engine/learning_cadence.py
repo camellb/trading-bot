@@ -1298,6 +1298,18 @@ def _compose_and_deliver_report(user_id: str, mode: str,
 
 # ── DB helpers ───────────────────────────────────────────────────────────────
 def _count_settled_trades(user_id: str, mode: str) -> int:
+    """Count of trades that have a closed outcome.
+
+    Must match the CANONICAL ALGORITHM in CLAUDE.md RULE #1:
+    `trades = COUNT WHERE status IN ('settled', 'closed_early', 'invalid')`.
+
+    Earlier this counter excluded `closed_early` rows, which silently
+    starved the learning cadence: a user could hit 50 real closed
+    trades and never trigger a review because half of them were
+    closed via manual sell / stop-loss / take-profit. Fixed
+    2026-06-02 after the user flagged "I've had 50 trades completed
+    in live mode, why haven't I received the review?"
+    """
     try:
         from sqlalchemy import text
         from db.engine import get_engine
@@ -1305,7 +1317,7 @@ def _count_settled_trades(user_id: str, mode: str) -> int:
             return int(conn.execute(text(
                 "SELECT COUNT(*) FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled', 'invalid')"
+                "  AND status IN ('settled', 'closed_early', 'invalid')"
             ), {"uid": user_id, "m": mode}).scalar() or 0)
     except Exception as exc:
         print(f"[learning_cadence] count_settled failed: {exc}", file=sys.stderr)
@@ -1332,9 +1344,19 @@ def _last_cycle_settled_count(user_id: str, mode: str) -> int:
       report-bookmark fix and for the rare case where the report INSERT
       itself fails but suggestion INSERTs succeed.
 
-    Scoped by mode for `learning_reports` (the table tracks it).
-    `pending_suggestions` does not, so it stays user-scoped only - that
-    is acceptable because the bookmark only ever moves forward.
+    Both tables track `mode`. The old version queried
+    pending_suggestions without a mode filter, which let a sim-mode
+    bookmark contaminate the live-mode count: a user who ran sim
+    cycles past trade 300 then switched to live saw the live cadence
+    permanently gated (settled_now - 300 stays deeply negative).
+    Set 2026-06-02 alongside the closed_early count fix - same root
+    incident.
+
+    Historical rows from before the pending_suggestions.mode column
+    existed have NULL mode and intentionally do NOT contribute to
+    either mode's bookmark. That is the correct behaviour: those
+    cycles ran in a pre-mode-tracking era and we don't know which
+    mode they correspond to.
     """
     try:
         from sqlalchemy import text
@@ -1348,8 +1370,8 @@ def _last_cycle_settled_count(user_id: str, mode: str) -> int:
             from_pending = conn.execute(text(
                 "SELECT MAX(settled_count_at_creation) "
                 "FROM pending_suggestions "
-                "WHERE user_id = :uid"
-            ), {"uid": user_id}).scalar()
+                "WHERE user_id = :uid AND mode = :m"
+            ), {"uid": user_id, "m": mode}).scalar()
             return max(int(from_reports or 0), int(from_pending or 0))
     except Exception as exc:
         print(f"[learning_cadence] last_cycle_count failed: {exc}", file=sys.stderr)
