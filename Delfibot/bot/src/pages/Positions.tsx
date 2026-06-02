@@ -67,11 +67,11 @@ function decision(raw: string | null): "BUY YES" | "BUY NO" | "SKIP" {
 // functions return the raw scalar each click should sort by - never
 // the formatted string, so "+10%" sorts after "+9%" not before it.
 
-type OpenSk    = "id"     | "market"   | "category" | "side" | "size"
-                | "avg"   | "now"      | "value"    | "pnl"
-                | "myes"  | "dyes"     | "dconf"    | "opened" | "closes";
-type ClosedSk  = "id"     | "market"   | "category" | "side" | "outcome"
-                | "size"  | "value"    | "pnl"      | "settled";
+type OpenSk    = "id"     | "market"   | "side"    | "avgnow"
+                | "traded"| "towin"    | "value"   | "pnl"
+                | "opened"| "closes";
+type ClosedSk  = "id"     | "market"   | "side"    | "traded"
+                | "value" | "pnl"      | "settled" | "outcome";
 type SkippedSk = "id"     | "market"   | "category" | "myes" | "dyes"
                 | "closed";
 
@@ -79,19 +79,19 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
   switch (f) {
     case "id":       return p.id;
     case "market":   return p.question;
-    case "category": return (p.category as string | null) ?? "";
     case "side":     return p.side;
-    case "size":     return p.cost_usd;
-    case "avg":      return p.entry_price;
-    case "now": {
-      // Current mid-price for the held side. We derive it from the
-      // mark stored in current_value_usd whenever the exit-policy
-      // job has written one, else fall back to entry_price.
+    case "avgnow": {
+      // Sort by the CURRENT per-share price of the side held. Same
+      // computation as the cell-rendering NOW value below; if the
+      // mark hasn't been written yet, fall back to the entry price
+      // so freshly opened positions still sort sensibly.
       const cv = (p as unknown as Record<string, unknown>).current_value_usd as
         | number | null | undefined;
       if (cv != null && p.shares > 0) return Number(cv) / p.shares;
       return p.entry_price;
     }
+    case "traded":   return p.cost_usd;
+    case "towin":    return p.shares;
     case "value": {
       const cv = (p as unknown as Record<string, unknown>).current_value_usd as
         | number | null | undefined;
@@ -102,12 +102,6 @@ function openKpi(p: PMPosition, f: OpenSk): SortKey {
         | number | null | undefined;
       return cv != null ? Number(cv) - p.cost_usd : 0;
     }
-    case "myes": {
-      const m = p.side === "YES" ? p.entry_price : 1 - p.entry_price;
-      return m;
-    }
-    case "dyes":     return (p.delfi_probability as number | null) ?? null;
-    case "dconf":    return (p.confidence as number | null) ?? null;
     case "opened": {
       const iso = p.created_at as string | null | undefined;
       return iso ? new Date(iso).getTime() : null;
@@ -123,14 +117,8 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
   switch (f) {
     case "id":       return p.id;
     case "market":   return p.question;
-    case "category": return (p.category as string | null) ?? "";
     case "side":     return p.side;
-    case "outcome": {
-      const o = p.settlement_outcome as string | null | undefined;
-      const won = o ? o === p.side : ((p.realized_pnl_usd as number | null) ?? 0) >= 0;
-      return won ? "WON" : "LOST";
-    }
-    case "size":     return p.cost_usd;
+    case "traded":   return p.cost_usd;
     case "value": {
       // Final settled value = cost + realized P&L. Sorts the table
       // by what the position is worth at close (including refunds /
@@ -142,6 +130,11 @@ function closedKpi(p: PMPosition, f: ClosedSk): SortKey {
     case "settled": {
       const iso = p.settled_at as string | null | undefined;
       return iso ? new Date(iso).getTime() : null;
+    }
+    case "outcome": {
+      const o = p.settlement_outcome as string | null | undefined;
+      const won = o ? o === p.side : ((p.realized_pnl_usd as number | null) ?? 0) >= 0;
+      return won ? "WON" : "LOST";
     }
   }
 }
@@ -448,28 +441,30 @@ export default function Positions() {
           ) : (
             <table className="table-simple">
               <colgroup>
-                <col style={{ width: "44px" }} />
-                <col style={{ width: "auto" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "56px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "150px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "28px" }} />
+                <col style={{ width: "44px"  }} /> {/* ID */}
+                <col style={{ width: "auto"  }} /> {/* Market */}
+                <col style={{ width: "56px"  }} /> {/* Side */}
+                <col style={{ width: "110px" }} /> {/* Avg -> Now */}
+                <col style={{ width: "72px"  }} /> {/* Traded */}
+                <col style={{ width: "72px"  }} /> {/* To win */}
+                <col style={{ width: "72px"  }} /> {/* Value */}
+                <col style={{ width: "150px" }} /> {/* P&L */}
+                <col style={{ width: "72px"  }} /> {/* Opened */}
+                <col style={{ width: "72px"  }} /> {/* Closes */}
+                <col style={{ width: "28px"  }} /> {/* chevron */}
               </colgroup>
               <thead>
                 <tr>
-                  <SortableTh field="id"       sort={openSort}>#</SortableTh>
-                  <SortableTh field="market"   sort={openSort}>Market</SortableTh>
-                  <SortableTh field="category" sort={openSort}>Category</SortableTh>
-                  <SortableTh field="side"     sort={openSort}>Side</SortableTh>
-                  <SortableTh field="size"     sort={openSort}>Cost</SortableTh>
-                  <SortableTh field="value"    sort={openSort}>Value</SortableTh>
-                  <SortableTh field="pnl"      sort={openSort}>P&amp;L</SortableTh>
-                  <SortableTh field="opened"   sort={openSort}>Opened</SortableTh>
-                  <SortableTh field="closes"   sort={openSort}>Closes</SortableTh>
+                  <SortableTh field="id"     sort={openSort}>#</SortableTh>
+                  <SortableTh field="market" sort={openSort}>Market</SortableTh>
+                  <SortableTh field="side"   sort={openSort}>Side</SortableTh>
+                  <SortableTh field="avgnow" sort={openSort}>Avg → Now</SortableTh>
+                  <SortableTh field="traded" sort={openSort}>Traded</SortableTh>
+                  <SortableTh field="towin"  sort={openSort}>To win</SortableTh>
+                  <SortableTh field="value"  sort={openSort}>Value</SortableTh>
+                  <SortableTh field="pnl"    sort={openSort}>P&amp;L</SortableTh>
+                  <SortableTh field="opened" sort={openSort}>Opened</SortableTh>
+                  <SortableTh field="closes" sort={openSort}>Closes</SortableTh>
                   <th />
                 </tr>
               </thead>
@@ -509,9 +504,22 @@ export default function Positions() {
                       >
                         <td className="mono" style={{ color: "var(--vellum-40)" }}>{p.id}</td>
                         <td className="truncate" title={p.question}>{p.question}</td>
-                        <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={p.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{p.side}</span></td>
+                        <td className="mono" style={{ whiteSpace: "nowrap" }}>{
+                          // AVG -> NOW in cents. Per-share price the bot
+                          // paid (AVG) and the current per-share price of
+                          // the held side (NOW). The mark hasn't been
+                          // written yet for fresh opens, so NOW renders
+                          // as a dash until the exit-policy job catches up.
+                          (() => {
+                            const avg = Math.round(p.entry_price * 100);
+                            if (!haveMark) return `${avg}¢`;
+                            const now = Math.round((Number(cv) / p.shares) * 100);
+                            return `${avg}¢ → ${now}¢`;
+                          })()
+                        }</td>
                         <td className="mono">${p.cost_usd.toFixed(2)}</td>
+                        <td className="mono">${p.shares.toFixed(2)}</td>
                         <td className="mono">{haveMark ? `$${Number(cv).toFixed(2)}` : "-"}</td>
                         <td className={`mono ${pnlClass}`} style={{ whiteSpace: "nowrap" }}>{
                           pnl == null ? "-"
@@ -545,7 +553,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={11} style={{ padding: "16px 20px 22px" }}>
                             {/* Full market title - the row cell above
                                 truncates at the Market column width. */}
                             <div
@@ -567,6 +575,10 @@ export default function Positions() {
                               <div>
                                 <div className="kv-label">Closes</div>
                                 <div className="kv-val mono">{fmtDateTime(closesAt)}</div>
+                              </div>
+                              <div>
+                                <div className="kv-label">Category</div>
+                                <div className="kv-val mono">{category ?? "-"}</div>
                               </div>
                               <div>
                                 <div className="kv-label">Entry price</div>
@@ -644,28 +656,26 @@ export default function Positions() {
           ) : (
             <table className="table-simple">
               <colgroup>
-                <col style={{ width: "44px" }} />
-                <col style={{ width: "auto" }} />
-                <col style={{ width: "10%" }} />
-                <col style={{ width: "56px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "150px" }} />
-                <col style={{ width: "72px" }} />
-                <col style={{ width: "92px" }} />
-                <col style={{ width: "28px" }} />
+                <col style={{ width: "44px" }} /> {/* ID */}
+                <col style={{ width: "auto" }} /> {/* Market */}
+                <col style={{ width: "56px" }} /> {/* Side */}
+                <col style={{ width: "72px" }} /> {/* Traded */}
+                <col style={{ width: "72px" }} /> {/* Value */}
+                <col style={{ width: "150px" }} /> {/* P&L */}
+                <col style={{ width: "72px" }} /> {/* Closed */}
+                <col style={{ width: "92px" }} /> {/* Outcome */}
+                <col style={{ width: "28px" }} /> {/* chevron */}
               </colgroup>
               <thead>
                 <tr>
-                  <SortableTh field="id"       sort={closedSort}>#</SortableTh>
-                  <SortableTh field="market"   sort={closedSort}>Market</SortableTh>
-                  <SortableTh field="category" sort={closedSort}>Category</SortableTh>
-                  <SortableTh field="side"     sort={closedSort}>Side</SortableTh>
-                  <SortableTh field="size"     sort={closedSort}>Cost</SortableTh>
-                  <SortableTh field="value"    sort={closedSort}>Value</SortableTh>
-                  <SortableTh field="pnl"      sort={closedSort}>P&amp;L</SortableTh>
-                  <SortableTh field="settled"  sort={closedSort}>Closed</SortableTh>
-                  <SortableTh field="outcome"  sort={closedSort}>Outcome</SortableTh>
+                  <SortableTh field="id"      sort={closedSort}>#</SortableTh>
+                  <SortableTh field="market"  sort={closedSort}>Market</SortableTh>
+                  <SortableTh field="side"    sort={closedSort}>Side</SortableTh>
+                  <SortableTh field="traded"  sort={closedSort}>Traded</SortableTh>
+                  <SortableTh field="value"   sort={closedSort}>Value</SortableTh>
+                  <SortableTh field="pnl"     sort={closedSort}>P&amp;L</SortableTh>
+                  <SortableTh field="settled" sort={closedSort}>Closed</SortableTh>
+                  <SortableTh field="outcome" sort={closedSort}>Outcome</SortableTh>
                   <th />
                 </tr>
               </thead>
@@ -732,7 +742,6 @@ export default function Positions() {
                       >
                         <td className="mono" style={{ color: "var(--vellum-40)" }}>{s.id}</td>
                         <td className="truncate" title={s.question}>{s.question}</td>
-                        <td className="truncate" title={category ?? ""}>{category ?? "-"}</td>
                         <td><span className={s.side === "YES" ? "pill pill-yes" : "pill pill-no"}>{s.side}</span></td>
                         <td className="mono">${s.cost_usd.toFixed(2)}</td>
                         <td className="mono">${finalValue.toFixed(2)}</td>
@@ -752,7 +761,7 @@ export default function Positions() {
                       </tr>
                       {isOpen && (
                         <tr className="expanded-row">
-                          <td colSpan={10} style={{ padding: "16px 20px 22px" }}>
+                          <td colSpan={9} style={{ padding: "16px 20px 22px" }}>
                             {/* Full market title - the row cell above
                                 truncates at the Market column width. */}
                             <div
@@ -767,6 +776,10 @@ export default function Positions() {
                               {s.question}
                             </div>
                             <div className="kv-grid" style={{ marginBottom: 14 }}>
+                              <div>
+                                <div className="kv-label">Category</div>
+                                <div className="kv-val mono">{category ?? "-"}</div>
+                              </div>
                               <div>
                                 <div className="kv-label">Opened</div>
                                 <div className="kv-val mono">{fmtDateTime(openedAt)}</div>
