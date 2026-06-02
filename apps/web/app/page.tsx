@@ -297,10 +297,6 @@ function Problem() {
             <div className="problem-label">trades the average active<br />Polymarket user now makes</div>
           </div>
         </div>
-        <p className="problem-close">
-          The problem isn&apos;t what you know.<br className="br-keep" />
-          <span>It&apos;s how fast you can act on it.</span>
-        </p>
       </div>
     </section>
   );

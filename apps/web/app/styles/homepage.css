@@ -286,11 +286,6 @@ html, body { scroll-behavior: smooth; }
   font-feature-settings: "tnum";
 }
 .problem-label { font-family: var(--font-body); font-size: 14px; color: var(--vellum-60); line-height: 1.5; max-width: 26ch; margin: 0 auto; }
-.problem-close {
-  font-family: var(--font-display); font-style: italic; font-size: 22px;
-  color: var(--vellum-60); max-width: 640px; margin: 0 auto;
-  line-height: 1.45; letter-spacing: -0.005em;
-}
 
 /* ─── Pillars ─── */
 .pillars { border-top: 1px solid var(--vellum-10); background: var(--obsidian-sink); }
@@ -935,7 +930,6 @@ html, body { scroll-behavior: smooth; }
   .problem-stat { padding: 24px 14px; }
   .problem-num { font-size: 34px; margin-bottom: 12px; }
   .problem-label { font-size: 13px; max-width: 28ch; }
-  .problem-close { font-size: 16px; line-height: 1.5; }
 
   /* Pillars */
   .pillars-head { font-size: 28px !important; line-height: 1.18; letter-spacing: -0.02em; }
