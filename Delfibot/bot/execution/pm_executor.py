@@ -317,6 +317,66 @@ def _get_clob_client(wallet_address: str, private_key: str):
     return client
 
 
+def _safe_float(v, default: Optional[float] = None) -> Optional[float]:
+    """Coerce CLOB JSON values (often numeric strings) to float.
+    Returns `default` on None / empty / unparseable input.
+    """
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_clob_age_seconds(
+    created_at_value, now_unix: float,
+) -> Optional[float]:
+    """Parse the CLOB's `created_at` field and return age in seconds.
+
+    Polymarket has emitted this field in two forms across SDK versions:
+      - Unix seconds (int, float, or numeric string e.g. "1717440000")
+      - ISO 8601 UTC string (e.g. "2026-06-02T02:08:00Z")
+    The original implementation only handled the numeric form; ISO
+    strings raised inside a bare `float()` and got swallowed by the
+    outer try/except, silently disabling the stale-order recovery.
+    Returns None if the value is missing or unparseable, so callers
+    can fall through to other staleness signals (e.g. price drift).
+    """
+    if created_at_value is None or created_at_value == "":
+        return None
+    # Numeric path.
+    try:
+        ts = float(created_at_value)
+        # Sanity: Polymarket can also send a number that's actually
+        # milliseconds. Anything above year-2100-in-seconds is almost
+        # certainly ms; rescale.
+        if ts > 4_102_444_800:  # 2100-01-01 UTC in seconds
+            ts = ts / 1000.0
+        return max(0.0, now_unix - ts)
+    except (TypeError, ValueError):
+        pass
+    # ISO 8601 path.
+    try:
+        from datetime import datetime, timezone
+        s = str(created_at_value).strip()
+        # datetime.fromisoformat accepts most variants but not
+        # trailing 'Z'; swap it for the timezone marker.
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, now_unix - dt.timestamp())
+    except Exception as exc:
+        print(
+            f"[pm_executor] _parse_clob_age_seconds: unparseable "
+            f"created_at={created_at_value!r}: {exc}",
+            file=sys.stderr, flush=True,
+        )
+        return None
+
+
 def _extract_filled_size(final: dict, resp: dict) -> float:
     """Pull the ACTUAL filled size in shares from a CLOB order response.
 
@@ -2101,7 +2161,9 @@ class PMExecutor:
             # the SELL submission (the original behaviour) so a CLOB
             # outage can't permanently block exits. The downstream
             # error path is unchanged when that happens.
-            if self._token_has_open_sell(clob_token_id):
+            if self._token_has_open_sell(
+                clob_token_id, current_bid=float(current_bid),
+            ):
                 print(
                     f"[pm_executor] close_position_early: pos "
                     f"#{position_id} ({reason}) skipped - CLOB still "
@@ -2110,6 +2172,49 @@ class PMExecutor:
                     file=sys.stderr, flush=True,
                 )
                 return False
+
+            # On-chain size clip. The DB row tracks the share count we
+            # INTENDED to own (from the BUY's fill record), but the
+            # actual on-chain balance can drift smaller via:
+            #   - a previous SELL that partially filled and got
+            #     cancelled (or that we never captured)
+            #   - tiny dust deductions
+            # Submitting `shares=5.0` when on-chain has 4.82 makes
+            # Polymarket bounce the order with `not enough balance /
+            # allowance` forever. Probe data-api ONCE before the SELL
+            # and clip the size to what the wallet actually holds.
+            # Best-effort: an API outage falls through to the original
+            # DB value so a transient blip can't permanently block exits.
+            sell_shares = float(shares)
+            try:
+                _on_chain = _lookup_on_chain_position(
+                    funder_address=(
+                        get_active_polymarket_creds(self._user_config)
+                        .get("wallet_address") or ""
+                    ).strip(),
+                    condition_id=condition_id,
+                    side=side,
+                )
+                if _on_chain is not None:
+                    _oc_size = float(_on_chain.get("size") or 0.0)
+                    if 0.0 < _oc_size < sell_shares:
+                        print(
+                            f"[pm_executor] close_position_early: pos "
+                            f"#{position_id} clipping SELL size from "
+                            f"DB {sell_shares} to on-chain {_oc_size} "
+                            f"(partial-fill drift on token "
+                            f"{clob_token_id[:14]}...).",
+                            file=sys.stderr, flush=True,
+                        )
+                        sell_shares = _oc_size
+            except Exception as _clip_exc:
+                print(
+                    f"[pm_executor] on-chain size probe failed for "
+                    f"pos #{position_id}: {_clip_exc}. Submitting DB "
+                    f"size; reconcile path will catch a drift.",
+                    file=sys.stderr,
+                )
+
             try:
                 (
                     clob_order_id,
@@ -2118,7 +2223,7 @@ class PMExecutor:
                     actual_fill_size,
                 ) = self._place_close_order(
                     token_id=clob_token_id,
-                    shares=shares,
+                    shares=sell_shares,
                     sell_price=float(current_bid),
                 )
             except Exception as exc:
@@ -2150,6 +2255,33 @@ class PMExecutor:
                 #     the standard layout the user already approved.
                 err_msg = str(exc)
                 low = err_msg.lower()
+                # Transient CLOB errors: "service not ready" (425),
+                # "rate limit" (429), "temporarily unavailable" (503),
+                # generic 5xx. These are recoverable on the next 60s
+                # tick. Don't push Telegram (it's not user-actionable),
+                # don't write event_log, don't write the row - just
+                # log to stderr so the engineer audit sees the blip.
+                is_transient = (
+                    "service not ready" in low
+                    or "status_code=425" in low
+                    or "status_code=429" in low
+                    or "status_code=502" in low
+                    or "status_code=503" in low
+                    or "status_code=504" in low
+                    or "rate limit" in low
+                    or "temporarily unavailable" in low
+                    or "gateway timeout" in low
+                    or "read timed out" in low
+                    or "connection reset" in low
+                )
+                if is_transient:
+                    print(
+                        f"[pm_executor] close_position_early: pos "
+                        f"#{position_id} ({reason}) hit transient "
+                        f"CLOB error; will retry next tick. {err_msg[:200]}",
+                        file=sys.stderr, flush=True,
+                    )
+                    return False
                 is_balance_drift = (
                     "not enough balance" in low
                     or "balance is not enough" in low
@@ -2409,8 +2541,15 @@ class PMExecutor:
                         get_poly_signer_info,
                         _POSITIONS_VALUE_LOCK,
                     )
+                    # NOTE: do NOT import get_active_polymarket_creds
+                    # locally here - it's already imported at module
+                    # top (line 50). A local `from ... import ...`
+                    # rebinds the name for the entire function in
+                    # Python's scoping rules, which makes earlier
+                    # uses (e.g. the v1.5.54 reconcile branch above)
+                    # raise UnboundLocalError. Diagnosed 2026-06-03
+                    # when the price-stale cancel fix unmasked it.
                     from engine.user_config import (
-                        get_active_polymarket_creds,
                         get_user_config as _gcfg,
                     )
                     _cfg_refresh = _gcfg(self.user_id)
@@ -2500,7 +2639,9 @@ class PMExecutor:
 
         return True
 
-    def _token_has_open_sell(self, token_id: str) -> bool:
+    def _token_has_open_sell(
+        self, token_id: str, *, current_bid: Optional[float] = None,
+    ) -> bool:
         """Return True iff the CLOB already has an active SELL order
         from this wallet on `token_id`.
 
@@ -2511,6 +2652,25 @@ class PMExecutor:
         balance / allowance` because all shares are locked in the
         first LIVE order, and the resulting `order_error` events
         spam Telegram (47 messages on a single position 2026-05-29).
+
+        Two cancel-and-replace triggers:
+
+        (a) AGE-stale: order has been LIVE > stale_seconds with zero
+            fills. Original 5-min threshold from b77cb76.
+
+        (b) PRICE-stale: the limit price has drifted >5% above the
+            CURRENT market bid. Catches the "market walked away" case
+            where the original SELL was placed at $0.58 and the bid
+            collapsed to $0.17; the limit will NEVER match but it
+            keeps locking the position's shares. age-stale alone
+            wasn't enough - position #378 hit this with the
+            created_at parser silently failing on ISO 8601 strings,
+            so the age check never fired. 2026-06-03 incident.
+
+        Both checks tolerate Polymarket's two possible created_at
+        formats (Unix seconds as numeric string OR ISO 8601 date
+        string). Parse failures now log to stderr instead of being
+        silently swallowed.
 
         Best-effort: a CLOB outage or unexpected response shape
         returns False so the caller falls through to the actual SELL
@@ -2542,6 +2702,12 @@ class PMExecutor:
         import time as _time
         now_unix = _time.time()
         stale_seconds = 300.0  # 5 minutes
+        # Price-drift threshold: cancel a SELL whose limit price is
+        # more than this fraction above the current bid. The market
+        # has clearly moved past it; the order will never match.
+        # 5% is conservative; smaller values cancel too often on
+        # noisy orderbooks, larger values let stop-losses bleed.
+        price_drift_threshold = 0.05
         for o in orders:
             if not isinstance(o, dict):
                 continue
@@ -2554,50 +2720,64 @@ class PMExecutor:
             side  = str(o.get("side") or "").upper()
             if asset != token_id or side != "SELL":
                 continue
-            # Stale-order recovery. If the SELL has been LIVE for more
-            # than 5 minutes with zero fills, the limit price is no
-            # longer hitting the book - cancel it so the caller can
-            # re-submit at the current bid. Without this, a user with
-            # a stop-loss that placed a SELL at a now-stale price
-            # would wait FOREVER for it to match while the market
-            # walks away. 2026-05-29 incident: position #350 SELL
-            # placed at $0.35, market moved to $0.34, our order
-            # never matched, bot kept skipping because the SELL
-            # was "still LIVE", user kept losing money.
-            #
-            # Heuristic: only cancel if the order is BOTH old AND
-            # zero-filled. A partially-filled order should run to
-            # completion; the remaining slice is presumably matching
-            # at the right level.
-            try:
-                created_at = o.get("created_at")
-                size_matched = float(o.get("size_matched") or 0)
-                if created_at is not None and size_matched == 0:
-                    age = now_unix - float(created_at)
-                    if age > stale_seconds:
-                        oid = str(o.get("id") or "")
-                        if oid:
-                            try:
-                                client.cancel_orders([oid])  # type: ignore[union-attr]
-                                print(
-                                    f"[pm_executor] _token_has_open_sell: "
-                                    f"cancelled stale SELL on token "
-                                    f"{token_id[:14]}... (age={age:.0f}s, "
-                                    f"price=${o.get('price')}, "
-                                    f"order={oid[:14]}...). Caller will "
-                                    f"submit a fresh SELL at the current bid.",
-                                    file=sys.stderr, flush=True,
-                                )
-                                continue  # treat as no open SELL
-                            except Exception as cexc:
-                                print(
-                                    f"[pm_executor] _token_has_open_sell: "
-                                    f"stale-cancel failed for {oid[:14]}...: "
-                                    f"{cexc}. Treating as still-live.",
-                                    file=sys.stderr, flush=True,
-                                )
-            except Exception:
-                pass
+            oid = str(o.get("id") or "")
+            order_price = _safe_float(o.get("price"))
+            size_matched = _safe_float(o.get("size_matched"), 0.0)
+            age_seconds = _parse_clob_age_seconds(
+                o.get("created_at"), now_unix,
+            )
+            # Reason this order should be cancelled, if any.
+            # PRICE-stale fires REGARDLESS of partial-fill state: a
+            # limit price >5% above the current bid will never match
+            # the remaining unfilled portion, partial fill or not.
+            # AGE-stale still requires zero fills - a partially-
+            # filled order within the 5-min window is presumably
+            # still matching at the right level. Position #378
+            # (2026-06-03) hit exactly this gap: a SELL placed at
+            # $0.58 had a tiny partial fill on the way down, then
+            # the market collapsed to $0.17 and the remainder sat
+            # forever. The first revision of this guard gated price-
+            # stale behind size_matched==0 and so missed the case.
+            cancel_reason: Optional[str] = None
+            if (
+                current_bid is not None
+                and order_price is not None
+                and current_bid > 0
+                and order_price > current_bid * (1.0 + price_drift_threshold)
+            ):
+                drift_pct = (order_price - current_bid) / current_bid * 100.0
+                cancel_reason = (
+                    f"price-stale (limit ${order_price:.3f} vs "
+                    f"bid ${current_bid:.3f}, +{drift_pct:.1f}%)"
+                )
+            elif (
+                size_matched == 0
+                and age_seconds is not None
+                and age_seconds > stale_seconds
+            ):
+                cancel_reason = f"age-stale ({age_seconds:.0f}s)"
+            if cancel_reason and oid:
+                try:
+                    client.cancel_orders([oid])  # type: ignore[union-attr]
+                    print(
+                        f"[pm_executor] _token_has_open_sell: "
+                        f"cancelled SELL on token {token_id[:14]}... "
+                        f"({cancel_reason}, price=${order_price}, "
+                        f"order={oid[:14]}...). Caller will submit "
+                        f"a fresh SELL at the current bid.",
+                        file=sys.stderr, flush=True,
+                    )
+                    continue  # treat as no open SELL
+                except Exception as cexc:
+                    print(
+                        f"[pm_executor] _token_has_open_sell: "
+                        f"cancel failed for {oid[:14]}... "
+                        f"({cancel_reason}): {cexc}. "
+                        f"Treating as still-live.",
+                        file=sys.stderr, flush=True,
+                    )
+            # Order is still live (either too fresh, partially filled,
+            # or cancel attempt failed).
             return True
         return False
 
