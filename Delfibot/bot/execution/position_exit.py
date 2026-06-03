@@ -167,10 +167,29 @@ def evaluate_exit(
 
     # Universal safety floor: don't exit if very close to natural
     # settlement. Spread + fees eat the marginal value.
+    #
+    # IMPORTANT: only applies when resolution is in the FUTURE.
+    # When hours_remaining is NEGATIVE, the market is OVERDUE for
+    # natural settlement (Polymarket flagged the gamma row as past
+    # expected_resolution_at but the oracle hasn't committed an
+    # outcome yet - the "settling" state in the UI). During that
+    # window the orderbook can still trade with a non-zero bid, and
+    # a losing position will keep bleeding toward $0 if we don't
+    # exit. The bot must still be able to fire stop-loss in that
+    # state. 2026-06-03 incident: position #380 (Gyeongsangnam
+    # gubernatorial) had expected_resolution 8 hours in the past,
+    # market still trading at 21c, stop-loss should have fired at
+    # -65%, but the safety floor blocked it with the nonsense
+    # message "only -480.0 min to natural settlement (safety floor
+    # 15 min)".
     safety_min_minutes = int(getattr(
         user_config, "exit_min_time_to_resolution_minutes", 5
     ))
-    if hours_remaining is not None and hours_remaining * 60.0 < safety_min_minutes:
+    if (
+        hours_remaining is not None
+        and hours_remaining > 0
+        and hours_remaining * 60.0 < safety_min_minutes
+    ):
         return _hold(
             unrealized_pct, current_bid,
             f"only {hours_remaining * 60.0:.1f} min to natural settlement "
