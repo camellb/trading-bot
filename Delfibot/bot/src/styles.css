@@ -1503,6 +1503,9 @@ button { font: inherit; }
   margin: 0 0 14px;
 }
 .intel-list { display: grid; gap: 14px; }
+/* Tighter gap when proposals are nested inside a review card so the
+   in-card list reads as part of the card, not a separate stack. */
+.intel-list-tight { gap: 10px; margin-top: 10px; }
 .intel-card {
   border: 1px solid var(--vellum-10);
   background: rgba(255, 255, 255, 0.02);

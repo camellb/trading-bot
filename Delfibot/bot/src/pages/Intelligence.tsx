@@ -114,15 +114,12 @@ function SuggestionDiff({ s }: { s: PendingSuggestion }) {
   );
 }
 
-type Tab = "reviews" | "proposals";
-
 export default function Intelligence() {
   const [reports, setReports]         = useState<LearningReport[] | null>(null);
   const [suggestions, setSuggestions] = useState<PendingSuggestion[] | null>(null);
   const [history, setHistory]         = useState<PendingSuggestion[] | null>(null);
   const [error, setError]             = useState<string | null>(null);
   const [busyId, setBusyId]           = useState<number | null>(null);
-  const [tab, setTab]                 = useState<Tab>("reviews");
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -164,14 +161,6 @@ export default function Intelligence() {
     pending.length > 0 ||
     snoozed.length > 0 ||
     historyList.length > 0;
-
-  // Auto-jump to Proposals when there's pending work and no reviews yet.
-  useEffect(() => {
-    if (!loaded) return;
-    if (reportsList.length === 0 && (pending.length > 0 || snoozed.length > 0)) {
-      setTab("proposals");
-    }
-  }, [loaded, reportsList.length, pending.length, snoozed.length]);
 
   const apply = async (id: number) => {
     setBusyId(id);
@@ -242,46 +231,10 @@ export default function Intelligence() {
       )}
 
       {loaded && hasAnything && (
-        <div className="intel-tabs" role="tablist" aria-label="Intelligence sections">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "reviews"}
-            className={`intel-tab ${tab === "reviews" ? "active" : ""}`}
-            onClick={() => setTab("reviews")}
-          >
-            Reviews
-            {reportsList.length > 0 && (
-              <span className="intel-tab-badge">{reportsList.length}</span>
-            )}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "proposals"}
-            className={`intel-tab ${tab === "proposals" ? "active" : ""}`}
-            onClick={() => setTab("proposals")}
-          >
-            Proposals
-            {(pending.length + snoozed.length) > 0 && (
-              <span className="intel-tab-badge gold">
-                {pending.length + snoozed.length}
-              </span>
-            )}
-          </button>
-        </div>
-      )}
-
-      {loaded && hasAnything && tab === "reviews" && (
         <ReviewsPane
           reports={reportsList}
           ranges={reportRanges}
           cycleNumber={cycleNumber}
-        />
-      )}
-
-      {loaded && hasAnything && tab === "proposals" && (
-        <ProposalsPane
           pending={pending}
           snoozed={snoozed}
           history={historyList}
@@ -298,24 +251,77 @@ export default function Intelligence() {
   );
 }
 
-/* ─────────────────────────── Reviews tab ─────────────────────────── */
+/* ─────────────────────────── Reviews + proposals ─────────────────────────── */
 
 function ReviewsPane({
   reports, ranges, cycleNumber,
+  pending, snoozed, history, historyOpen, onHistoryToggle,
+  busyId, onApply, onSnooze, onSkip,
 }: {
   reports: LearningReport[];
   ranges: Map<number, { from: number; to: number }>;
   cycleNumber: (id: number) => number | null;
+  pending: PendingSuggestion[];
+  snoozed: PendingSuggestion[];
+  history: PendingSuggestion[];
+  historyOpen: boolean;
+  onHistoryToggle: () => void;
+  busyId: number | null;
+  onApply: (id: number) => void;
+  onSnooze: (id: number) => void;
+  onSkip: (id: number) => void;
 }) {
+  // Map each active suggestion to the cycle that produced it.
+  // Suggestions carry the settled_count value of the review they
+  // came from; reports carry the same value. Match exact, fall back
+  // to "newest review" for any orphans so a corrupt bookmark
+  // doesn't drop a pending decision off the screen.
+  const suggestionsByReport = useMemo(() => {
+    const byCount = new Map<number, LearningReport>();
+    for (const r of reports) {
+      if (r.settled_count != null) byCount.set(r.settled_count, r);
+    }
+    const map = new Map<number, PendingSuggestion[]>();
+    const all = [...pending, ...snoozed];
+    for (const s of all) {
+      const targetCount = s.settled_count ?? null;
+      let target: LearningReport | undefined;
+      if (targetCount != null) target = byCount.get(targetCount);
+      if (!target) target = reports[0];  // newest report fallback
+      if (!target) continue;
+      const arr = map.get(target.id) ?? [];
+      arr.push(s);
+      map.set(target.id, arr);
+    }
+    return map;
+  }, [reports, pending, snoozed]);
+
   if (reports.length === 0) {
+    // No reviews yet, but there may still be pending suggestions
+    // (e.g. seeded from an import). Show them on their own so the
+    // user can act before the first 50-trade review fires.
+    if (pending.length === 0 && snoozed.length === 0) {
+      return (
+        <section className="intel-empty">
+          <div className="intel-empty-pill">NO REVIEWS YET</div>
+          <h2 className="intel-empty-head">First review fires at 50 settled trades</h2>
+          <p className="intel-empty-body">
+            Delfi reviews its performance every 50 closed trades.
+          </p>
+        </section>
+      );
+    }
     return (
-      <section className="intel-empty">
-        <div className="intel-empty-pill">NO REVIEWS YET</div>
-        <h2 className="intel-empty-head">First review fires at 50 settled trades</h2>
-        <p className="intel-empty-body">
-          Delfi reviews its performance every 50 closed trades.
-        </p>
-      </section>
+      <div className="intel-list">
+        <SuggestionGroup
+          title="Proposed strategy changes"
+          items={[...pending, ...snoozed]}
+          busyId={busyId}
+          onApply={onApply}
+          onSnooze={onSnooze}
+          onSkip={onSkip}
+        />
+      </div>
     );
   }
   return (
@@ -327,19 +333,87 @@ function ReviewsPane({
           range={ranges.get(r.id) ?? null}
           cycle={cycleNumber(r.id)}
           hero={idx === 0}
+          proposals={suggestionsByReport.get(r.id) ?? []}
+          busyId={busyId}
+          onApply={onApply}
+          onSnooze={onSnooze}
+          onSkip={onSkip}
         />
       ))}
+      {history.length > 0 && (
+        <section className="intel-section">
+          <button
+            type="button"
+            className="intel-history-toggle"
+            onClick={onHistoryToggle}
+            aria-expanded={historyOpen}
+          >
+            {historyOpen ? "Hide history" : `Show history (${history.length})`}
+          </button>
+          {historyOpen && (
+            <div className="intel-list intel-history">
+              {history.map((s) => (
+                <SuggestionCard
+                  key={s.id}
+                  s={s}
+                  busy={false}
+                  historical
+                  onApply={() => onApply(s.id)}
+                  onSnooze={() => onSnooze(s.id)}
+                  onSkip={() => onSkip(s.id)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </div>
+  );
+}
+
+function SuggestionGroup({
+  title, items, busyId, onApply, onSnooze, onSkip,
+}: {
+  title: string;
+  items: PendingSuggestion[];
+  busyId: number | null;
+  onApply: (id: number) => void;
+  onSnooze: (id: number) => void;
+  onSkip: (id: number) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <section className="intel-section">
+      <h3 className="review-section-title">{title}</h3>
+      <div className="intel-list">
+        {items.map((s) => (
+          <SuggestionCard
+            key={s.id}
+            s={s}
+            busy={busyId === s.id}
+            onApply={() => onApply(s.id)}
+            onSnooze={() => onSnooze(s.id)}
+            onSkip={() => onSkip(s.id)}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
 function ReportCard({
   report, range, cycle, hero,
+  proposals, busyId, onApply, onSnooze, onSkip,
 }: {
   report: LearningReport;
   range: { from: number; to: number } | null;
   cycle: number | null;
   hero: boolean;
+  proposals: PendingSuggestion[];
+  busyId: number | null;
+  onApply: (id: number) => void;
+  onSnooze: (id: number) => void;
+  onSkip: (id: number) => void;
 }) {
   const data = report.data;
   const headline = data?.headline;
@@ -410,6 +484,29 @@ function ReportCard({
 
       {data && (data.top_wins.length > 0 || data.top_losses.length > 0) && (
         <TopMovesGrid wins={data.top_wins} losses={data.top_losses} />
+      )}
+
+      {/* Strategy proposals generated from this review. Merged into
+          the same card so the user can read the review, see the
+          recommendations, and act on them without flipping tabs.
+          Hidden entirely when the cycle produced no proposals - no
+          empty state, just absent. */}
+      {proposals.length > 0 && (
+        <section className="review-section">
+          <h3 className="review-section-title">Proposed strategy changes</h3>
+          <div className="intel-list intel-list-tight">
+            {proposals.map((s) => (
+              <SuggestionCard
+                key={s.id}
+                s={s}
+                busy={busyId === s.id}
+                onApply={() => onApply(s.id)}
+                onSnooze={() => onSnooze(s.id)}
+                onSkip={() => onSkip(s.id)}
+              />
+            ))}
+          </div>
+        </section>
       )}
     </article>
   );
@@ -514,113 +611,6 @@ function MoveRow({ pos, positive }: { pos: ReportPosition; positive: boolean }) 
         {archetypeLabel(pos.archetype)} · {pos.side ?? "-"} resolved {pos.outcome ?? "-"}
       </div>
     </div>
-  );
-}
-
-/* ───────────────────────── Proposals tab ─────────────────────────── */
-
-function ProposalsPane({
-  pending, snoozed, history, historyOpen, onHistoryToggle,
-  busyId, onApply, onSnooze, onSkip,
-}: {
-  pending: PendingSuggestion[];
-  snoozed: PendingSuggestion[];
-  history: PendingSuggestion[];
-  historyOpen: boolean;
-  onHistoryToggle: () => void;
-  busyId: number | null;
-  onApply: (id: number) => void;
-  onSnooze: (id: number) => void;
-  onSkip: (id: number) => void;
-}) {
-  const noActive = pending.length === 0 && snoozed.length === 0;
-
-  return (
-    <>
-      {noActive && history.length === 0 && (
-        <section className="intel-empty">
-          <div className="intel-empty-pill">NO PROPOSALS</div>
-          <h2 className="intel-empty-head">Delfi has nothing to propose right now</h2>
-          <p className="intel-empty-body">
-            When a category drifts (ROI, calibration, drawdown), Delfi will
-            queue a config change here for your approval.
-          </p>
-        </section>
-      )}
-
-      {noActive && history.length > 0 && (
-        <section className="intel-section">
-          <h2 className="intel-section-title">Active proposals</h2>
-          <div className="intel-empty-soft">
-            No proposals at the moment
-          </div>
-        </section>
-      )}
-
-      {pending.length > 0 && (
-        <section className="intel-section">
-          <h2 className="intel-section-title">Pending your decision</h2>
-          <div className="intel-list">
-            {pending.map((s) => (
-              <SuggestionCard
-                key={s.id}
-                s={s}
-                busy={busyId === s.id}
-                onApply={() => onApply(s.id)}
-                onSnooze={() => onSnooze(s.id)}
-                onSkip={() => onSkip(s.id)}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {snoozed.length > 0 && (
-        <section className="intel-section">
-          <h2 className="intel-section-title">Snoozed</h2>
-          <div className="intel-list">
-            {snoozed.map((s) => (
-              <SuggestionCard
-                key={s.id}
-                s={s}
-                busy={busyId === s.id}
-                onApply={() => onApply(s.id)}
-                onSnooze={() => onSnooze(s.id)}
-                onSkip={() => onSkip(s.id)}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {history.length > 0 && (
-        <section className="intel-section">
-          <button
-            type="button"
-            className="intel-history-toggle"
-            onClick={onHistoryToggle}
-            aria-expanded={historyOpen}
-          >
-            {historyOpen ? "Hide history" : `Show history (${history.length})`}
-          </button>
-          {historyOpen && (
-            <div className="intel-list intel-history">
-              {history.map((s) => (
-                <SuggestionCard
-                  key={s.id}
-                  s={s}
-                  busy={false}
-                  historical
-                  onApply={() => onApply(s.id)}
-                  onSnooze={() => onSnooze(s.id)}
-                  onSkip={() => onSkip(s.id)}
-                />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-    </>
   );
 }
 
