@@ -1331,6 +1331,10 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
     title: "Early exits",
     description: "Positions closed before resolution by take-profit, stop-loss, or time-decay.",
   },
+  position_invalid: {
+    title: "Refunded positions",
+    description: "Markets that resolve INVALID. The stake is refunded; no P&L.",
+  },
   order_error: {
     title: "Order errors",
     description: "Orders rejected by Polymarket before they could fill.",
@@ -1346,6 +1350,14 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
   bot_status: {
     title: "Bot status changes",
     description: "When Delfi pauses or resumes trading, with the reason.",
+  },
+  bankroll_pause: {
+    title: "Low-balance pause",
+    description: "When available cash drops below the minimum needed to place a trade.",
+  },
+  mode_switch: {
+    title: "Mode switches",
+    description: "When the master Simulation/Live toggle changes.",
   },
   learning_report_ready: {
     title: "Strategy proposals",

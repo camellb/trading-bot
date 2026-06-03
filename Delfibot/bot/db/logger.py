@@ -136,14 +136,47 @@ def log_event(
     # with no keychain entry doesn't pay the import cost on every
     # event_log write.
     #
+    # Telegram push is GATED on `telegram_html` being non-None. The
+    # raw `description` field is the dashboard's audit copy; it's
+    # never push-worthy on its own (it carries developer-format
+    # strings like "PolyApiException[status_code=400, error_message=
+    # {'error': 'not enough balance / allowance...'}]" that read
+    # like garbage in a chat client). Every event type the user
+    # actually receives MUST come with a hand-crafted card from
+    # `feeds/telegram_messages.py`. If a future contributor calls
+    # log_event without telegram_html for a category that's in
+    # NOTIFICATION_CATEGORIES, we skip the push entirely AND emit a
+    # loud stderr warning so the gap surfaces in the next session
+    # log. Prior behaviour (fall back to `description`) silently
+    # leaked raw exception text into the user's Telegram feed; bug
+    # class fixed 2026-06-02 (v1.5.54/.55/.56 chain).
+    #
     # Throttle gate: if an identical-fingerprint notification was
     # already pushed within the last 10 min, skip the Telegram push
     # (the SQL write above is unaffected so the dashboard activity
     # feed still shows every event). Prevents the 47-message
     # spam-storm class of failure (2026-05-29 Bitcoin SELL retries).
     try:
-        from engine.user_config import should_notify
+        from engine.user_config import (
+            should_notify, NOTIFICATION_CATEGORIES,
+        )
         if should_notify(category=event_type):
+            if telegram_html is None:
+                # Engineer-visible warning, never user-visible. Only
+                # noisy for categories the user expects to see in
+                # Telegram; ad-hoc audit-only events still log to
+                # event_log without pestering stderr.
+                if event_type in NOTIFICATION_CATEGORIES:
+                    print(
+                        f"[logger] missing telegram_html for "
+                        f"event_type={event_type!r} source={source!r}; "
+                        f"skipping Telegram push (raw description is "
+                        f"never sent to chat). Add a template in "
+                        f"feeds/telegram_messages.py and pass it via "
+                        f"telegram_html=.",
+                        file=sys.stderr,
+                    )
+                return
             if _should_throttle_notification(event_type, description):
                 print(
                     f"[logger] telegram push throttled (event_type="
@@ -152,6 +185,6 @@ def log_event(
                 )
             else:
                 from feeds.telegram_notifier import notify as _tg_notify
-                _tg_notify(telegram_html or description)
+                _tg_notify(telegram_html)
     except Exception as exc:
         print(f"[logger] telegram push error: {exc}", file=sys.stderr)

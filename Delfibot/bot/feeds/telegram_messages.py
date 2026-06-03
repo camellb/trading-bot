@@ -236,6 +236,67 @@ def position_invalid(
     )
 
 
+# ── 2b'''. Bankroll-pause notice ────────────────────────────────────────────
+def bankroll_pause(
+    *,
+    bankroll: float,
+    min_required: float,
+    mode: str | None = None,
+) -> str:
+    """Available cash dropped below the platform minimum needed to
+    place a trade. The bot keeps forecasting and resolving open
+    positions but cannot open new ones until the wallet is funded.
+
+    Replaces the prior hand-built notify() call in pm_analyst that
+    used a banned emoji and bypassed event_log entirely.
+    """
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    return (
+        f"⏸ <b>Trading paused</b>\n"
+        f"Available cash is below the minimum needed to place a trade.\n"
+        f"\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Minimum per trade: ${min_required:.2f}\n"
+        f"Mode: {mode_label}\n"
+        f"\n"
+        f"Trading resumes automatically once the wallet is funded."
+    )
+
+
+# ── 2b''''. Mode-switch (Simulation <-> Live) ───────────────────────────────
+def mode_switch(
+    *,
+    prior_mode: str,
+    new_mode: str,
+) -> str:
+    """User flipped the master Simulation/Live toggle in Settings.
+    Pushed so the user has a permanent record of the change in their
+    Telegram history, with a brief explanation of what changes.
+
+    Replaces the prior hand-built notify() call in local_api that
+    bypassed event_log + the user's notification preferences.
+    """
+    label_old = "Live" if (prior_mode or "").lower() == "live" else "Simulation"
+    label_new = "Live" if (new_mode  or "").lower() == "live" else "Simulation"
+    if (new_mode or "").lower() == "live":
+        detail = (
+            "Real-money orders will fire on the next scan if a market "
+            "clears the filter. Make sure your wallet is funded and "
+            "risk settings are set correctly."
+        )
+    else:
+        detail = (
+            "Live trading paused. Delfi will keep forecasting but no "
+            "real-money orders will be placed."
+        )
+    return (
+        f"⏸ <b>Delfi switched to {label_new}</b>\n"
+        f"From: {label_old}\n"
+        f"\n"
+        f"{detail}"
+    )
+
+
 # ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
 def early_exit_win(
     *,

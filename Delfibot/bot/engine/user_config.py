@@ -348,6 +348,7 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     "position_opened",
     "position_settled",
     "position_closed_early",   # take-profit / stop-loss / time-decay exit
+    "position_invalid",        # market resolved INVALID, stake refunded
 
     # Order-side problems.
     "order_error",             # rejected by Polymarket before fill
@@ -358,6 +359,9 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     # Risk + bot state.
     "risk_event",              # circuit breaker trip
     "bot_status",              # paused or resumed
+    "bankroll_pause",          # cash below platform minimum;
+                               # trading paused until refunded
+    "mode_switch",             # toggled SIMULATION <-> LIVE
 
     # Periodic summaries + proposals.
     "learning_report_ready",   # 50-trade calibration proposal

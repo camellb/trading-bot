@@ -1008,30 +1008,30 @@ class LocalAPI:
         request handler.
         """
         def _send() -> None:
+            # Route through log_event so the dashboard records the
+            # switch AND the user's mode_switch notification preference
+            # is respected. Prior revision called notify() directly,
+            # bypassing event_log and the notification preferences;
+            # 2026-06-02.
             try:
-                from feeds.telegram_notifier import notify as _tg_notify
-            except Exception:
-                return  # telegram_notifier missing - configured off
-            label_old = "Live" if prior_mode == "live" else "Simulation"
-            label_new = "Live"  if new_mode  == "live" else "Simulation"
-            if new_mode == "live":
-                body = (
-                    f"<b>Delfi switched to {label_new}</b>\n"
-                    f"From: {label_old}\n\n"
-                    f"Real-money orders will fire on the next scan if "
-                    f"a market clears the forecaster's filter. Make "
-                    f"sure your wallet is funded and risk settings "
-                    f"are set correctly."
+                from db.logger import log_event
+                from feeds import telegram_messages as _tm
+                telegram_html = _tm.mode_switch(
+                    prior_mode=prior_mode,
+                    new_mode=new_mode,
                 )
-            else:
-                body = (
-                    f"<b>Delfi switched to {label_new}</b>\n"
-                    f"From: {label_old}\n\n"
-                    f"Live trading paused. Delfi will keep forecasting "
-                    f"but no real-money orders will be placed."
+                label_old = "Live" if prior_mode == "live" else "Simulation"
+                label_new = "Live" if new_mode == "live" else "Simulation"
+                description = (
+                    f"Delfi switched mode: {label_old} -> {label_new}."
                 )
-            try:
-                _tg_notify(body)
+                log_event(
+                    event_type="mode_switch",
+                    severity=10,
+                    description=description,
+                    source="local_api._notify_mode_switch_async",
+                    telegram_html=telegram_html,
+                )
             except Exception as exc:
                 print(
                     f"[local_api] telegram mode-switch notify failed: "

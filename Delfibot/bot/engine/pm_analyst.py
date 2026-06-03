@@ -195,13 +195,37 @@ def _maybe_broadcast_bankroll_pause(
     if _pause_already_announced():
         return
     _set_pause_announced(True)
+    # Route through log_event so the dashboard's activity feed records
+    # the pause AND the user's bankroll_pause notification preference
+    # is respected. Prior revision called notify() directly with a
+    # banned emoji and bypassed event_log entirely; 2026-06-02.
     try:
-        from feeds.telegram_notifier import notify
-        notify(
-            "💤 Delfi has paused. Your available cash is below the "
-            "minimum needed to place a trade. Trading will resume "
-            "automatically once more funds are available.",
-            user_id=user_id,
+        from feeds import telegram_messages as _tm
+        # Read current bankroll + the platform's $1 / 5-share minimum
+        # so the card shows the real numbers, not generic copy.
+        bankroll = 0.0
+        try:
+            from execution.pm_executor import PMExecutor
+            stats = PMExecutor(user_id).get_portfolio_stats()
+            bankroll = float(stats.get("bankroll", 0.0))
+        except Exception:
+            pass
+        from execution.pm_sizer import _MIN_ABSOLUTE_STAKE_USD
+        telegram_html = _tm.bankroll_pause(
+            bankroll=bankroll,
+            min_required=float(_MIN_ABSOLUTE_STAKE_USD),
+            mode="live",  # paused is a live-only condition; sim never
+                          # runs out of fake cash.
+        )
+        log_event(
+            event_type="bankroll_pause",
+            severity=10,
+            description=(
+                f"Bankroll paused at ${bankroll:.2f}; below the "
+                f"${_MIN_ABSOLUTE_STAKE_USD:.2f} per-trade floor."
+            ),
+            source="pm_analyst._notify_bankroll_pause",
+            telegram_html=telegram_html,
         )
     except Exception as exc:
         print(
