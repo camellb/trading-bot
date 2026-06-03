@@ -188,15 +188,46 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
             result["positions_invalid"] += 1
             try:
                 from db.logger import log_event
+                from feeds import telegram_messages as _tm
+                description = (
+                    f"Position #{p['id']} resolved INVALID "
+                    f"({(p.get('question') or '')[:120]}). "
+                    f"Stake refunded; no P&L."
+                )
+                # Match the visual spec of settled_win / settled_loss /
+                # closed_early so every position outcome lands in
+                # Telegram as a formatted card. Without this branch the
+                # raw `description` got pushed verbatim, which the user
+                # flagged as inconsistent with the other event cards.
+                telegram_html: str | None = None
+                try:
+                    stats = executor.get_portfolio_stats()
+                    bankroll_after = float(stats.get("bankroll", 0.0))
+                    equity_after   = float(stats.get("equity",   bankroll_after))
+                    locked_capital = float(
+                        stats.get("locked_capital",
+                                  stats.get("open_cost", 0.0))
+                        or 0.0
+                    )
+                    telegram_html = _tm.position_invalid(
+                        question=(p.get("question") or ""),
+                        side=p.get("side", "?"),
+                        stake_usd=float(p.get("cost_usd", 0.0) or 0.0),
+                        bankroll=bankroll_after,
+                        equity=equity_after,
+                        locked_capital=locked_capital,
+                        mode=p.get("mode") or "simulation",
+                    )
+                except Exception as exc:
+                    print(f"[pm_runner] telegram render failed for "
+                          f"INVALID pos #{p.get('id')}: {exc}",
+                          file=sys.stderr)
                 log_event(
                     event_type="position_invalid",
                     severity=20,
-                    description=(
-                        f"Position #{p['id']} resolved INVALID "
-                        f"({(p.get('question') or '')[:120]}). "
-                        f"Stake refunded; no P&L."
-                    ),
+                    description=description,
                     source="polymarket_runner",
+                    telegram_html=telegram_html,
                 )
             except Exception as exc:
                 print(f"[resolve] log_event invalid failed: {exc}",

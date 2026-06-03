@@ -1857,10 +1857,10 @@ class PMExecutor:
                 from feeds import telegram_messages as _tm
                 description = (
                     f"Order placed but never filled on "
-                    f"'{(market.question or '')[:80]}': "
+                    f"'{market.question or ''}': "
                     f"{decision.side} {decision.shares:.2f}@"
                     f"${entry_price:.3f}. Status: {final_status!r}. "
-                    f"Skipping the trade — no on-chain position created."
+                    f"Skipping the trade; no on-chain position created."
                 )
                 try:
                     telegram_html = _tm.order_rejected(
@@ -2241,7 +2241,7 @@ class PMExecutor:
                     from feeds import telegram_messages as _tm
                     description = (
                         f"Early-exit SELL rejected on "
-                        f"'{question[:120]}': {err_msg[:300]}"
+                        f"'{question}': {err_msg[:300]}"
                     )
                     try:
                         telegram_html = _tm.early_exit_failed(

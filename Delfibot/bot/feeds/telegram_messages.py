@@ -195,6 +195,47 @@ def early_exit_failed(
     )
 
 
+# ── 2b''. Position refunded (market resolved INVALID) ───────────────────────
+def position_invalid(
+    *,
+    question: str,
+    side: str,
+    stake_usd: float,
+    bankroll: float,
+    equity: float,
+    locked_capital: Optional[float] = None,
+    mode: str | None = None,
+) -> str:
+    """Polymarket resolved the market INVALID and refunded the stake.
+    No P&L either way; the user gets their money back.
+
+    Renders the same Balance / Locked capital / Total equity / Mode
+    block as settled_win / settled_loss so the Telegram feed stays
+    visually consistent for every position outcome.
+
+    Replaces the prior raw-string description that pushed
+    "Position #N resolved INVALID (Question). Stake refunded; no
+    P&L." into Telegram bypassing the spec.
+    """
+    mode_label = "Live" if (mode or "").lower() == "live" else "Simulation"
+    locked = (
+        float(locked_capital) if locked_capital is not None
+        else max(0.0, float(equity) - float(bankroll))
+    )
+    return (
+        f"⚠️ <b>Refunded</b>\n"
+        f"{_clip(question, MAX_QUESTION_SETTLEMENT)}\n"
+        f"\n"
+        f"Bet: {side}\n"
+        f"Outcome: market resolved INVALID\n"
+        f"Stake refunded: ${stake_usd:.2f}\n"
+        f"Balance: ${bankroll:.2f}\n"
+        f"Locked capital: ${locked:.2f}\n"
+        f"Total equity: ${equity:.2f}\n"
+        f"Mode: {mode_label}"
+    )
+
+
 # ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
 def early_exit_win(
     *,
