@@ -2106,6 +2106,28 @@ class PMExecutor:
             print(f"[pm_executor] close_position_early: invalid bid "
                   f"{current_bid!r} for pos {position_id}", file=sys.stderr)
             return False
+        # Sub-tick bid guard. Polymarket's standard tick is 0.01;
+        # quantizing anything below that to the tick rounds down to
+        # 0.0 inside _place_close_order, which the CLOB rejects with
+        # "invalid price (0.0), min: ...". Below 1c the position is
+        # worth basically nothing anyway (5 shares = $0.05), so
+        # refuse the SELL and let it settle naturally.
+        # 2026-06-04 incident: position #382 (Perugia tennis at
+        # bid=$0.001) fired this 10x in 1.6s and each retry pushed a
+        # formatted "Early-exit failed" card to Telegram. The dedupe
+        # works on first 100 chars of description and the error suffix
+        # ("min: 0.01") varied past that boundary so the throttle didn't
+        # collapse them. Right fix: don't submit the order at all.
+        _MIN_BID_FOR_SELL = 0.01
+        if current_bid < _MIN_BID_FOR_SELL:
+            print(
+                f"[pm_executor] close_position_early: bid "
+                f"{current_bid:.4f} below tick floor "
+                f"{_MIN_BID_FOR_SELL:.2f} for pos {position_id}; "
+                f"skipping SELL (position will settle naturally).",
+                file=sys.stderr, flush=True,
+            )
+            return False
 
         try:
             with get_engine().begin() as conn:
@@ -2255,12 +2277,27 @@ class PMExecutor:
                 #     the standard layout the user already approved.
                 err_msg = str(exc)
                 low = err_msg.lower()
-                # Transient CLOB errors: "service not ready" (425),
-                # "rate limit" (429), "temporarily unavailable" (503),
-                # generic 5xx. These are recoverable on the next 60s
-                # tick. Don't push Telegram (it's not user-actionable),
-                # don't write event_log, don't write the row - just
-                # log to stderr so the engineer audit sees the blip.
+                # Transient CLOB errors: server-side throttles, network
+                # blips, and order-validation failures the user can't
+                # act on. These are recoverable on the next 60s tick.
+                # Don't push Telegram, don't write event_log, don't
+                # write the row - just log to stderr so the engineer
+                # audit sees the blip.
+                #
+                # Coverage:
+                #   - HTTP throttles + 5xx: 425/429/502/503/504, service
+                #     not ready, rate limit, temporarily unavailable,
+                #     gateway timeout.
+                #   - Network failures: status_code=None ("Request
+                #     exception!" emitted by py-clob-client-v2 for
+                #     connection reset, DNS, TLS, etc.), read timeout,
+                #     connection reset, connection refused/aborted.
+                #   - Order-validation failures that mean "your price
+                #     was unviable, not Polymarket's fault": "invalid
+                #     price", "min:", "tick size". The bid-floor guard
+                #     above handles the common 0.01 case; this catches
+                #     0.001-tick markets where the bid is technically
+                #     valid but below the SDK's quantization floor.
                 is_transient = (
                     "service not ready" in low
                     or "status_code=425" in low
@@ -2268,11 +2305,20 @@ class PMExecutor:
                     or "status_code=502" in low
                     or "status_code=503" in low
                     or "status_code=504" in low
+                    or "status_code=none" in low
+                    or "request exception" in low
                     or "rate limit" in low
                     or "temporarily unavailable" in low
                     or "gateway timeout" in low
                     or "read timed out" in low
+                    or "read timeout" in low
                     or "connection reset" in low
+                    or "connection aborted" in low
+                    or "connection refused" in low
+                    or "max retries exceeded" in low
+                    or ("ssl" in low and "error" in low)
+                    or "invalid price" in low
+                    or "tick size" in low
                 )
                 if is_transient:
                     print(
