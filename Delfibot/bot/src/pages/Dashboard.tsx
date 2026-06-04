@@ -372,20 +372,36 @@ export default function Dashboard({ state, goto }: Props) {
   const bankroll = summary?.bankroll ?? summary?.starting_cash ?? 0;
   const starting = summary?.starting_cash ?? 0;
   // Headline P&L semantics:
-  //   range = all  -> realized + unrealized (matches Polymarket's
-  //                   "All-Time Profit/Loss" tile and the doctrine)
-  //   range = 30d/7d -> realized only from filtered settled trades
-  //                     (unrealized is current-state, not period-scoped)
-  // The pnlPct denominator stays pinned to starting_cash for both modes
-  // so a user comparing "All time +110%" to "7 day +30%" reads the same
-  // baseline both ways. (Different from "7d return on 7d starting"
-  // which would require a separate snapshot at the window start.)
+  //   range = all   -> equity - starting_cash (server-authoritative
+  //                    total_pnl; matches Polymarket's All-Time tile).
+  //   range = 30d/7d-> equity_now - equity_at_period_start
+  //                    (matches the dashed trend line on the chart
+  //                    AND the user's mental model: "what was my
+  //                    equity then vs now, that's my P&L"). Prior
+  //                    revision summed realized-only over the window
+  //                    which could go GREEN on a week the equity went
+  //                    DOWN, because realized trades net positive can
+  //                    coexist with unrealized swings dragging total
+  //                    equity lower. User flagged 2026-06-05.
   const realizedOnly = summary?.realized_pnl ?? 0;
   const totalPnl     = summary?.total_pnl ?? null;
+  // Period-start equity from the equity series (first point of the
+  // range-clipped curve; equitySeries is already filtered to the
+  // selected window above).
+  const periodStartEquity = equitySeries.length > 0
+    ? equitySeries[0].v
+    : starting;
+  const currentEquity = numberOr(summary?.equity, periodStartEquity);
   const pnl = effectiveRange === "all"
     ? (totalPnl != null ? Number(totalPnl) : realizedOnly)
-    : filteredStats.realizedPnl;
-  const pnlPct = starting > 0 ? (pnl / starting) * 100 : 0;
+    : (currentEquity - periodStartEquity);
+  // Denominator: starting_cash for all-time (the user's deposit
+  // baseline), period-start equity for 7d/30d (so "+10% on the week"
+  // reads as "10% gain over the equity I held entering the week").
+  const pnlDenom = effectiveRange === "all"
+    ? starting
+    : periodStartEquity;
+  const pnlPct = pnlDenom > 0 ? (pnl / pnlDenom) * 100 : 0;
   const winRate = effectiveRange === "all"
     ? (summary?.win_rate ?? null)
     : filteredStats.winRate;
