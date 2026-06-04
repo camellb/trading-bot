@@ -890,6 +890,65 @@ class PMAnalyst:
             user_cfgs = {uid: get_user_config(uid) for uid in user_ids}
 
             for mk in markets:
+                # ─────────────────────────────────────────────────────
+                # AFFORDABILITY GATE (FIRST CHECK)
+                # ─────────────────────────────────────────────────────
+                # Polymarket's per-order floor is max($1, 5 shares × ask).
+                # The bot ALWAYS buys the favourite (V2 doctrine), so
+                # the relevant price is max(yes, 1-yes) = favourite_price.
+                # If EVERY user's deployable cash is below the floor for
+                # this market, NOTHING about this market matters: skip
+                # before any other work (recent-eval DB lookup, archetype
+                # classify, research fetch, Claude call).
+                #
+                # User instructions:
+                #   2026-06-04: "the fact that delfi scans so much when
+                #     we cant place a bet is ridiculous. It's wasting a
+                #     lot of money on tokens and we cant even place a bet"
+                #   2026-06-04: "it should be done before any evaluation
+                #     so it doesnt waste tokens"
+                #
+                # Single-user installs (the default) have a one-element
+                # bankroll_summaries; multi-tenant fan-outs check if
+                # ANY user can afford the market before doing any work.
+                # Fail-open on any parse error so a malformed market
+                # doesn't permanently block scans.
+                try:
+                    favourite_price = max(mk.yes_price, 1.0 - mk.yes_price)
+                    min_order = max(
+                        POLYMARKET_MIN_ORDER_USD,
+                        POLYMARKET_MIN_SHARES * favourite_price,
+                    )
+                    any_user_affordable = False
+                    max_deployable = 0.0
+                    for _uid, _bk, _dep in bankroll_summaries:
+                        if _dep >= min_order:
+                            any_user_affordable = True
+                            break
+                        if _dep > max_deployable:
+                            max_deployable = _dep
+                    if (bankroll_summaries
+                            and not any_user_affordable):
+                        summary["outcomes"].append({
+                            "market_id": mk.id,
+                            "question":  mk.question[:80],
+                            "status":    "SKIP_PRE_FILTER",
+                            "detail":    (
+                                f"platform minimum ${min_order:.2f} "
+                                f"exceeds bankroll ${max_deployable:.2f}"
+                            ),
+                        })
+                        summary["skipped"] += 1
+                        continue
+                except Exception as _aff_exc:
+                    # Fail-open: parse error falls through to the rest
+                    # of the loop. Post-Claude sizer still catches it.
+                    print(
+                        f"[pm_analyst] affordability pre-filter failed "
+                        f"for {mk.id}: {_aff_exc}",
+                        file=sys.stderr,
+                    )
+
                 if _recently_predicted(mk.id, skip_days):
                     summary["outcomes"].append({
                         "market_id": mk.id, "question": mk.question[:80],
@@ -965,60 +1024,6 @@ class PMAnalyst:
                     })
                     summary["skipped"] += 1
                     continue
-
-                # ─────────────────────────────────────────────────────
-                # PRE-CLAUDE AFFORDABILITY FILTER
-                # ─────────────────────────────────────────────────────
-                # Polymarket's per-order floor is max($1, 5 shares × ask).
-                # The bot ALWAYS buys the favourite (V2 doctrine), so
-                # the relevant price is max(yes, 1-yes) = favourite_price.
-                # If EVERY user's deployable cash is below the floor for
-                # this market, no LLM verdict matters - the sizer will
-                # refuse regardless. Pre-skip to save tokens.
-                #
-                # User instruction 2026-06-04: "the fact that delfi
-                # scans so much when we cant place a bet is ridiculous.
-                # It's wasting a lot of money on tokens and we cant
-                # even place a bet."
-                #
-                # Single-user installs (the default) have a one-element
-                # bankroll_summaries; multi-tenant fan-outs check
-                # if ANY user can afford it before running Claude.
-                try:
-                    favourite_price = max(mk.yes_price, 1.0 - mk.yes_price)
-                    min_order = max(
-                        POLYMARKET_MIN_ORDER_USD,
-                        POLYMARKET_MIN_SHARES * favourite_price,
-                    )
-                    any_user_affordable = False
-                    max_deployable = 0.0
-                    for _uid, _bk, _dep in bankroll_summaries:
-                        if _dep >= min_order:
-                            any_user_affordable = True
-                            break
-                        if _dep > max_deployable:
-                            max_deployable = _dep
-                    if (bankroll_summaries
-                            and not any_user_affordable):
-                        summary["outcomes"].append({
-                            "market_id": mk.id,
-                            "question":  mk.question[:80],
-                            "status":    "SKIP_PRE_FILTER",
-                            "detail":    (
-                                f"platform minimum ${min_order:.2f} "
-                                f"exceeds bankroll ${max_deployable:.2f}"
-                            ),
-                        })
-                        summary["skipped"] += 1
-                        continue
-                except Exception as _aff_exc:
-                    # Fail-open: any parse error falls through to the
-                    # LLM. The post-Claude sizer still catches it.
-                    print(
-                        f"[pm_analyst] affordability pre-filter failed "
-                        f"for {mk.id}: {_aff_exc}",
-                        file=sys.stderr,
-                    )
 
                 # Risk-breaker re-check INSIDE the loop. The pre-flight
                 # at the top of the scan caught the state at scan-start,
