@@ -56,27 +56,6 @@ function fmtBrier(n: number | null | undefined): string {
   return Number(n).toFixed(3);
 }
 
-// Three buckets only: Profitable / Breakeven / Unprofitable.
-// Older verdict strings (saved to learning_reports.data before the
-// collapse) map onto one of the three so old rows keep rendering.
-const VERDICT_COPY: Record<string, { label: string; tone: "profit" | "ember" | "neutral" }> = {
-  profitable:           { label: "Profitable",   tone: "profit"  },
-  unprofitable:         { label: "Unprofitable", tone: "ember"   },
-  breakeven:            { label: "Breakeven",    tone: "neutral" },
-  // Legacy aliases (write-once compatibility for already-saved rows):
-  strongly_profitable:  { label: "Profitable",   tone: "profit"  },
-  mildly_unprofitable:  { label: "Unprofitable", tone: "ember"   },
-  deeply_unprofitable:  { label: "Unprofitable", tone: "ember"   },
-  mis_calibrated:       { label: "Unprofitable", tone: "ember"   },
-  neutral:              { label: "Breakeven",    tone: "neutral" },
-  insufficient_data:    { label: "Breakeven",    tone: "neutral" },
-};
-
-function verdictPresent(v: string | null | undefined) {
-  if (!v) return { label: "Unknown", tone: "neutral" as const };
-  return VERDICT_COPY[v] ?? { label: v.replace(/_/g, " "), tone: "neutral" as const };
-}
-
 /** Diff renderer for the three suggestion operation shapes. */
 function SuggestionDiff({ s }: { s: PendingSuggestion }) {
   const meta = (s.metadata ?? {}) as Record<string, unknown>;
@@ -417,7 +396,6 @@ function ReportCard({
 }) {
   const data = report.data;
   const headline = data?.headline;
-  const verdict = verdictPresent(data?.verdict);
   const settledRow = report.settled_count ?? 0;
 
   const tradesLabel =
@@ -469,12 +447,6 @@ function ReportCard({
           label="Avg Brier"
           value={fmtBrier(headline?.brier)}
           tone={(headline?.brier ?? 0.25) > 0.25 ? "ember" : undefined}
-        />
-        <Stat
-          label="Cycle verdict"
-          value={verdict.label}
-          tone={verdict.tone === "neutral" ? undefined : verdict.tone}
-          text
         />
       </div>
 
