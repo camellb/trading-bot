@@ -1171,11 +1171,30 @@ function ArchetypeCard({
     onBandsChange(bands);
   };
 
+  // Lifetime P&L stat. Hidden entirely when this archetype has
+  // never produced a closed trade for the user, so the cards for
+  // unused archetypes stay clean. Mode-scoped to the user's current
+  // trading mode (live or simulation) by the backend.
+  const lifeTrades = a.lifetime_trades ?? 0;
+  const lifePnl = a.lifetime_pnl_usd ?? 0;
+  const lifeSign = lifePnl > 0 ? "+" : lifePnl < 0 ? "-" : "";
+  const lifeTone = lifePnl > 0 ? "profit" : lifePnl < 0 ? "ember" : "muted";
+
   return (
     <div className={`archetype-card ${a.skip ? "skipped" : ""}`}>
       <div>
         <div className="archetype-name">{a.label}</div>
         <div className="archetype-desc">{a.description}</div>
+        {lifeTrades > 0 && (
+          <div className="archetype-lifetime">
+            <span className={`archetype-lifetime-pnl ${lifeTone}`}>
+              {lifeSign}${Math.abs(lifePnl).toFixed(2)}
+            </span>
+            <span className="archetype-lifetime-meta">
+              {" "}lifetime · {lifeTrades} {lifeTrades === 1 ? "trade" : "trades"}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="archetype-controls">

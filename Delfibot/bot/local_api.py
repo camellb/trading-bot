@@ -2156,6 +2156,42 @@ class LocalAPI:
         # list-of-lists per archetype on the way out.
         arch_bands = dict(cfg.archetype_skip_market_price_bands or {})
 
+        # Lifetime per-archetype performance, scoped to the user's
+        # current mode (live or simulation). Used by the Risk
+        # Controls UI as a decision aid when tuning multipliers.
+        # P&L sum follows the canonical RULE #1 algorithm:
+        # status IN ('settled', 'closed_early'). Trade count
+        # additionally includes 'invalid' rows so refunded markets
+        # are visible in the per-archetype sample size.
+        def _read_arch_perf() -> dict:
+            from sqlalchemy import text as _sa_text
+            engine = get_engine()
+            with engine.connect() as conn:
+                rows = conn.execute(_sa_text(
+                    "SELECT COALESCE(market_archetype, '') AS archetype, "
+                    "       COUNT(*) FILTER ("
+                    "         WHERE status IN ('settled', 'closed_early', 'invalid')"
+                    "       ) AS trades, "
+                    "       COALESCE(SUM(realized_pnl_usd) FILTER ("
+                    "         WHERE status IN ('settled', 'closed_early')"
+                    "       ), 0) AS pnl_usd "
+                    "FROM pm_positions "
+                    "WHERE user_id = :uid AND mode = :m "
+                    "GROUP BY market_archetype"
+                ), {"uid": DEFAULT_USER_ID, "m": cfg.mode}).fetchall()
+                return {
+                    str(r._mapping["archetype"]): {
+                        "trades":   int(r._mapping["trades"] or 0),
+                        "pnl_usd":  float(r._mapping["pnl_usd"] or 0.0),
+                    } for r in rows
+                }
+        try:
+            perf_by_arch = await self._offload(_read_arch_perf)
+        except Exception as exc:
+            print(f"[local_api] archetype perf read failed: {exc}",
+                  file=sys.stderr)
+            perf_by_arch = {}
+
         out = []
         for arch in ARCHETYPES:
             meta = ARCHETYPE_META.get(arch, {"label": arch, "description": ""})
@@ -2163,15 +2199,18 @@ class LocalAPI:
             default_skip = arch in V1_DEFAULT_ARCHETYPE_SKIP_LIST
             current_mult = float(mults.get(arch, default_mult))
             bands_tuple = arch_bands.get(arch, ())
+            perf = perf_by_arch.get(arch, {"trades": 0, "pnl_usd": 0.0})
             out.append({
-                "id":             arch,
-                "label":          meta["label"],
-                "description":    meta["description"],
-                "skip":           arch in skip_set,
-                "multiplier":     current_mult,
-                "default_skip":   default_skip,
-                "default_mult":   default_mult,
-                "bands":          [list(p) for p in bands_tuple],
+                "id":              arch,
+                "label":           meta["label"],
+                "description":     meta["description"],
+                "skip":            arch in skip_set,
+                "multiplier":      current_mult,
+                "default_skip":    default_skip,
+                "default_mult":    default_mult,
+                "bands":           [list(p) for p in bands_tuple],
+                "lifetime_trades": perf["trades"],
+                "lifetime_pnl_usd": perf["pnl_usd"],
             })
 
         bounds_lo, bounds_hi = ARCHETYPE_MULTIPLIER_BOUNDS

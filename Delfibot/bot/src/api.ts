@@ -703,6 +703,15 @@ export interface ArchetypeEntry {
    *  market_price_yes falls inside any band on its archetype's list.
    *  Empty/undefined = trade every price band for this archetype. */
   bands?: number[][];
+  /** Lifetime P&L sum across all settled + closed_early trades for
+   *  this archetype, mode-scoped to the user's current trading mode.
+   *  Surfaces in the Risk Controls UI as a decision aid when tuning
+   *  the multiplier. 0 when no trades have closed yet. */
+  lifetime_pnl_usd?: number;
+  /** Lifetime count of closed trades (settled / closed_early / invalid)
+   *  for this archetype, mode-scoped. 0 when this archetype has never
+   *  produced a settled trade for the user. Hidden in the UI when 0. */
+  lifetime_trades?: number;
 }
 
 export interface ArchetypeCatalogue {
