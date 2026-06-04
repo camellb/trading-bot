@@ -210,10 +210,15 @@ def _maybe_broadcast_bankroll_pause(
             bankroll = float(stats.get("bankroll", 0.0))
         except Exception:
             pass
-        from execution.pm_sizer import _MIN_ABSOLUTE_STAKE_USD
+        # POLYMARKET_MIN_ORDER_USD ($1.00) is the actual platform
+        # floor enforced by is_scan_idle_for_bankroll (line 180) to
+        # decide WHEN to pause; the v1.5.56 revision sourced
+        # _MIN_ABSOLUTE_STAKE_USD (= 0.0, a vestigial placeholder)
+        # which made the Telegram card read "Minimum per trade:
+        # $0.00". Fixed 2026-06-04 to match the gating constant.
         telegram_html = _tm.bankroll_pause(
             bankroll=bankroll,
-            min_required=float(_MIN_ABSOLUTE_STAKE_USD),
+            min_required=float(POLYMARKET_MIN_ORDER_USD),
             mode="live",  # paused is a live-only condition; sim never
                           # runs out of fake cash.
         )
@@ -222,7 +227,7 @@ def _maybe_broadcast_bankroll_pause(
             severity=10,
             description=(
                 f"Bankroll paused at ${bankroll:.2f}; below the "
-                f"${_MIN_ABSOLUTE_STAKE_USD:.2f} per-trade floor."
+                f"${POLYMARKET_MIN_ORDER_USD:.2f} per-trade floor."
             ),
             source="pm_analyst._notify_bankroll_pause",
             telegram_html=telegram_html,
