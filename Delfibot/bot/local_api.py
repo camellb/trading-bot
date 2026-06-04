@@ -155,7 +155,7 @@ ARCHETYPE_META: dict[str, dict[str, str]] = {
     "crypto":             {"label": "Crypto",
                            "description": "BTC, ETH, SOL, altcoins. Price moves, exchange events, token unlocks."},
     "crypto_short":       {"label": "Crypto micro-window",
-                           "description": "5-30 minute \"Up or Down\" direction markets settled on a single price tick. Default-skipped: research is per-event, the market is per-window, so the forecaster has no information advantage."},
+                           "description": "5-30 minute \"Up or Down\" direction markets settled on a single price tick."},
     "stocks":             {"label": "Stocks",
                            "description": "Equity prices, IPOs, earnings, S&P / NASDAQ / index moves."},
     "macro":              {"label": "Macro",
@@ -1705,40 +1705,34 @@ class LocalAPI:
 
         starting = float(stats.get("starting_cash") or 0.0)
 
-        # Realized + Unrealized P&L source-of-truth.
+        # Unrealized P&L source-of-truth: Polymarket's data-api
+        # `cashPnl` summed over open positions (redeemable=false).
+        # Tracks the live MTM swing on the user's open book and
+        # matches polymarket.com's Open P&L tile to the cent.
+        # In sim mode (no Polymarket data) fall back to the bot's
+        # internal cost-vs-MTM diff.
         #
-        # Polymarket UI's "All-Time P&L" tile is:
-        #     realized  = sum(realizedPnl)  from /closed-positions
-        #               + sum(cashPnl)      from /positions where
-        #                                   redeemable=true
-        #     unrealized= sum(cashPnl)      from /positions where
-        #                                   redeemable=false
-        #     total     = realized + unrealized
-        #
-        # Using these exact fields (read via the polymarket_wallet
-        # cache, refreshed every 60s by the pm_pnl_refresh job)
-        # makes the dashboard match polymarket.com's portfolio
-        # tile to the cent. Earlier attempts that derived realized
-        # from our local DB or composed total from user-pnl-api
-        # drifted from the UI by $0.20-$0.50 because their fee
-        # accounting differs from ours; this trusts Polymarket
-        # directly.
-        #
-        # In sim mode (no Polymarket data) we fall back to the DB
-        # realized + bot-tracked MTM unrealized.
-        pm_closed   = stats.get("polymarket_closed_realized")
-        pm_redeem   = stats.get("polymarket_redeemable_cashPnl")
+        # NOTE: realized is back-derived from `total_pnl - unrealized`
+        # AFTER the live_starting_cash snapshot path below, so the
+        # dashboard's "realized + unrealized = total" invariant holds
+        # and matches the user's mental model (started with X, now
+        # have Y, difference is the P&L). The prior `pm_closed +
+        # pm_redeem` formula double-counted: settled losers appear in
+        # /closed-positions (realizedPnl=-cost) AND in /positions
+        # with redeemable=true (cashPnl=-cost on the dust tokens).
+        # Adding both inflated realized to roughly 2x reality.
+        # 2026-06-04 incident: equity $33.47 / starting $20.34 (true
+        # total $13.13) was displaying as +$26.02 (+127.94%).
         pm_open_pnl = stats.get("data_api_unrealized")
         is_live = (stats.get("mode") == "live")
-        if (is_live and pm_closed is not None and pm_redeem is not None
-                and pm_open_pnl is not None):
-            realized = float(pm_closed) + float(pm_redeem)
+        if is_live and pm_open_pnl is not None:
             unrealized_pnl = float(pm_open_pnl)
         else:
-            realized = float(stats.get("realized_pnl") or 0.0)
             open_cost_mtm    = float(stats.get("open_cost") or 0.0)
             open_cost_basis  = float(stats.get("bot_open_cost") or 0.0)
             unrealized_pnl   = open_cost_mtm - open_cost_basis
+        # Placeholder; back-derived from total below.
+        realized = 0.0
 
         # LIVE-mode starting capital: PINNED via the user_config
         # `live_starting_cash` column. Snapshot once, read forever.
@@ -1785,11 +1779,20 @@ class LocalAPI:
                 starting = stored
             else:
                 # First observation OR a previous one was unusable.
-                # Snapshot `equity - total_pnl` (= deposit-side capital
-                # per the equity = starting + realized + unrealized
-                # identity) and persist. Floor at $1 so a degenerate
-                # equity=0 boot doesn't pin a near-zero baseline.
-                snapshot = max(1.0, equity - realized - unrealized_pnl)
+                # Snapshot `equity - lifetime_pnl` so future calls
+                # have a stable deposit-side baseline. Source
+                # lifetime_pnl from Polymarket's user-pnl-api (the
+                # authoritative number that drives polymarket.com's
+                # own portfolio tile). When user-pnl is unavailable,
+                # treat the current equity AS the baseline (P&L
+                # starts from 0 from this moment forward) - better
+                # than back-deriving from a possibly-wrong realized
+                # sum.
+                pm_lifetime = stats.get("data_api_total_pnl")
+                if pm_lifetime is not None:
+                    snapshot = max(1.0, equity - float(pm_lifetime))
+                else:
+                    snapshot = max(1.0, equity)
                 starting = snapshot
                 try:
                     with get_engine().begin() as conn:
@@ -1801,40 +1804,39 @@ class LocalAPI:
                     print(
                         f"[summary] snapshotted live_starting_cash="
                         f"${snapshot:.4f} for user='local' (equity="
-                        f"${equity:.4f}, realized=${realized:.4f}, "
-                        f"unrealized=${unrealized_pnl:.4f}). ROI denominator "
-                        f"is now PINNED to this value.",
+                        f"${equity:.4f}, pm_lifetime_pnl="
+                        f"{pm_lifetime}). ROI denominator is now "
+                        f"PINNED to this value.",
                         file=sys.stderr, flush=True,
                     )
                 except Exception as exc:
                     print(f"[summary] live_starting_cash write failed: {exc}",
                           file=sys.stderr, flush=True)
 
-        roi = (realized / starting) if starting > 0 else None
-        # Total P&L source-of-truth:
+        # Total P&L: DEFINITIONAL via equity - starting.
         #
-        # `realized + unrealized_pnl`, in BOTH modes.
+        # equity is the wallet's current cash + open-position MTM.
+        # starting is the pinned deposit-side capital baseline
+        # (live_starting_cash column, set once per RULE #4). The
+        # user's mental model is "I started with $X, now I have $Y,
+        # the difference is my P&L" - so we make the dashboard
+        # arithmetically match that intuition.
         #
-        # Earlier (commit 97a72b9) we preferred Polymarket's
-        # user-pnl-api number on the theory that it matched their
-        # portfolio UI to the cent. It didn't. The user-pnl-api
-        # endpoint returns a value computed from a different
-        # aggregation than what's displayed in polymarket.com's
-        # Profit/Loss tile - typically ~$0.20-$0.40 off, growing
-        # with trade volume.
-        #
-        # `realized + unrealized_pnl` is INTERNALLY CONSISTENT (the
-        # breakdown on the dashboard sums to the headline) and,
-        # paired with the cost-basis backfill in pm_reconciler that
-        # makes cost_usd fee-INCLUSIVE for every settled row, it
-        # matches Polymarket UI within rounding (the rare residual
-        # comes from fee adjustments Polymarket folds in that we
-        # can't observe per-trade).
-        #
-        # User instruction (2026-05-23): "i just want the values to
-        # match polymarket. It worked before. You made it fucking
-        # work before. So just make it match it."
-        total_pnl = realized + unrealized_pnl
+        # Realized is then back-derived as `total - unrealized` so
+        # the dashboard's "realized + unrealized = total" invariant
+        # always holds. The prior `realized = pm_closed + pm_redeem`
+        # formula double-counted settled losers (they appear in
+        # /closed-positions AND in /positions with redeemable=true)
+        # and inflated the total to ~2x reality. 2026-06-04 incident:
+        # equity $33.47 / starting $20.34 (true total $13.13) was
+        # displaying as +$26.02 (+127.94%).
+        total_pnl = equity - starting
+        realized = total_pnl - unrealized_pnl
+        # ROI uses total_pnl in the numerator so the headline ROI
+        # matches the headline P&L. Previously this was
+        # `realized / starting` which made the % and $ figures use
+        # different numerators and diverged from each other.
+        roi = (total_pnl / starting) if starting > 0 else None
 
         payload = {
             "mode":           stats.get("mode"),
