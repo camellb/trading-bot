@@ -2239,43 +2239,54 @@ class PMExecutor:
                     file=sys.stderr,
                 )
 
-            # Polymarket V2 enforces POLYMARKET_MIN_SHARES (= 5) as the
-            # absolute floor for BOTH buys AND sells. When partial-fill
-            # drift leaves the wallet with 4.99 shares, there's no
-            # valid order size: 5.0 fails with "not enough balance",
-            # 4.99 fails with "Size (4.99) lower than the minimum: 5".
-            # Refuse the SELL, log silently, let the position settle
-            # naturally on resolution. The user keeps the dust shares;
-            # the redeem sweep handles the eventual payout at $0 or $1.
+            # Order-type dispatch.
             #
-            # 2026-06-05 incident: Bitcoin Up or Down market, on-chain
-            # 4.99 shares, formatted "Early-exit failed" card hit
-            # Telegram with the raw "Size (4.99) lower than the minimum"
-            # error. Class of bug: there is no valid order, the bot
-            # should stop trying instead of showing a user-facing
-            # failure.
-            if sell_shares < POLYMARKET_MIN_SHARES:
-                print(
-                    f"[pm_executor] close_position_early: pos "
-                    f"#{position_id} on-chain size {sell_shares:.4f} "
-                    f"below platform minimum {POLYMARKET_MIN_SHARES} "
-                    f"shares (dust drift). Skipping SELL; position "
-                    f"will settle naturally at resolution.",
-                    file=sys.stderr, flush=True,
-                )
-                return False
-
+            # Polymarket V2's LIMIT-order endpoint enforces a 5-share
+            # floor on SELLs. When partial-fill drift leaves the
+            # wallet with 4.99 shares, that endpoint is unreachable:
+            #   shares=5.00 -> "not enough balance / allowance"
+            #   shares=4.99 -> "Size (4.99) lower than the minimum: 5"
+            # But the MARKET-order endpoint (create_and_post_market_
+            # order with OrderType.FOK) does NOT enforce that floor -
+            # it's the same path polymarket.com's UI uses to sell
+            # dust positions. User flagged 2026-06-05 that bots
+            # should be able to sell anything the UI can sell. Route
+            # sub-5-share positions to the market path, normal-size
+            # positions to the existing limit path (preserves price
+            # control + the v1.5.58 stale-cancel guard which only
+            # makes sense for limit orders).
+            use_market_order = sell_shares < POLYMARKET_MIN_SHARES
             try:
-                (
-                    clob_order_id,
-                    tx_hash,
-                    actual_proceeds,
-                    actual_fill_size,
-                ) = self._place_close_order(
-                    token_id=clob_token_id,
-                    shares=sell_shares,
-                    sell_price=float(current_bid),
-                )
+                if use_market_order:
+                    print(
+                        f"[pm_executor] close_position_early: pos "
+                        f"#{position_id} dust drift ({sell_shares:.4f} "
+                        f"< {POLYMARKET_MIN_SHARES} shares). Routing "
+                        f"via MARKET (FOK) order to bypass the limit-"
+                        f"order share floor.",
+                        file=sys.stderr, flush=True,
+                    )
+                    (
+                        clob_order_id,
+                        tx_hash,
+                        actual_proceeds,
+                        actual_fill_size,
+                    ) = self._place_close_market_order(
+                        token_id=clob_token_id,
+                        shares=sell_shares,
+                        sell_price=float(current_bid),
+                    )
+                else:
+                    (
+                        clob_order_id,
+                        tx_hash,
+                        actual_proceeds,
+                        actual_fill_size,
+                    ) = self._place_close_order(
+                        token_id=clob_token_id,
+                        shares=sell_shares,
+                        sell_price=float(current_bid),
+                    )
             except Exception as exc:
                 # Order placement failure path. Two distinct sub-cases:
                 #
@@ -2951,6 +2962,88 @@ class PMExecutor:
         except Exception:
             actual_proceeds = 0.0
 
+        return (
+            str(order_id),
+            (str(tx_hash) if tx_hash else None),
+            (float(actual_proceeds) if actual_proceeds > 0 else None),
+            (float(actual_fill_size) if actual_fill_size > 0 else None),
+        )
+
+    def _place_close_market_order(
+        self,
+        *,
+        token_id:   str,
+        shares:     float,
+        sell_price: float,
+    ) -> tuple[str, Optional[str], Optional[float], Optional[float]]:
+        """
+        Submit a MARKET (FOK) SELL via the SDK's
+        `create_and_post_market_order` path. Used by
+        `close_position_early` when partial-fill drift leaves the
+        position below the limit-order share floor (5 shares). This
+        path mirrors what polymarket.com's UI uses to sell dust
+        positions - the limit-order endpoint's "Size (X) lower than
+        the minimum: 5" check does NOT apply here.
+
+        Returns the same 4-tuple shape as `_place_close_order`:
+            (order_id, tx_hash, actual_fill_proceeds, actual_fill_size)
+        so the caller's accounting + retry logic stays identical.
+        Raises on any rejection; the caller's exception handler
+        routes through the transient-error / reconcile gate.
+        """
+        creds = get_active_polymarket_creds(self._user_config)
+        wallet      = (creds.get("wallet_address") or "").strip()
+        private_key = (creds.get("private_key")    or "").strip()
+        if not wallet or not private_key:
+            raise RuntimeError("missing wallet/private_key on user_config")
+        client = _get_clob_client(wallet, private_key)
+        from py_clob_client_v2.clob_types import (   # type: ignore
+            MarketOrderArgs, OrderType, PartialCreateOrderOptions,
+        )
+        try:
+            from py_clob_client_v2.order_builder.constants import SELL  # type: ignore
+            sell_side = SELL
+        except Exception:
+            sell_side = "SELL"
+        # For MARKET SELLs the SDK's `amount` field is "shares to
+        # sell" (per MarketOrderArgsV2 docstring). `price` is a hint;
+        # the SDK auto-calculates the actual market price from the
+        # orderbook when needed.
+        amount = round(float(shares), 4)
+        args = MarketOrderArgs(
+            token_id=token_id,
+            amount=amount,
+            side=sell_side,
+            price=float(sell_price),
+        )
+        resp = client.create_and_post_market_order(
+            order_args=args,
+            options=PartialCreateOrderOptions(),
+            order_type=OrderType.FOK,
+        )
+        if not isinstance(resp, dict):
+            raise RuntimeError(f"unexpected market SELL response: {resp!r}")
+        order_id = resp.get("orderID") or resp.get("orderId") or resp.get("id")
+        if not order_id:
+            raise RuntimeError(f"market SELL response missing order id: {resp!r}")
+        final = _poll_order_filled(client, str(order_id))
+        tx_hash = (
+            final.get("transactionHash")
+            or (final.get("transactionsHashes") or [None])[0]
+            or resp.get("transactionHash")
+        )
+        try:
+            actual_fill_size = _extract_filled_size(final, resp)
+        except Exception:
+            actual_fill_size = 0.0
+        try:
+            actual_proceeds = _extract_filled_cost(
+                final, resp, actual_fill_size,
+                fallback_price=float(sell_price),
+                client=client, order_id=str(order_id),
+            ) if actual_fill_size > 0 else 0.0
+        except Exception:
+            actual_proceeds = 0.0
         return (
             str(order_id),
             (str(tx_hash) if tx_hash else None),

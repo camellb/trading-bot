@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "delfi"
-version = "1.5.69"
+version = "1.5.70"
 dependencies = [
  "log",
  "once_cell",
