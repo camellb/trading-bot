@@ -43,7 +43,9 @@ from sqlalchemy import text
 
 import calibration
 from db.engine import get_engine, iso_utc
-from execution.pm_sizer import SizingDecision, _MIN_ABSOLUTE_STAKE_USD
+from execution.pm_sizer import (
+    SizingDecision, _MIN_ABSOLUTE_STAKE_USD, POLYMARKET_MIN_SHARES,
+)
 from feeds.polymarket_feed import PolyMarket
 from engine.user_config import (
     UserConfig,
@@ -2237,6 +2239,32 @@ class PMExecutor:
                     file=sys.stderr,
                 )
 
+            # Polymarket V2 enforces POLYMARKET_MIN_SHARES (= 5) as the
+            # absolute floor for BOTH buys AND sells. When partial-fill
+            # drift leaves the wallet with 4.99 shares, there's no
+            # valid order size: 5.0 fails with "not enough balance",
+            # 4.99 fails with "Size (4.99) lower than the minimum: 5".
+            # Refuse the SELL, log silently, let the position settle
+            # naturally on resolution. The user keeps the dust shares;
+            # the redeem sweep handles the eventual payout at $0 or $1.
+            #
+            # 2026-06-05 incident: Bitcoin Up or Down market, on-chain
+            # 4.99 shares, formatted "Early-exit failed" card hit
+            # Telegram with the raw "Size (4.99) lower than the minimum"
+            # error. Class of bug: there is no valid order, the bot
+            # should stop trying instead of showing a user-facing
+            # failure.
+            if sell_shares < POLYMARKET_MIN_SHARES:
+                print(
+                    f"[pm_executor] close_position_early: pos "
+                    f"#{position_id} on-chain size {sell_shares:.4f} "
+                    f"below platform minimum {POLYMARKET_MIN_SHARES} "
+                    f"shares (dust drift). Skipping SELL; position "
+                    f"will settle naturally at resolution.",
+                    file=sys.stderr, flush=True,
+                )
+                return False
+
             try:
                 (
                     clob_order_id,
@@ -2319,6 +2347,14 @@ class PMExecutor:
                     or ("ssl" in low and "error" in low)
                     or "invalid price" in low
                     or "tick size" in low
+                    # Polymarket V2 share-floor error. The bid-floor
+                    # and min-shares guards above handle the common
+                    # case; this is defence-in-depth for any future
+                    # variant that slips through (e.g. tick-size
+                    # change that pushes a previously-valid order
+                    # below the floor between scan-time and order
+                    # placement).
+                    or "lower than the minimum" in low
                 )
                 if is_transient:
                     print(
