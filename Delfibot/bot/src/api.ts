@@ -770,6 +770,21 @@ export interface NotificationsConfig {
   notification_prefs: Record<string, boolean>;
 }
 
+/** Polymarket connectivity status. Powered by a 5-minute probe that
+ *  hits gamma-api and counts recent 403s in event_log. Three states:
+ *  "ok" (everything works), "unreachable" (network / DNS / regional
+ *  outage), "geo_blocked" (reachable but exit IP is in Polymarket's
+ *  blocklist - common when VPN is off or routed through a US node).
+ *  `unknown` only appears on the very first paint before the probe
+ *  has had a chance to run. */
+export interface ConnectivityStatus {
+  state:             "ok" | "unreachable" | "geo_blocked" | "unknown";
+  gamma_latency_ms:  number | null;
+  recent_403_count:  number;
+  detail:            string;
+  checked_at:        string;
+}
+
 /** Telegram outbound config. The bot token is never returned by the
  *  backend (it's keychain-only); the UI sees only whether it's set. */
 export interface TelegramConfig {
@@ -900,6 +915,9 @@ export const api = {
     request<{ ok: boolean; detail: string }>("/api/reset-simulation", {
       method: "POST",
     }),
+
+  // Polymarket reach state (powers the connection pill on Dashboard).
+  connectivity: () => request<ConnectivityStatus>("/api/connectivity"),
 
   // Performance + learning
   summary:     () => request<PerformanceSummary>("/api/summary"),

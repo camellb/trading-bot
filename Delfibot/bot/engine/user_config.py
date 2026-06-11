@@ -362,6 +362,8 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     "bankroll_pause",          # cash below platform minimum;
                                # trading paused until refunded
     "mode_switch",             # toggled SIMULATION <-> LIVE
+    "connectivity",            # Polymarket reach state changed
+                               # (unreachable / geo_blocked / restored)
 
     # Periodic summaries + proposals.
     "learning_report_ready",   # 50-trade calibration proposal

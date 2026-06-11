@@ -747,6 +747,55 @@ button { font: inherit; }
 .hero-balance-mode.sim  { color: var(--teal); border-color: var(--teal-line); background: var(--teal-dim); }
 .hero-balance-mode.live { color: var(--gold); border-color: var(--gold-line); background: var(--gold-dim); }
 
+/* ── Connection status pill (Polymarket reach) ──────────────────── */
+/* Sits in the hero head next to "Total equity" so the user always
+   has a visible confirmation that trading can actually happen. The
+   underlying probe runs every 5 min on the daemon side; the UI
+   polls the cached state every 15s along with the rest of the
+   hero. Three states (ok / geo_blocked / unreachable) plus an
+   "unknown" fallback for the first 15s after boot. */
+.connectivity-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 4px 9px 4px 8px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono); font-size: 10.5px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  border: 1px solid;
+  white-space: nowrap;
+}
+.connectivity-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: var(--radius-full);
+  background: currentColor;
+}
+.connectivity-pill.ok {
+  color: var(--profit);
+  border-color: var(--profit-line);
+  background: var(--profit-dim);
+}
+.connectivity-pill.ok .connectivity-dot {
+  /* Slow breath so it reads as alive, not just static. Matches the
+     live-dot animation elsewhere in the app. */
+  animation: breath 2.4s var(--ease) infinite;
+  box-shadow: 0 0 0 0 var(--profit-glow);
+}
+.connectivity-pill.warning {
+  color: var(--warn);
+  border-color: rgba(245, 158, 11, 0.35);
+  background: var(--warn-dim);
+}
+.connectivity-pill.error {
+  color: var(--ember);
+  border-color: var(--ember-line);
+  background: var(--ember-dim);
+}
+.connectivity-pill.unknown {
+  color: var(--vellum-60);
+  border-color: var(--vellum-10);
+  background: var(--vellum-05);
+}
+
 .hero-balance-value {
   font-size: 56px;
   color: var(--vellum);

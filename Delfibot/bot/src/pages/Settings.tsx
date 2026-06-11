@@ -1359,6 +1359,10 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
     title: "Mode switches",
     description: "When the master Simulation/Live toggle changes.",
   },
+  connectivity: {
+    title: "Polymarket connection",
+    description: "When Delfi loses or regains its connection to Polymarket (geo-block, network outage, VPN drop).",
+  },
   learning_report_ready: {
     title: "Strategy proposals",
     description: "Every 50 settled trades, Delfi reviews performance and may propose a tuning change.",

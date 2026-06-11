@@ -71,7 +71,7 @@ from aiohttp import web
 from sqlalchemy import desc, select, text
 
 import calibration
-from db.engine import get_engine, iso_utc
+from db.engine import app_data_dir, get_engine, iso_utc
 from db.models import event_log, market_evaluations, pm_positions
 from engine.archetype_classifier import ARCHETYPES
 from engine.learning_cadence import (
@@ -490,6 +490,9 @@ class LocalAPI:
         # Notification prefs (per-category toggles, in-app only)
         app.router.add_get("/api/config/notifications",   self._get_notifications)
         app.router.add_put("/api/config/notifications",   self._put_notifications)
+
+        # Polymarket connectivity status (powers the Dashboard pill)
+        app.router.add_get("/api/connectivity",      self._get_connectivity)
 
         # Telegram outbound notifications (BYO bot via @BotFather).
         app.router.add_get("/api/config/telegram",        self._get_telegram_config)
@@ -2318,6 +2321,50 @@ class LocalAPI:
             "categories":         list(NOTIFICATION_CATEGORIES_VISIBLE),
             "notification_prefs": full,
         })
+
+    # ── Polymarket connectivity (powers Dashboard pill) ─────────────────
+    async def _get_connectivity(self, _req: web.Request) -> web.Response:
+        """Return the most recent Polymarket connectivity probe result.
+
+        Reads `<app-data>/connectivity_state.json` which the scheduler
+        rewrites every 5 minutes. If the file doesn't exist (fresh
+        install, daemon just booted), we run an inline probe so the
+        dashboard never has to render a "loading..." spinner on the
+        connection pill. Falls back to `{"state": "unknown"}` only when
+        the probe itself raises something catastrophic.
+        """
+        state_file = app_data_dir() / "connectivity_state.json"
+
+        def _read():
+            try:
+                if state_file.exists():
+                    with open(state_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and "state" in data:
+                        return data
+            except Exception as exc:
+                print(
+                    f"[connectivity] read {state_file} failed: {exc}",
+                    file=sys.stderr,
+                )
+            # File missing or corrupt: run an inline probe so the UI
+            # gets something usable on the very first paint.
+            try:
+                from engine.connectivity_probe import (
+                    probe_polymarket_connectivity,
+                )
+                return probe_polymarket_connectivity()
+            except Exception as exc:
+                return {
+                    "state":            "unknown",
+                    "gamma_latency_ms": None,
+                    "recent_403_count": 0,
+                    "detail":           f"probe failed: {type(exc).__name__}",
+                    "checked_at":       datetime.now(timezone.utc).isoformat(),
+                }
+
+        result = await self._offload(_read)
+        return _ok(result)
 
     # ── Telegram outbound notifications ─────────────────────────────────
     async def _get_telegram_config(self, _req: web.Request) -> web.Response:

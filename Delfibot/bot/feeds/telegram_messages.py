@@ -297,6 +297,64 @@ def mode_switch(
     )
 
 
+# ── 2b'''''. Connectivity transitions (Polymarket reach) ────────────────────
+def connectivity_lost(*, state: str, detail: str) -> str:
+    """Polymarket connectivity probe just transitioned from ok to a
+    failure state. Surface to Telegram so the user knows the bot is
+    silently blocked instead of finding out hours later.
+
+    state in {"unreachable", "geo_blocked"}.
+    """
+    if state == "unreachable":
+        title = "Polymarket unreachable"
+        explain = (
+            "The bot can't reach Polymarket's servers. Common causes:\n"
+            "  - VPN disconnected\n"
+            "  - ISP started DNS-blocking polymarket.com domains\n"
+            "  - Polymarket-side outage\n\n"
+            "Trading is paused until the connection comes back. The "
+            "bot will keep retrying every 5 minutes and ping you when "
+            "it's working again."
+        )
+    else:  # geo_blocked
+        title = "Trading geo-blocked"
+        explain = (
+            "Polymarket is reachable but orders are being rejected "
+            "with HTTP 403 \"Trading restricted\". This usually means "
+            "the VPN exit node is in a blocked region (e.g. routing "
+            "through US datacenters), OR no VPN is running.\n\n"
+            "Switch to a VPN exit in an allowed region (Netherlands, "
+            "Germany, UK, etc.) and the bot will resume on the next "
+            "scan tick."
+        )
+    return (
+        f"⚠️ <b>{title}</b>\n"
+        f"\n"
+        f"{explain}\n"
+        f"\n"
+        f"Detail: {_clip(detail, 200)}"
+    )
+
+
+def connectivity_restored(*, gamma_latency_ms) -> str:
+    """Polymarket connectivity probe just transitioned BACK to ok.
+    Pairs with `connectivity_lost` so the user gets the green light
+    that trading is unblocked again.
+    """
+    lat = (
+        f"{int(gamma_latency_ms)}ms"
+        if gamma_latency_ms is not None else "ok"
+    )
+    return (
+        f"✅ <b>Polymarket connected</b>\n"
+        f"\n"
+        f"The bot can reach Polymarket again. Trading will resume "
+        f"on the next scan tick.\n"
+        f"\n"
+        f"Detail: gamma-api {lat}"
+    )
+
+
 # ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
 def early_exit_win(
     *,

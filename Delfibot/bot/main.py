@@ -1639,6 +1639,82 @@ async def main() -> None:
             print(f"[delfi] balance refresh failed: {exc}",
                   file=sys.stderr, flush=True)
 
+    def _run_connectivity_probe():
+        """Probe Polymarket reach + 403 history. Fire Telegram on
+        state TRANSITIONS only. Persist last state to disk so a
+        daemon restart in a still-broken state doesn't re-fire the
+        same "down" alert (only fires on the FLIP).
+        """
+        try:
+            from engine.connectivity_probe import (
+                probe_polymarket_connectivity,
+            )
+            from feeds import telegram_messages as _tm
+            from db.logger import log_event
+            from db.engine import app_data_dir
+            import json as _json
+            state_path = os.path.join(
+                str(app_data_dir()), "connectivity_state.json",
+            )
+            # Load prior state.
+            prior_state: Optional[str] = None
+            try:
+                if os.path.exists(state_path):
+                    with open(state_path, "r", encoding="utf-8") as f:
+                        prior_state = (_json.load(f) or {}).get("state")
+            except Exception:
+                prior_state = None
+            # Run probe.
+            probe = probe_polymarket_connectivity()
+            current_state = probe["state"]
+            # Persist current state.
+            try:
+                with open(state_path, "w", encoding="utf-8") as f:
+                    _json.dump(probe, f)
+            except Exception as exc:
+                print(
+                    f"[delfi] connectivity_state.json write failed: "
+                    f"{exc}", file=sys.stderr,
+                )
+            # Fire Telegram only on TRANSITION.
+            #   prior None      -> silent first observation
+            #   prior == current -> no-op
+            #   prior ok -> bad  -> connectivity_lost
+            #   prior bad -> ok  -> connectivity_restored
+            #   prior bad -> different-bad -> connectivity_lost (updated)
+            if prior_state is None or prior_state == current_state:
+                return
+            if current_state == "ok":
+                telegram_html = _tm.connectivity_restored(
+                    gamma_latency_ms=probe["gamma_latency_ms"],
+                )
+                description = (
+                    f"Polymarket connectivity restored. "
+                    f"gamma-api {probe['gamma_latency_ms']}ms."
+                )
+            else:
+                telegram_html = _tm.connectivity_lost(
+                    state=current_state,
+                    detail=probe["detail"],
+                )
+                description = (
+                    f"Polymarket connectivity state -> "
+                    f"{current_state}. {probe['detail']}"
+                )
+            log_event(
+                event_type="connectivity",
+                severity=10,
+                description=description,
+                source="main._run_connectivity_probe",
+                telegram_html=telegram_html,
+            )
+        except Exception as exc:
+            print(
+                f"[delfi] connectivity probe failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+
     def _run_equity_snapshot():
         """Append one (bankroll, open_cost, equity) row to
         equity_snapshots for the current user+mode.
@@ -2095,6 +2171,23 @@ async def main() -> None:
         # replaced, the SIM default $1000. 60s cadence afterwards is
         # fast enough that a fresh deposit shows up within a minute.
         next_run_time=now_utc + timedelta(seconds=1),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+    )
+    # Polymarket connectivity probe every 5 min. Fires Telegram on
+    # state TRANSITIONS only (ok -> unreachable / geo_blocked, and
+    # back). Persists last-known state to <app-data>/
+    # connectivity_state.json so a daemon restart doesn't re-send a
+    # "restored" alert just because we lost the in-process memo.
+    # First probe at +20s post-boot to give the wallet caches time
+    # to warm + avoid alerting on a network-still-coming-up cold
+    # boot. User instruction 2026-06-08: "I feel like we should have
+    # some kind of confirmation on switching it on cause I literally
+    # wouldn't know whether it works or not if I didnt ask you."
+    scheduler.add_job(
+        _run_connectivity_probe, IntervalTrigger(minutes=5),
+        id="connectivity_probe",
+        next_run_time=now_utc + timedelta(seconds=20),
         max_instances=1, coalesce=True,
         executor="threadpool",
     )
