@@ -1,6 +1,6 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { api, AutostartStatus, BotState, Credentials, isConnectionError, tauriRestartSidecar, waitForSidecar } from "./api";
+import { api, AutostartStatus, BotState, ConnectivityStatus, Credentials, isConnectionError, tauriRestartSidecar, waitForSidecar } from "./api";
 import Dashboard from "./pages/Dashboard";
 import Positions from "./pages/Positions";
 import PerformancePage from "./pages/Performance";
@@ -59,17 +59,30 @@ export default function App() {
   // last-known value so the banner can surface the right message
   // even though the daemon is currently unreachable.
   const [autostart, setAutostart] = useState<AutostartStatus | null>(null);
+  // Polymarket reach state. Drives the connection pill above the
+  // Status/Mode box in the sidebar so the user has a visible signal
+  // that trades can actually go through (vs the older silent-failure
+  // mode where /api/scan would 403 forever and the dashboard would
+  // keep rendering cached equity numbers).
+  const [connectivity, setConnectivity] =
+    useState<ConnectivityStatus | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, c, cfg] = await Promise.all([
+      const [s, c, cfg, conn] = await Promise.all([
         api.state(),
         api.credentials(),
         api.config(),
+        // Connectivity is best-effort. On a cold cache (the first
+        // 15s after boot the state file doesn't exist yet) the
+        // handler runs an inline probe which can take 8s; don't
+        // block the whole sidebar on it.
+        api.connectivity().catch(() => null),
       ]);
       setState(s);
       setCreds(c);
       setConfig(cfg);
+      setConnectivity(conn);
       setConnected(true);
       // Only clear the error AFTER a confirmed successful refresh.
       // Pre-clearing (setError(null) before Promise.all resolves)
@@ -240,6 +253,7 @@ export default function App() {
         setMode={setMode}
         toggleBotEnabled={toggleBotEnabled}
         modeBusy={modeBusy}
+        connectivity={connectivity}
       />
       <main className="app-main">
         <ConnectionBanner
@@ -545,6 +559,7 @@ function Sidebar({
   setMode,
   toggleBotEnabled,
   modeBusy,
+  connectivity,
 }: {
   page: Page;
   settingsTab: SettingsTab;
@@ -556,6 +571,7 @@ function Sidebar({
   setMode: (m: "simulation" | "live") => void;
   toggleBotEnabled: () => void;
   modeBusy: boolean;
+  connectivity: ConnectivityStatus | null;
 }) {
   // Pull the version from Tauri at runtime (resolves to the value
   // in tauri.conf.json's `version` field). The footer used to be a
@@ -613,6 +629,8 @@ function Sidebar({
           );
         })}
       </nav>
+
+      <ConnectionPill status={connectivity} />
 
       <BotStatusPill
         mode={mode}
@@ -703,6 +721,61 @@ function BotStatusPill({
           {modeBusy ? "Starting..." : "Start Delfi"}
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Polymarket connection status pill. Sits in the sidebar directly above
+ * the Status / Mode box so the user always has a one-glance signal that
+ * trades can actually go through, on every page (not just the
+ * Dashboard).
+ *
+ *   ok           green dot + "Polymarket connected" (+ latency)
+ *   geo_blocked  amber dot + "Polymarket geo-blocked"
+ *   unreachable  red dot   + "Polymarket unreachable"
+ *   unknown      gray dot  + "Checking..." (first paint, ~15s)
+ *
+ * Hover for the full probe detail.
+ *
+ * User instruction 2026-06-11: "please move this 'POLYMARKET
+ * UNREACHABLE' pill above the status box on the left panel instead"
+ * (relocated from Dashboard hero in v1.5.72).
+ */
+function ConnectionPill({ status }: { status: ConnectivityStatus | null }) {
+  if (!status) {
+    return (
+      <div className="connectivity-pill side-pill unknown" title="Checking connectivity...">
+        <span className="connectivity-dot" />
+        <span>Checking...</span>
+      </div>
+    );
+  }
+  let label: string;
+  let cls: string;
+  switch (status.state) {
+    case "ok":
+      cls = "ok";
+      label = status.gamma_latency_ms != null
+        ? `Polymarket connected (${status.gamma_latency_ms}ms)`
+        : "Polymarket connected";
+      break;
+    case "geo_blocked":
+      cls = "warning";
+      label = "Polymarket geo-blocked";
+      break;
+    case "unreachable":
+      cls = "error";
+      label = "Polymarket unreachable";
+      break;
+    default:
+      cls = "unknown";
+      label = "Checking...";
+  }
+  return (
+    <div className={`connectivity-pill side-pill ${cls}`} title={status.detail}>
+      <span className="connectivity-dot" />
+      <span>{label}</span>
     </div>
   );
 }

@@ -5,7 +5,6 @@ import { EquityChart } from "../components/EquityChart";
 import {
   api,
   BotState,
-  ConnectivityStatus,
   EquitySnapshot,
   isConnectionError,
   MarketEvaluation,
@@ -117,15 +116,10 @@ export default function Dashboard({ state, goto }: Props) {
   // (which retcons the past on deposit but is the best we can do
   // before the snapshot table has populated).
   const [equitySnapshots, setEquitySnapshots] = useState<EquitySnapshot[]>([]);
-  // Polymarket reach state. Driven by a 5-min scheduler probe on the
-  // daemon side; the dashboard polls the cached state every 15s along
-  // with everything else. Drives the connection pill in the hero head.
-  const [connectivity, setConnectivity] =
-    useState<ConnectivityStatus | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [s, p, ev, eh, conn] = await Promise.all([
+      const [s, p, ev, eh] = await Promise.all([
         api.summary(),
         // Match Performance's limit so the equity chart on both
         // pages renders the SAME line from the SAME data. With 50
@@ -138,17 +132,11 @@ export default function Dashboard({ state, goto }: Props) {
         // the rest of the dashboard - swallow to an empty list and
         // let the legacy back-step path render the chart.
         api.equityHistory().then((r) => r.history).catch(() => []),
-        // Connectivity is best-effort too; on the first 15s after
-        // boot the cached state file doesn't exist yet and the
-        // handler runs an inline probe (which can be slow). Don't
-        // block the rest of the dashboard on it.
-        api.connectivity().catch(() => null),
       ]);
       setSummary(s);
       setPositions(p);
       setEvaluations(ev);
       setEquitySnapshots(eh);
-      setConnectivity(conn);
       // Gate `loaded` on the server's data_ready signal. On a fresh
       // daemon boot in live mode, the wallet probe takes 1-2s to
       // warm; until then `data_ready` is false and the hero tiles
@@ -510,7 +498,6 @@ export default function Dashboard({ state, goto }: Props) {
         loaded={loaded}
         range={range}
         setRange={setRange}
-        connectivity={connectivity}
       />
 
       <div className="dash-grid">
@@ -550,7 +537,6 @@ function DashHero({
   closedTrades, openTrades, skippedTrades,
   equitySeries, loaded,
   range, setRange,
-  connectivity,
 }: {
   bankroll: number;
   lockedCapital: number;
@@ -565,7 +551,6 @@ function DashHero({
   loaded: boolean;
   range: Range;
   setRange: (r: Range) => void;
-  connectivity: ConnectivityStatus | null;
 }) {
   const pnlSign = realizedPnl > 0 ? "+" : realizedPnl < 0 ? "-" : "";
   const pctSign = realizedPct > 0 ? "+" : realizedPct < 0 ? "-" : "";
@@ -576,10 +561,7 @@ function DashHero({
     <section className="dash-hero">
       <div className="hero-balance">
         <div className="hero-balance-head">
-          <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-            <div className="hero-balance-label">Total equity</div>
-            <ConnectionPill status={connectivity} />
-          </div>
+          <div className="hero-balance-label">Total equity</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {RANGES.map((r) => (
               <button
@@ -676,60 +658,6 @@ function DashHero({
         )}
       </div>
     </section>
-  );
-}
-
-/**
- * Polymarket connection status pill. Lives in the hero head, next to
- * the "Total equity" label.
- *
- *   ok           green dot + "Polymarket connected" (+ latency)
- *   geo_blocked  amber dot + "Polymarket geo-blocked"
- *   unreachable  red dot   + "Polymarket unreachable"
- *   unknown      gray dot  + "Checking..."
- *
- * Hover for the full probe detail. Falls back to "Checking..." on the
- * very first paint before /api/connectivity returns.
- *
- * User instruction 2026-06-08: "I feel like we should have some kind
- * of confirmation on switching it on cause I literally wouldn't know
- * whether it works or not if I didnt ask you."
- */
-function ConnectionPill({ status }: { status: ConnectivityStatus | null }) {
-  if (!status) {
-    return (
-      <div className="connectivity-pill unknown" title="Checking connectivity...">
-        <span className="connectivity-dot" />
-        <span>Checking...</span>
-      </div>
-    );
-  }
-  let label: string;
-  let cls: string;
-  switch (status.state) {
-    case "ok":
-      cls = "ok";
-      label = status.gamma_latency_ms != null
-        ? `Polymarket connected (${status.gamma_latency_ms}ms)`
-        : "Polymarket connected";
-      break;
-    case "geo_blocked":
-      cls = "warning";
-      label = "Polymarket geo-blocked";
-      break;
-    case "unreachable":
-      cls = "error";
-      label = "Polymarket unreachable";
-      break;
-    default:
-      cls = "unknown";
-      label = "Checking...";
-  }
-  return (
-    <div className={`connectivity-pill ${cls}`} title={status.detail}>
-      <span className="connectivity-dot" />
-      <span>{label}</span>
-    </div>
   );
 }
 

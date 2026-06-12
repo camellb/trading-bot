@@ -795,6 +795,18 @@ button { font: inherit; }
   border-color: var(--vellum-10);
   background: var(--vellum-05);
 }
+/* Sidebar variant: stacks above .bot-pill, matches its padding/width
+   so the two blocks read as a coherent group. The base pill is
+   inline-flex (designed for the hero head); .side-pill turns it into
+   a full-width block + adds breathing room before the status box. */
+.connectivity-pill.side-pill {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%;
+  padding: 8px 10px;
+  margin: 16px 0 0;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+}
 
 .hero-balance-value {
   font-size: 56px;
