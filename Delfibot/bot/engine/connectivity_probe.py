@@ -20,13 +20,14 @@ on every state TRANSITION (silent on initial probe / steady-state).
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 
-from db.engine import get_engine
+from db.engine import app_data_dir, get_engine
 from sqlalchemy import text
 
 
@@ -135,3 +136,83 @@ def probe_polymarket_connectivity() -> dict:
         "detail": "; ".join(detail_parts),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# State values that mean "trades will fail; do not attempt." Includes
+# both geo_blocked (orders 403) and unreachable (servers down / DNS
+# hijacked). "ok" and "unknown" both pass through (the latter only
+# briefly during the first ~20s after boot before the probe has run).
+_BLOCKING_STATES = ("unreachable", "geo_blocked")
+
+# Stale cache threshold. If the most recent probe is older than this,
+# the cached state is no longer trustworthy (the user may have flipped
+# VPN since the last probe wrote the file). The cheap gates that read
+# the cache treat stale as blocked - better to skip a scan than to
+# burn LLM tokens on markets we can no longer trade. Tuned tighter
+# than the probe interval (60s) so a single missed probe still
+# triggers the stale-equals-blocked path.
+_STALE_CACHE_SEC = 120
+
+
+def connectivity_blocks_trading() -> Tuple[bool, Optional[str]]:
+    """Cheap read of the cached connectivity state. <1ms steady-state.
+
+    Returns:
+        (blocked, state)
+          blocked - True if the latest probe says trades will fail OR
+                    the cache is older than _STALE_CACHE_SEC.
+          state   - The probe's state string when blocked
+                    ("unreachable", "geo_blocked", "stale"), else None.
+
+    Behaviour:
+      * Missing state file (fresh boot, file not written yet) -> NOT
+        blocked. The first connectivity probe fires at +20s post-boot;
+        pm_scan's first fire is at +30s by default, so the file is
+        usually there. If it isn't, fail-permissive so the system
+        attempts work instead of silently stalling.
+      * Corrupt JSON / IO error -> NOT blocked. Same rationale.
+      * state == "ok" AND fresh -> NOT blocked.
+      * state == "ok" BUT cache is older than _STALE_CACHE_SEC ->
+        blocked with reason="stale". The user may have flipped VPN
+        since the last probe wrote the file; tokens-side gates need
+        fresh ground truth and should re-probe inline.
+      * state in {"unreachable", "geo_blocked"} -> blocked.
+
+    User instructions:
+      * 2026-06-13: "The bot should recognise when it's geoblocked and
+        should stop trying to work - it should just stop operating -
+        it should pause."
+      * 2026-06-15: "Delfi shouldn't try to place orders when it's in
+        restricted region so why the fuck is it keep trying? It's just
+        fukcing wasting my tokens. It should start as soon as you are
+        in location (IP) that's not restricted." Tightened the gate:
+        stale cache now reads as blocked so a freshly-flipped VPN
+        can't slip through a 5-min window of stale "ok".
+    """
+    state_path = app_data_dir() / "connectivity_state.json"
+    if not state_path.exists():
+        return False, None
+    try:
+        with open(state_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return False, None
+    state = (data or {}).get("state")
+    if state in _BLOCKING_STATES:
+        return True, state
+    # Stale-equals-blocked check. The cheap gate cannot trust a cache
+    # older than _STALE_CACHE_SEC because the user may have switched
+    # network state since.
+    checked_at = (data or {}).get("checked_at")
+    if checked_at:
+        try:
+            ts = datetime.fromisoformat(checked_at)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+            if age_sec > _STALE_CACHE_SEC:
+                return True, "stale"
+        except Exception:
+            # Malformed timestamp - treat as stale to be conservative.
+            return True, "stale"
+    return False, None

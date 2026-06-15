@@ -753,29 +753,49 @@ class LocalAPI:
             and _keyring_get(KEYRING_POLYMARKET_KEY) is not None
         )
 
-        # idle_reason: when the scan is being skipped to save LLM tokens
-        # because the user has nothing to spend, surface that on the
-        # dashboard so they see a clear "the bot paused itself, here's
-        # why" message instead of silent inaction. Today the only
-        # programmatic idle state is insufficient_bankroll; other halts
-        # (bot_enabled=False, /pause, circuit breaker) are reflected by
-        # the existing bot_enabled / ready_to_trade fields.
-        #
-        # Cheap because the wallet probe behind it is cached with a 60s
-        # TTL; offloaded to the executor anyway so a cold-cache call
-        # can't block the aiohttp event loop.
+        # idle_reason: surfaces the dashboard's "Delfi paused, here's
+        # why" banner. Precedence order (highest -> lowest):
+        #   1. polymarket_unreachable / polymarket_geo_blocked
+        #      Network-level block. Trading is auto-paused because
+        #      orders can't even be submitted. Set 2026-06-13 per
+        #      user instruction "The bot should recognise when it's
+        #      geoblocked and should stop trying to work".
+        #   2. insufficient_bankroll
+        #      Cash below the platform minimum order.
+        # Other halts (bot_enabled=False, /pause, circuit breaker)
+        # are reflected by bot_enabled / ready_to_trade.
         idle_reason: Optional[str] = None
         try:
-            from engine.pm_analyst import is_scan_idle_for_bankroll
-            if await asyncio.get_event_loop().run_in_executor(
-                self._api_executor, is_scan_idle_for_bankroll,
-            ):
-                idle_reason = "insufficient_bankroll"
+            from engine.connectivity_probe import (
+                connectivity_blocks_trading,
+            )
+            blocked, conn_state = await asyncio.get_event_loop().run_in_executor(
+                self._api_executor, connectivity_blocks_trading,
+            )
+            if blocked:
+                idle_reason = (
+                    "polymarket_geo_blocked"
+                    if conn_state == "geo_blocked"
+                    else "polymarket_unreachable"
+                )
         except Exception:
-            # Fail-quiet: idle_reason stays None and the dashboard
-            # shows no banner. The scan gate itself is the source of
-            # truth; this is just a UI hint.
             pass
+        # Bankroll check only if connectivity didn't already win. When
+        # Polymarket is unreachable the wallet probe returns zeros (it
+        # times out) which would falsely trigger insufficient_bankroll;
+        # the connectivity reason is the truthful root cause.
+        if idle_reason is None:
+            try:
+                from engine.pm_analyst import is_scan_idle_for_bankroll
+                if await asyncio.get_event_loop().run_in_executor(
+                    self._api_executor, is_scan_idle_for_bankroll,
+                ):
+                    idle_reason = "insufficient_bankroll"
+            except Exception:
+                # Fail-quiet: idle_reason stays None and the dashboard
+                # shows no banner. The scan gate itself is the source
+                # of truth; this is just a UI hint.
+                pass
 
         return _ok({
             "mode": cfg.mode,

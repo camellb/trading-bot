@@ -448,41 +448,7 @@ export default function Dashboard({ state, goto }: Props) {
         <div className="error">{error}</div>
       )}
 
-      {state?.idle_reason === "insufficient_bankroll" && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "10px 14px",
-            // No bottom margin: `.dash-hero` already supplies its own
-            // 32px top margin. Adding 14px here on top of that made
-            // the banner → hero gap (46px) visibly larger than the
-            // hero-balance → hero-chart gap (32px) on stacked
-            // viewports. Letting dash-hero own the spacing keeps
-            // both gaps at a consistent 32px.
-            margin: 0,
-            borderRadius: 8,
-            background: "rgba(120, 180, 220, 0.06)",
-            border: "1px solid rgba(120, 180, 220, 0.22)",
-            color: "var(--vellum-90, #e8e6e1)",
-            fontSize: 13,
-            lineHeight: 1.5,
-          }}
-        >
-          <span
-            aria-hidden="true"
-            style={{ fontSize: 16, opacity: 0.8 }}
-          >
-            💤
-          </span>
-          <span>
-            Delfi has paused. Your available cash is below the
-            minimum needed to place a trade. Trading will resume
-            automatically once more funds are available.
-          </span>
-        </div>
-      )}
+      <IdleBanner reason={state?.idle_reason ?? null} />
 
       <DashHero
         bankroll={bankroll}
@@ -527,6 +493,84 @@ export default function Dashboard({ state, goto }: Props) {
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Auto-pause banner. Reads `state.idle_reason` from the daemon and
+ * explains why trading is currently halted in plain English. Renders
+ * nothing when reason is null (steady state).
+ *
+ * Reasons handled (in matching order of the precedence ladder in
+ * local_api._get_state):
+ *   polymarket_unreachable  - probe says network/DNS dead. The
+ *                             scheduler short-circuits pm_scan +
+ *                             pm_evaluate_exits + pm_balance_refresh
+ *                             so no tokens are burned and the cache
+ *                             retains last-known balance.
+ *   polymarket_geo_blocked  - probe says gamma reachable but recent
+ *                             orders 403. VPN exit is in a blocked
+ *                             region.
+ *   insufficient_bankroll   - cash below platform minimum.
+ *
+ * User instruction 2026-06-13: "The bot should recognise when it's
+ * geoblocked and should stop trying to work - it should just stop
+ * operating - it should pause."
+ */
+function IdleBanner({ reason }: { reason: string | null }) {
+  if (!reason) return null;
+  let copy: string;
+  switch (reason) {
+    case "polymarket_unreachable":
+      copy = (
+        "Delfi has paused. The bot can't reach Polymarket right now "
+        + "(network, DNS, or regional outage). Trading and balance "
+        + "checks will resume automatically once the connection is "
+        + "back."
+      );
+      break;
+    case "polymarket_geo_blocked":
+      copy = (
+        "Delfi has paused. Polymarket is reachable but orders are "
+        + "being rejected from this network. Switch your VPN to an "
+        + "allowed region (Netherlands, Germany, UK) and trading will "
+        + "resume on the next scan tick."
+      );
+      break;
+    case "insufficient_bankroll":
+      copy = (
+        "Delfi has paused. Your available cash is below the minimum "
+        + "needed to place a trade. Trading will resume automatically "
+        + "once more funds are available."
+      );
+      break;
+    default:
+      return null;
+  }
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 14px",
+        // No bottom margin: `.dash-hero` already supplies its own
+        // 32px top margin. Letting dash-hero own the spacing keeps
+        // both gaps at a consistent 32px.
+        margin: 0,
+        borderRadius: 8,
+        background: "rgba(120, 180, 220, 0.06)",
+        border: "1px solid rgba(120, 180, 220, 0.22)",
+        color: "var(--vellum-90, #e8e6e1)",
+        fontSize: 13,
+        lineHeight: 1.5,
+      }}
+    >
+      <span aria-hidden="true" style={{ fontSize: 16, opacity: 0.8 }}>
+        💤
+      </span>
+      <span>{copy}</span>
     </div>
   );
 }

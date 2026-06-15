@@ -1595,6 +1595,71 @@ class PMExecutor:
             )
             return None
 
+        # ── Pre-order favourite re-check (V2 doctrine guard) ──────────────
+        # Race condition the gate exists to catch: pm_analyst sizes the
+        # trade from `market.yes_price` / `market.no_price` provided by
+        # gamma. Gamma's cache lags the CLOB orderbook by seconds-to-
+        # minutes. Between the sizer's decision and this point in the
+        # executor, the CLOB price for our side can flip below 0.50,
+        # turning what was supposed to be a "buy the market favourite"
+        # trade into a "buy the underdog at underdog price" trade.
+        #
+        # Doctrine: side = market favourite (price >= 0.50). If the
+        # LIVE ASK for the side we picked is now below 0.50, the market
+        # has flipped on us. Refuse to place the order.
+        #
+        # 2026-06-15 incident audit (positions #400, #401, #405): all
+        # three opened NO at prices between 0.06 and 0.43 because gamma
+        # said NO was favourite but the CLOB had already swung to YES.
+        # The bot ended up holding the underdog and lost on all three.
+        # User: "WE LOSE FUCKING MONEY CAUSE DELFI BETS AGAINST THE
+        # FUCKING MARKET EVEN THOUGH WE FUCKING CHANGED IT."
+        try:
+            live_ask_raw = client.get_price(token_id, "SELL")
+            # SDK returns {"price": "0.234"} (string) or just "0.234".
+            if isinstance(live_ask_raw, dict):
+                live_ask = float(live_ask_raw.get("price", live_ask_raw.get("mid", 0)))
+            else:
+                live_ask = float(live_ask_raw)
+        except Exception as exc:
+            print(
+                f"[pm_executor] _open_live: live-ask probe failed for "
+                f"token {token_id[:10]}... ({exc}); skipping order to "
+                f"avoid trading on stale price data",
+                file=sys.stderr, flush=True,
+            )
+            return None
+        if live_ask < 0.50:
+            print(
+                f"[pm_executor] _open_live: V2 doctrine guard - "
+                f"side={decision.side} live_ask={live_ask:.3f} < 0.50; "
+                f"market favourite has flipped since pm_analyst sized "
+                f"this trade. Refusing to buy the underdog. "
+                f"market='{market.question[:60]}'",
+                file=sys.stderr, flush=True,
+            )
+            return None
+        # Live ask is sane (>= 0.50) and we'll be paying near it. If
+        # the gamma-derived `decision.entry_price` is materially above
+        # the live ask (the gamma feed was stale, the actual best
+        # offer is cheaper), tighten the limit to the live ask + 1
+        # cent so we don't overpay but still get a marketable LIMIT.
+        if decision.entry_price > live_ask + 0.02:
+            print(
+                f"[pm_executor] _open_live: tightening limit "
+                f"{decision.entry_price:.3f} -> {live_ask + 0.01:.3f} "
+                f"(live ask {live_ask:.3f}) on '{market.question[:60]}'",
+                flush=True,
+            )
+            try:
+                from dataclasses import replace as _replace
+                decision = _replace(decision, entry_price=live_ask + 0.01)
+            except TypeError:
+                try:
+                    decision.entry_price = live_ask + 0.01  # type: ignore[misc]
+                except Exception:
+                    pass
+
         # Limit price = the wallet's intended entry price on the chosen
         # side. Round to the market's CLOB tick size so the SDK doesn't
         # reject the order. Source the tick from gamma (parsed into

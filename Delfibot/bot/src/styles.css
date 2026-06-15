@@ -420,6 +420,8 @@ button { font: inherit; }
   display: inline-flex; align-items: center; gap: 10px;
   color: var(--vellum); text-decoration: none;
   margin: 0 8px 36px; padding: 6px 0;
+  /* Pinned in the sidebar's flex column; nav below scrolls. */
+  flex-shrink: 0;
 }
 .side-mark { width: 22px; height: 22px; display: block; }
 .side-word {
@@ -431,6 +433,12 @@ button { font: inherit; }
 .side-nav {
   display: flex; flex-direction: column; gap: 2px;
   flex: 1; min-height: 0;
+  /* Without overflow-y the nav content (Settings subnav adds 5 items)
+     extends past its flex-allocated bounds and visually overlaps the
+     connectivity pill + bot-pill underneath. With overflow-y:auto the
+     nav becomes a proper scrollable region inside the sidebar's flex
+     column. */
+  overflow-y: auto;
 }
 
 .side-group { display: flex; flex-direction: column; }
@@ -490,6 +498,9 @@ button { font: inherit; }
   border-radius: var(--radius-1);
   border: 1px solid var(--vellum-20);
   background: rgba(255, 255, 255, 0.02);
+  /* Pinned size in the sidebar's flex column - the nav above us
+     scrolls instead of squishing this. */
+  flex-shrink: 0;
 }
 .bot-pill.on {
   border-color: var(--teal-line);
@@ -576,6 +587,8 @@ button { font: inherit; }
   border-top: 1px solid var(--vellum-10);
   padding-top: 16px;
   display: flex; flex-direction: column; gap: 10px;
+  /* Pinned in the sidebar's flex column; nav above scrolls. */
+  flex-shrink: 0;
 }
 .side-footnote {
   font-family: var(--font-mono); font-size: 10px;
@@ -806,6 +819,10 @@ button { font: inherit; }
   margin: 16px 0 0;
   font-size: 9.5px;
   letter-spacing: 0.12em;
+  /* Don't let the flex parent (.side) shrink the pill - it must keep
+     its natural height so the nav above it is forced to scroll within
+     its own region rather than overflowing on top of the pill. */
+  flex-shrink: 0;
 }
 
 .hero-balance-value {

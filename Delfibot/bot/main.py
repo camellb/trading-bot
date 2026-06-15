@@ -281,6 +281,46 @@ def _ensure_job_loop() -> asyncio.AbstractEventLoop:
         return loop
 
 
+# Dedicated ThreadPoolExecutor for sync scheduler jobs that touch
+# Polymarket HTTP (wallet probe, reconciler, redeemer, legacy-balance
+# activator). Separate from APScheduler's pool so a stuck httpx call
+# in one of these jobs CANNOT starve the scheduler thread pool. If
+# the underlying I/O refuses to die after the wall-clock timeout, the
+# worker thread is abandoned (it will eventually unblock when httpx
+# returns - or when the process exits). Leaking a thread is strictly
+# better than wedging the scheduler. 2026-06-15 incident: VPN switch
+# left httpx HTTP/2 connections in a broken state; the wallet probe
+# inside _run_balance_refresh hung for 17+ minutes, blocking the only
+# APScheduler worker, dropping pm_scan / pm_evaluate_exits / etc.
+import concurrent.futures as _cf_blocking
+_BLOCKING_JOB_POOL = _cf_blocking.ThreadPoolExecutor(
+    max_workers=8, thread_name_prefix="delfi-blocking-job",
+)
+
+
+def _run_bounded_sync(fn, timeout_s: int, label: str):
+    """Run a sync callable `fn` with a hard wall-clock timeout, on a
+    dedicated thread pool that is isolated from APScheduler's worker
+    pool.
+
+    If `fn` finishes within `timeout_s`, returns its return value. If
+    not, raises `TimeoutError`. The underlying worker thread keeps
+    running (we don't `future.cancel()` - that's a no-op for sync
+    work) but the CALLING thread (an APScheduler worker) is freed,
+    so the next scheduled tick can fire normally.
+    """
+    future = _BLOCKING_JOB_POOL.submit(fn)
+    try:
+        return future.result(timeout=timeout_s)
+    except _cf_blocking.TimeoutError:
+        print(
+            f"[delfi] {label} exceeded {timeout_s}s wall-clock ceiling - "
+            f"worker thread abandoned (will drain when I/O unblocks)",
+            file=sys.stderr, flush=True,
+        )
+        raise TimeoutError(f"{label} timeout {timeout_s}s")
+
+
 def _submit_job(coro, outer_timeout_s: int) -> None:
     """Submit *coro* to the persistent job loop and block the calling
     APScheduler thread until the coroutine finishes or *outer_timeout_s*
@@ -1505,6 +1545,65 @@ async def main() -> None:
     def _run_scan():
         if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
             return
+        # Connectivity gate. TWO checks:
+        #   1. Cheap cache read - returns blocked if state file says
+        #      unreachable/geo_blocked/stale (>2 min old).
+        #   2. If cache says "ok", do a FRESH inline probe (~200ms)
+        #      anyway, because LLM tokens cost real money and a stale
+        #      "ok" cache from before the user flipped VPN would burn
+        #      ~$0.20 per scan tick on nothing.
+        # User instruction 2026-06-15: "Delfi shouldn't try to place
+        # orders when it's in restricted region so why the fuck is it
+        # keep trying? It's just fukcing wasting my tokens. It should
+        # start as soon as you are in location (IP) that's not
+        # restricted."
+        try:
+            from engine.connectivity_probe import (
+                connectivity_blocks_trading,
+                probe_polymarket_connectivity,
+            )
+            blocked, conn_state = connectivity_blocks_trading()
+            if blocked:
+                print(
+                    f"[delfi] pm_scan skipped: connectivity={conn_state}",
+                    file=sys.stderr, flush=True,
+                )
+                proc_health.record_job_ok("pm_scan")
+                return
+            # Cache says "ok". Re-verify with a fresh ~200ms gamma
+            # probe before burning the LLM budget. Persist the result
+            # to disk so the rest of the system (dashboard, evaluate
+            # gate, balance refresh) immediately reflects the same
+            # ground truth.
+            fresh = probe_polymarket_connectivity()
+            try:
+                import json as _json
+                from db.engine import app_data_dir as _adir
+                state_path = os.path.join(
+                    str(_adir()), "connectivity_state.json",
+                )
+                with open(state_path, "w", encoding="utf-8") as f:
+                    _json.dump(fresh, f)
+            except Exception:
+                pass
+            if fresh.get("state") != "ok":
+                print(
+                    f"[delfi] pm_scan skipped: fresh probe says "
+                    f"connectivity={fresh.get('state')} "
+                    f"({fresh.get('detail')})",
+                    file=sys.stderr, flush=True,
+                )
+                proc_health.record_job_ok("pm_scan")
+                return
+        except Exception as exc:
+            # Helper read failure -> fall through and let the scan
+            # try. The downstream order placement will surface the
+            # real network issue if there is one.
+            print(
+                f"[delfi] pm_scan connectivity gate errored: {exc}; "
+                f"falling through to scan",
+                file=sys.stderr, flush=True,
+            )
         try:
             _submit_job(
                 _bounded(
@@ -1564,6 +1663,23 @@ async def main() -> None:
         position. Cheap when the policy is disabled (per-user) or no
         positions are open. Runs at 60s cadence so a take-profit or
         stop-loss reacts within a minute of the bid moving."""
+        # Connectivity gate: don't waste time recomputing exit signals
+        # we can't act on. The SELL would just ConnectTimeout on the
+        # CLOB. When connectivity comes back the next 60s tick fires
+        # and stop-loss / take-profit react then.
+        try:
+            from engine.connectivity_probe import connectivity_blocks_trading
+            blocked, conn_state = connectivity_blocks_trading()
+            if blocked:
+                print(
+                    f"[delfi] pm_evaluate_exits skipped: "
+                    f"connectivity={conn_state}",
+                    file=sys.stderr, flush=True,
+                )
+                proc_health.record_job_ok("pm_evaluate_exits")
+                return
+        except Exception:
+            pass
         try:
             _submit_job(
                 _bounded(
@@ -1596,20 +1712,47 @@ async def main() -> None:
 
         No-op in simulation mode (no live key). Failure swallowed
         so a network blip doesn't cascade.
+
+        Hard 30s wall-clock timeout via `_run_bounded_sync`. The
+        wallet probe makes multiple httpx calls to clob.polymarket.com
+        + data-api.polymarket.com; when VPN switches mid-flight,
+        py_clob_client_v2's HTTP/2 connections can hang for minutes.
+        Without the outer timeout this would block an APScheduler
+        worker forever (incident 2026-06-15: 17-min wedge after VPN
+        flip, pm_scan never re-fired).
         """
+        # Connectivity gate: when Polymarket is unreachable, every
+        # wallet probe times out (8s per path, 6+ paths) producing
+        # the all-zeros "bankroll" the dashboard renders as dashes.
+        # Skipping the refresh keeps the LAST KNOWN GOOD cached
+        # balance, so the user still sees their actual equity from
+        # before the outage instead of placeholder zeros + a
+        # misleading "insufficient bankroll" banner.
         try:
+            from engine.connectivity_probe import connectivity_blocks_trading
+            blocked, conn_state = connectivity_blocks_trading()
+            if blocked:
+                print(
+                    f"[delfi] pm_balance_refresh skipped: "
+                    f"connectivity={conn_state} (cache retained)",
+                    file=sys.stderr, flush=True,
+                )
+                proc_health.record_job_ok("pm_balance_refresh")
+                return
+        except Exception:
+            pass
+
+        def _impl():
             from engine.user_config import (
                 get_user_config, get_user_polymarket_creds,
             )
             from feeds.polymarket_wallet import refresh_live_balance_cache
             cfg = get_user_config()
             if (cfg.mode or "").lower() != "live":
-                proc_health.record_job_ok("pm_balance_refresh")
                 return
             creds = get_user_polymarket_creds()
             pk = (creds or {}).get("private_key") if creds else None
             if not pk:
-                proc_health.record_job_ok("pm_balance_refresh")
                 return
             refresh_live_balance_cache(pk)
             # Piggy-back the Polymarket P&L cache refresh on this
@@ -1633,6 +1776,9 @@ async def main() -> None:
                 # refresh above is what gates the OK/error counter.
                 print(f"[delfi] pnl cache refresh failed: {exc}",
                       file=sys.stderr, flush=True)
+
+        try:
+            _run_bounded_sync(_impl, timeout_s=30, label="balance_refresh")
             proc_health.record_job_ok("pm_balance_refresh")
         except Exception as exc:
             proc_health.record_job_error("pm_balance_refresh")
@@ -1644,8 +1790,13 @@ async def main() -> None:
         state TRANSITIONS only. Persist last state to disk so a
         daemon restart in a still-broken state doesn't re-fire the
         same "down" alert (only fires on the FLIP).
+
+        Hard 15s timeout via `_run_bounded_sync`. The probe itself
+        uses an 8s requests timeout but DNS resolution / handshake
+        edge cases can stack on top. Without the outer cap, a hung
+        probe could miss multiple 60s ticks before unblocking.
         """
-        try:
+        def _impl():
             from engine.connectivity_probe import (
                 probe_polymarket_connectivity,
             )
@@ -1708,6 +1859,8 @@ async def main() -> None:
                 source="main._run_connectivity_probe",
                 telegram_html=telegram_html,
             )
+        try:
+            _run_bounded_sync(_impl, timeout_s=15, label="connectivity_probe")
         except Exception as exc:
             print(
                 f"[delfi] connectivity probe failed: "
@@ -1758,9 +1911,11 @@ async def main() -> None:
         (USDC.e.approve(wrapper) + wrapper.wrap) replicates exactly
         what polymarket.com's "Confirm pending deposit" sends.
         """
-        try:
+        def _impl():
             from execution.pm_redeemer import activate_legacy_collateral_balance
             activate_legacy_collateral_balance()
+        try:
+            _run_bounded_sync(_impl, timeout_s=60, label="activate_legacy_balance")
             proc_health.record_job_ok("pm_activate_legacy")
         except Exception as exc:
             proc_health.record_job_error("pm_activate_legacy")
@@ -1781,9 +1936,11 @@ async def main() -> None:
         or modifies. Cheap when in sync (single HTTPS GET + a
         SELECT-and-set diff).
         """
-        try:
+        def _impl():
             from engine.pm_reconciler import reconcile_positions
             reconcile_positions()
+        try:
+            _run_bounded_sync(_impl, timeout_s=45, label="pm_reconcile")
             proc_health.record_job_ok("pm_reconcile")
         except Exception as exc:
             proc_health.record_job_error("pm_reconcile")
@@ -1806,9 +1963,11 @@ async def main() -> None:
         Cheap when there's nothing stuck: a single indexed-by-status
         SELECT that returns 0 rows.
         """
-        try:
+        def _impl():
             from execution.pm_redeemer import sweep_unredeemed_winners
             sweep_unredeemed_winners(max_per_run=25)
+        try:
+            _run_bounded_sync(_impl, timeout_s=90, label="redeem_sweeper")
             proc_health.record_job_ok("pm_redeem_sweep")
         except Exception as exc:
             proc_health.record_job_error("pm_redeem_sweep")
@@ -2174,18 +2333,25 @@ async def main() -> None:
         max_instances=1, coalesce=True,
         executor="threadpool",
     )
-    # Polymarket connectivity probe every 5 min. Fires Telegram on
+    # Polymarket connectivity probe every 60s. Fires Telegram on
     # state TRANSITIONS only (ok -> unreachable / geo_blocked, and
     # back). Persists last-known state to <app-data>/
     # connectivity_state.json so a daemon restart doesn't re-send a
     # "restored" alert just because we lost the in-process memo.
     # First probe at +20s post-boot to give the wallet caches time
     # to warm + avoid alerting on a network-still-coming-up cold
-    # boot. User instruction 2026-06-08: "I feel like we should have
-    # some kind of confirmation on switching it on cause I literally
-    # wouldn't know whether it works or not if I didnt ask you."
+    # boot.
+    #
+    # Interval tightened from 5 min -> 60s on 2026-06-15 because the
+    # cache-staleness window between probes was wide enough that a
+    # VPN flip during the window left the gate reading stale "ok"
+    # for up to 5 min, burning LLM tokens on pm_scan ticks that
+    # couldn't actually place orders. User: "It should start as
+    # soon as you are in location (IP) that's not restricted."
+    # Gamma-api is free; 60s costs ~zero. pm_scan also does an
+    # inline fresh probe before LLM work (defense-in-depth).
     scheduler.add_job(
-        _run_connectivity_probe, IntervalTrigger(minutes=5),
+        _run_connectivity_probe, IntervalTrigger(seconds=60),
         id="connectivity_probe",
         next_run_time=now_utc + timedelta(seconds=20),
         max_instances=1, coalesce=True,
