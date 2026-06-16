@@ -88,6 +88,27 @@ def record_equity_snapshot(user_id: str = "local") -> bool:
         # the codebase relies on (equity = bankroll + open_cost).
         open_cost = max(0.0, equity - bankroll)
 
+        # Wallet-probe-failure guard. In live mode, a snapshot with
+        # bankroll=0 AND open_cost>0 is impossible in reality - the
+        # user would have to be holding open positions with literally
+        # zero cash, which never happens because the bot leaves a
+        # tiny gas float. The pattern is the unambiguous signature
+        # of the wallet probe returning a stale/failed read (timeout
+        # during VPN flip, geo-block window, cold cache on first
+        # boot). 2026-06-16 incident: 8 such rows had been written
+        # over a week of network blips and showed up on the equity
+        # chart as sharp downward dips that mystified the user. Skip
+        # the write instead - a small gap in the curve is honest;
+        # a phantom dip is not.
+        if mode == "live" and bankroll == 0.0 and open_cost > 0:
+            print(
+                f"[equity_snapshot] skip: bankroll=0 + open_cost="
+                f"{open_cost:.2f} (wallet probe returned a stale/"
+                f"failed read; not writing a phantom dip)",
+                file=sys.stderr, flush=True,
+            )
+            return False
+
         ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
         with get_engine().begin() as conn:
