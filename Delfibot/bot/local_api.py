@@ -117,7 +117,16 @@ from engine.user_config import (
     set_user_telegram_config,
     update_user_config,
     validated_update_payload,
+    # Multi-provider LLM connections + role wiring (Settings > Connections).
+    add_llm_connection,
+    delete_llm_connection,
+    get_llm_connections,
+    get_llm_roles,
+    has_forecaster_connection,
+    set_llm_roles,
+    update_llm_connection,
 )
+from engine import llm_providers as _llm_providers
 from engine.device_id import get_device_id, get_device_label
 from engine.license import (
     fresh_meta_for,
@@ -451,6 +460,24 @@ class LocalAPI:
         app.router.add_post("/api/config/import", self._import_config)
         app.router.add_get("/api/credentials", self._get_credentials)
         app.router.add_put("/api/credentials", self._put_credentials)
+        # Remove a stored non-LLM credential (Polymarket key, wallet,
+        # NewsAPI, CryptoPanic, relayer, builder API tuple). LLM keys
+        # are removed by deleting their connection (see /api/llm/* below).
+        app.router.add_delete("/api/credentials", self._delete_credential)
+
+        # Multi-provider LLM connections. The user adds an API key for any
+        # provider, picks a model per entry, and assigns connections to use
+        # cases (forecaster / search) as primary / backup. Replaces the old
+        # fixed "LLM API key / Backup LLM / Search LLM" slots.
+        app.router.add_get("/api/llm/providers",    self._get_llm_providers)
+        app.router.add_get("/api/llm/connections",  self._get_llm_connections)
+        app.router.add_post("/api/llm/connections", self._post_llm_connection)
+        app.router.add_put("/api/llm/connections/{conn_id}",
+                            self._put_llm_connection)
+        app.router.add_delete("/api/llm/connections/{conn_id}",
+                            self._delete_llm_connection)
+        app.router.add_get("/api/llm/roles",        self._get_llm_roles)
+        app.router.add_put("/api/llm/roles",        self._put_llm_roles)
         app.router.add_get("/api/positions",   self._get_positions)
         app.router.add_get("/api/open-orders", self._get_open_orders)
         app.router.add_get("/api/events",      self._get_events)
@@ -538,7 +565,7 @@ class LocalAPI:
                 status=204,
                 headers={
                     "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, PUT, POST, OPTIONS",
+                    "Access-Control-Allow-Methods": "GET, PUT, POST, DELETE, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type",
                 },
             )
@@ -1395,6 +1422,223 @@ class LocalAPI:
         snap["has_llm_key"] = snap["has_anthropic_key"]
         return _ok({"wrote": wrote, **snap})
 
+    async def _delete_credential(self, req: web.Request) -> web.Response:
+        """Remove a stored non-LLM credential.
+
+        The field to clear comes from the JSON body ({"field": "..."})
+        or the ?field= query param. LLM keys are NOT removed here - they
+        live in connections; delete the connection via
+        DELETE /api/llm/connections/{id}.
+
+        Recognised fields:
+          polymarket_private_key | wallet_address | polymarket (both)
+          newsapi_key | cryptopanic_key
+          polymarket_relayer_api_key
+          polymarket_api (clears the api_key/secret/passphrase tuple)
+        """
+        field: Optional[str] = None
+        try:
+            body = await req.json()
+            if isinstance(body, dict):
+                field = body.get("field")
+        except Exception:
+            field = None
+        if not field:
+            field = req.query.get("field")
+        if not isinstance(field, str) or not field.strip():
+            return _err("field is required", 400)
+        field = field.strip()
+
+        # LLM credentials are connection-scoped now.
+        if field in ("llm_api_key", "anthropic_api_key", "llm_backup_key",
+                     "gemini_key", "gemini_api_key"):
+            return _err(
+                "LLM keys are managed as connections - remove the "
+                "connection via DELETE /api/llm/connections/{id}",
+                400,
+            )
+
+        def _clear() -> None:
+            if field in ("polymarket_private_key", "polymarket"):
+                set_user_polymarket_creds(private_key="")
+                if field == "polymarket":
+                    set_user_polymarket_creds(wallet_address="")
+            elif field == "wallet_address":
+                set_user_polymarket_creds(wallet_address="")
+            elif field == "newsapi_key":
+                set_newsapi_key("")
+            elif field == "cryptopanic_key":
+                set_cryptopanic_key("")
+            elif field == "polymarket_relayer_api_key":
+                set_polymarket_relayer_api_key("")
+            elif field in ("polymarket_api", "polymarket_api_key",
+                           "polymarket_api_secret", "polymarket_api_passphrase"):
+                # The CLOB Builder tuple is all-or-nothing (the executor
+                # only uses it when all three are present), so removing
+                # any one clears the whole triplet.
+                set_polymarket_api_creds(api_key="", api_secret="",
+                                         api_passphrase="")
+            else:
+                raise KeyError(field)
+
+        try:
+            await self._offload(_clear)
+        except KeyError:
+            return _err(f"unknown credential field '{field}'", 400)
+        except Exception as exc:
+            return _err(f"failed to remove credential: {exc}", 500)
+
+        # Hot-reload the running process so the cleared key takes effect
+        # immediately (mirror of _put_credentials' hot-reload paths).
+        import os as _os
+        if field == "newsapi_key":
+            _os.environ.pop("NEWS_API_KEY", None)
+        elif field == "cryptopanic_key":
+            _os.environ.pop("CRYPTOPANIC_API_KEY", None)
+        elif field in ("polymarket_private_key", "polymarket", "wallet_address",
+                       "polymarket_api", "polymarket_api_key",
+                       "polymarket_api_secret", "polymarket_api_passphrase"):
+            try:
+                from execution.pm_executor import (
+                    _CLOB_CLIENT_CACHE, reset_v2_signer_mismatch_state,
+                )
+                _CLOB_CLIENT_CACHE.clear()
+                reset_v2_signer_mismatch_state()
+                from feeds.polymarket_wallet import (
+                    _API_KEY_ROTATED_CTX, clear_cache as _pw_clear,
+                )
+                _API_KEY_ROTATED_CTX.clear()
+                _pw_clear()
+            except Exception as exc:
+                print(f"[creds] CLOB client cache flush failed: {exc}",
+                      flush=True)
+
+        if hasattr(self, "_creds_cache"):
+            self._creds_cache = None
+        return _ok({"removed": field})
+
+    # ── LLM connections + roles (Settings > Connections) ────────────────
+    def _reset_llm_runtime(self) -> None:
+        """Drop cached LLM SDK clients + the creds existence cache so a
+        connection / role change takes effect on the very next call with
+        no daemon restart. The forecaster + every search pass go through
+        the engine.llm_client singleton, which reads each connection's
+        own api_key, so reset_llm() is the entire hot-reload."""
+        try:
+            from engine.llm_client import reset_llm
+            reset_llm()
+        except Exception as exc:
+            print(f"[llm] reset failed: {exc}", flush=True)
+        if hasattr(self, "_creds_cache"):
+            self._creds_cache = None
+
+    @staticmethod
+    def _redact_connection(c: dict) -> dict:
+        """Public shape of a stored connection. NEVER includes api_key -
+        only whether one is present (has_key boolean)."""
+        return {
+            "id":       c.get("id"),
+            "provider": c.get("provider"),
+            "label":    c.get("label"),
+            "model":    c.get("model"),
+            "base_url": c.get("base_url") or "",
+            "has_key":  bool((c.get("api_key") or "").strip()),
+        }
+
+    async def _get_llm_providers(self, _req: web.Request) -> web.Response:
+        """Static provider catalogue for the connection editor (labels,
+        kinds, model lists, key hints). Holds no secrets."""
+        return _ok({"providers": _llm_providers.providers()})
+
+    async def _get_llm_connections(self, _req: web.Request) -> web.Response:
+        """The configured connections (redacted) + the role map."""
+        def _read() -> dict:
+            conns = [self._redact_connection(c) for c in get_llm_connections()]
+            return {"connections": conns, "roles": get_llm_roles()}
+        return _ok(await self._offload(_read))
+
+    async def _post_llm_connection(self, req: web.Request) -> web.Response:
+        try:
+            body = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(body, dict):
+            return _err("body must be a JSON object", 400)
+        entry = {
+            "provider": (body.get("provider") or "").strip(),
+            "label":    (body.get("label") or "").strip(),
+            "model":    (body.get("model") or "").strip(),
+            "base_url": (body.get("base_url") or "").strip(),
+            "api_key":  (body.get("api_key") or "").strip(),
+        }
+        try:
+            conn = await self._offload(add_llm_connection, entry)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        except Exception as exc:
+            return _err(f"failed to add connection: {exc}", 500)
+        self._reset_llm_runtime()
+        return _ok({"connection": self._redact_connection(conn)}, status=201)
+
+    async def _put_llm_connection(self, req: web.Request) -> web.Response:
+        conn_id = req.match_info.get("conn_id", "")
+        try:
+            body = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if not isinstance(body, dict):
+            return _err("body must be a JSON object", 400)
+        # Only forward fields the caller actually sent. An absent/empty
+        # api_key leaves the stored secret unchanged (metadata-only edit).
+        patch: dict = {}
+        for f in ("provider", "label", "model", "base_url", "api_key"):
+            if f in body and body[f] is not None:
+                patch[f] = str(body[f]).strip()
+        try:
+            conn = await self._offload(update_llm_connection, conn_id, patch)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        except Exception as exc:
+            return _err(f"failed to update connection: {exc}", 500)
+        if conn is None:
+            return _err("connection not found", 404)
+        self._reset_llm_runtime()
+        return _ok({"connection": self._redact_connection(conn)})
+
+    async def _delete_llm_connection(self, req: web.Request) -> web.Response:
+        conn_id = req.match_info.get("conn_id", "")
+        try:
+            ok = await self._offload(delete_llm_connection, conn_id)
+        except Exception as exc:
+            return _err(f"failed to delete connection: {exc}", 500)
+        if not ok:
+            return _err("connection not found", 404)
+        self._reset_llm_runtime()
+        roles = await self._offload(get_llm_roles)
+        return _ok({"deleted": conn_id, "roles": roles})
+
+    async def _get_llm_roles(self, _req: web.Request) -> web.Response:
+        return _ok({"roles": await self._offload(get_llm_roles)})
+
+    async def _put_llm_roles(self, req: web.Request) -> web.Response:
+        try:
+            body = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        # Accept either the bare role map or {"roles": {...}}.
+        if isinstance(body, dict) and "roles" in body:
+            roles_in = body.get("roles")
+        else:
+            roles_in = body
+        if not isinstance(roles_in, dict):
+            return _err("body must be a role map object", 400)
+        try:
+            roles = await self._offload(set_llm_roles, roles_in)
+        except Exception as exc:
+            return _err(f"failed to set roles: {exc}", 500)
+        self._reset_llm_runtime()
+        return _ok({"roles": roles})
+
     async def _get_positions(self, req: web.Request) -> web.Response:
         try:
             limit = int(req.query.get("limit", "100"))
@@ -1500,11 +1744,11 @@ class LocalAPI:
 
         Validates that the user has the credentials they actually need
         for their current mode before flipping the switch. Live mode
-        requires a wallet, a Polymarket private key, and an LLM API
-        key. Simulation only needs the LLM key (Delfi still forecasts
-        each market, just doesn't fund the trade). Mode-switching
-        itself is a separate operation: PUT /api/config with
-        `{"mode": "live"}` or `{"mode": "simulation"}`.
+        requires a wallet, a Polymarket private key, and a forecaster
+        LLM connection. Simulation only needs the forecaster connection
+        (Delfi still forecasts each market, just doesn't fund the
+        trade). Mode-switching itself is a separate operation: PUT
+        /api/config with `{"mode": "live"}` or `{"mode": "simulation"}`.
         """
         _log_bot_toggle_request("start", req)
         # License is a hard gate — any non-valid status here means
@@ -1524,8 +1768,8 @@ class LocalAPI:
         # audit log entry on every redundant call.
         if cfg.bot_enabled:
             return _ok({"bot_enabled": True, "mode": cfg.mode})
-        if (await self._offload(get_anthropic_api_key)) is None:
-            return _err("LLM API key is not set", 400)
+        if not (await self._offload(has_forecaster_connection)):
+            return _err("no forecaster LLM connection is configured", 400)
         if cfg.mode == "live":
             if not cfg.wallet_address:
                 return _err("wallet_address is not set", 400)

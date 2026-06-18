@@ -13,6 +13,10 @@ dependencies = [
     # LLMs.
     "anthropic>=0.40",
     "google-genai>=0.3",
+    # OpenAI-compatible providers (OpenAI, xAI/Grok, DeepSeek, Mistral,
+    # Groq, OpenRouter, and any custom base_url). One SDK + a base_url
+    # swap covers every "kind=openai" connection in engine/llm_providers.
+    "openai>=1.40",
 
     # HTTP API + scheduler that the Tauri shell launches as a sidecar.
     "aiohttp>=3.9",

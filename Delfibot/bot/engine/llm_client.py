@@ -1,59 +1,66 @@
 """
-Provider-routing LLM client with primary/backup failover and Anthropic
+Role-routing LLM client with primary/backup failover and Anthropic
 prompt caching.
 
-The bot makes two kinds of LLM calls today:
-  1. polymarket_evaluator — the per-market forecast call. Huge system
-     prompt (~1500 tokens, reusable verbatim across every market in a
-     scan) plus a short per-market user message. Fired 50+ times per
-     scan cycle.
-  2. research/fetcher — claude-driven keyword extraction for research
-     queries. Short prompt, no reusable system block.
+The bot makes two kinds of LLM calls, each its own "use case":
 
-Both used to instantiate anthropic.Anthropic() directly with no
-fallback. When the configured key 401'd, every call died. The user
-also had a Gemini key stored under "Backup LLM" but nothing was
-wired to use it.
+  1. forecaster — the per-market forecast (polymarket_evaluator). Huge
+     system prompt (~1500 tokens, reusable verbatim across every market
+     in a scan) plus a short per-market user message. Fired 50+ times
+     per scan cycle.
+  2. search — research keyword extraction + bundle curation
+     (research/fetcher) and headline summarisation (feeds/news_feed).
+     Short prompts, no reusable system block, cheap model preferred.
 
-This module:
+Connections + role wiring live in secrets.json and are resolved through
+engine.user_config. The user adds an API key for ANY provider, picks the
+model per entry, and assigns which connection serves which use case as
+primary or backup. This client:
 
-  • Routes by api-key prefix: sk-ant-* → Anthropic, AIzaSy* → Gemini.
-    Unknown prefixes are skipped in the failover chain rather than
-    guessed at.
-  • On primary failure (auth error, rate limit, 5xx, network error,
-    unexpected exception), retries the same logical call against the
-    backup provider if one is set. Returns the first successful text.
-  • Caches a single Anthropic + a single Gemini SDK client per
-    process. `reset()` drops both — call after a credential save so
-    the next request constructs fresh clients against the current
-    env/keychain.
-  • When cache_system=True, sends the system prompt to Anthropic with
-    cache_control:ephemeral so subsequent calls within the 5-minute
-    TTL pay 0.1x the input price on the cached prefix instead of 1x.
-    First call costs 1.25x once to write the cache; from call 2
-    onward the savings dominate. For Gemini that flag is a no-op (no
-    equivalent prefix-cache API at this size). The 1024-token minimum
-    for Anthropic caching is comfortably met by the evaluator's
-    system prompt.
+  • Resolves the ordered connection chain for a use case via
+    resolve_llm_chain(use_case) — primary first, then backup. 'search'
+    falls back to the forecaster chain when no search role is set, so a
+    single key still powers research.
+  • Dispatches each connection by provider "kind":
+      anthropic -> anthropic SDK (messages API, prompt caching)
+      gemini    -> google-genai SDK (generate_content)
+      openai    -> openai SDK against the connection's base_url
+                   (chat.completions). Covers OpenAI, xAI/Grok,
+                   DeepSeek, Mistral, Groq, OpenRouter, and any custom
+                   OpenAI-compatible endpoint.
+  • On a connection failure (auth error, rate limit, 5xx, network
+    error, unexpected exception), moves to the next connection in the
+    chain. Returns the first successful text, or None when the whole
+    chain is exhausted (callers treat None as "skip this market").
+  • Uses each connection's own model id (resolved with the provider
+    default as a fallback), so the forecaster can stay on Claude Sonnet
+    4 while search runs on a cheaper model — or whatever the user picks.
+  • Caches one SDK client per (kind, api_key, base_url) so a multi-key
+    setup doesn't rebuild a client per call. reset() drops every cached
+    client — call after a credential save so the next request builds
+    fresh against the now-current connections.
+  • When cache_system=True (forecaster only), sends the Anthropic system
+    prompt with cache_control:ephemeral so subsequent calls within the
+    5-minute TTL pay 0.1x input on the cached prefix. No-op for the
+    other providers.
 
 Module-level singleton: `get_llm()` returns a process-wide instance;
 `reset_llm()` clears its cached SDK clients. The hot-reload path in
-`local_api._put_credentials` calls `reset_llm()` after writing keys
-so credential changes take effect without a daemon restart.
+local_api (after writing connections) calls `reset_llm()` so changes
+take effect without a daemon restart.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 import anthropic
 
-import config
-from engine.user_config import get_llm_backup_key
+from engine import llm_providers as _providers
+from engine.user_config import resolve_llm_chain
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────
@@ -75,7 +82,7 @@ def get_llm() -> "LLMClient":
 def reset_llm() -> None:
     """Drop cached provider SDK clients.
 
-    Call after a credential save so the next request constructs fresh
+    Call after a connection save so the next request constructs fresh
     clients against the now-current keys. Safe to call even if no
     singleton exists yet — it's a no-op in that case.
     """
@@ -83,41 +90,25 @@ def reset_llm() -> None:
         _singleton.reset()
 
 
-# ── Provider detection ──────────────────────────────────────────────────────
-
-def _provider_of(api_key: Optional[str]) -> Optional[str]:
-    """Map api-key prefix → provider name. Unknown shapes return None
-    so the caller skips that slot rather than constructing an SDK
-    against a key that won't authenticate anyway."""
-    if not api_key:
-        return None
-    if api_key.startswith("sk-ant-"):
-        return "anthropic"
-    if api_key.startswith("AIzaSy"):
-        return "gemini"
-    return None
-
-
 # ── Client ──────────────────────────────────────────────────────────────────
 
 class LLMClient:
     """
-    Two-provider client with primary/backup failover.
+    Multi-provider client with role-based primary/backup failover.
 
-    Construction is lazy: the underlying SDK clients are built only
-    when the first request needs them. `reset()` nulls the caches;
-    the next call reconstructs against whatever env + keychain says.
+    Construction is lazy: the underlying SDK clients are built only when
+    the first request needs them and cached by (kind, api_key, base_url).
+    `reset()` nulls the cache; the next call reconstructs against
+    whatever the connection store says.
     """
 
     def __init__(self) -> None:
-        self._anthropic: Optional[anthropic.Anthropic] = None
-        self._gemini = None  # google.genai.Client once constructed
+        self._clients: dict[tuple, Any] = {}
         self._lock = threading.Lock()
 
     def reset(self) -> None:
         with self._lock:
-            self._anthropic = None
-            self._gemini = None
+            self._clients = {}
 
     async def call(
         self,
@@ -127,82 +118,87 @@ class LLMClient:
         max_tokens: int,
         temperature: float = 1.0,
         cache_system: bool = False,
+        use_case: str = "forecaster",
     ) -> Optional[str]:
         """
-        Try primary, fall back to backup, return response text.
+        Walk the use case's connection chain, return the first response.
 
-        Returns None only if every configured provider failed or no
-        provider key was usable. Callers should treat None as "skip
-        this market" rather than retrying indefinitely.
+        Returns None only if every connection in the chain failed or no
+        connection is wired for the use case. Callers should treat None
+        as "skip" rather than retrying indefinitely.
         """
-        primary = os.environ.get("ANTHROPIC_API_KEY") or ""
-        backup = get_llm_backup_key() or ""
-        attempts: list[tuple[str, str, str]] = []
-        for key, label in [(primary, "primary"), (backup, "backup")]:
-            provider = _provider_of(key)
-            if provider is None:
-                continue
-            attempts.append((provider, key, label))
-
-        if not attempts:
-            print("[llm_client] no usable provider key configured "
-                  "(neither ANTHROPIC_API_KEY env nor backup keychain "
-                  "matches a known prefix)", file=sys.stderr)
+        chain = resolve_llm_chain(use_case)
+        if not chain:
+            print(f"[llm_client] no usable '{use_case}' connection "
+                  f"configured (add one in Settings -> Connections)",
+                  file=sys.stderr)
             return None
 
         last_exc: Optional[Exception] = None
-        for provider, key, label in attempts:
+        for i, conn in enumerate(chain):
+            kind = _providers.provider_kind(conn.get("provider"))
+            label = "primary" if i == 0 else f"backup{i}"
             try:
-                if provider == "anthropic":
+                if kind == "anthropic":
                     return await self._call_anthropic(
-                        key, system, user, max_tokens, temperature,
+                        conn, system, user, max_tokens, temperature,
                         cache_system,
                     )
-                if provider == "gemini":
+                if kind == "gemini":
                     return await self._call_gemini(
-                        key, system, user, max_tokens, temperature,
+                        conn, system, user, max_tokens, temperature,
                     )
+                if kind == "openai":
+                    return await self._call_openai(
+                        conn, system, user, max_tokens, temperature,
+                    )
+                print(f"[llm_client] {use_case} {label}: unknown kind for "
+                      f"provider {conn.get('provider')!r}; skipping",
+                      file=sys.stderr)
             except Exception as exc:
                 last_exc = exc
-                print(f"[llm_client] {label} {provider} failed: "
+                print(f"[llm_client] {use_case} {label} "
+                      f"{conn.get('provider')} failed: "
                       f"{type(exc).__name__}: {exc}", file=sys.stderr)
                 continue
 
-        # Every configured provider raised. Surface a one-line summary
-        # so the operator can find it in the err log without grepping.
-        print(f"[llm_client] all providers exhausted; last exc: "
+        print(f"[llm_client] {use_case} chain exhausted; last exc: "
               f"{type(last_exc).__name__ if last_exc else 'None'}: "
               f"{last_exc}", file=sys.stderr)
         return None
 
+    # ── provider call paths ─────────────────────────────────────────────────
+
     async def _call_anthropic(
         self,
-        api_key: str,
+        conn: dict,
         system: Optional[str],
         user: str,
         max_tokens: int,
         temperature: float,
         cache_system: bool,
     ) -> str:
+        api_key = conn.get("api_key") or ""
+        model = _providers.model_for(conn)
+        cache_key = ("anthropic", api_key)
         with self._lock:
-            if self._anthropic is None:
-                self._anthropic = anthropic.Anthropic(api_key=api_key)
-            client = self._anthropic
+            client = self._clients.get(cache_key)
+            if client is None:
+                client = anthropic.Anthropic(api_key=api_key)
+                self._clients[cache_key] = client
 
         # Build the `system` argument three ways:
-        #   None     → don't send a system block at all (use NOT_GIVEN
-        #              so the SDK omits the field).
-        #   cached   → list form with cache_control:ephemeral. The
-        #              cache marker applies to that block + everything
-        #              before it; since `system` is the first content
-        #              the bot ever sends, marking it caches the whole
-        #              system. Hits within the 5-min ephemeral TTL
-        #              cost 0.1x input; the first write costs 1.25x
-        #              once. Minimum cacheable length is ~1024 tokens,
-        #              comfortably met by the evaluator's prompt.
+        #   None     → don't send a system block (NOT_GIVEN omits it).
+        #   cached   → list form with cache_control:ephemeral. The cache
+        #              marker applies to that block + everything before
+        #              it; since `system` is the first content the bot
+        #              sends, marking it caches the whole system. Hits
+        #              within the 5-min TTL cost 0.1x input; the first
+        #              write costs 1.25x once. Minimum cacheable length
+        #              is ~1024 tokens, met by the evaluator's prompt.
         #   plain    → ordinary string, no caching.
         if system is None:
-            system_arg = anthropic.NOT_GIVEN
+            system_arg: Any = anthropic.NOT_GIVEN
         elif cache_system:
             system_arg = [{
                 "type":          "text",
@@ -216,7 +212,7 @@ class LLMClient:
         response = await loop.run_in_executor(
             None,
             lambda: client.messages.create(
-                model       = config.CLAUDE_MODEL,
+                model       = model,
                 max_tokens  = max_tokens,
                 temperature = temperature,
                 system      = system_arg,
@@ -224,11 +220,9 @@ class LLMClient:
             ),
         )
 
-        # Surface cache usage in stderr at debug level so the operator
-        # can confirm savings. Anthropic SDK exposes
-        # response.usage.cache_creation_input_tokens (this call wrote
-        # the cache) and cache_read_input_tokens (this call read it).
-        # Total input tokens still includes both classes.
+        # Surface cache usage in stderr so the operator can confirm
+        # savings. cache_creation_input_tokens = this call wrote the
+        # cache; cache_read_input_tokens = this call read it.
         try:
             u = response.usage
             cw = getattr(u, "cache_creation_input_tokens", 0) or 0
@@ -244,30 +238,30 @@ class LLMClient:
 
     async def _call_gemini(
         self,
-        api_key: str,
+        conn: dict,
         system: Optional[str],
         user: str,
         max_tokens: int,
         temperature: float,
     ) -> str:
+        api_key = conn.get("api_key") or ""
+        model = _providers.model_for(conn)
+        cache_key = ("gemini", api_key)
         with self._lock:
-            if self._gemini is None:
+            client = self._clients.get(cache_key)
+            if client is None:
                 from google import genai
-                self._gemini = genai.Client(api_key=api_key)
-            client = self._gemini
+                client = genai.Client(api_key=api_key)
+                self._clients[cache_key] = client
 
-        # The google-genai SDK accepts the config either as a
-        # GenerateContentConfig instance or as a dict. Dict is
-        # smaller surface area; passing system as system_instruction
-        # so the model sees it the same way Anthropic does.
+        # google-genai accepts the config as a dict. system goes in as
+        # system_instruction so the model sees it the way Anthropic does.
         #
         # thinking_budget=0 disables Gemini Flash's chain-of-thought
-        # phase. Without this, the model spends most of
-        # max_output_tokens on internal "thoughts" before emitting
-        # any output text; a request with max_tokens=20 came back
-        # with text=None and 20 thinking tokens. We don't need
-        # reasoning here (the bot wants JSON), and the caller's
-        # max_tokens is sized for output, not deliberation.
+        # phase. Without it the model spends most of max_output_tokens on
+        # internal "thoughts" before emitting any output text; a request
+        # with max_tokens=20 came back with text=None and 20 thinking
+        # tokens. We want JSON, not deliberation.
         cfg: dict = {
             "max_output_tokens": max_tokens,
             "temperature":       temperature,
@@ -280,9 +274,69 @@ class LLMClient:
         response = await loop.run_in_executor(
             None,
             lambda: client.models.generate_content(
-                model    = config.GEMINI_MODEL,
+                model    = model,
                 contents = user,
                 config   = cfg,
             ),
         )
         return response.text
+
+    async def _call_openai(
+        self,
+        conn: dict,
+        system: Optional[str],
+        user: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """OpenAI-compatible chat.completions call. One code path covers
+        OpenAI, xAI/Grok, DeepSeek, Mistral, Groq, OpenRouter and custom
+        endpoints — only the base_url + model differ."""
+        api_key = conn.get("api_key") or ""
+        base_url = _providers.base_url_for(conn) or None
+        model = _providers.model_for(conn)
+        cache_key = ("openai", api_key, base_url or "")
+        with self._lock:
+            client = self._clients.get(cache_key)
+            if client is None:
+                from openai import OpenAI
+                kwargs: dict = {"api_key": api_key}
+                if base_url:
+                    kwargs["base_url"] = base_url
+                client = OpenAI(**kwargs)
+                self._clients[cache_key] = client
+
+        messages: list[dict] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+
+        def _create(use_completion_tokens: bool, include_temp: bool):
+            kw: dict = {"model": model, "messages": messages}
+            if use_completion_tokens:
+                kw["max_completion_tokens"] = max_tokens
+            else:
+                kw["max_tokens"] = max_tokens
+            if include_temp:
+                kw["temperature"] = temperature
+            return client.chat.completions.create(**kw)
+
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(
+                None, lambda: _create(False, True),
+            )
+        except Exception as exc:
+            # Reasoning models (o1/o3/o4...) reject max_tokens and a
+            # non-default temperature. Retry once with the newer param
+            # and default temperature before giving up on this provider.
+            msg = str(exc).lower()
+            if ("max_tokens" in msg or "max_completion_tokens" in msg
+                    or "temperature" in msg or "unsupported" in msg):
+                response = await loop.run_in_executor(
+                    None, lambda: _create(True, False),
+                )
+            else:
+                raise
+
+        return response.choices[0].message.content

@@ -33,7 +33,6 @@ from urllib.parse import quote_plus
 import aiohttp
 from sqlalchemy import text
 
-import config
 from db.engine import get_engine
 from research import live_crypto, live_equity
 
@@ -519,62 +518,15 @@ def _tolerant_json_object(raw: str) -> Optional[dict]:
     return None
 
 
-async def _extract_keywords_llm(
-    question: str,
-    call_fn,
-    label: str,
-) -> Optional[dict]:
-    """Shared LLM keyword extraction: run call_fn in executor, parse JSON."""
-    raw = ""
-    try:
-        loop = asyncio.get_running_loop()
-        raw = await loop.run_in_executor(None, call_fn) or ""
-        obj = _tolerant_json_object(raw)
-        if isinstance(obj, dict) and "search_terms" in obj:
-            return obj
-        print(f"[research] {label} keyword parse miss - raw[:200]={raw[:200]!r}",
-              file=sys.stderr)
-    except Exception as exc:
-        print(f"[research] {label} keyword extraction failed: {exc} - "
-              f"raw[:200]={raw[:200]!r}", file=sys.stderr)
-    return None
+async def _extract_keywords_search(question: str) -> Optional[dict]:
+    """Domain-aware keyword extraction via the shared 'search' LLM chain.
 
-
-_gemini_client = None
-
-
-async def _extract_keywords_gemini(question: str) -> Optional[dict]:
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
-        return None
-    global _gemini_client
-    if _gemini_client is None:
-        from google import genai
-        _gemini_client = genai.Client(api_key=gemini_key)
-
-    prompt = f"Question: {question}\n\n{_KW_EXTRACTION_PROMPT}"
-    client = _gemini_client
-
-    def _call():
-        return client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=prompt,
-            config={"response_mime_type": "application/json",
-                    "max_output_tokens": 800, "temperature": 0.1},
-        ).text
-
-    return await _extract_keywords_llm(question, _call, "gemini")
-
-
-async def _extract_keywords_claude(question: str) -> Optional[dict]:
-    """Keyword extraction via the shared LLM client.
-
-    Goes through engine.llm_client so it gets primary/backup failover
-    automatically — if Anthropic 401s or rate-limits, the same call
-    is retried against whatever Gemini key the user stored under
-    "Backup LLM" in Settings. Previously this held its own cached
-    anthropic.Anthropic() and silently dropped every call on auth
-    failure with no fallback.
+    Routes through engine.llm_client with use_case="search", so it runs
+    on whatever cheap model the user wired to the search role (primary
+    then backup) and automatically falls back to the forecaster chain
+    when no search role is set. Replaces the old split gemini-direct /
+    claude paths: the connection chain now owns provider selection and
+    failover, so this is one call site instead of two.
     """
     from engine.llm_client import get_llm
 
@@ -584,18 +536,19 @@ async def _extract_keywords_claude(question: str) -> Optional[dict]:
         raw = await get_llm().call(
             system      = None,
             user        = prompt,
-            max_tokens  = 500,
+            max_tokens  = 800,
             temperature = 0,
+            use_case    = "search",
         ) or ""
         if not raw:
             return None
         obj = _tolerant_json_object(raw)
         if isinstance(obj, dict) and "search_terms" in obj:
             return obj
-        print(f"[research] claude keyword parse miss - "
+        print(f"[research] search keyword parse miss - "
               f"raw[:200]={raw[:200]!r}", file=sys.stderr)
     except Exception as exc:
-        print(f"[research] claude keyword extraction failed: {exc} - "
+        print(f"[research] search keyword extraction failed: {exc} - "
               f"raw[:200]={raw[:200]!r}", file=sys.stderr)
     return None
 
@@ -661,11 +614,12 @@ async def _curate_bundle_for_event(
     """
     if not raw_block or len(raw_block.strip()) < 500:
         return None, "skipped"
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
-        # No Gemini key - skip curation rather than fall back to Claude
-        # (which would double the per-market cost). The forecaster's
-        # own same_event_verified gate still protects downstream.
+    from engine.user_config import has_dedicated_search_connection
+    if not has_dedicated_search_connection():
+        # No dedicated search model - skip curation rather than spend the
+        # forecaster model on it (which would ~double the per-market
+        # cost). The forecaster's own same_event_verified gate still
+        # protects downstream.
         return None, "skipped"
     res_date_str = (
         resolution_date.strftime("%Y-%m-%d")
@@ -681,36 +635,20 @@ async def _curate_bundle_for_event(
         f"--- ORIGINAL BUNDLE END ---\n"
     )
 
-    global _gemini_client
-    if _gemini_client is None:
-        try:
-            from google import genai
-            _gemini_client = genai.Client(api_key=gemini_key)
-        except Exception as exc:
-            print(f"[research] curation: gemini client init failed: {exc}",
-                  file=sys.stderr)
-            return None, "failed"
-    client = _gemini_client
-
-    def _call():
-        return client.models.generate_content(
-            model=config.GEMINI_MODEL,
-            contents=[_CURATION_SYSTEM, user_prompt],
-            config={
-                # Up to ~10K tokens of curated bundle. Most fall well
-                # short; this just stops a runaway response from being
-                # truncated.
-                "max_output_tokens": 12000,
-                "temperature": 0.0,
-            },
-        ).text
-
-    loop = asyncio.get_running_loop()
+    # Curate on the 'search' chain (cheap model). max_tokens caps the
+    # curated bundle at ~10K; most fall well short, this just stops a
+    # runaway response from being truncated.
+    from engine.llm_client import get_llm
     try:
-        raw = await loop.run_in_executor(None, _call)
+        raw = await get_llm().call(
+            system      = _CURATION_SYSTEM,
+            user        = user_prompt,
+            max_tokens  = 12000,
+            temperature = 0.0,
+            use_case    = "search",
+        )
     except Exception as exc:
-        print(f"[research] curation gemini call failed: {exc}",
-              file=sys.stderr)
+        print(f"[research] curation call failed: {exc}", file=sys.stderr)
         return None, "failed"
     if not raw:
         return None, "failed"
@@ -1682,18 +1620,20 @@ async def fetch_research(
     if event_slug:
         extractor_question = f"{extractor_question} [event: {event_slug}]"
 
-    # 0. Gemini-powered keyword extraction (domain-aware, replaces regex).
+    # 0. LLM-powered keyword extraction (domain-aware, replaces regex).
+    #    One call through the 'search' connection chain (cheap model,
+    #    forecaster fallback); then a sports heuristic, then plain regex.
     detected_event_name: Optional[str] = None
     detected_event_qualifier: Optional[str] = None
-    gemini_meta = await _extract_keywords_gemini(extractor_question)
-    if gemini_meta:
-        bundle.keywords = (gemini_meta.get("search_terms") or [])[:4]
-        detected_category = gemini_meta.get("category")
-        detected_sport = gemini_meta.get("sport")
-        detected_teams = gemini_meta.get("teams") or []
-        detected_event_name = (gemini_meta.get("event_name") or "").strip() or None
-        detected_event_qualifier = (gemini_meta.get("event_qualifier") or "").strip() or None
-        bundle.sources.append("gemini_keywords")
+    kw_meta = await _extract_keywords_search(extractor_question)
+    if kw_meta:
+        bundle.keywords = (kw_meta.get("search_terms") or [])[:4]
+        detected_category = kw_meta.get("category")
+        detected_sport = kw_meta.get("sport")
+        detected_teams = kw_meta.get("teams") or []
+        detected_event_name = (kw_meta.get("event_name") or "").strip() or None
+        detected_event_qualifier = (kw_meta.get("event_qualifier") or "").strip() or None
+        bundle.sources.append("llm_keywords")
     else:
         sports_meta = _detect_sports_matchup(extractor_question)
         if sports_meta:
@@ -1703,21 +1643,10 @@ async def fetch_research(
             detected_teams = sports_meta.get("teams") or []
             bundle.sources.append("sports_heuristic")
         else:
-            # Try Claude for keyword extraction before falling back to regex
-            claude_meta = await _extract_keywords_claude(extractor_question)
-            if claude_meta:
-                bundle.keywords = (claude_meta.get("search_terms") or [])[:4]
-                detected_category = claude_meta.get("category")
-                detected_sport = claude_meta.get("sport")
-                detected_teams = claude_meta.get("teams") or []
-                detected_event_name = (claude_meta.get("event_name") or "").strip() or None
-                detected_event_qualifier = (claude_meta.get("event_qualifier") or "").strip() or None
-                bundle.sources.append("delfi_keywords")
-            else:
-                bundle.keywords = extract_keywords(question)
-                detected_category = None
-                detected_sport = None
-                detected_teams = []
+            bundle.keywords = extract_keywords(question)
+            detected_category = None
+            detected_sport = None
+            detected_teams = []
 
     loop = asyncio.get_running_loop()
 

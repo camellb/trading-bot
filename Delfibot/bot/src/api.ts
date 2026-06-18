@@ -381,6 +381,58 @@ export interface Credentials {
   has_llm_backup_key?: boolean;
   has_newsapi_key?: boolean;
   has_cryptopanic_key?: boolean;
+  // Builder CLOB tuple + relayer (surfaced by the sidecar; optional so
+  // older builds that don't return them still type-check).
+  has_polymarket_api_key?: boolean;
+  has_polymarket_api_secret?: boolean;
+  has_polymarket_api_passphrase?: boolean;
+  has_polymarket_relayer_api_key?: boolean;
+  has_gemini_key?: boolean;
+}
+
+// ── Multi-provider LLM connections (Settings > Connections) ───────────────
+// The user adds an API key for any provider, picks a model per entry, and
+// assigns connections to use cases (forecaster / search) as primary /
+// backup. Replaces the old fixed "LLM API key / Backup LLM / Search LLM"
+// slots.
+
+/** Static provider catalogue entry from GET /api/llm/providers. Holds no
+ *  secrets - just labels, the model list, and editor hints. */
+export interface LLMProvider {
+  key: string;            // "anthropic" | "openai" | "gemini" | "xai" | ...
+  label: string;          // "Anthropic (Claude)" etc.
+  kind: string;           // call-path: "anthropic" | "openai" | "gemini"
+  base_url: string;       // default base_url ("" for SDK-native providers)
+  models: string[];       // suggested model ids
+  default_model: string;  // pre-selected model
+  key_hint: string;       // placeholder hint for the api-key field
+  custom_base_url: boolean; // true => base_url is required + user-editable
+}
+
+/** A stored connection, redacted (the api_key never leaves the sidecar -
+ *  only `has_key`). */
+export interface LLMConnection {
+  id: string;
+  provider: string;
+  label: string;
+  model: string;
+  base_url: string;
+  has_key: boolean;
+}
+
+/** Role -> connection-id map. Any role may be null (unassigned). */
+export interface LLMRoles {
+  forecaster_primary: string | null;
+  forecaster_backup: string | null;
+  search_primary: string | null;
+  search_backup: string | null;
+}
+
+export type LLMRole = keyof LLMRoles;
+
+export interface LLMConnectionsResponse {
+  connections: LLMConnection[];
+  roles: LLMRoles;
 }
 
 /** A raw row from the CLOB `/orders` endpoint, surfaced via
@@ -905,6 +957,55 @@ export const api = {
     request<Credentials & { wrote: string[] }>("/api/credentials", {
       method: "PUT",
       body: JSON.stringify(creds),
+    }),
+  /** Remove a stored non-LLM credential (Polymarket key, wallet,
+   *  NewsAPI, CryptoPanic, relayer, or the Builder API tuple). LLM keys
+   *  are removed by deleting their connection (see deleteLlmConnection). */
+  deleteCredential: (field: string) =>
+    request<{ removed: string }>(
+      `/api/credentials?field=${encodeURIComponent(field)}`,
+      { method: "DELETE" },
+    ),
+
+  // Multi-provider LLM connections + role wiring.
+  llmProviders: () =>
+    request<{ providers: LLMProvider[] }>("/api/llm/providers"),
+  llmConnections: () =>
+    request<LLMConnectionsResponse>("/api/llm/connections"),
+  addLlmConnection: (entry: {
+    provider: string;
+    api_key: string;
+    label?: string;
+    model?: string;
+    base_url?: string;
+  }) =>
+    request<{ connection: LLMConnection }>("/api/llm/connections", {
+      method: "POST",
+      body: JSON.stringify(entry),
+    }),
+  updateLlmConnection: (
+    id: string,
+    patch: {
+      provider?: string;
+      api_key?: string;
+      label?: string;
+      model?: string;
+      base_url?: string;
+    },
+  ) =>
+    request<{ connection: LLMConnection }>(
+      `/api/llm/connections/${encodeURIComponent(id)}`,
+      { method: "PUT", body: JSON.stringify(patch) },
+    ),
+  deleteLlmConnection: (id: string) =>
+    request<{ deleted: string; roles: LLMRoles }>(
+      `/api/llm/connections/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  setLlmRoles: (roles: Partial<LLMRoles>) =>
+    request<{ roles: LLMRoles }>("/api/llm/roles", {
+      method: "PUT",
+      body: JSON.stringify(roles),
     }),
 
   // Bot lifecycle

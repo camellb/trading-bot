@@ -393,24 +393,31 @@ function GuideLlm({ anchor, clearAnchor }: GuideHookProps) {
       clearAnchor={clearAnchor}
     >
       <p>
-        Delfi uses three LLM slots: the primary forecaster reads
-        every market, the backup takes over when the primary errors
-        or rate-limits, and the Search LLM does keyword extraction
-        and headline filtering. The steps are the same for all
-        three, only the field you paste into differs.
+        Delfi routes two use cases through your LLM connections.
+        Forecasting reads every market and produces the forecast;
+        research does keyword extraction and headline filtering. You
+        add a connection for any provider, then pick which connection
+        serves each use case as primary or backup.
       </p>
       <Step n={1} title="Create an API key with your chosen provider">
         Provider key pages:
         <LlmProviderLinks />
       </Step>
-      <Step n={2} title="Paste it into Delfi">
-        Open <strong>Settings &rarr; Connections</strong> and paste
-        into the matching field: <em>LLM API key</em> for the
-        primary forecaster, <em>Backup LLM API key</em> for the
-        fallback, or <em>Search LLM API key</em> for keyword
-        extraction. Save.
+      <Step n={2} title="Add a connection in Delfi">
+        Open <strong>Settings &rarr; Connections</strong>, click{" "}
+        <em>+ Add connection</em>, choose the provider, pick a model,
+        and paste the API key. Save. Repeat for any other providers
+        you want available.
       </Step>
-      <Step n={3} title="Add billing at the provider">
+      <Step n={3} title="Assign use cases">
+        Under <em>Use cases</em>, set a primary (and optional backup)
+        connection for <em>Forecasting</em> and for{" "}
+        <em>Research and news</em>. The backup takes over when the
+        primary errors or rate-limits. Research falls back to the
+        forecasting connection when left unset, so cheaper models are
+        fine there.
+      </Step>
+      <Step n={4} title="Add billing at the provider">
         Most providers gate sustained usage behind a saved payment
         method. At default cadence Delfi costs single-digit cents
         per market evaluated.

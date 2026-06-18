@@ -25,8 +25,8 @@ scaffold so the learning cycle still completes and the user sees a
 
 from __future__ import annotations
 
+import asyncio
 import json
-import os
 import re
 import sys
 from typing import Any, Optional
@@ -858,8 +858,8 @@ def _verdict(roi: float, brier: Optional[float], n: int) -> str:
 
 # ── Thesis generation ────────────────────────────────────────────────────────
 def generate_thesis(data: dict) -> str:
-    """2-3 sentence narration. Delegates to the configured model when an
-    anthropic client is available; otherwise returns a deterministic
+    """2-3 sentence narration. Delegates to the forecaster connection
+    (any provider) when one is wired; otherwise returns a deterministic
     fallback. Either path is passed through `_sanitise_thesis` so banned
     terminology can never leak to the user."""
     try:
@@ -871,29 +871,45 @@ def generate_thesis(data: dict) -> str:
     return _sanitise_thesis(raw or _fallback_thesis(data))
 
 
-def _generate_thesis_via_model(data: dict) -> str:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return _fallback_thesis(data)
-    try:
-        import anthropic
-    except Exception:
-        return _fallback_thesis(data)
+def _call_model_blocking(system: str, user: str, max_tokens: int) -> Optional[str]:
+    """Run the async LLM client to completion from this sync function.
 
-    from config import CLAUDE_MODEL
-    client = anthropic.Anthropic()
+    compose_report runs in a worker thread (run_in_executor from
+    local_api) or as a plain sync call from pm_executor, so there is
+    normally no event loop running on this thread and asyncio.run is
+    safe. If a loop does happen to be running here, offload to a
+    dedicated thread so we never block it.
+    """
+    from engine.llm_client import get_llm
+
+    async def _coro():
+        return await get_llm().call(
+            system      = system,
+            user        = user,
+            max_tokens  = max_tokens,
+            temperature = 1.0,
+            use_case    = "forecaster",
+        )
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_coro())
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(lambda: asyncio.run(_coro())).result()
+
+
+def _generate_thesis_via_model(data: dict) -> str:
+    """Narrate via the forecaster connection (any provider). Falls back
+    to the deterministic thesis when no forecaster is wired or the call
+    returns nothing."""
+    from engine.user_config import has_forecaster_connection
+    if not has_forecaster_connection():
+        return _fallback_thesis(data)
     user_block = _thesis_user_block(data)
-    resp = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=400,
-        system=_THESIS_SYSTEM,
-        messages=[{"role": "user", "content": user_block}],
-    )
-    parts = []
-    for block in getattr(resp, "content", []) or []:
-        text_val = getattr(block, "text", None)
-        if text_val:
-            parts.append(text_val)
-    return ("".join(parts)).strip()
+    text = _call_model_blocking(_THESIS_SYSTEM, user_block, 400)
+    return (text or "").strip() or _fallback_thesis(data)
 
 
 def _thesis_user_block(data: dict) -> str:

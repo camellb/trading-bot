@@ -1,12 +1,14 @@
 """
-News Feed - multi-source RSS + Nitter + CryptoPanic aggregator with Gemini pre-filtering.
+News Feed - multi-source RSS + Nitter + CryptoPanic aggregator with LLM pre-filtering.
 
 TWO-MODEL ARCHITECTURE:
-  Gemini Flash (config.GEMINI_MODEL): fetches RSS + Nitter + CryptoPanic, filters and
-  summarises raw content. Near-zero cost on free tier.
+  Search model (the 'search' LLM connection): fetches RSS + Nitter +
+  CryptoPanic, filters and summarises raw content. Runs on whatever cheap
+  model the user wired to the search role; skipped entirely when no
+  dedicated search connection is set (falls back to raw RSS titles).
 
-  Claude Sonnet (config.CLAUDE_MODEL): receives cleaned headlines and
-  scores severity 1–10. Logic lives in engine/event_overlay.py unchanged.
+  Forecaster model: receives cleaned headlines and scores severity 1-10.
+  Logic lives in engine/event_overlay.py unchanged.
 
 Sources:
   RSS: 8 crypto + 6 macro/finance  (see config.RSS_FEEDS)
@@ -37,8 +39,8 @@ import aiohttp
 import config
 from feeds.feed_health_monitor import FeedHealthMonitor
 
-# System prompt for Gemini relevance filtering
-_GEMINI_SYSTEM = (
+# System prompt for the search-model relevance filter
+_NEWS_FILTER_SYSTEM = (
     "You are a prediction-market news filter. From the given news items, extract "
     "those relevant to resolvable prediction markets across ALL domains: "
     "politics (elections, polls, legislation), geopolitics (conflicts, treaties, "
@@ -80,8 +82,8 @@ class NewsFeed:
     Multi-source news aggregator.
 
     Fetches headlines from RSS feeds and Nitter accounts concurrently.
-    Pre-filters and summarises using Gemini Flash.
-    Passes cleaned headlines to event_overlay.py for Claude Sonnet severity scoring.
+    Pre-filters and summarises using the search model.
+    Passes cleaned headlines to event_overlay.py for forecaster severity scoring.
     """
 
     def __init__(self, health_monitor: FeedHealthMonitor) -> None:
@@ -99,28 +101,18 @@ class NewsFeed:
             self._monitor.report_degraded("cryptopanic", "API key not configured",
                                           expected=True)
 
-        # Configure Gemini
-        gemini_key = os.getenv("GEMINI_API_KEY", "")
-        self._gemini_client = None
-        if not gemini_key:
+        # Headline summarisation runs on the 'search' LLM connection,
+        # resolved per-call in _summarise_headlines so runtime connection
+        # changes take effect without a restart - nothing to construct
+        # here. With no dedicated search model wired we fall back to raw
+        # RSS titles.
+        from engine.user_config import has_dedicated_search_connection
+        if not has_dedicated_search_connection():
             print(
-                "[news_feed] GEMINI_API_KEY not set - "
-                "using raw RSS titles as fallback (no Gemini filtering)",
+                "[news_feed] no dedicated search model wired - "
+                "using raw RSS titles as fallback (no summarisation)",
                 file=sys.stderr,
             )
-        else:
-            try:
-                from google import genai
-                self._gemini_client = genai.Client(api_key=gemini_key)
-                print(
-                    f"[news_feed] Gemini configured: model={config.GEMINI_MODEL}",
-                    flush=True,
-                )
-            except Exception as exc:
-                print(
-                    f"[news_feed] Gemini init failed: {exc} - falling back to raw titles",
-                    file=sys.stderr,
-                )
 
     # ── Start / scheduling ────────────────────────────────────────────────────
 
@@ -226,7 +218,7 @@ class NewsFeed:
             new_items.append(item)
 
         if new_items:
-            headlines = await self._summarise_with_gemini(new_items)
+            headlines = await self._summarise_headlines(new_items)
             self._latest_headlines = (self._latest_headlines + headlines)[-50:]
             # Offload to executor: _persist_headlines is a synchronous SQLite
             # write that can block for up to busy_timeout (5s) under write
@@ -415,16 +407,19 @@ class NewsFeed:
             )
             return []
 
-    # ── Gemini summarisation ──────────────────────────────────────────────────
+    # ── Headline summarisation ────────────────────────────────────────────────
 
-    async def _summarise_with_gemini(self, raw_items: list[dict]) -> list[str]:
+    async def _summarise_headlines(self, raw_items: list[dict]) -> list[str]:
         """
-        Use Gemini Flash to filter and clean raw headlines into concise,
-        relevant summaries under 15 words each.
+        Filter and clean raw headlines into concise, relevant summaries
+        under 15 words each, using the 'search' LLM connection.
 
-        Falls back to raw titles if Gemini is unavailable or fails.
+        Falls back to raw titles when no dedicated search model is wired
+        or the call fails. Resolved per-call so a connection change made
+        in Settings takes effect on the next poll without a restart.
         """
-        if self._gemini_client is None:
+        from engine.user_config import has_dedicated_search_connection
+        if not has_dedicated_search_connection():
             return [item["title"] for item in raw_items[:10]]
 
         user_content = json.dumps([
@@ -435,27 +430,36 @@ class NewsFeed:
             for i in raw_items[:20]
         ])
 
+        from engine.llm_client import get_llm
         try:
-            loop = asyncio.get_event_loop()
-            client = self._gemini_client
-            response = await loop.run_in_executor(
-                None,
-                lambda: client.models.generate_content(
-                    model=config.GEMINI_MODEL,
-                    contents=f"{_GEMINI_SYSTEM}\n\n{user_content}",
-                    config={"response_mime_type": "application/json"},
-                ),
+            text = await get_llm().call(
+                system      = _NEWS_FILTER_SYSTEM,
+                user        = user_content,
+                max_tokens  = 1000,
+                temperature = 0.0,
+                use_case    = "search",
             )
-            text = response.text.strip()
-            parsed = json.loads(text)
+            if not text:
+                return [item["title"] for item in raw_items[:10]]
+            # Tolerate a ```json fence around the array.
+            t = text.strip()
+            if t.startswith("```"):
+                nl = t.find("\n")
+                if nl != -1:
+                    t = t[nl + 1:]
+                if t.endswith("```"):
+                    t = t[:-3]
+                t = t.strip()
+            parsed = json.loads(t)
             if isinstance(parsed, list):
                 return [str(h) for h in parsed[:10] if h]
             return [item["title"] for item in raw_items[:10]]
         except json.JSONDecodeError:
-            print("[news_feed] Gemini returned non-JSON - using raw titles", file=sys.stderr)
+            print("[news_feed] summary returned non-JSON - using raw titles",
+                  file=sys.stderr)
             return [item["title"] for item in raw_items[:10]]
         except Exception as exc:
-            print(f"[news_feed] Gemini summarisation error: {exc}", file=sys.stderr)
+            print(f"[news_feed] summarisation error: {exc}", file=sys.stderr)
             return [item["title"] for item in raw_items[:10]]
 
     # ── Persistence ─────────────────────────────────────────────────────────────

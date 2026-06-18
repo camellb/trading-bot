@@ -38,6 +38,12 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, Tuple, Union
 
+# Leaf module (stdlib-only deps); safe to import at module load even
+# while the `engine` package is mid-initialisation. Holds the provider
+# catalogue + connection validation/normalisation used by the LLM
+# connections store below.
+from engine import llm_providers as _providers
+
 
 DEFAULT_USER_ID = "local"
 
@@ -1699,32 +1705,341 @@ def get_active_polymarket_creds(cfg: UserConfig) -> dict:
     }
 
 
-# ── LLM API keys ────────────────────────────────────────────────────────────
-# `get_anthropic_api_key` / `set_anthropic_api_key` are kept under their
-# original names because that's what every existing caller imports. The UI
-# surfaces this as "LLM API key" (primary). The backup helpers below are
-# optional - they're stored regardless of provider so when the multi-LLM
-# router lands they can be used for failover without further migration.
+# ── LLM connections (multi-provider list + role assignment) ─────────────────
+# secrets.json shape:
+#   "llm_connections": [ {id, provider, label, model, base_url, api_key}, ... ]
+#   "llm_roles":       { "forecaster_primary": <id|null>, "forecaster_backup": ...,
+#                        "search_primary": ..., "search_backup": ... }
+#
+# This replaces the three fixed slots (anthropic_api_key / llm_backup_api_key /
+# gemini_api_key). The user adds an API key for ANY provider, picks the model
+# per entry, and assigns which connection serves which use case (forecaster vs
+# search) as primary or backup. On first read we migrate those three legacy
+# flat keys into the list once, then drop them so the list is the single
+# source of truth.
+SECRETS_LLM_CONNECTIONS = "llm_connections"
+SECRETS_LLM_ROLES = "llm_roles"
+
+
+def _new_connection_id() -> str:
+    import secrets as _sec
+    return "conn_" + _sec.token_hex(6)
+
+
+def _empty_roles() -> dict:
+    return {r: None for r in _providers.ROLE_KEYS}
+
+
+def _migrate_legacy_llm_keys(secrets_map: dict) -> bool:
+    """Build llm_connections + llm_roles from the three legacy flat keys
+    the first time. Mutates secrets_map in place; returns True if it
+    changed anything (caller persists).
+
+    Idempotent: keyed off the presence of the llm_connections field, so
+    a second call is a no-op even when the migrated list is empty (the
+    user had no keys to migrate).
+    """
+    if SECRETS_LLM_CONNECTIONS in secrets_map:
+        return False
+
+    conns: list[dict] = []
+    roles = _empty_roles()
+
+    def _mk(api_key: str, fallback_provider: str) -> dict:
+        prov = _providers.detect_provider(api_key) or fallback_provider
+        return _providers.normalize_connection({
+            "id":       _new_connection_id(),
+            "provider": prov,
+            "api_key":  api_key,
+        })
+
+    primary = (secrets_map.get(KEYRING_ANTHROPIC_KEY) or "").strip()
+    backup  = (secrets_map.get(KEYRING_LLM_BACKUP_KEY) or "").strip()
+    gemini  = (secrets_map.get(KEYRING_GEMINI_KEY) or "").strip()
+
+    if primary:
+        c = _mk(primary, "anthropic")
+        conns.append(c)
+        roles["forecaster_primary"] = c["id"]
+    if backup:
+        c = _mk(backup, "anthropic")
+        conns.append(c)
+        roles["forecaster_backup"] = c["id"]
+    if gemini:
+        c = _mk(gemini, "gemini")
+        conns.append(c)
+        roles["search_primary"] = c["id"]
+
+    secrets_map[SECRETS_LLM_CONNECTIONS] = conns
+    secrets_map[SECRETS_LLM_ROLES] = roles
+    # The list now owns these; drop the flat copies so there is exactly
+    # one source of truth.
+    for k in (KEYRING_ANTHROPIC_KEY, KEYRING_LLM_BACKUP_KEY, KEYRING_GEMINI_KEY):
+        secrets_map.pop(k, None)
+    return True
+
+
+def get_llm_connections() -> list[dict]:
+    """Return the configured LLM connections (each a dict with
+    id/provider/label/model/base_url/api_key). Runs the one-time legacy
+    migration on first access."""
+    secrets_map = _read_secrets()
+    if _migrate_legacy_llm_keys(secrets_map):
+        _write_secrets(secrets_map)
+    raw = secrets_map.get(SECRETS_LLM_CONNECTIONS) or []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for e in raw:
+        if isinstance(e, dict) and e.get("id"):
+            out.append(dict(e))
+    return out
+
+
+def get_llm_connection(conn_id: Optional[str]) -> Optional[dict]:
+    if not conn_id:
+        return None
+    for c in get_llm_connections():
+        if c["id"] == conn_id:
+            return c
+    return None
+
+
+def _save_llm_connections(conns: list[dict], roles: Optional[dict] = None) -> None:
+    """Persist the connection list (and optionally the role map). Always
+    stamps the migration sentinel + clears the legacy flat keys so a
+    later read never re-migrates over a user edit."""
+    secrets_map = _read_secrets()
+    secrets_map[SECRETS_LLM_CONNECTIONS] = [dict(c) for c in conns]
+    if roles is not None:
+        secrets_map[SECRETS_LLM_ROLES] = dict(roles)
+    elif SECRETS_LLM_ROLES not in secrets_map:
+        secrets_map[SECRETS_LLM_ROLES] = _empty_roles()
+    for k in (KEYRING_ANTHROPIC_KEY, KEYRING_LLM_BACKUP_KEY, KEYRING_GEMINI_KEY):
+        secrets_map.pop(k, None)
+    _write_secrets(secrets_map)
+
+
+def get_llm_roles() -> dict:
+    """Return the role->connection-id map. Always has all four role keys
+    present; pointers to deleted connections are coerced to None."""
+    valid_ids = {c["id"] for c in get_llm_connections()}
+    secrets_map = _read_secrets()
+    raw = secrets_map.get(SECRETS_LLM_ROLES) or {}
+    roles = _empty_roles()
+    if isinstance(raw, dict):
+        for k in roles:
+            v = raw.get(k)
+            if isinstance(v, str) and v in valid_ids:
+                roles[k] = v
+    return roles
+
+
+def set_llm_roles(roles: dict) -> dict:
+    """Persist the full role map. Unknown role keys are ignored; pointers
+    to non-existent connections are stored as None."""
+    valid_ids = {c["id"] for c in get_llm_connections()}
+    clean = _empty_roles()
+    if isinstance(roles, dict):
+        for k in clean:
+            v = roles.get(k)
+            clean[k] = v if (isinstance(v, str) and v in valid_ids) else None
+    secrets_map = _read_secrets()
+    secrets_map[SECRETS_LLM_ROLES] = clean
+    _write_secrets(secrets_map)
+    return clean
+
+
+def set_llm_role(role: str, conn_id: Optional[str]) -> dict:
+    """Assign (or clear, with conn_id=None) a single role slot."""
+    if role not in _providers.ROLE_KEYS:
+        raise ValueError(f"unknown role '{role}'")
+    roles = get_llm_roles()
+    roles[role] = conn_id or None
+    return set_llm_roles(roles)
+
+
+def add_llm_connection(entry: dict) -> dict:
+    """Validate, assign an id, append, and persist. Returns the stored
+    connection. Raises ValueError on an unusable entry."""
+    norm = _providers.normalize_connection(entry)
+    if not norm["id"]:
+        norm["id"] = _new_connection_id()
+    err = _providers.validate_connection(norm)
+    if err:
+        raise ValueError(err)
+    conns = get_llm_connections()
+    conns.append(norm)
+    _save_llm_connections(conns)
+    return norm
+
+
+def update_llm_connection(conn_id: str, patch: dict) -> Optional[dict]:
+    """Merge `patch` into an existing connection and persist. Returns the
+    updated connection, or None if no connection has that id.
+
+    api_key semantics: a non-empty api_key in `patch` replaces the
+    stored secret; an absent/empty api_key leaves it unchanged (the UI
+    does not re-send the secret on a metadata-only edit). To remove a
+    key, delete the connection.
+    """
+    conns = get_llm_connections()
+    idx = next((i for i, c in enumerate(conns) if c["id"] == conn_id), None)
+    if idx is None:
+        return None
+    merged = dict(conns[idx])
+    if isinstance(patch, dict):
+        for f in ("provider", "label", "model", "base_url"):
+            if f in patch and patch[f] is not None:
+                merged[f] = patch[f]
+        new_key = patch.get("api_key")
+        if isinstance(new_key, str) and new_key.strip():
+            merged["api_key"] = new_key.strip()
+    norm = _providers.normalize_connection(merged)
+    norm["id"] = conn_id
+    err = _providers.validate_connection(norm)
+    if err:
+        raise ValueError(err)
+    conns[idx] = norm
+    _save_llm_connections(conns)
+    return norm
+
+
+def delete_llm_connection(conn_id: str) -> bool:
+    """Remove a connection and null any role that pointed at it. Returns
+    False if no connection had that id."""
+    conns = get_llm_connections()
+    remaining = [c for c in conns if c["id"] != conn_id]
+    if len(remaining) == len(conns):
+        return False
+    roles = get_llm_roles()
+    for k in roles:
+        if roles[k] == conn_id:
+            roles[k] = None
+    _save_llm_connections(remaining, roles)
+    return True
+
+
+def resolve_llm_role(role: str) -> Optional[dict]:
+    """The connection assigned to a role, or None."""
+    return get_llm_connection(get_llm_roles().get(role))
+
+
+def resolve_llm_chain(use_case: str) -> list[dict]:
+    """Ordered list of usable connections for a use case (primary first,
+    then backup). 'search' falls back to the forecaster chain when no
+    search role is set, so a single key still powers research. Drops
+    unusable entries (no key / unknown provider) and de-dupes by id.
+    """
+    roles = get_llm_roles()
+
+    def _chain_for(uc: str) -> list[dict]:
+        out: list[dict] = []
+        for role in _providers.USE_CASE_CHAINS.get(uc, ()):
+            conn = get_llm_connection(roles.get(role))
+            if conn and _providers.validate_connection(conn) is None:
+                out.append(conn)
+        return out
+
+    chain = _chain_for(use_case)
+    if not chain and use_case == "search":
+        chain = _chain_for("forecaster")
+
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for c in chain:
+        if c["id"] in seen:
+            continue
+        seen.add(c["id"])
+        deduped.append(c)
+    return deduped
+
+
+def has_forecaster_connection() -> bool:
+    """True when at least one usable forecaster connection is wired."""
+    return bool(resolve_llm_chain("forecaster"))
+
+
+def has_search_connection() -> bool:
+    """True when a search use-case connection resolves (incl. forecaster
+    fallback)."""
+    return bool(resolve_llm_chain("search"))
+
+
+def has_dedicated_search_connection() -> bool:
+    """True only when a search role (primary or backup) is explicitly
+    wired to a usable connection.
+
+    Distinct from has_search_connection(), which is also True when the
+    search use case is merely borrowing the forecaster chain. Callers
+    that run an *optional, cost-bearing* search pass (research bundle
+    curation, news summarisation) use this so those passes fire only
+    when the user dedicated a cheap model to search - never silently on
+    the expensive forecaster model. Mirrors the old "skip unless a
+    Gemini key is set" behaviour after the legacy->connections
+    migration.
+    """
+    roles = get_llm_roles()
+    for role in ("search_primary", "search_backup"):
+        conn = get_llm_connection(roles.get(role))
+        if conn and _providers.validate_connection(conn) is None:
+            return True
+    return False
+
+
+def _upsert_role_connection(
+    role: str, provider: str, value: Optional[str],
+) -> None:
+    """Back-compat helper for the legacy single-key setters. Maps a bare
+    api-key write onto the connection model: updates the key in the
+    connection currently assigned to `role`, or creates one and assigns
+    it. An empty value deletes the connection in that slot."""
+    v = (value or "").strip()
+    cid = get_llm_roles().get(role)
+    if not v:
+        if cid:
+            delete_llm_connection(cid)
+        return
+    if cid and get_llm_connection(cid):
+        update_llm_connection(cid, {"api_key": v})
+        return
+    conn = add_llm_connection({"provider": provider, "api_key": v})
+    set_llm_role(role, conn["id"])
+
+
+# ── LLM API keys (legacy resolvers over the connection model) ───────────────
+# Kept under their original names because ~6 call sites import them. They now
+# resolve against llm_connections/llm_roles instead of the retired flat keys.
 def get_anthropic_api_key() -> Optional[str]:
-    """Read primary LLM key from keychain first; fall back to env var."""
-    v = _keyring_get(KEYRING_ANTHROPIC_KEY)
-    if v:
-        return v
+    """An Anthropic key if one powers the forecaster (or any connection),
+    so main.py can seed ANTHROPIC_API_KEY for back-compat readers. Falls
+    back to the env var for an externally-provided key."""
+    for conn in resolve_llm_chain("forecaster") + get_llm_connections():
+        if (_providers.provider_kind(conn.get("provider")) == "anthropic"
+                and conn.get("api_key")):
+            return conn["api_key"]
     import os
     return os.environ.get("ANTHROPIC_API_KEY") or None
 
 
 def set_anthropic_api_key(value: Optional[str]) -> None:
-    _keyring_set(KEYRING_ANTHROPIC_KEY, value)
+    """Back-compat: upsert the forecaster-primary slot as an Anthropic
+    connection. New code uses add/update_llm_connection + set_llm_role."""
+    _upsert_role_connection("forecaster_primary", "anthropic", value)
 
 
 def get_llm_backup_key() -> Optional[str]:
-    """Read backup LLM key from keychain. None if user hasn't set one."""
-    return _keyring_get(KEYRING_LLM_BACKUP_KEY) or None
+    """The forecaster-backup connection's key, or None."""
+    conn = resolve_llm_role("forecaster_backup")
+    return (conn.get("api_key") if conn else None) or None
 
 
 def set_llm_backup_key(value: Optional[str]) -> None:
-    _keyring_set(KEYRING_LLM_BACKUP_KEY, value)
+    """Back-compat: upsert the forecaster-backup slot, preserving its
+    provider if one is already assigned (default Anthropic)."""
+    conn = resolve_llm_role("forecaster_backup")
+    provider = conn["provider"] if conn else "anthropic"
+    _upsert_role_connection("forecaster_backup", provider, value)
 
 
 # ── Optional research feed keys ─────────────────────────────────────────────
@@ -1753,18 +2068,22 @@ def set_cryptopanic_key(value: Optional[str]) -> None:
 
 
 def get_gemini_api_key() -> Optional[str]:
-    """Optional Google Gemini key. Used by research/fetcher.py for
-    cheap keyword extraction and by feeds/news_feed.py for headline
-    pre-filtering. Bot warns on every scan when missing."""
-    v = _keyring_get(KEYRING_GEMINI_KEY)
-    if v:
-        return v
+    """A Gemini key if one is wired for the search use case (or any
+    connection). research/fetcher.py + feeds/news_feed.py now route
+    through the search role, but this resolver stays for the
+    has_gemini_key boolean and env back-compat."""
+    for conn in resolve_llm_chain("search") + get_llm_connections():
+        if (_providers.provider_kind(conn.get("provider")) == "gemini"
+                and conn.get("api_key")):
+            return conn["api_key"]
     import os
     return os.environ.get("GEMINI_API_KEY") or None
 
 
 def set_gemini_api_key(value: Optional[str]) -> None:
-    _keyring_set(KEYRING_GEMINI_KEY, value)
+    """Back-compat: upsert the search-primary slot as a Gemini
+    connection."""
+    _upsert_role_connection("search_primary", "gemini", value)
 
 
 def get_polymarket_api_creds() -> Optional[dict]:

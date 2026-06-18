@@ -9,6 +9,10 @@ import {
   AutostartStatus,
   Credentials,
   LicenseStatus,
+  LLMConnection,
+  LLMProvider,
+  LLMRole,
+  LLMRoles,
   LoginItemStatus,
   NotificationsConfig,
   TelegramConfig,
@@ -1093,6 +1097,48 @@ function LicensePanel() {
 
 // ── Connections ──────────────────────────────────────────────────────────
 
+// Shared add/edit payload for an LLM connection. `api_key` is "" in edit
+// mode when the user leaves it blank (the sidecar keeps the stored secret).
+type ConnEntry = {
+  provider: string;
+  api_key: string;
+  label?: string;
+  model?: string;
+  base_url?: string;
+};
+
+// The two use cases the bot routes through connections, each with a
+// primary + backup slot. Forecasting = the per-market call; Research =
+// keyword extraction + headline filtering (cheaper models are fine, and
+// it falls back to the forecasting model when left unset).
+const LLM_ROLE_ROWS: {
+  title: string;
+  hint: string;
+  primary: LLMRole;
+  backup: LLMRole;
+}[] = [
+  {
+    title: "Forecasting",
+    hint: "Reads every market and produces the forecast. Primary runs first; backup takes over on error or rate-limit.",
+    primary: "forecaster_primary",
+    backup: "forecaster_backup",
+  },
+  {
+    title: "Research and news",
+    hint: "Keyword extraction and headline filtering. Falls back to the forecasting model when left unset. Cheap models work well here.",
+    primary: "search_primary",
+    backup: "search_backup",
+  },
+];
+
+// Short badge shown on a connection card for each role it currently holds.
+const ROLE_BADGE_LABEL: Record<LLMRole, string> = {
+  forecaster_primary: "Forecasting",
+  forecaster_backup: "Forecasting backup",
+  search_primary: "Research",
+  search_backup: "Research backup",
+};
+
 function ConnectionsPanel({
   creds,
   onSaved,
@@ -1102,52 +1148,631 @@ function ConnectionsPanel({
   onSaved: () => void;
   goto: Goto;
 }) {
-  const [pmKey, setPmKey] = useState("");
-  const [llmKey, setLlmKey] = useState("");
-  const [llmBackup, setLlmBackup] = useState("");
-  const [newsapi, setNewsapi] = useState("");
-  const [cryptopanic, setCryptopanic] = useState("");
-  const [gemini, setGemini] = useState("");
-  const [pmRelayerKey, setPmRelayerKey] = useState("");
-  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [providers, setProviders] = useState<LLMProvider[]>([]);
+  const [connections, setConnections] = useState<LLMConnection[]>([]);
+  const [roles, setRoles] = useState<LLMRoles>({
+    forecaster_primary: null,
+    forecaster_backup: null,
+    search_primary: null,
+    search_backup: null,
+  });
+  const [llmLoading, setLlmLoading] = useState(true);
+  const [llmMsg, setLlmMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [roleBusy, setRoleBusy] = useState(false);
 
-  // Older sidecars don't return `has_llm_key`; fall back to the legacy
-  // `has_anthropic_key` so the "(stored)" placeholder is correct on
-  // either version.
-  const hasLlm = creds?.has_llm_key ?? creds?.has_anthropic_key ?? false;
-  const hasLlmBackup = creds?.has_llm_backup_key ?? false;
+  const reloadLlm = async () => {
+    const data = await api.llmConnections();
+    setConnections(data.connections);
+    setRoles(data.roles);
+  };
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [prov, conns] = await Promise.all([
+          api.llmProviders(),
+          api.llmConnections(),
+        ]);
+        if (!alive) return;
+        setProviders(prov.providers);
+        setConnections(conns.connections);
+        setRoles(conns.roles);
+      } catch (err) {
+        if (!alive) return;
+        setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+      } finally {
+        if (alive) setLlmLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const providerLabel = (key: string) =>
+    providers.find((p) => p.key === key)?.label ?? key;
+
+  const addConnection = async (entry: ConnEntry) => {
+    setLlmMsg(null);
+    try {
+      await api.addLlmConnection(entry);
+      await reloadLlm();
+      setAdding(false);
+      setLlmMsg({ kind: "ok", text: "Connection added." });
+      onSaved();
+    } catch (err) {
+      setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+      throw err;
+    }
+  };
+
+  const updateConnection = async (id: string, entry: ConnEntry) => {
+    setLlmMsg(null);
+    try {
+      await api.updateLlmConnection(id, entry);
+      await reloadLlm();
+      setEditingId(null);
+      setLlmMsg({ kind: "ok", text: "Connection updated." });
+      onSaved();
+    } catch (err) {
+      setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+      throw err;
+    }
+  };
+
+  const removeConnection = async (id: string) => {
+    setBusyId(id);
+    setLlmMsg(null);
+    try {
+      const res = await api.deleteLlmConnection(id);
+      setConnections((cs) => cs.filter((c) => c.id !== id));
+      setRoles(res.roles);
+      setLlmMsg({ kind: "ok", text: "Connection removed." });
+      onSaved();
+    } catch (err) {
+      setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const changeRole = async (role: LLMRole, connId: string | null) => {
+    setRoleBusy(true);
+    setLlmMsg(null);
+    // set_llm_roles REPLACES the whole map on the sidecar, so always send
+    // all four keys (the merged map), not just the one that changed.
+    const next: LLMRoles = { ...roles, [role]: connId };
+    try {
+      const res = await api.setLlmRoles(next);
+      setRoles(res.roles);
+      onSaved();
+    } catch (err) {
+      setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setRoleBusy(false);
+    }
+  };
+
+  const rolesForConn = (id: string): LLMRole[] =>
+    (Object.keys(roles) as LLMRole[]).filter((r) => roles[r] === id);
+
+  return (
+    <>
+      <div className="panel">
+        <div className="panel-head">
+          <h2 className="panel-title">LLM connections</h2>
+          <HelpHint anchor={HELP_ANCHORS.llm} goto={goto} />
+        </div>
+        <p className="page-sub" style={{ marginBottom: 16 }}>
+          Add a connection for any provider, then assign each one to a use
+          case below. Keys are stored locally and never shared.
+        </p>
+
+        {llmLoading ? (
+          <p className="form-hint">Loading...</p>
+        ) : (
+          <>
+            <div className="conn-list">
+              {connections.length === 0 && !adding && (
+                <p className="form-hint">
+                  No connections yet. Add one to start forecasting.
+                </p>
+              )}
+              {connections.map((c) =>
+                editingId === c.id ? (
+                  <ConnectionEditor
+                    key={c.id}
+                    providers={providers}
+                    existing={c}
+                    onSubmit={(entry) => updateConnection(c.id, entry)}
+                    onCancel={() => setEditingId(null)}
+                  />
+                ) : (
+                  <div className="conn-card" key={c.id}>
+                    <div className="conn-card-main">
+                      <div className="conn-card-title">
+                        {c.label || providerLabel(c.provider)}
+                      </div>
+                      <div className="conn-card-sub">
+                        {providerLabel(c.provider)} &middot; {c.model || "default model"}
+                        {!c.has_key && (
+                          <span className="conn-card-warn"> &middot; no key</span>
+                        )}
+                      </div>
+                      {rolesForConn(c.id).length > 0 && (
+                        <div className="conn-card-roles">
+                          {rolesForConn(c.id).map((r) => (
+                            <span className="conn-role-badge" key={r}>
+                              {ROLE_BADGE_LABEL[r]}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="conn-card-actions">
+                      <button
+                        type="button"
+                        className="btn small ghost"
+                        onClick={() => {
+                          setEditingId(c.id);
+                          setAdding(false);
+                        }}
+                      >
+                        Edit
+                      </button>
+                      <ConfirmButton
+                        label="Remove"
+                        confirmLabel="Confirm remove"
+                        busy={busyId === c.id}
+                        onConfirm={() => removeConnection(c.id)}
+                      />
+                    </div>
+                  </div>
+                ),
+              )}
+            </div>
+
+            {adding ? (
+              <ConnectionEditor
+                providers={providers}
+                onSubmit={addConnection}
+                onCancel={() => setAdding(false)}
+              />
+            ) : (
+              <button
+                type="button"
+                className="btn small"
+                style={{ marginTop: 12 }}
+                onClick={() => {
+                  setAdding(true);
+                  setEditingId(null);
+                }}
+              >
+                + Add connection
+              </button>
+            )}
+
+            {connections.length > 0 && (
+              <div className="conn-roles">
+                <h3 className="form-section-title">Use cases</h3>
+                <p className="form-hint" style={{ marginBottom: 12 }}>
+                  Choose which connection serves each use case.
+                </p>
+                <div className="conn-role-selects">
+                  {LLM_ROLE_ROWS.map((row) => (
+                    <div className="conn-role-row" key={row.title}>
+                      <div className="conn-role-row-head">
+                        <span className="conn-role-row-title">{row.title}</span>
+                        <span className="form-hint">{row.hint}</span>
+                      </div>
+                      <div className="conn-role-pair">
+                        <RoleSelect
+                          label="Primary"
+                          value={roles[row.primary]}
+                          connections={connections}
+                          providerLabel={providerLabel}
+                          disabled={roleBusy}
+                          onChange={(v) => changeRole(row.primary, v)}
+                        />
+                        <RoleSelect
+                          label="Backup"
+                          value={roles[row.backup]}
+                          connections={connections}
+                          providerLabel={providerLabel}
+                          disabled={roleBusy}
+                          onChange={(v) => changeRole(row.backup, v)}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {llmMsg && (
+          <div className="form-actions" style={{ marginTop: 14 }}>
+            <span className={llmMsg.kind === "ok" ? "form-success" : "form-error"}>
+              {llmMsg.text}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <OtherCredentialsPanel creds={creds} onSaved={onSaved} goto={goto} />
+    </>
+  );
+}
+
+/** Shared add/edit form for one LLM connection. In edit mode the provider
+ *  is locked and the API-key field may be left blank to keep the stored
+ *  secret. Calls `onSubmit` and keeps itself open if the parent throws. */
+function ConnectionEditor({
+  providers,
+  existing,
+  onSubmit,
+  onCancel,
+}: {
+  providers: LLMProvider[];
+  existing?: LLMConnection;
+  onSubmit: (entry: ConnEntry) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const isEdit = !!existing;
+  const [provider, setProvider] = useState(existing?.provider ?? providers[0]?.key ?? "");
+  const spec = providers.find((p) => p.key === provider);
+  const [label, setLabel] = useState(existing?.label ?? "");
+  const [model, setModel] = useState(existing?.model ?? spec?.default_model ?? "");
+  const [baseUrl, setBaseUrl] = useState(existing?.base_url ?? spec?.base_url ?? "");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Switching provider (add mode only) resets model + base_url to the new
+  // provider's defaults so the editor never carries a stale model id.
+  const onProviderChange = (key: string) => {
+    setProvider(key);
+    const next = providers.find((p) => p.key === key);
+    setModel(next?.default_model ?? "");
+    setBaseUrl(next?.base_url ?? "");
+  };
+
+  const submit = async () => {
+    setErr(null);
+    if (!isEdit && !apiKey.trim()) {
+      setErr("API key is required.");
+      return;
+    }
+    if (spec?.custom_base_url && !baseUrl.trim()) {
+      setErr("Base URL is required for this provider.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSubmit({
+        provider,
+        api_key: apiKey.trim(),
+        label: label.trim(),
+        model: model.trim(),
+        base_url: baseUrl.trim(),
+      });
+    } catch {
+      // Parent surfaced the message; keep the editor open for a retry.
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const datalistId = `models-${provider}`;
+
+  return (
+    <div className="conn-editor">
+      <div className="conn-editor-grid">
+        <div className="form-field">
+          <label>Provider</label>
+          <select
+            value={provider}
+            disabled={isEdit}
+            onChange={(e) => onProviderChange(e.target.value)}
+          >
+            {providers.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-field">
+          <label>Label (optional)</label>
+          <input
+            type="text"
+            autoComplete="off"
+            placeholder={spec?.label ?? "My connection"}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Model</label>
+          <input
+            type="text"
+            autoComplete="off"
+            list={datalistId}
+            placeholder={spec?.default_model ?? "model id"}
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          />
+          <datalist id={datalistId}>
+            {(spec?.models ?? []).map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </div>
+
+        {spec?.custom_base_url && (
+          <div className="form-field">
+            <label>Base URL</label>
+            <input
+              type="text"
+              autoComplete="off"
+              placeholder="https://api.example.com/v1"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="form-field conn-editor-key">
+        <label>API key</label>
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={
+            isEdit
+              ? existing?.has_key
+                ? "Leave blank to keep the stored key"
+                : "Paste an API key"
+              : spec?.key_hint || "Paste your API key"
+          }
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+        />
+      </div>
+
+      <div className="form-actions">
+        <button type="button" className="btn small" disabled={busy} onClick={submit}>
+          {busy ? "Saving..." : isEdit ? "Save changes" : "Add connection"}
+        </button>
+        <button type="button" className="btn small ghost" disabled={busy} onClick={onCancel}>
+          Cancel
+        </button>
+        {err && <span className="form-error">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** One labelled dropdown that assigns a connection (or "None") to a role. */
+function RoleSelect({
+  label,
+  value,
+  connections,
+  providerLabel,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: string | null;
+  connections: LLMConnection[];
+  providerLabel: (key: string) => string;
+  disabled: boolean;
+  onChange: (connId: string | null) => void;
+}) {
+  return (
+    <label className="conn-role-select">
+      <span className="conn-role-select-label">{label}</span>
+      <select
+        value={value ?? ""}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value || null)}
+      >
+        <option value="">None</option>
+        {connections.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.label || providerLabel(c.provider)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Inline two-step confirm button. window.confirm is unreliable in the
+ *  Tauri webview, so the first click arms and the second confirms. */
+function ConfirmButton({
+  label,
+  confirmLabel,
+  busy,
+  onConfirm,
+}: {
+  label: string;
+  confirmLabel: string;
+  busy?: boolean;
+  onConfirm: () => void;
+}) {
+  const [armed, setArmed] = useState(false);
+
+  // Auto-disarm so a stray armed button doesn't linger and get clicked
+  // by accident much later.
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  if (busy) {
+    return (
+      <button type="button" className="btn small danger" disabled>
+        Removing...
+      </button>
+    );
+  }
+
+  if (!armed) {
+    return (
+      <button type="button" className="btn small ghost" onClick={() => setArmed(true)}>
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <span className="confirm-pair">
+      <button
+        type="button"
+        className="btn small danger"
+        onClick={() => {
+          setArmed(false);
+          onConfirm();
+        }}
+      >
+        {confirmLabel}
+      </button>
+      <button type="button" className="btn small ghost" onClick={() => setArmed(false)}>
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+/** Non-LLM credentials: Polymarket signing key, relayer, and the optional
+ *  research feeds. Each row saves and removes independently. */
+function OtherCredentialsPanel({
+  creds,
+  onSaved,
+  goto,
+}: {
+  creds: Credentials | null;
+  onSaved: () => void;
+  goto: Goto;
+}) {
   const hasNewsapi = creds?.has_newsapi_key ?? false;
   const hasCryptopanic = creds?.has_cryptopanic_key ?? false;
-  const hasGemini = (creds as Record<string, unknown> | null | undefined)?.has_gemini_key === true;
-  const hasPmRelayerKey = (creds as Record<string, unknown> | null | undefined)?.has_polymarket_relayer_api_key === true;
+  const hasPmRelayerKey =
+    (creds as Record<string, unknown> | null | undefined)?.has_polymarket_relayer_api_key === true;
 
-  const save = async (e: React.FormEvent) => {
-    e.preventDefault();
+  return (
+    <div className="panel">
+      <div className="panel-head">
+        <h2 className="panel-title">Other connections</h2>
+        <span className="panel-meta">Stored locally</span>
+      </div>
+      <p className="page-sub" style={{ marginBottom: 16 }}>
+        Polymarket signing and optional research feeds. All keys stay on this
+        device and are never shared.
+      </p>
+
+      <div className="cred-rows">
+        <CredentialRow
+          title="Polymarket private key"
+          field="polymarket_private_key"
+          deleteField="polymarket"
+          stored={creds?.has_polymarket_key ?? false}
+          storedPlaceholder="(stored)"
+          emptyPlaceholder="0x..."
+          hint="Signs Polymarket orders in live mode. The wallet address auto-derives from this key. Removing it also clears the derived wallet address."
+          helpAnchor={HELP_ANCHORS.polymarketKey}
+          goto={goto}
+          onSaved={onSaved}
+        />
+        <CredentialRow
+          title="Polymarket Relayer API key"
+          field="polymarket_relayer_api_key"
+          stored={hasPmRelayerKey}
+          storedPlaceholder="(stored)"
+          emptyPlaceholder="019d9954-..."
+          hint="Enables auto-redeem of winning positions."
+          helpAnchor={HELP_ANCHORS.polymarketRelayer}
+          goto={goto}
+          onSaved={onSaved}
+        />
+        <CredentialRow
+          title="NewsAPI key"
+          field="newsapi_key"
+          stored={hasNewsapi}
+          storedPlaceholder="(stored)"
+          emptyPlaceholder="..."
+          hint="Headlines for geopolitical, economic, and current-event markets."
+          helpAnchor={HELP_ANCHORS.newsapi}
+          goto={goto}
+          onSaved={onSaved}
+        />
+        <CredentialRow
+          title="CryptoPanic key"
+          field="cryptopanic_key"
+          stored={hasCryptopanic}
+          storedPlaceholder="(stored)"
+          emptyPlaceholder="..."
+          hint="Crypto-specific news for Polymarket crypto markets."
+          helpAnchor={HELP_ANCHORS.cryptopanic}
+          goto={goto}
+          onSaved={onSaved}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Generic single-credential row: password input + Save/Replace, plus a
+ *  two-step Remove when a value is already stored. `deleteField` defaults
+ *  to `field` (Polymarket overrides it to clear the derived wallet too). */
+function CredentialRow({
+  title,
+  field,
+  deleteField,
+  stored,
+  storedPlaceholder,
+  emptyPlaceholder,
+  hint,
+  helpAnchor,
+  goto,
+  onSaved,
+}: {
+  title: string;
+  field: string;
+  deleteField?: string;
+  stored: boolean;
+  storedPlaceholder: string;
+  emptyPlaceholder: string;
+  hint: string;
+  helpAnchor?: string;
+  goto: Goto;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const save = async () => {
+    if (!value.trim()) {
+      setMsg({ kind: "err", text: "Nothing to save." });
+      return;
+    }
     setBusy(true);
     setMsg(null);
     try {
-      const payload: Record<string, string> = {};
-      if (pmKey.trim())       payload.polymarket_private_key = pmKey.trim();
-      if (llmKey.trim())      payload.llm_api_key = llmKey.trim();
-      if (llmBackup.trim())   payload.llm_backup_key = llmBackup.trim();
-      if (newsapi.trim())     payload.newsapi_key = newsapi.trim();
-      if (cryptopanic.trim()) payload.cryptopanic_key = cryptopanic.trim();
-      if (gemini.trim())      payload.gemini_key = gemini.trim();
-      if (pmRelayerKey.trim()) payload.polymarket_relayer_api_key = pmRelayerKey.trim();
-      if (Object.keys(payload).length === 0) {
-        setMsg({ kind: "err", text: "Nothing to save." });
-        return;
-      }
-      const res = await api.saveCredentials(payload as Parameters<typeof api.saveCredentials>[0]);
-      setPmKey("");
-      setLlmKey("");
-      setLlmBackup("");
-      setNewsapi("");
-      setCryptopanic("");
-      setGemini("");
-      setPmRelayerKey("");
-      setMsg({ kind: "ok", text: `Saved: ${res.wrote.join(", ") || "nothing"}.` });
+      await api.saveCredentials({ [field]: value.trim() } as Parameters<typeof api.saveCredentials>[0]);
+      setValue("");
+      setMsg({ kind: "ok", text: "Saved." });
       onSaved();
     } catch (err) {
       setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
@@ -1156,162 +1781,55 @@ function ConnectionsPanel({
     }
   };
 
+  const remove = async () => {
+    setRemoving(true);
+    setMsg(null);
+    try {
+      await api.deleteCredential(deleteField ?? field);
+      setMsg({ kind: "ok", text: "Removed." });
+      onSaved();
+    } catch (err) {
+      setMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setRemoving(false);
+    }
+  };
+
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <h2 className="panel-title">Credentials</h2>
-        <span className="panel-meta">Stored in OS keychain</span>
+    <div className="cred-row">
+      <div className="form-label-row">
+        <label>{title}</label>
+        {helpAnchor && <HelpHint anchor={helpAnchor} goto={goto} />}
       </div>
-      <p className="page-sub" style={{ marginBottom: 16 }}>
-        All keys are stored locally and are never shared with us.
-      </p>
-      <form className="form-row" onSubmit={save}>
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>Polymarket private key</label>
-            <HelpHint anchor={HELP_ANCHORS.polymarketKey} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={creds?.has_polymarket_key ? "(stored)" : "0x..."}
-            value={pmKey}
-            onChange={(e) => setPmKey(e.target.value)}
+      <div className="cred-row-input">
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={stored ? storedPlaceholder : emptyPlaceholder}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button type="button" className="btn small" disabled={busy} onClick={save}>
+          {busy ? "Saving..." : stored ? "Replace" : "Save"}
+        </button>
+        {stored && (
+          <ConfirmButton
+            label="Remove"
+            confirmLabel="Confirm remove"
+            busy={removing}
+            onConfirm={remove}
           />
-          <p className="form-hint">
-            Signs Polymarket orders in live mode. The wallet address auto-derives from this key.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>LLM API key</label>
-            <HelpHint anchor={HELP_ANCHORS.llm} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasLlm ? "(stored)" : "Paste your LLM API key"}
-            value={llmKey}
-            onChange={(e) => setLlmKey(e.target.value)}
-          />
-          <p className="form-hint">
-            The forecaster that reads each market.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>Backup LLM API key</label>
-            <HelpHint anchor={HELP_ANCHORS.llmBackup} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasLlmBackup ? "(stored)" : "Paste a second LLM API key"}
-            value={llmBackup}
-            onChange={(e) => setLlmBackup(e.target.value)}
-          />
-          <p className="form-hint">
-            Used when the primary LLM errors or rate-limits.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>Search LLM API key</label>
-            <HelpHint anchor={HELP_ANCHORS.searchLlm} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasGemini ? "(stored)" : "Paste a Search LLM API key"}
-            value={gemini}
-            onChange={(e) => setGemini(e.target.value)}
-          />
-          <p className="form-hint">
-            Used for keyword extraction and headline filtering. Cheap models recommended.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>NewsAPI key</label>
-            <HelpHint anchor={HELP_ANCHORS.newsapi} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasNewsapi ? "(stored)" : "..."}
-            value={newsapi}
-            onChange={(e) => setNewsapi(e.target.value)}
-          />
-          <p className="form-hint">
-            Headlines for geopolitical, economic, and current-event markets.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>CryptoPanic key</label>
-            <HelpHint anchor={HELP_ANCHORS.cryptopanic} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasCryptopanic ? "(stored)" : "..."}
-            value={cryptopanic}
-            onChange={(e) => setCryptopanic(e.target.value)}
-          />
-          <p className="form-hint">
-            Crypto-specific news for Polymarket crypto markets.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <div className="form-label-row">
-            <label>Polymarket Relayer API key</label>
-            <HelpHint anchor={HELP_ANCHORS.polymarketRelayer} goto={goto} />
-          </div>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasPmRelayerKey ? "(stored)" : "019d9954-..."}
-            value={pmRelayerKey}
-            onChange={(e) => setPmRelayerKey(e.target.value)}
-          />
-          <p className="form-hint">
-            Enables auto-redeem of winning positions.
-          </p>
-        </div>
-
-        <div className="form-field">
-          <label>Gemini API key (optional)</label>
-          <input
-            type="password"
-            autoComplete="off"
-            placeholder={hasGemini ? "(stored)" : "AIzaSy..."}
-            value={gemini}
-            onChange={(e) => setGemini(e.target.value)}
-          />
-          <p className="form-hint">
-            Used for fast keyword extraction and headline pre-filtering.
-            Without it, Delfi falls back to raw RSS titles (still works,
-            but research is noisier). Free at aistudio.google.com.
-          </p>
-        </div>
-
-        <div className="form-actions">
-          <button type="submit" className="btn small" disabled={busy}>
-            {busy ? "Saving..." : "Save credentials"}
-          </button>
-          {msg && (
-            <span className={msg.kind === "ok" ? "form-success" : "form-error"}>
-              {msg.text}
-            </span>
-          )}
-        </div>
-      </form>
+        )}
+      </div>
+      <p className="form-hint">{hint}</p>
+      {msg && (
+        <span
+          className={msg.kind === "ok" ? "form-success" : "form-error"}
+          style={{ fontSize: 12 }}
+        >
+          {msg.text}
+        </span>
+      )}
     </div>
   );
 }

@@ -69,6 +69,13 @@ bundled_pkgs = [
     # Anthropic SDK has lazy submodule imports.
     "anthropic",
 
+    # OpenAI SDK - powers every "kind=openai" connection (OpenAI,
+    # xAI/Grok, DeepSeek, Mistral, Groq, OpenRouter, custom base_url).
+    # engine/llm_client._call_openai lazy-imports `from openai import
+    # OpenAI`; the SDK has lazy submodule imports + pydantic models
+    # that static analysis misses, so collect_all is the safe choice.
+    "openai",
+
     # HTTP stack. aiohttp ships C extensions; certifi ships the CA
     # bundle as a data file.
     "aiohttp",

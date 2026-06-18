@@ -2115,6 +2115,165 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   flex-wrap: wrap;
 }
 
+/* ── Connections: multi-provider LLM list ─────────────────────────────
+   The Connections settings tab lists LLM connections as cards, each
+   assignable to a use case (forecasting / research) as primary or
+   backup. Card rhythm matches the rest of the app (subtle vellum
+   border, 2px radius). Added 2026-06-18 with the multi-LLM rewrite. */
+.conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.conn-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  background: rgba(232, 228, 216, 0.02);
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-2);
+}
+.conn-card-main { min-width: 0; flex: 1 1 auto; }
+.conn-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vellum);
+}
+.conn-card-sub {
+  font-size: 12px;
+  color: var(--vellum-60);
+  margin-top: 3px;
+  font-family: var(--font-mono);
+}
+.conn-card-warn { color: var(--ember); }
+.conn-card-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.conn-role-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gold);
+  background: var(--gold-dim);
+  border: 1px solid var(--gold-line);
+}
+.conn-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* Add/edit form: replaces a card in-place (edit) or sits below the
+   list (add). Teal border marks it as the active editing surface. */
+.conn-editor {
+  padding: 16px;
+  background: rgba(232, 228, 216, 0.02);
+  border: 1px solid var(--teal-line);
+  border-radius: var(--radius-2);
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.conn-editor-grid {
+  display: grid;
+  gap: 14px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  align-items: start;
+}
+
+/* Use-case role assignment grid below the connection list. */
+.conn-roles {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--vellum-10);
+}
+.form-section-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--vellum-60);
+  margin: 0 0 4px;
+}
+.conn-role-selects {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.conn-role-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.conn-role-row-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.conn-role-row-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vellum);
+}
+.conn-role-pair {
+  display: grid;
+  gap: 12px 18px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.conn-role-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conn-role-select-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--vellum-40);
+}
+
+/* Inline two-step confirm (Remove -> Confirm / Cancel). */
+.confirm-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Non-LLM credential rows (Polymarket key, relayer, news feeds). Each
+   row is an input plus Save/Replace and an optional two-step Remove. */
+.cred-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.cred-row {
+  display: flex;
+  flex-direction: column;
+}
+.cred-row-input {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cred-row-input > input {
+  flex: 1 1 240px;
+  min-width: 0;
+  width: auto;
+}
+
 .section-title {
   font-family: var(--font-display);
   font-size: 22px;
