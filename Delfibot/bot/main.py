@@ -232,9 +232,9 @@ import threading as _threading    # noqa: E402
 # Every _run_* job wrapper previously called asyncio.run(), which creates
 # a fresh event loop, runs the coroutine, then does cleanup. The cleanup
 # calls loop.shutdown_default_executor() which waits for ALL executor
-# threads to finish: DNS lookups (ThreadedResolver), DDGS search threads,
+# threads to finish: DNS lookups (ThreadedResolver), web-search threads,
 # httpx initialisation. If any of those threads hang -- confirmed 2026-05-21
-# via thread dump: DDGS threads stuck in logging.getLogger (global lock
+# via thread dump: web-search threads stuck in logging.getLogger (global lock
 # contention) and httpx.__init__, with concurrent futures thread.py:166
 # (submit) blocked waiting for _shutdown_lock -- the cleanup deadlocks.
 # The APScheduler worker thread stays blocked indefinitely. The accept
@@ -1232,7 +1232,7 @@ async def main() -> None:
     #  2. The persistent _job_loop has no cleanup cycle. The old pattern
     #     (asyncio.run() per scan) destroyed the loop after each scan and
     #     called shutdown_default_executor(), which deadlocked whenever a
-    #     DDGS or httpx thread hung. See the module-level comment for the
+    #     web-search or httpx thread hung. See the module-level comment for the
     #     full forensics.
     #
     # APScheduler's ThreadPoolExecutor fires the _run_* wrappers in its own
@@ -2395,7 +2395,7 @@ async def main() -> None:
         _run_license_revocation_check, IntervalTrigger(hours=12),
         id="license_revocation_check",
         # First fire 90s after boot - long enough that a network blip
-        # at startup doesn't fight with macro-calendar / DDGS warmup,
+        # at startup doesn't fight with macro-calendar / research setup,
         # short enough that a refunded customer who relaunches stops
         # trading within minutes rather than 12 hours.
         next_run_time=now_utc + timedelta(seconds=90),

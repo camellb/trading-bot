@@ -95,9 +95,6 @@ bundled_pkgs = [
     # Feedparser uses sgmllib via dynamic import on some platforms.
     "feedparser",
 
-    # DuckDuckGo search.
-    "ddgs",
-
     # ccxt ships per-exchange JSON market metadata as package data
     # (e.g. ccxt/async_support/okx.py loads markets from
     # ccxt/abi/*.json and similar). Without collect_all, the bundle

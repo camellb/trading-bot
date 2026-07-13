@@ -39,7 +39,6 @@ dependencies = [
     # Research / data feeds.
     "requests>=2.31",
     "feedparser>=6.0",
-    "ddgs>=8.0",
     "trafilatura>=1.10",
     "yfinance>=0.2.40",
 

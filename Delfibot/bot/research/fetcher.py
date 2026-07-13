@@ -17,81 +17,23 @@ with regex heuristics as a last resort.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import json
 import os
 import re
 import sys
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+from html.parser import HTMLParser
 from typing import Optional
-from urllib.parse import quote_plus
+from urllib.parse import parse_qs, quote_plus, urlsplit
 
 import aiohttp
+import requests
 from sqlalchemy import text
 
 from db.engine import get_engine
 from research import live_crypto, live_equity
-
-try:
-    from ddgs import DDGS
-    _DDGS_AVAILABLE = True
-except ImportError:
-    _DDGS_AVAILABLE = False
-
-# Pre-warm DDGS at module import time.
-#
-# DDGS lazy-loads its engine plugins (ddgs/__init__.py:_load_real,
-# ddgs/ddgs.py:_get_engines, ddgs/http_client.py.__init__) on the first
-# DDGS() instantiation. _fetch_web_search_raw later spawns up to 4
-# worker threads inside an inner ThreadPoolExecutor; if those workers
-# all race to instantiate DDGS for the first time, Python's import lock
-# and ddgs's internal init synchronization don't compose and the threads
-# deadlock indefinitely. Symptom: after a scan starts, the asyncio API
-# stops responding because the default executor's threads are stuck.
-#
-# Forcing one DDGS() construction here, single-threaded, before
-# APScheduler starts pays the lazy-load cost once during boot and lets
-# every later DDGS() call short-circuit through the already-populated
-# module caches.
-if _DDGS_AVAILABLE:
-    try:
-        _ddgs_warm_t0 = time.monotonic()
-        with DDGS():
-            pass
-        print(f"[research] DDGS warmed in "
-              f"{time.monotonic() - _ddgs_warm_t0:.2f}s",
-              flush=True)
-    except Exception as _ddgs_warm_exc:
-        # Don't fail import if the warmup itself crashes (e.g. transient
-        # network error during plugin discovery). The first real scan will
-        # try again, and at worst we re-introduce the deadlock risk for
-        # exactly that one scan.
-        print(f"[research] DDGS warmup failed: {_ddgs_warm_exc}",
-              file=sys.stderr, flush=True)
-
-# Serialize DDGS() construction across all threads.
-#
-# DDGS 9.x uses primp (a Rust TLS library) whose global initialization
-# is NOT thread-safe. When _parallel_search submits 4 workers to a
-# ThreadPoolExecutor, all four race to call DDGS() which calls
-# primp.Client(impersonate="random") at ddgs/http_client.py:53.
-# Concurrent primp.Client construction deadlocks.
-#
-# Python 3.12 makes this even worse: ThreadPoolExecutor.submit() holds
-# the module-level _global_shutdown_lock while calling t.start(). If
-# the new thread blocks in primp.Client init before signalling _started,
-# _global_shutdown_lock is held indefinitely and ALL thread pool
-# submit() calls across the entire process freeze - including the job
-# loop thread's DNS lookups, which causes the aiohttp server to stop
-# accepting connections.
-#
-# Fix: serialize DDGS() construction through this lock. The search
-# query itself runs outside the lock so only the init step is serialized.
-_ddgs_init_lock = threading.Lock()
 
 try:
     import trafilatura
@@ -912,31 +854,92 @@ async def _fetch_live_market_data(
 
 
 # ── DuckDuckGo web search ──────────────────────────────────────────────────
+_DDG_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_DDG_SEARCH_TIMEOUT = (3, 10)
+_DDG_SEARCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36"
+    ),
+}
+
+
+class _DuckDuckGoResultsParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.results: list[dict] = []
+        self._result: dict | None = None
+        self._capture: str | None = None
+        self._capture_tag: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = dict(attrs)
+        classes = set((attr_map.get("class") or "").split())
+        if tag == "a" and "result__a" in classes:
+            self._append_result()
+            self._result = {
+                "href": _unwrap_duckduckgo_url(attr_map.get("href") or ""),
+                "title": "",
+                "body": "",
+            }
+            self._capture = "title"
+            self._capture_tag = tag
+        elif self._result and "result__snippet" in classes:
+            self._capture = "body"
+            self._capture_tag = tag
+
+    def handle_data(self, data: str) -> None:
+        if self._result is not None and self._capture is not None:
+            self._result[self._capture] += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._capture_tag == tag:
+            self._capture = None
+            self._capture_tag = None
+
+    def close(self) -> None:
+        super().close()
+        self._append_result()
+
+    def _append_result(self) -> None:
+        if self._result is None:
+            return
+        self._result["title"] = " ".join(self._result["title"].split())
+        self._result["body"] = " ".join(self._result["body"].split())
+        if self._result["href"] and self._result["title"]:
+            self.results.append(self._result)
+        self._result = None
+
+
+def _unwrap_duckduckgo_url(raw_url: str) -> str:
+    if raw_url.startswith("//"):
+        raw_url = f"https:{raw_url}"
+    parsed = urlsplit(raw_url)
+    if parsed.netloc.endswith("duckduckgo.com"):
+        redirect_url = parse_qs(parsed.query).get("uddg", [""])[0]
+        if redirect_url:
+            return redirect_url
+    return raw_url
+
+
 def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
-    if not _DDGS_AVAILABLE:
-        return []
     try:
-        # DON'T pass `region="wt-wt"` here. DDG's "wt-wt" is its
-        # internal "no region" code, but ddgs splits it on "-" when
-        # routing to the Wikipedia backend and uses the first half
-        # as a Wikipedia language code - producing a bogus
-        # `wt.wikipedia.org` URL that doesn't exist. Every research
-        # query was hitting that broken URL and silently dropping
-        # the Wikipedia signal. Default region (None) gives clean
-        # routing across all backends. Bug fixed 2026-05-03.
-        #
-        # Acquire _ddgs_init_lock before constructing DDGS() to prevent
-        # concurrent primp.Client initialization from deadlocking.
-        # The lock is released as soon as the DDGS object is constructed;
-        # the actual text search runs outside the lock.
-        with _ddgs_init_lock:
-            ddg = DDGS()
-        with ddg:
-            return list(ddg.text(query, max_results=max_results) or [])
-    except Exception as exc:
-        print(f"[research] ddgs search failed for {query[:60]!r}: {exc}",
+        response = requests.get(
+            _DDG_SEARCH_URL,
+            params={"q": query},
+            headers=_DDG_SEARCH_HEADERS,
+            timeout=_DDG_SEARCH_TIMEOUT,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"[research] DuckDuckGo search failed for {query[:60]!r}: {exc}",
               file=sys.stderr)
         return []
+
+    parser = _DuckDuckGoResultsParser()
+    parser.feed(response.text)
+    parser.close()
+    return parser.results[:max_results]
 
 
 def _format_ddg_results(
@@ -1313,9 +1316,6 @@ async def _fetch_web_search_raw(
     resolution_date: Optional[datetime] = None,
     event_slug: Optional[str] = None,
 ) -> list[dict]:
-    if not _DDGS_AVAILABLE:
-        return []
-
     queries = _build_search_queries(
         question, keywords or [], category, sport, teams or [],
         event_name=event_name,
@@ -1323,40 +1323,25 @@ async def _fetch_web_search_raw(
         resolution_date=resolution_date,
         event_slug=event_slug,
     )
+    if not queries:
+        return []
 
     loop = asyncio.get_running_loop()
 
-    def _parallel_search():
+    def _search_queries():
         all_results: list[dict] = []
-        # Use shutdown(wait=False) so stuck threads (e.g. network hang) never
-        # block the caller. A 25s wall-clock timeout via concurrent.futures.wait
-        # gives each query a generous window while guaranteeing we return before
-        # the outer _bounded()/job-fence fires.
-        pool = ThreadPoolExecutor(
-            max_workers=min(len(queries), 4),
-            thread_name_prefix="delfi-ddgs",
-        )
-        try:
-            futures = [pool.submit(_ddg_search_sync, q, 8) for q in queries]
-            done, not_done = concurrent.futures.wait(futures, timeout=25)
-            for f in not_done:
-                f.cancel()
-                print(
-                    "[research] ddgs query timed out - cancelled",
-                    file=sys.stderr,
-                )
-            for f in done:
-                try:
-                    all_results.extend(f.result())
-                except Exception:
-                    pass
-        finally:
-            # wait=False: don't block on any threads that are still running
-            # inside a network call or stuck in primp init despite the lock.
-            pool.shutdown(wait=False)
+        for query in queries:
+            all_results.extend(_ddg_search_sync(query, 8))
         return all_results
 
-    return await loop.run_in_executor(None, _parallel_search)
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _search_queries),
+            timeout=30,
+        )
+    except asyncio.TimeoutError:
+        print("[research] DuckDuckGo search batch timed out", file=sys.stderr)
+        return []
 
 
 
