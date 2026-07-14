@@ -1618,9 +1618,16 @@ async def main() -> None:
                 outer_timeout_s=260,
             )
             proc_health.record_job_ok("pm_scan")
+            from engine.runtime_alerts import report_recovery
+            report_recovery("market_scan")
         except Exception as exc:
             proc_health.record_job_error("pm_scan")
             print(f"[delfi] scan failed: {exc}", file=sys.stderr, flush=True)
+            from engine.runtime_alerts import report_failure
+            report_failure(
+                "market_scan",
+                "The latest market scan did not finish before its safety limit.",
+            )
 
     def _run_resolve():
         try:

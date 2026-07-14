@@ -355,6 +355,29 @@ def connectivity_restored(*, gamma_latency_ms) -> str:
     )
 
 
+def trading_blocked(*, title: str, detail: str) -> str:
+    """Alert that a runtime failure is preventing new trade entries."""
+    return (
+        f"⚠️ <b>{_clip(title, 120)}</b>\n"
+        f"\n"
+        f"Delfi cannot prepare new positions right now. Existing positions "
+        f"continue to be monitored. It will retry automatically and notify "
+        f"you when entries are available again.\n"
+        f"\n"
+        f"Detail: {_clip(detail, 200)}"
+    )
+
+
+def trading_restored(*, title: str) -> str:
+    """Confirm that a previously blocked trade-entry path recovered."""
+    return (
+        f"✅ <b>{_clip(title, 120)} recovered</b>\n"
+        f"\n"
+        f"Delfi can prepare new positions again. Trading resumes on the next "
+        f"scan."
+    )
+
+
 # ── 2c. Early exit - WIN (exit policy tripped, position closed positive) ────
 def early_exit_win(
     *,

@@ -1881,6 +1881,10 @@ const CATEGORY_LABELS: Record<string, { title: string; description: string }> = 
     title: "Polymarket connection",
     description: "When Delfi loses or regains its connection to Polymarket (geo-block, network outage, VPN drop).",
   },
+  trading_blocked: {
+    title: "Trading blocked",
+    description: "When a forecast provider or market scan failure prevents Delfi from opening new positions.",
+  },
   learning_report_ready: {
     title: "Strategy proposals",
     description: "Every 50 settled trades, Delfi reviews performance and may propose a tuning change.",
@@ -2215,4 +2219,3 @@ function TelegramConnectorPanel({ goto }: { goto: Goto }) {
     </div>
   );
 }
-

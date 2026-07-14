@@ -132,6 +132,12 @@ class LLMClient:
             print(f"[llm_client] no usable '{use_case}' connection "
                   f"configured (add one in Settings -> Connections)",
                   file=sys.stderr)
+            if use_case == "forecaster":
+                from engine.runtime_alerts import report_failure
+                report_failure(
+                    "forecast_provider",
+                    "No forecast provider is configured.",
+                )
             return None
 
         last_exc: Optional[Exception] = None
@@ -140,21 +146,27 @@ class LLMClient:
             label = "primary" if i == 0 else f"backup{i}"
             try:
                 if kind == "anthropic":
-                    return await self._call_anthropic(
+                    response = await self._call_anthropic(
                         conn, system, user, max_tokens, temperature,
                         cache_system,
                     )
-                if kind == "gemini":
-                    return await self._call_gemini(
+                elif kind == "gemini":
+                    response = await self._call_gemini(
                         conn, system, user, max_tokens, temperature,
                     )
-                if kind == "openai":
-                    return await self._call_openai(
+                elif kind == "openai":
+                    response = await self._call_openai(
                         conn, system, user, max_tokens, temperature,
                     )
-                print(f"[llm_client] {use_case} {label}: unknown kind for "
-                      f"provider {conn.get('provider')!r}; skipping",
-                      file=sys.stderr)
+                else:
+                    print(f"[llm_client] {use_case} {label}: unknown kind for "
+                          f"provider {conn.get('provider')!r}; skipping",
+                          file=sys.stderr)
+                    continue
+                if use_case == "forecaster":
+                    from engine.runtime_alerts import report_recovery
+                    report_recovery("forecast_provider")
+                return response
             except Exception as exc:
                 last_exc = exc
                 print(f"[llm_client] {use_case} {label} "
@@ -165,6 +177,13 @@ class LLMClient:
         print(f"[llm_client] {use_case} chain exhausted; last exc: "
               f"{type(last_exc).__name__ if last_exc else 'None'}: "
               f"{last_exc}", file=sys.stderr)
+        if use_case == "forecaster":
+            from engine.runtime_alerts import report_failure
+            error_name = type(last_exc).__name__ if last_exc else "UnknownError"
+            report_failure(
+                "forecast_provider",
+                f"Every configured forecast provider failed ({error_name}).",
+            )
         return None
 
     # ── provider call paths ─────────────────────────────────────────────────

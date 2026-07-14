@@ -370,6 +370,7 @@ NOTIFICATION_CATEGORIES: Tuple[str, ...] = (
     "mode_switch",             # toggled SIMULATION <-> LIVE
     "connectivity",            # Polymarket reach state changed
                                # (unreachable / geo_blocked / restored)
+    "trading_blocked",         # forecast provider or market scan failure
 
     # Periodic summaries + proposals.
     "learning_report_ready",   # 50-trade calibration proposal
@@ -2388,5 +2389,4 @@ def should_notify(user_id: str = DEFAULT_USER_ID, category: str = "") -> bool:
 # ── Admin (single-user app: the user is always 'admin') ─────────────────────
 def is_admin(user_id: str = DEFAULT_USER_ID) -> bool:
     return user_id == DEFAULT_USER_ID
-
 
