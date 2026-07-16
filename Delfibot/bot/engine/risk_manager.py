@@ -121,9 +121,12 @@ def evaluate(
             notes="gross exposure cap reached - close positions or lower reserve cash",
         )
 
-    # Daily loss limit.
+    # Daily loss limit. Guarded on starting_cash > 0: with a zero
+    # denominator the limit is -0.0 and `0.0 <= -0.0` is True, so a
+    # cold wallet-probe cache (starting_cash 0, P&L exactly $0) would
+    # halt trading with "daily loss $+0.00 <= limit $-0.00".
     daily_limit = -user_config.daily_loss_limit_pct * starting_cash
-    if today_pnl <= daily_limit:
+    if starting_cash > 0 and today_pnl <= daily_limit:
         return RiskVerdict(
             halt_reason=(
                 f"daily loss ${today_pnl:+.2f} ≤ limit ${daily_limit:+.2f} "
@@ -134,9 +137,9 @@ def evaluate(
             notes="daily loss limit breached",
         )
 
-    # Weekly loss limit.
+    # Weekly loss limit. Same starting_cash > 0 guard as the daily one.
     weekly_limit = -user_config.weekly_loss_limit_pct * starting_cash
-    if weekly_pnl <= weekly_limit:
+    if starting_cash > 0 and weekly_pnl <= weekly_limit:
         return RiskVerdict(
             halt_reason=(
                 f"weekly loss ${weekly_pnl:+.2f} ≤ limit ${weekly_limit:+.2f} "
@@ -175,12 +178,17 @@ def _pnl_since(user_id: str, mode: str, hours: int) -> float:
     from db.engine import get_engine
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     with get_engine().begin() as conn:
+        # closed_early MUST be in this set: a stop-loss SELL realizes a
+        # real loss, and the daily/weekly breakers exist precisely for
+        # days when the exit policy is closing losers. Before 2026-07-16
+        # this read ('settled','invalid') only, so a day of stop-loss
+        # bleed never tripped the limits.
         val = conn.execute(text(
             "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
             "FROM pm_positions "
             "WHERE user_id = :uid "
             "  AND mode = :m "
-            "  AND status IN ('settled', 'invalid') "
+            "  AND status IN ('settled', 'closed_early', 'invalid') "
             "  AND settled_at >= :cutoff"
         ), {"uid": user_id, "m": mode, "cutoff": cutoff}).scalar()
     return float(val or 0.0)
@@ -194,7 +202,8 @@ def _realized_total(user_id: str, mode: str) -> float:
             "SELECT COALESCE(SUM(realized_pnl_usd), 0) "
             "FROM pm_positions "
             "WHERE user_id = :uid "
-            "  AND mode = :m AND status IN ('settled', 'invalid')"
+            "  AND mode = :m "
+            "  AND status IN ('settled', 'closed_early', 'invalid')"
         ), {"uid": user_id, "m": mode}).scalar()
     return float(val or 0.0)
 
@@ -249,11 +258,13 @@ def _consecutive_losses(user_id: str, mode: str) -> int:
     from sqlalchemy import text
     from db.engine import get_engine
     with get_engine().begin() as conn:
+        # closed_early counts toward the streak: a stop-loss exit is a
+        # realized loss (canonical algorithm, CLAUDE.md RULE #1).
         rows = conn.execute(text(
             "SELECT realized_pnl_usd "
             "FROM pm_positions "
             "WHERE user_id = :uid "
-            "  AND mode = :m AND status = 'settled' "
+            "  AND mode = :m AND status IN ('settled', 'closed_early') "
             "ORDER BY settled_at DESC "
             "LIMIT 20"
         ), {"uid": user_id, "m": mode}).fetchall()

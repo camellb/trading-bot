@@ -502,10 +502,21 @@ class PMAnalyst:
         if decision.should_trade and verdict.stake_multiplier != 1.0:
             decision.stake_usd *= verdict.stake_multiplier
             decision.shares    *= verdict.stake_multiplier
-            if decision.stake_usd < 2.0:
+            # Re-check BOTH platform floors after halving, not just the
+            # $2 sanity floor. The sizer enforced max($1, 5 shares)
+            # BEFORE the multiplier; a halved order can pass `>= $2.00`
+            # while dropping below 5 shares (e.g. $4.40 @ 0.80 halves
+            # to $2.20 / 2.75 sh) and the CLOB rejects it with "Size
+            # lower than the minimum: 5" - an ERROR outcome instead of
+            # a clean skip, on every such trade during a cooldown.
+            from execution.pm_sizer import POLYMARKET_MIN_SHARES
+            if (
+                decision.stake_usd < 2.0
+                or decision.shares < POLYMARKET_MIN_SHARES
+            ):
                 decision.skip_reason = (
                     f"streak cooldown ({verdict.notes}) halved stake below "
-                    f"$2.00 minimum - skipping"
+                    f"the platform minimum - skipping"
                 )
                 decision.stake_usd = 0.0
                 decision.shares    = 0.0
@@ -585,14 +596,21 @@ class PMAnalyst:
                     prediction_id=prediction_id,
                 )
 
-        pos_id = executor.open_position(
+        # Offload to an executor thread: open_position is synchronous
+        # (CLOB POST + up to 30s of time.sleep in the fill poll) and
+        # this coroutine runs on the shared job loop. Calling it inline
+        # blocked every other scheduled coroutine (resolve_fast,
+        # evaluate_exits) for the full poll - the 2026-07-16 "missed
+        # by 0:11-0:14" scheduler stalls.
+        _loop = asyncio.get_running_loop()
+        pos_id = await _loop.run_in_executor(None, lambda: executor.open_position(
             market=market, decision=decision,
             delfi_probability=evaluation.probability_yes,
             prediction_id=prediction_id,
             reasoning=evaluation.reasoning,
             category=evaluation.category,
             market_archetype=archetype,
-        )
+        ))
         if pos_id is None:
             return AnalysisOutcome(
                 market_id=market.id, question=q,

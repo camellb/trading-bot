@@ -775,7 +775,14 @@ def sweep_unredeemed_winners(*, max_per_run: int = 25) -> dict:
             )
             continue
 
-        if result.tx_hash:
+        # Persist ONLY on verified success (redeemed=True). A payout=0
+        # no-op redeem returns redeemed=False with the mined tx hash;
+        # writing that hash would drop the row out of this sweeper's
+        # own `redeem_tx_hash IS NULL` SELECT and kill the retry the
+        # error text promises. (2026-07-16 audit fix; the position-317
+        # verification added the payout check but both persist sites
+        # still stored the failed hash.)
+        if result.redeemed and result.tx_hash:
             try:
                 with get_engine().begin() as conn:
                     conn.execute(text(
@@ -1476,12 +1483,23 @@ def _try_gasless_redeem(
         return None
 
     # Resolve actual collateral (USDC.e vs pUSD) before building the
-    # call. Same lookup as the relayer-api-key path.
+    # call - probing balances at the FUNDER, exactly like the
+    # relayer-api-key path. For sig_type 1/3 accounts the CTF tokens
+    # live at the smart wallet, not the signing EOA; probing the EOA
+    # sees zero everywhere and silently falls back to the wrong
+    # default collateral - the position-317 "payout=0" root cause,
+    # fixed on the sibling path but not here until 2026-07-16.
+    try:
+        from feeds.polymarket_wallet import get_poly_signer_info
+        _signer_info = get_poly_signer_info(private_key) or {}
+    except Exception:
+        _signer_info = {}
+    _holder = (_signer_info.get("funder") or wallet)
     collateral_for_redeem = (
         resolve_collateral_for_position(
             cond_bytes=cond_bytes,
             index_sets=index_sets,
-            holder_address=wallet,
+            holder_address=_holder,
         )
         or USDCE_ADDRESS
     )
@@ -1543,9 +1561,25 @@ def _try_gasless_redeem(
                 f"settlement failed: {exc}",
                 file=sys.stderr, flush=True,
             )
-        # Whether wait succeeded or not, if we have a tx_hash the
-        # transaction was at least broadcast. Polygonscan can verify.
+        # Verify the actual on-chain payout before declaring success,
+        # exactly like the relayer-api-key path. Broadcast != redeemed:
+        # a wrong-collateral redeem mines fine with payout=0, and
+        # declaring redeemed=True would strand the winnings (the
+        # sweeper only retries rows without a persisted success).
         if tx_hash:
+            verified = _verify_payout_from_receipt(tx_hash, cond_bytes)
+            if verified is False:
+                return RedeemResult(
+                    redeemed=False, tx_hash=tx_hash,
+                    error=(
+                        f"gasless tx {tx_hash} mined with payout=0 - "
+                        f"likely wrong collateral or tokens at a "
+                        f"different funder. Will retry on next sweeper "
+                        f"tick."
+                    ),
+                )
+            # verified True, or None (receipt fetch failed - don't
+            # penalise a transient RPC blip; trust the broadcast).
             return RedeemResult(redeemed=True, tx_hash=tx_hash, error=None)
         return RedeemResult(
             redeemed=False, tx_hash=None,

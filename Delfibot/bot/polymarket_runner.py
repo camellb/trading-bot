@@ -180,7 +180,13 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
             print(f"[resolve] INVALID settlement for pos #{p['id']} "
                   f"market={p['market_id']} prices={prices} "
                   f"(both in [0.4, 0.6])", flush=True)
-            executor.settle_position(p["id"], "INVALID", 0.5)
+            # Executor thread, not inline: settle_position is sync and
+            # its live-winner redeem chain can hold the shared job loop
+            # for minutes (relayer POST 60s + receipt wait 120s),
+            # freezing resolve_fast / evaluate_exits ticks.
+            await asyncio.get_running_loop().run_in_executor(
+                None, lambda: executor.settle_position(p["id"], "INVALID", 0.5),
+            )
             # INVALID is a real resolution outcome, not an error. Log
             # to the event feed so the dashboard reflects what
             # happened, and count separately so /api/scheduler stats
@@ -234,7 +240,13 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                       file=sys.stderr)
             continue
         outcome = "YES" if yes_won else "NO"
-        if executor.settle_position(p["id"], outcome):
+        # Executor thread for the same reason as the INVALID branch:
+        # the redeem chain inside settle_position must not block the
+        # job loop.
+        _settled_ok = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: executor.settle_position(p["id"], outcome),
+        )
+        if _settled_ok:
             result["positions_settled"] += 1
             try:
                 from db.logger import log_event
@@ -691,12 +703,18 @@ async def evaluate_open_positions() -> dict:
                 continue
         executor = exe_cache[user_id]
 
-        ok = executor.close_position_early(
-            position_id=int(p["id"]),
-            reason=decision.reason or "take_profit",
-            details=decision.details,
-            current_bid=float(current_bid),
-            clob_token_id=clob_token_id,
+        # Executor thread: close_position_early is sync (SELL POST +
+        # 30s fill poll via time.sleep). Inline it blocked the job
+        # loop's timers, so exit ticks stalled exactly while an exit
+        # was in flight.
+        ok = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: executor.close_position_early(
+                position_id=int(p["id"]),
+                reason=decision.reason or "take_profit",
+                details=decision.details,
+                current_bid=float(current_bid),
+                clob_token_id=clob_token_id,
+            ),
         )
         if ok:
             result["closed_early"] += 1

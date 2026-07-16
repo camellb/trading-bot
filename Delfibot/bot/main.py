@@ -257,11 +257,16 @@ _job_loop_lock = _threading.Lock()
 def _ensure_job_loop() -> asyncio.AbstractEventLoop:
     """Return the singleton persistent job loop, starting it if needed."""
     global _job_loop
-    # Fast path: already running.
-    if _job_loop is not None and _job_loop.is_running():
+    # Fast path: already created. Gate on `is not None`, NOT
+    # is_running(): between t.start() and the thread entering
+    # run_forever, is_running() is still False, and two boot-time
+    # jobs racing here (pm_resolve_fast + license_boot_claim both
+    # first-fire at boot+30s) would each build a loop - leaking one
+    # loop + its 16-thread executor and splitting jobs across two.
+    if _job_loop is not None:
         return _job_loop
     with _job_loop_lock:
-        if _job_loop is not None and _job_loop.is_running():
+        if _job_loop is not None:
             return _job_loop
         loop = asyncio.new_event_loop()
         # Named threads make crash dumps readable: "delfi-job-0", etc.
@@ -1111,6 +1116,13 @@ async def main() -> None:
 
     news_feed = NewsFeed(monitor)
     macro_calendar = MacroCalendar(monitor)
+    # start() the news poller. It was constructed-but-never-started
+    # from the daemon's beginning, so `news_event_log` had no writer
+    # and research bundles carried ZERO news headlines (found in the
+    # 2026-07-16 audit). The research fetcher reads that table with a
+    # 48h window; without this call the "news_snippets" field is
+    # permanently empty - silent research degradation.
+    await news_feed.start()
     await macro_calendar.start()
 
     # Single-user app: the analyst evaluates each market once and the
@@ -1581,15 +1593,45 @@ async def main() -> None:
             # to disk so the rest of the system (dashboard, evaluate
             # gate, balance refresh) immediately reflects the same
             # ground truth.
-            fresh = probe_polymarket_connectivity()
+            # Bounded like the dedicated probe job. The raw call uses
+            # requests timeout=8, which does NOT bound getaddrinfo; a
+            # DNS wedge here would hang this APScheduler worker outside
+            # every fence and (max_instances=1) silently stop scanning
+            # until restart.
+            try:
+                fresh = _run_bounded_sync(
+                    probe_polymarket_connectivity, timeout_s=15,
+                    label="scan-gate connectivity probe",
+                )
+            except Exception:
+                fresh = None
+            if not isinstance(fresh, dict):
+                # Probe hung or errored. A wedged probe usually means
+                # the network itself is wedged - skip this tick rather
+                # than falling through to a scan that would burn LLM
+                # tokens into a dead socket.
+                print(
+                    "[delfi] pm_scan gate probe timed out/errored; "
+                    "skipping this scan tick", file=sys.stderr, flush=True,
+                )
+                proc_health.record_job_ok("pm_scan")
+                return
             try:
                 import json as _json
+                import tempfile as _tempfile
                 from db.engine import app_data_dir as _adir
                 state_path = os.path.join(
                     str(_adir()), "connectivity_state.json",
                 )
-                with open(state_path, "w", encoding="utf-8") as f:
+                # Atomic write (tmp + rename). Two writers exist (this
+                # gate + the probe job); a plain truncate-and-write can
+                # tear and a reader parsing the torn file fails OPEN.
+                fd, tmp_path = _tempfile.mkstemp(
+                    dir=os.path.dirname(state_path),
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     _json.dump(fresh, f)
+                os.replace(tmp_path, state_path)
             except Exception:
                 pass
             if fresh.get("state") != "ok":
@@ -1831,10 +1873,17 @@ async def main() -> None:
             # Run probe.
             probe = probe_polymarket_connectivity()
             current_state = probe["state"]
-            # Persist current state.
+            # Persist current state. Atomic (tmp + rename): the pm_scan
+            # gate also writes this file; torn reads fail OPEN in
+            # connectivity_blocks_trading.
             try:
-                with open(state_path, "w", encoding="utf-8") as f:
+                import tempfile as _tempfile
+                fd, tmp_path = _tempfile.mkstemp(
+                    dir=os.path.dirname(state_path),
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     _json.dump(probe, f)
+                os.replace(tmp_path, state_path)
             except Exception as exc:
                 print(
                     f"[delfi] connectivity_state.json write failed: "
@@ -2369,6 +2418,13 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(seconds=20),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        # ALWAYS run, however late. APScheduler's default misfire
+        # grace is 1s; under a saturated pool the probe's fires were
+        # silently discarded, connectivity_state.json aged past the
+        # 120s stale window, and the trading gates read "stale" -
+        # a purely local scheduling backlog masquerading as a network
+        # outage that disabled scans AND stop-loss ticks.
+        misfire_grace_time=None,
     )
     # Equity snapshot every 10 min. First fire 30s after boot so
     # pm_balance_refresh (fires at +1s) has time to warm the wallet

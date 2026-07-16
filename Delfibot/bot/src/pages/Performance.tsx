@@ -135,6 +135,15 @@ export default function Performance() {
     });
   }, [closed, range]);
 
+  // Mirror Dashboard.tsx EXACTLY (RULE #1): when the selected window
+  // covers every closed row (typical for young accounts), windowed
+  // KPIs must equal all-time KPIs, so collapse to the "all" code path
+  // and consume the server's numbers with zero client re-summing.
+  const coversAll = filtered.length === closed.length;
+  const effectiveRange = (range === "all" || coversAll)
+    ? ("all" as typeof range)
+    : range;
+
   // ═══════════════════════════════════════════════════════════════════════
   // CANONICAL WIN/LOSS ALGORITHM - DO NOT WRITE ANOTHER VARIANT
   // ═══════════════════════════════════════════════════════════════════════
@@ -168,9 +177,10 @@ export default function Performance() {
   // is all-time only.
 
   const filteredStats = useMemo(() => {
-    // All-time range: defer to the server's authoritative values.
-    // No client-side recomputation -> no opportunity for drift.
-    if (range === "all" && summary) {
+    // All-time range (or a window that covers all history): defer to
+    // the server's authoritative values. No client-side recomputation
+    // -> no opportunity for drift.
+    if (effectiveRange === "all" && summary) {
       const wins = Number(summary.settled_wins ?? 0);
       const losses = Number(summary.settled_losses ?? 0);
       const trades = Number(summary.settled_total ?? wins + losses);
@@ -214,7 +224,7 @@ export default function Performance() {
     const starting = summary?.starting_cash ?? 0;
     const roi = starting > 0 ? (totalPnl / starting) * 100 : 0;
     return { trades, wins, losses, totalPnl, totalCost, winRate, roi };
-  }, [filtered, summary, range]);
+  }, [filtered, summary, effectiveRange]);
 
   const equitySeries = useMemo(() => {
     // Same strategy as Dashboard.tsx: full historical back-step
@@ -302,6 +312,31 @@ export default function Performance() {
     return baseSeries;
   }, [summary, filtered, range, equitySnapshots]);
 
+  // Headline P&L/ROI semantics mirror Dashboard.tsx EXACTLY (RULE #1;
+  // the two pages diverged when Dashboard moved windowed P&L to an
+  // equity-delta on 2026-06-05 and this page kept the realized-only
+  // sum - green +$4 here vs red -$2 there on the same 30d window):
+  //   effectiveRange = all -> server total_pnl over starting_cash.
+  //   30d/7d              -> equity_now - equity_at_period_start,
+  //                          over equity_at_period_start.
+  const periodStartEquity = equitySeries.length > 0
+    ? equitySeries[0].v
+    : (summary?.starting_cash ?? 0);
+  const currentEquity = summary?.equity != null
+    ? Number(summary.equity)
+    : periodStartEquity;
+  const headlinePnl = effectiveRange === "all"
+    ? (summary?.total_pnl != null
+        ? Number(summary.total_pnl)
+        : filteredStats.totalPnl)
+    : (currentEquity - periodStartEquity);
+  const headlineDenom = effectiveRange === "all"
+    ? (summary?.starting_cash ?? 0)
+    : periodStartEquity;
+  const headlineRoi = headlineDenom > 0
+    ? (headlinePnl / headlineDenom) * 100
+    : 0;
+
   return (
     <div className="page-wrap">
       <div className="page-head">
@@ -356,31 +391,22 @@ export default function Performance() {
               sum since Polymarket doesn't expose a time-windowed
               total. */}
           <div className="stat-cell-label">Total P&amp;L</div>
-          {(() => {
-            const useApi = range === "all"
-              && summary
-              && summary.total_pnl != null;
-            const value = useApi
-              ? (summary!.total_pnl as number)
-              : filteredStats.totalPnl;
-            const denom = summary?.starting_cash ?? 0;
-            const roi = denom > 0 ? (value / denom) * 100 : 0;
-            return (
-              <>
-                <div className={`stat-cell-val t-num ${value > 0 ? "profit" : value < 0 ? "ember" : ""}`}>
-                  {loaded ? fmtMoney(value) : "-"}
-                </div>
-                <div className={`stat-cell-delta ${roi < 0 ? "down" : ""}`}>
-                  {loaded && denom > 0 ? `${fmtPct(roi)} ROI` : ""}
-                </div>
-              </>
-            );
-          })()}
+          <div className={`stat-cell-val t-num ${headlinePnl > 0 ? "profit" : headlinePnl < 0 ? "ember" : ""}`}>
+            {loaded ? fmtMoney(headlinePnl) : "-"}
+          </div>
+          <div className={`stat-cell-delta ${headlineRoi < 0 ? "down" : ""}`}>
+            {loaded && headlineDenom > 0 ? `${fmtPct(headlineRoi)} ROI` : ""}
+          </div>
         </div>
         <div className="stat-cell">
           <div className="stat-cell-label">Win rate</div>
+          {/* Gate on decisive trades (wins+losses), not total trades:
+              a ledger of only break-even rows has no win rate, and
+              Dashboard renders "-" for that state. Rendering "0%"
+              here made the two pages disagree. */}
           <div className="stat-cell-val t-num">
-            {filteredStats.trades > 0 ? `${filteredStats.winRate.toFixed(0)}%` : "-"}
+            {filteredStats.wins + filteredStats.losses > 0
+              ? `${filteredStats.winRate.toFixed(0)}%` : "-"}
           </div>
           <div className="stat-cell-delta">
             {filteredStats.trades > 0 ? `${filteredStats.wins}W / ${filteredStats.losses}L` : ""}
@@ -410,7 +436,7 @@ export default function Performance() {
           <EquityChart
             series={equitySeries}
             showTrend
-            positive={filteredStats.totalPnl >= 0}
+            positive={headlinePnl >= 0}
           />
         )}
       </div>

@@ -1039,7 +1039,15 @@ def _refresh_positions_cache(funder_address: str) -> bool:
     for row in data:
         try:
             v = float(row.get("currentValue") or 0.0)
-            if v > 0:
+            # Skip redeemable rows in the value sum. The old comment
+            # claimed they exclude themselves "because curVal is 0" -
+            # true only for settled LOSERS. A settled WINNER pre-redeem
+            # has currentValue = size * $1 AND is simultaneously
+            # bridged into bankroll by the executor's pending_payout
+            # projection, so counting it here double-counted the
+            # payout in equity for up to 10 minutes per win (2026-07-16
+            # audit).
+            if v > 0 and not row.get("redeemable"):
                 total_value += v
         except (TypeError, ValueError):
             pass

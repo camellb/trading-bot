@@ -263,7 +263,7 @@ def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
             "brier_by_archetype":  D.brier_by_archetype("all"),
             "cost_validation":     D.cost_validation(user_id=user_id),
             "archetype_pnl":       D.archetype_pnl_attribution(user_id=user_id),
-            "settled_rows":        _load_settled_rows(user_id=user_id),
+            "settled_rows":        _load_settled_rows(user_id=user_id, mode=mode),
             # V1.5 risk-knob slices.
             "exit_policy":         LD.exit_policy_attribution(uid, mode),
             "exit_threshold_sweep": LD.exit_threshold_backtest(uid, mode),
@@ -280,18 +280,38 @@ def _collect_diagnostics(user_id: Optional[str] = None) -> dict:
         return {}
 
 
-def _load_settled_rows(user_id: Optional[str] = None) -> list[dict]:
+def _load_settled_rows(
+    user_id: Optional[str] = None,
+    mode: Optional[str] = None,
+) -> list[dict]:
     """Settled-and-resolved pm_positions for this user, plain dicts.
 
     Used by proposers that need to run bootstrap CI checks. Returns the
     fields the bootstrap and CI helpers consume (cost, pnl, archetype,
     side, entry_price, delfi_probability) plus enough context to slice
     the data into cells in any way a future proposer might need.
+
+    `mode` MUST be passed by production callers: sim and live cannot
+    mix (CLAUDE.md hard rule), and multiplier/skip proposals computed
+    on a sim-contaminated sample would scale LIVE stakes. Before
+    2026-07-16 this loader had no mode predicate and also dropped
+    closed_early rows, so the proposers ran on a different (smaller,
+    mixed) set than the 50-trade canonical counter that triggers them.
     """
     from db.engine import get_engine
     from sqlalchemy import text as _sa_text
     eng = get_engine()
     uid = user_id or DEFAULT_USER_ID
+    filters = [
+        "user_id = :uid",
+        "status IN ('settled', 'closed_early')",
+        "cost_usd IS NOT NULL",
+        "realized_pnl_usd IS NOT NULL",
+    ]
+    params: dict = {"uid": uid}
+    if mode:
+        filters.append("mode = :m")
+        params["m"] = mode
     try:
         with eng.connect() as conn:
             rs = conn.execute(_sa_text(
@@ -299,10 +319,8 @@ def _load_settled_rows(user_id: Optional[str] = None) -> list[dict]:
                 "       delfi_probability, cost_usd, realized_pnl_usd, "
                 "       mode, status, settled_at "
                 "FROM pm_positions "
-                "WHERE user_id = :uid AND status='settled' "
-                "  AND cost_usd IS NOT NULL "
-                "  AND realized_pnl_usd IS NOT NULL"
-            ), {"uid": uid})
+                "WHERE " + " AND ".join(filters)
+            ), params)
             return [dict(r._mapping) for r in rs]
     except Exception as exc:
         print(f"[learning_cadence] settled-rows load failed: {exc}",
@@ -1391,11 +1409,15 @@ def _gather_stats(user_id: str, mode: str, limit: int) -> dict:
             # which collapses sports into 'sports'. See the docstring
             # on `_archetype_pnl_attribution_impl` in diagnostics.py
             # for the same fix in the diagnostic path.
+            # Canonical closed-trade set (RULE #1): closed_early rows
+            # carry real realized P&L and MUST be in the window; before
+            # 2026-07-16 they were dropped while invalid refunds were
+            # kept, so window ROI/win-rate ignored every stop-loss.
             rows = conn.execute(text(
                 "SELECT cost_usd, realized_pnl_usd, market_archetype "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled', 'invalid') "
+                "  AND status IN ('settled', 'closed_early', 'invalid') "
                 "ORDER BY settled_at DESC "
                 "LIMIT :lim"
             ), {"uid": user_id, "m": mode, "lim": limit}).fetchall()
@@ -1410,9 +1432,13 @@ def _gather_stats(user_id: str, mode: str, limit: int) -> dict:
     n = len(rows)
     total_cost = sum(costs) or 1.0
     total_pnl  = sum(pnls)
-    wins = sum(1 for p in pnls if p > 0)
+    wins   = sum(1 for p in pnls if p > 0)
+    losses = sum(1 for p in pnls if p < 0)
     roi = total_pnl / total_cost
-    win_rate = wins / n if n else 0.0
+    # Canonical win rate: wins / (wins + losses). Break-even and
+    # invalid (refunded, pnl 0) rows count toward the window but not
+    # toward the rate, matching every other surface.
+    win_rate = wins / (wins + losses) if (wins + losses) else 0.0
 
     # Peak drawdown over the window - running max vs current equity.
     equity = 0.0

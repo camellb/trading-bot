@@ -397,12 +397,31 @@ def _backfill_settled_cost_basis(
             "  AND condition_id IS NOT NULL"
         ), {"uid": user_id})
         rows = cur.fetchall()
+    # The activity feed aggregates ALL BUY trades per (condition, side)
+    # over the wallet's lifetime with no per-position attribution. When
+    # the bot traded the same market side more than once (stop-loss
+    # exit, later re-entry), comparing that lifetime total against each
+    # individual row would bump EVERY row to the combined cost and
+    # subtract the same phantom "fee" delta from each row's realized
+    # P&L. Only backfill keys that map to exactly one DB row.
+    key_counts: dict = {}
+    for _pid, _cond, _side, *_rest in rows:
+        if _cond and _side:
+            _k = (_cond.lower(), 0 if str(_side).upper() == "YES" else 1)
+            key_counts[_k] = key_counts.get(_k, 0) + 1
+
     for pid, cond_id, side, db_cost, db_pnl, shares, status in rows:
         summary["checked"] += 1
         if not cond_id or not side:
             summary["skipped"] += 1
             continue
         idx = 0 if str(side).upper() == "YES" else 1
+        if key_counts.get((cond_id.lower(), idx), 0) > 1:
+            # Re-traded market: lifetime activity total is not
+            # attributable to a single row. Skip; honest per-fill
+            # costs were already recorded at open time.
+            summary["skipped"] += 1
+            continue
         new_cost = activity_costs.get((cond_id.lower(), idx))
         if new_cost is None or new_cost <= 0:
             summary["skipped"] += 1

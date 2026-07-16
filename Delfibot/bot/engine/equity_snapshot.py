@@ -100,11 +100,19 @@ def record_equity_snapshot(user_id: str = "local") -> bool:
         # chart as sharp downward dips that mystified the user. Skip
         # the write instead - a small gap in the curve is honest;
         # a phantom dip is not.
-        if mode == "live" and bankroll == 0.0 and open_cost > 0:
+        # No `open_cost > 0` condition: on daemon restart with zero
+        # open DB positions, a cold wallet-probe cache reads
+        # bankroll=0 AND open_cost=0 and the old guard let an
+        # equity=0 row through - the same phantom dip, just without
+        # positions (this job's 10-min tick can fire before the first
+        # pm_balance_refresh succeeds). A genuinely-zero live wallet
+        # loses nothing meaningful: the chart holds its last honest
+        # point instead of adding a $0.00 one.
+        if mode == "live" and bankroll == 0.0:
             print(
-                f"[equity_snapshot] skip: bankroll=0 + open_cost="
-                f"{open_cost:.2f} (wallet probe returned a stale/"
-                f"failed read; not writing a phantom dip)",
+                f"[equity_snapshot] skip: bankroll=0 (open_cost="
+                f"{open_cost:.2f}) - wallet probe returned a stale/"
+                f"failed/cold read; not writing a phantom dip",
                 file=sys.stderr, flush=True,
             )
             return False

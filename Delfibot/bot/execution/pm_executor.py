@@ -734,6 +734,25 @@ class PMExecutor:
             self._user_config.mode == "live"
             and self._view_mode_override is None
         ):
+            # PREFER the pinned baseline (user_config.live_starting_cash,
+            # the same column RULE #4 pins the ROI denominator to). The
+            # wallet+open_cost derivation below falls in lockstep with
+            # every realized loss, so `drawdown = 1 - equity/starting`
+            # was structurally ~0 in live mode and the drawdown halt
+            # could never fire on realized losses (found 2026-07-16;
+            # equity ground $45 -> $6 without a single drawdown trip).
+            # The pinned value only moves when the user rebaselines in
+            # Settings - exactly the stability every denominator-style
+            # risk gate needs. Fall through to the old derivation when
+            # the baseline hasn't been snapshotted yet.
+            try:
+                pinned = getattr(
+                    self._user_config, "live_starting_cash", None,
+                )
+                if pinned is not None and float(pinned) > 0:
+                    return float(pinned)
+            except (TypeError, ValueError):
+                pass
             # Live mode: starting_cash is the user's TOTAL committed
             # capital on Polymarket, i.e. cash + cost basis of all
             # open positions = equity at cost basis. This is the
@@ -2026,15 +2045,32 @@ class PMExecutor:
         # the actual numbers. Keep the original entry_price (it's the
         # limit price, which equals the fill price for marketable BUYs
         # on Polymarket V2 unless price-improved).
-        if filled_shares < decision.shares - 1e-9:
-            print(
-                f"[pm_executor][live] partial fill on order {order_id}: "
-                f"intent {decision.shares:.2f} sh @ "
-                f"${entry_price:.3f} = ${decision.stake_usd:.2f}, "
-                f"actual {filled_shares:.2f} sh @ "
-                f"${filled_cost/filled_shares:.3f} = ${filled_cost:.2f}",
-                flush=True,
-            )
+        # Apply the ACTUAL fill economics on EVERY fill, not only
+        # partial ones. Marketable BUYs frequently fill BELOW the limit
+        # price (price improvement); the pre-2026-07-16 code only
+        # swapped in `filled_cost` inside the partial-fill branch, so a
+        # FULL fill at a better price persisted the sizer's intent cost
+        # (shares x gamma ask) - the exact drift `_extract_filled_cost`
+        # documents (Solana 1AM ET: DB $3.85, on-chain $2.31). That
+        # overstated cost understates realized P&L on every
+        # price-improved winner.
+        if filled_shares > 0 and filled_cost > 0:
+            if filled_shares < decision.shares - 1e-9:
+                print(
+                    f"[pm_executor][live] partial fill on order {order_id}: "
+                    f"intent {decision.shares:.2f} sh @ "
+                    f"${entry_price:.3f} = ${decision.stake_usd:.2f}, "
+                    f"actual {filled_shares:.2f} sh @ "
+                    f"${filled_cost/filled_shares:.3f} = ${filled_cost:.2f}",
+                    flush=True,
+                )
+            elif abs(filled_cost - decision.stake_usd) > 0.005:
+                print(
+                    f"[pm_executor][live] price-improved fill on order "
+                    f"{order_id}: intent ${decision.stake_usd:.2f}, actual "
+                    f"${filled_cost:.2f} for {filled_shares:.2f} sh",
+                    flush=True,
+                )
             try:
                 from dataclasses import replace as _replace
                 decision = _replace(
@@ -2500,15 +2536,32 @@ class PMExecutor:
                         )
                         try:
                             with get_engine().begin() as conn:
-                                conn.execute(text(
+                                # AND status='open': the row was read as
+                                # open in an EARLIER transaction; the
+                                # resolve jobs (60s fast tick) can settle
+                                # it while this method was doing network
+                                # I/O. Worst case without the guard: a
+                                # just-settled-and-redeemed WINNER probes
+                                # "absent" here (tokens burned by the
+                                # redeem) and gets its win overwritten
+                                # with pnl 0.
+                                res = conn.execute(text(
                                     "UPDATE pm_positions SET "
                                     "  status           = 'closed_early', "
                                     "  closed_at        = CURRENT_TIMESTAMP, "
                                     "  settled_at       = CURRENT_TIMESTAMP, "
                                     "  close_reason     = 'reconciled_no_shares', "
                                     "  realized_pnl_usd = 0.0 "
-                                    "WHERE id = :pid AND user_id = :uid"
+                                    "WHERE id = :pid AND user_id = :uid "
+                                    "  AND status = 'open'"
                                 ), {"pid": position_id, "uid": self.user_id})
+                                if getattr(res, "rowcount", 1) == 0:
+                                    print(
+                                        f"[pm_executor] reconcile skipped: "
+                                        f"pos #{position_id} no longer open "
+                                        f"(settled concurrently).",
+                                        file=sys.stderr, flush=True,
+                                    )
                         except Exception as upd_exc:
                             print(
                                 f"[pm_executor] reconcile UPDATE failed for "
@@ -2617,7 +2670,17 @@ class PMExecutor:
 
         try:
             with get_engine().begin() as conn:
-                conn.execute(text(
+                # AND status='open': this UPDATE runs in a different
+                # transaction than the SELECT that found the row open,
+                # with up to tens of seconds of network I/O between
+                # them (SELL placement + 30s fill poll). pm_resolve_fast
+                # (60s tick) can settle the row in that window; without
+                # the guard this write would overwrite a settlement
+                # outcome with sell-intent numbers. rowcount==0 means
+                # we lost the race: the fill still happened on-chain,
+                # and the reconciler's activity backfill squares the
+                # ledger on its next tick.
+                res = conn.execute(text(
                     "UPDATE pm_positions SET "
                     "  status                = 'closed_early', "
                     "  closed_at             = CURRENT_TIMESTAMP, "
@@ -2627,7 +2690,7 @@ class PMExecutor:
                     "  realized_pnl_usd      = :pnl, "
                     "  close_clob_order_id   = :oid, "
                     "  close_tx_hash         = :tx "
-                    "WHERE id = :pid"
+                    "WHERE id = :pid AND status = 'open'"
                 ), {
                     "reason": reason,
                     # Settlement price = actual fill average when the
@@ -2646,6 +2709,15 @@ class PMExecutor:
                     "tx":     tx_hash,
                     "pid":    position_id,
                 })
+                if getattr(res, "rowcount", 1) == 0:
+                    print(
+                        f"[pm_executor] close_position_early: pos "
+                        f"#{position_id} was settled concurrently; not "
+                        f"overwriting. SELL fill (if any) reconciles on "
+                        f"the next reconciler tick.",
+                        file=sys.stderr, flush=True,
+                    )
+                    return False
         except Exception as exc:
             print(f"[pm_executor] close_position_early UPDATE failed for "
                   f"pos {position_id}: {exc}", file=sys.stderr)
@@ -3274,7 +3346,15 @@ class PMExecutor:
                             wallet=wallet,
                             private_key=private_key,
                         )
-                        if result.tx_hash:
+                        # Persist ONLY on verified success. A payout=0
+                        # redeem (wrong collateral / tokens at another
+                        # funder) returns redeemed=False WITH a tx hash;
+                        # storing that hash would exclude the row from
+                        # the sweeper's `redeem_tx_hash IS NULL` retry
+                        # scan forever and strand the winnings, despite
+                        # the RedeemResult error text promising "will
+                        # retry on next sweeper tick".
+                        if result.redeemed and result.tx_hash:
                             try:
                                 with get_engine().begin() as conn2:
                                     conn2.execute(text(

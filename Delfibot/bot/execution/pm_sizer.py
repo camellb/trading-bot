@@ -330,6 +330,19 @@ def size_position(
         if cap_enabled:
             if stake < POLYMARKET_MIN_ORDER_USD:
                 stake = POLYMARKET_MIN_ORDER_USD
+            # Same wallet ceiling as the cap-disabled branch: the $1
+            # bump must not submit an order the bankroll can't fund
+            # (the executor's wallet pre-check would shrink it back
+            # below the platform minimum and the CLOB would reject in
+            # a loop instead of a clean skip).
+            if stake > bankroll:
+                return _skip(
+                    cp, cf,
+                    f"platform minimum ${stake:.2f} exceeds bankroll "
+                    f"${bankroll:.2f}. Deposit more or wait for a "
+                    f"lower-priced market.",
+                    side=side, entry=entry, p_win=p_win,
+                )
             shares_at_stake = (stake / ask) if ask > 0 else 0.0
             if shares_at_stake < POLYMARKET_MIN_SHARES:
                 return _skip(

@@ -81,28 +81,29 @@ def _post(token: str, method: str, payload: dict, *, timeout: float) -> Tuple[bo
             "Accept":       "application/json",
         },
     )
+    # No socket.setdefaulttimeout() here. urlopen's own `timeout`
+    # already bounds this call, and mutating the PROCESS-GLOBAL default
+    # from notify()'s many caller threads had a save/restore
+    # interleaving race that could pin the global at 6s forever -
+    # silently inheriting into every socket any library opens without
+    # an explicit timeout.
     import socket as _socket
-    _prev_default = _socket.getdefaulttimeout()
-    _socket.setdefaulttimeout(timeout)
     try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        # Telegram returns a JSON body with `description` on errors.
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-        except urllib.error.HTTPError as exc:
-            # Telegram returns a JSON body with `description` on errors.
-            try:
-                data = json.loads(exc.read())
-                return False, str(data.get("description") or f"HTTP {exc.code}")
-            except Exception:
-                return False, f"HTTP {exc.code}"
-        except urllib.error.URLError as exc:
-            return False, f"could not reach Telegram: {exc.reason}"
-        except _socket.timeout:
-            return False, "Telegram took too long to respond (timeout)"
-        except Exception as exc:
-            return False, f"send failed: {exc}"
-    finally:
-        _socket.setdefaulttimeout(_prev_default)
+            data = json.loads(exc.read())
+            return False, str(data.get("description") or f"HTTP {exc.code}")
+        except Exception:
+            return False, f"HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        return False, f"could not reach Telegram: {exc.reason}"
+    except _socket.timeout:
+        return False, "Telegram took too long to respond (timeout)"
+    except Exception as exc:
+        return False, f"send failed: {exc}"
 
     try:
         data = json.loads(raw)
