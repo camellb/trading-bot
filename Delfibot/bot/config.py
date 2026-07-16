@@ -105,7 +105,7 @@ GO_LIVE_MIN_REALIZED_PNL  = 0.0       # synthetic P&L net of simulated fees
 
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-5"
 CLAUDE_MAX_TOKENS = 700
 
 

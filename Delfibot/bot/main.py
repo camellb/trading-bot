@@ -1248,7 +1248,13 @@ async def main() -> None:
     # use per-thread connections and are unaffected by the loop split.
     scheduler = AsyncIOScheduler(executors={
         "default":    AsyncIOExecutor(),
-        "threadpool": APThreadPoolExecutor(max_workers=4),
+        # 8 workers, not 4: the long jobs (scan 260s, resolve 200s,
+        # evaluate_exits, balance_refresh) each pin a worker for their
+        # full outer fence. At 4 workers the pool saturated and the
+        # 60s jobs (pm_resolve_fast, pm_balance_refresh) logged
+        # "Run time ... was missed by 0:11-0:14" while connectivity
+        # flipped stale (observed 2026-07-16).
+        "threadpool": APThreadPoolExecutor(max_workers=8),
     })
     api.set_scheduler(scheduler)
 

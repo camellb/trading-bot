@@ -64,11 +64,11 @@ _PROVIDERS: tuple[ProviderSpec, ...] = (
         "kind":            "anthropic",
         "base_url":        "",
         "models":          (
-            "claude-sonnet-4-20250514",
-            "claude-opus-4-20250514",
-            "claude-3-5-haiku-20241022",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-haiku-4-5-20251001",
         ),
-        "default_model":   "claude-sonnet-4-20250514",
+        "default_model":   "claude-sonnet-5",
         "key_hint":        "sk-ant-...",
         "custom_base_url": False,
     },
@@ -281,13 +281,32 @@ def base_url_for(entry: dict) -> str:
     return default_base_url(entry.get("provider"))
 
 
+# Model ids Anthropic has retired from the API (404 not_found) mapped to
+# the closest same-tier current id. Applied at dispatch time in
+# model_for() so connections saved before the retirement keep working
+# without the user re-editing Settings. Incident 2026-07-16: every
+# stored forecaster connection pointed at claude-sonnet-4-20250514,
+# the API returned 404 on all of them, and trading blocked for days.
+RETIRED_MODEL_MAP: dict[str, str] = {
+    "claude-sonnet-4-20250514":   "claude-sonnet-5",
+    "claude-sonnet-4-0":          "claude-sonnet-5",
+    "claude-opus-4-20250514":     "claude-opus-4-8",
+    "claude-opus-4-0":            "claude-opus-4-8",
+    "claude-3-5-haiku-20241022":  "claude-haiku-4-5-20251001",
+    "claude-3-5-haiku-latest":    "claude-haiku-4-5-20251001",
+    "claude-3-5-sonnet-20241022": "claude-sonnet-5",
+    "claude-3-7-sonnet-20250219": "claude-sonnet-5",
+}
+
+
 def model_for(entry: dict) -> str:
     """Effective model id: the entry's model if set, else the provider
-    default."""
+    default. Retired Anthropic ids are remapped to their current
+    same-tier replacement (see RETIRED_MODEL_MAP)."""
     m = (entry.get("model") or "").strip()
-    if m:
-        return m
-    return default_model(entry.get("provider"))
+    if not m:
+        m = default_model(entry.get("provider"))
+    return RETIRED_MODEL_MAP.get(m, m)
 
 
 def validate_connection(entry: dict) -> Optional[str]:

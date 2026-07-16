@@ -63,6 +63,35 @@ from engine import llm_providers as _providers
 from engine.user_config import resolve_llm_chain
 
 
+# Per-request wall-clock ceiling for every provider SDK. The anthropic
+# SDK's own default is 600 seconds; one wedged HTTPS call at that
+# default pins a loop-executor thread for 10 minutes, which starves the
+# scheduler (observed 2026-07-16: pm_resolve_fast "missed by 0:14").
+# 90s is comfortably above a slow forecaster completion and far below
+# the scan's 240s ceiling.
+_REQUEST_TIMEOUT_S = 90.0
+
+# Substrings that mark an error as transient (worth one retry on the
+# same connection before failing over). Covers Gemini 503 UNAVAILABLE
+# spikes, Anthropic 529 overloaded, and generic gateway/network blips.
+_TRANSIENT_MARKERS = (
+    "503", "502", "504", "529", "429",
+    "overloaded", "unavailable", "rate limit", "rate_limit",
+    "timed out", "timeout", "connection error", "connection reset",
+    "temporarily",
+)
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    if isinstance(status, int):
+        return status in (429, 500, 502, 503, 504, 529)
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    if "not_found" in msg or "404" in msg:
+        return False
+    return any(marker in msg for marker in _TRANSIENT_MARKERS)
+
+
 # ── Module-level singleton ──────────────────────────────────────────────────
 
 _SINGLETON_LOCK = threading.Lock()
@@ -144,35 +173,47 @@ class LLMClient:
         for i, conn in enumerate(chain):
             kind = _providers.provider_kind(conn.get("provider"))
             label = "primary" if i == 0 else f"backup{i}"
-            try:
-                if kind == "anthropic":
-                    response = await self._call_anthropic(
-                        conn, system, user, max_tokens, temperature,
-                        cache_system,
-                    )
-                elif kind == "gemini":
-                    response = await self._call_gemini(
-                        conn, system, user, max_tokens, temperature,
-                    )
-                elif kind == "openai":
-                    response = await self._call_openai(
-                        conn, system, user, max_tokens, temperature,
-                    )
-                else:
-                    print(f"[llm_client] {use_case} {label}: unknown kind for "
-                          f"provider {conn.get('provider')!r}; skipping",
-                          file=sys.stderr)
-                    continue
-                if use_case == "forecaster":
-                    from engine.runtime_alerts import report_recovery
-                    report_recovery("forecast_provider")
-                return response
-            except Exception as exc:
-                last_exc = exc
-                print(f"[llm_client] {use_case} {label} "
-                      f"{conn.get('provider')} failed: "
-                      f"{type(exc).__name__}: {exc}", file=sys.stderr)
+            if kind not in ("anthropic", "gemini", "openai"):
+                print(f"[llm_client] {use_case} {label}: unknown kind for "
+                      f"provider {conn.get('provider')!r}; skipping",
+                      file=sys.stderr)
                 continue
+            # Two attempts per connection: transient failures (5xx,
+            # overloaded, rate limit, network blip) get one short-backoff
+            # retry before failing over. A Gemini 503 spike used to kill
+            # the whole chain instantly and block trading. Permanent
+            # errors (auth, 404 model) fail over immediately.
+            for attempt in (0, 1):
+                try:
+                    if kind == "anthropic":
+                        response = await self._call_anthropic(
+                            conn, system, user, max_tokens, temperature,
+                            cache_system,
+                        )
+                    elif kind == "gemini":
+                        response = await self._call_gemini(
+                            conn, system, user, max_tokens, temperature,
+                        )
+                    else:
+                        response = await self._call_openai(
+                            conn, system, user, max_tokens, temperature,
+                        )
+                    if use_case == "forecaster":
+                        from engine.runtime_alerts import report_recovery
+                        report_recovery("forecast_provider")
+                    return response
+                except Exception as exc:
+                    last_exc = exc
+                    transient = _is_transient_llm_error(exc)
+                    print(f"[llm_client] {use_case} {label} "
+                          f"{conn.get('provider')} failed "
+                          f"(attempt {attempt + 1}, "
+                          f"{'transient' if transient else 'permanent'}): "
+                          f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                    if transient and attempt == 0:
+                        await asyncio.sleep(3.0)
+                        continue
+                    break
 
         print(f"[llm_client] {use_case} chain exhausted; last exc: "
               f"{type(last_exc).__name__ if last_exc else 'None'}: "
@@ -203,7 +244,15 @@ class LLMClient:
         with self._lock:
             client = self._clients.get(cache_key)
             if client is None:
-                client = anthropic.Anthropic(api_key=api_key)
+                # max_retries=0: retry policy lives in call(), where it
+                # is transient-aware and shared across providers. The
+                # SDK default (2 retries x 600s timeout) could pin an
+                # executor thread for tens of minutes.
+                client = anthropic.Anthropic(
+                    api_key=api_key,
+                    timeout=_REQUEST_TIMEOUT_S,
+                    max_retries=0,
+                )
                 self._clients[cache_key] = client
 
         # Build the `system` argument three ways:
@@ -270,7 +319,11 @@ class LLMClient:
             client = self._clients.get(cache_key)
             if client is None:
                 from google import genai
-                client = genai.Client(api_key=api_key)
+                # http_options timeout is in milliseconds.
+                client = genai.Client(
+                    api_key=api_key,
+                    http_options={"timeout": int(_REQUEST_TIMEOUT_S * 1000)},
+                )
                 self._clients[cache_key] = client
 
         # google-genai accepts the config as a dict. system goes in as
@@ -319,7 +372,11 @@ class LLMClient:
             client = self._clients.get(cache_key)
             if client is None:
                 from openai import OpenAI
-                kwargs: dict = {"api_key": api_key}
+                kwargs: dict = {
+                    "api_key":     api_key,
+                    "timeout":     _REQUEST_TIMEOUT_S,
+                    "max_retries": 0,
+                }
                 if base_url:
                     kwargs["base_url"] = base_url
                 client = OpenAI(**kwargs)
