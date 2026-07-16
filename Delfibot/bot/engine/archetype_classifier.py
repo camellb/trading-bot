@@ -345,11 +345,14 @@ def classify_archetype(
     # narrative about 5-minute windows). User instruction
     # 2026-05-18: "this is an issue, why did it skip and why did it
     # give this kind of weird reason?"
-    if (
-        ("up or down" in q.lower())
-        and _CRYPTO_RE.search(q)
-        and _MICRO_WINDOW_RE.search(q)
-    ):
+    # The window marker is NOT required: "Bitcoin Up or Down - June 4,
+    # 2PM ET" (hourly, no HH:MM) and "Bitcoin Up or Down on June 26?"
+    # (daily) resolve on exactly the same single open-vs-close tick
+    # comparison as the 5-minute windows, but were falling through to
+    # plain `crypto` and trading at the crypto multiplier (found
+    # 2026-07-16 while auditing the June losses). Every crypto
+    # "Up or Down" market is the same coin-flip shape.
+    if ("up or down" in q.lower()) and _CRYPTO_RE.search(q):
         return "crypto_short"
 
     # Crypto.
