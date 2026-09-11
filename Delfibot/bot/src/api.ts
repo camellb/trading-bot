@@ -238,7 +238,7 @@ async function request<T>(
      *     we cut over from the current Lemon Squeezy gate). A
      *     replay could decrement the seat count twice if the
      *     daemon dies mid-request between the provider responding
-     *     and the keychain write committing. One-time-per-machine
+     *     and the local secret-file write committing. One-time-per-machine
      *     so the window is small, but the cost of getting it wrong
      *     is real money / a support ticket.
      *
@@ -838,7 +838,7 @@ export interface ConnectivityStatus {
 }
 
 /** Telegram outbound config. The bot token is never returned by the
- *  backend (it's keychain-only); the UI sees only whether it's set. */
+ *  backend (it's stored locally); the UI sees only whether it's set. */
 export interface TelegramConfig {
   bot_token_configured: boolean;
   chat_id: string | null;

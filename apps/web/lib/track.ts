@@ -2,10 +2,9 @@
 //
 // Client-side conversion-event helpers for Meta Pixel + GA4.
 //
-// These are fire-and-forget: if either provider isn't loaded
-// (consent not granted, ad-blocker, NEXT_PUBLIC_*_ID env var not
-// set in this environment), the call no-ops via the optional
-// chaining on `window.fbq?.` / `window.gtag?.`.
+// Events wait briefly for each provider to load. This prevents a
+// checkout or purchase event from being lost when React mounts before
+// an afterInteractive analytics script has initialized.
 //
 // Why both: GA4 powers the funnel reports we read every day
 // (Realtime + Reports → Engagement → Conversions). Meta Pixel
@@ -13,13 +12,9 @@
 // don't replace each other; you want both events firing on the
 // same step so each platform sees the conversion.
 //
-// Why a stable event id: the Stripe session_id (a) gives us
-// a stable dedup key for when we add server-side Conversions
-// API later, and (b) lets GA4's `transaction_id` field tie a
-// purchase row to the same Stripe session in our DB. Reusing
-// the same id on a second fire dedupes server-side; locally
-// we also guard against double-firing via a module-scope
-// `Set` (resists React StrictMode and accidental re-mounts).
+// Why a stable event id: the Stripe session_id deduplicates the
+// browser Purchase against the matching server-side Conversions API
+// event and ties GA4's transaction_id to the Stripe order.
 
 // Augment Window so callers can call these without each page
 // re-declaring the same `declare global` block.
@@ -32,20 +27,32 @@ declare global {
   }
 }
 
-// Module-scope dedup set. Cleared on every full page navigation
-// because the JS module reloads. Within a single page session
-// (React effects re-running, StrictMode double-invoke) it stops
-// duplicate fires.
 const fired = new Set<string>();
+const pending = new Map<string, { attempts: number; send: () => boolean }>();
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-function once(key: string, fn: () => void): void {
-  if (fired.has(key)) return;
-  fired.add(key);
-  try {
-    fn();
-  } catch {
-    // Analytics never breaks the page.
+function flushPending(): void {
+  retryTimer = null;
+  for (const [key, event] of pending) {
+    try {
+      if (event.send()) {
+        fired.add(key);
+        pending.delete(key);
+        continue;
+      }
+    } catch {
+      // Analytics must never break the page.
+    }
+    event.attempts += 1;
+    if (event.attempts >= 240) pending.delete(key);
   }
+  if (pending.size > 0) retryTimer = setTimeout(flushPending, 500);
+}
+
+function onceReady(key: string, send: () => boolean): void {
+  if (fired.has(key) || pending.has(key)) return;
+  pending.set(key, { attempts: 0, send });
+  if (retryTimer === null) flushPending();
 }
 
 /**
@@ -57,16 +64,22 @@ function once(key: string, fn: () => void): void {
  * `Purchase` so server-side dedup (when we add CAPI) lines up.
  */
 export function trackInitiateCheckout(sessionId: string): void {
-  once(`initiate:${sessionId}`, () => {
-    window.fbq?.(
+  onceReady(`meta:initiate:${sessionId}`, () => {
+    if (!window.fbq) return false;
+    window.fbq(
       "track",
       "InitiateCheckout",
       {},
       { eventID: sessionId },
     );
-    window.gtag?.("event", "begin_checkout", {
+    return true;
+  });
+  onceReady(`ga:initiate:${sessionId}`, () => {
+    if (!window.gtag) return false;
+    window.gtag("event", "begin_checkout", {
       transaction_id: sessionId,
     });
+    return true;
   });
 }
 
@@ -90,17 +103,23 @@ export function trackPurchase({
   value,
   currency,
 }: PurchaseArgs): void {
-  once(`purchase:${eventId}`, () => {
-    window.fbq?.(
+  onceReady(`meta:purchase:${eventId}`, () => {
+    if (!window.fbq) return false;
+    window.fbq(
       "track",
       "Purchase",
       { value, currency },
       { eventID: eventId },
     );
-    window.gtag?.("event", "purchase", {
+    return true;
+  });
+  onceReady(`ga:purchase:${eventId}`, () => {
+    if (!window.gtag) return false;
+    window.gtag("event", "purchase", {
       transaction_id: eventId,
       value,
       currency,
     });
+    return true;
   });
 }

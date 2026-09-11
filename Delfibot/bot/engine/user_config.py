@@ -7,10 +7,8 @@ plumbing here. `DEFAULT_USER_ID = "local"` exists only so the dozens of
 engine modules that still pass `user_id=...` keep working without a
 666-call refactor.
 
-Secrets live in the OS keychain via `keyring`, never in the SQLite file:
-
-    keyring service: 'delfi'
-    keys:            'polymarket_private_key', 'anthropic_api_key'
+Secrets live in `<app-data>/data/secrets.json`, an owner-only file written
+atomically with mode 600. They never enter the SQLite database.
 
 The wallet address itself is public so it stays in the user_config row.
 
@@ -51,8 +49,7 @@ KEYRING_SERVICE = "delfi"
 KEYRING_POLYMARKET_KEY = "polymarket_private_key"
 # `anthropic_api_key` is the historical name; the UI now calls this the
 # "LLM API key" since support for other providers is on the roadmap. The
-# keychain entry name is preserved so existing installs don't lose their
-# stored key on upgrade.
+# Historical key name is preserved so existing installs migrate cleanly.
 KEYRING_ANTHROPIC_KEY = "anthropic_api_key"           # primary LLM
 KEYRING_LLM_BACKUP_KEY = "llm_backup_api_key"          # optional secondary
 KEYRING_NEWSAPI_KEY = "newsapi_key"                    # optional, news headlines
@@ -234,7 +231,7 @@ class UserConfig:
     # constant so any legacy code that reads it (`getattr(cfg, "venue",
     # "polymarket")`) continues to resolve. The other polymarket_* and
     # polymarket_us_* SaaS-era credential fields were removed when the
-    # local-first pivot moved all secrets into the OS keychain.
+    # local-first pivot moved all secrets into an owner-only local file.
     venue:                    str           = "polymarket"
 
     # Per-category notification toggles. Keys are NOTIFICATION_CATEGORIES.
@@ -245,7 +242,7 @@ class UserConfig:
     # opts out.
     notification_prefs:       Dict[str, bool] = field(default_factory=dict)
 
-    # Telegram. The bot token (a secret) lives in the OS keychain at
+    # Telegram. The bot token (a secret) lives in the local secrets file at
     # KEYRING_TELEGRAM_TOKEN; this is just the recipient chat id (a
     # numeric string from @userinfobot or the user's own chat). Empty
     # string / None means "Telegram is not configured, suppress all
@@ -959,8 +956,8 @@ def _validate_mode_credentials(clean: dict) -> None:
         )
     if _keyring_get(KEYRING_POLYMARKET_KEY) is None:
         raise ValueError(
-            "live mode requires a Polymarket private key in the "
-            "keychain. Paste it in Settings -> Connections before "
+            "live mode requires a Polymarket private key. Paste it in "
+            "Settings -> Connections before "
             "switching mode."
         )
 
@@ -1691,7 +1688,7 @@ def set_user_polymarket_creds(
     wallet_address: Optional[str] = None,
     private_key:    Optional[str] = None,
 ) -> None:
-    """Wallet address goes to DB, private key goes to OS keychain. Either may be None to clear."""
+    """Store the public wallet address and local private key."""
     if wallet_address is not None:
         update_user_config(user_id, wallet_address=wallet_address)
     if private_key is not None:
@@ -2145,7 +2142,7 @@ def set_polymarket_relayer_api_key(value: Optional[str]) -> None:
 # The desktop app will not boot past `<LicenseGate>` until a signed
 # license blob has been pasted and verified against the embedded
 # Ed25519 public key (see engine/license.py). The blob lives in the
-# keychain so the user can copy it back out; the small JSON meta
+# owner-only secrets file so the user can copy it back out; JSON meta
 # (verified payload + activation timestamp) lives in the data
 # directory. Re-verification happens on every /api/license/status
 # call - the crypto check is sub-millisecond and there is no online
@@ -2258,7 +2255,7 @@ def set_license_meta(meta: Optional[dict]) -> None:
 
 # ── Telegram (outbound notifications) ───────────────────────────────────────
 # The bot token (a secret, format `123456:AA...` from @BotFather) lives
-# in the OS keychain. The chat_id (a numeric string identifying where
+# in the owner-only secrets file. The chat_id (a numeric string identifying where
 # to send) lives in user_config because it's not sensitive on its own
 # and the dashboard reads it back to render the connection state.
 def get_telegram_bot_token() -> Optional[str]:
@@ -2389,4 +2386,3 @@ def should_notify(user_id: str = DEFAULT_USER_ID, category: str = "") -> bool:
 # ── Admin (single-user app: the user is always 'admin') ─────────────────────
 def is_admin(user_id: str = DEFAULT_USER_ID) -> bool:
     return user_id == DEFAULT_USER_ID
-

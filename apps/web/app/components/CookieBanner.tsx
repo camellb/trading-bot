@@ -24,9 +24,8 @@ import Link from "next/link";
 // reads/writes the localStorage key; it doesn't render the analytics
 // itself.
 //
-// To revisit / change choice, clear localStorage on the cookies
-// policy page (the "review your choice" button there nukes the key
-// and the banner reappears on next render).
+// The Cookies Policy page exposes enable and disable controls for
+// every visitor, including visitors outside the banner region.
 
 const STORAGE_KEY = "delfi.cookie-consent";
 
@@ -46,16 +45,26 @@ export function readConsent(): CookieConsent | null {
   return null;
 }
 
-/** Clear consent so the banner reappears. Used by the cookies policy
- *  page's "review choice" button. */
-export function clearConsent(): void {
+function clearAnalyticsCookies(): void {
+  const prefixes = ["_ga", "_fbp", "_fbc", "_clck", "_clsk"];
+  const domain = window.location.hostname;
+  for (const part of document.cookie.split(";")) {
+    const name = part.split("=")[0]?.trim();
+    if (!name || !prefixes.some((prefix) => name.startsWith(prefix))) continue;
+    document.cookie = `${name}=; Max-Age=0; Path=/; SameSite=Lax`;
+    document.cookie = `${name}=; Max-Age=0; Path=/; Domain=.${domain}; SameSite=Lax`;
+  }
+}
+
+export function saveConsent(value: CookieConsent): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.removeItem(STORAGE_KEY);
-    window.dispatchEvent(new CustomEvent("delfi:consent-changed"));
+    window.localStorage.setItem(STORAGE_KEY, value);
+    if (value === "rejected") clearAnalyticsCookies();
   } catch {
-    // best effort
+    // Best effort. A blocked localStorage must not break the site.
   }
+  window.dispatchEvent(new CustomEvent("delfi:consent-changed"));
 }
 
 export function CookieBanner({
@@ -103,13 +112,8 @@ export function CookieBanner({
   if (consent === "loading" || consent !== null) return null;
 
   const choose = (value: CookieConsent) => {
-    try {
-      window.localStorage.setItem(STORAGE_KEY, value);
-    } catch {
-      // ignore, user will see the banner again next visit
-    }
+    saveConsent(value);
     setConsent(value);
-    window.dispatchEvent(new CustomEvent("delfi:consent-changed"));
   };
 
   return (

@@ -1,6 +1,6 @@
 /* Delfi content pages - legal, onboarding, 404, inner dashboard */
 
-/* ─── Cookies policy: consent state + reset button ─── */
+/* Cookies policy: consent controls */
 .consent-control {
   margin: 16px 0 24px;
   padding: 20px 24px;
@@ -28,6 +28,11 @@
   background: transparent;
   cursor: pointer;
   transition: box-shadow var(--dur-base) var(--ease);
+}
+.consent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 .consent-reset:hover:not(:disabled) {
   box-shadow: 0 0 12px rgba(218, 170, 76, 0.3);

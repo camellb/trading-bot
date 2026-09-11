@@ -17,9 +17,8 @@ Architecture in this single process:
     config-driven intervals. local_api.py serves an aiohttp HTTP API on
     127.0.0.1:<port> so the React UI can read state and post commands.
 
-No Telegram. No process-global API keys. Anthropic key + Polymarket private
-key live in the OS keychain (engine.user_config). DB lives in the platform
-app-data directory (db.engine).
+Credentials are stored in an owner-only local file managed by
+engine.user_config. The database lives in the platform app-data directory.
 """
 
 from __future__ import annotations
@@ -102,52 +101,15 @@ def _install_crash_log() -> None:
 _install_crash_log()
 
 
-# Force OpenSSL to use certifi's CA bundle. PyInstaller-bundled Python on
-# macOS ships no usable trust store: ssl.create_default_context() returns
-# a context with zero CA roots, and aiohttp's TCPConnector (which uses
-# that default context when no ssl_context is passed) then fails every
-# HTTPS handshake with "unable to get local issuer certificate". The
-# Anthropic Python SDK is not affected because httpx loads certifi
-# explicitly; aiohttp does not. py-clob-client (also aiohttp-based) is
-# affected the same way.
-#
-# Confirmed 2026-05-29 after the bot stopped evaluating for ~24 hours:
-# every gamma-api.polymarket.com call, every research page fetch, and
-# every CLOB /auth/api-key request SSL-failed while LLM calls kept
-# working. 39,111 cumulative SSL_VERIFY_FAILED errors in sidecar.err
-# pointing at multiple hosts (gamma-api, bls.gov, federalreserve.gov,
-# tennis365, etc.).
-#
-# Setting SSL_CERT_FILE + REQUESTS_CA_BUNDLE before any HTTPS-using
-# library imports is the cleanest fix. OpenSSL reads SSL_CERT_FILE on
-# first default-context creation, so aiohttp, requests, urllib, and
-# py-clob-client all share one trust root path with zero per-call
-# plumbing changes downstream.
+# INPUT axis: certifi may live in PyInstaller's temporary _MEI directory.
+# OUTPUT axis: every HTTPS client uses a CA file in persistent app data.
+# INVARIANT: deleting the _MEI directory while Delfi is running must not
+# break Polymarket, wallet, research, Telegram, or redemption requests.
 try:
-    import certifi as _certifi_bootstrap  # noqa: E402
-    _ca_path = _certifi_bootstrap.where()
-    if _ca_path and os.path.exists(_ca_path):
-        os.environ.setdefault("SSL_CERT_FILE", _ca_path)
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca_path)
-        # Belt-and-suspenders: ssl.create_default_context() ignores
-        # SSL_CERT_FILE on some PyInstaller-bundled OpenSSL builds
-        # (the default_verify_paths are baked into the dylib at compile
-        # time and point at non-existent paths). Monkey-patch the
-        # constructor so every default context picks up certifi roots.
-        import ssl as _ssl_for_certifi  # noqa: E402
-        _orig_create_default = _ssl_for_certifi.create_default_context
-        def _certifi_default_context(*args, **kwargs):
-            ctx = _orig_create_default(*args, **kwargs)
-            try:
-                ctx.load_verify_locations(cafile=_ca_path)
-            except Exception:
-                pass
-            return ctx
-        _ssl_for_certifi.create_default_context = _certifi_default_context
-except Exception:
-    # certifi not bundled (dev mode against system Python): the host's
-    # default trust store works fine. Skip silently.
-    pass
+    from engine.tls_bootstrap import install_persistent_ca_bundle
+    install_persistent_ca_bundle()
+except Exception as exc:
+    print(f"[delfi] TLS trust-store setup failed: {exc}", file=sys.stderr)
 
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -1586,7 +1548,7 @@ async def main() -> None:
                     f"[delfi] pm_scan skipped: connectivity={conn_state}",
                     file=sys.stderr, flush=True,
                 )
-                proc_health.record_job_ok("pm_scan")
+                proc_health.record_job_blocked("pm_scan", str(conn_state))
                 return
             # Cache says "ok". Re-verify with a fresh ~200ms gamma
             # probe before burning the LLM budget. Persist the result
@@ -1614,7 +1576,7 @@ async def main() -> None:
                     "[delfi] pm_scan gate probe timed out/errored; "
                     "skipping this scan tick", file=sys.stderr, flush=True,
                 )
-                proc_health.record_job_ok("pm_scan")
+                proc_health.record_job_blocked("pm_scan", "probe_failed")
                 return
             try:
                 import json as _json
@@ -1641,7 +1603,9 @@ async def main() -> None:
                     f"({fresh.get('detail')})",
                     file=sys.stderr, flush=True,
                 )
-                proc_health.record_job_ok("pm_scan")
+                proc_health.record_job_blocked(
+                    "pm_scan", str(fresh.get("state") or "unreachable"),
+                )
                 return
         except Exception as exc:
             # Helper read failure -> fall through and let the scan
@@ -1731,7 +1695,9 @@ async def main() -> None:
                     f"connectivity={conn_state}",
                     file=sys.stderr, flush=True,
                 )
-                proc_health.record_job_ok("pm_evaluate_exits")
+                proc_health.record_job_blocked(
+                    "pm_evaluate_exits", str(conn_state),
+                )
                 return
         except Exception:
             pass
@@ -1792,7 +1758,9 @@ async def main() -> None:
                     f"connectivity={conn_state} (cache retained)",
                     file=sys.stderr, flush=True,
                 )
-                proc_health.record_job_ok("pm_balance_refresh")
+                proc_health.record_job_blocked(
+                    "pm_balance_refresh", str(conn_state),
+                )
                 return
         except Exception:
             pass
@@ -1896,7 +1864,7 @@ async def main() -> None:
             #   prior bad -> ok  -> connectivity_restored
             #   prior bad -> different-bad -> connectivity_lost (updated)
             if prior_state is None or prior_state == current_state:
-                return
+                return current_state
             if current_state == "ok":
                 telegram_html = _tm.connectivity_restored(
                     gamma_latency_ms=probe["gamma_latency_ms"],
@@ -1921,9 +1889,19 @@ async def main() -> None:
                 source="main._run_connectivity_probe",
                 telegram_html=telegram_html,
             )
+            return current_state
         try:
-            _run_bounded_sync(_impl, timeout_s=15, label="connectivity_probe")
+            current_state = _run_bounded_sync(
+                _impl, timeout_s=15, label="connectivity_probe",
+            )
+            if current_state == "ok":
+                proc_health.record_job_ok("connectivity_probe")
+            else:
+                proc_health.record_job_blocked(
+                    "connectivity_probe", str(current_state or "unknown"),
+                )
         except Exception as exc:
+            proc_health.record_job_error("connectivity_probe")
             print(
                 f"[delfi] connectivity probe failed: "
                 f"{type(exc).__name__}: {exc}",

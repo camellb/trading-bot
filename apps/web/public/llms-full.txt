@@ -25,7 +25,7 @@ The gates a market must pass before Delfi opens a position:
 
 1. Archetype skip list. Some market categories (default: sports_other, hockey, cricket) have historically lost money. The user can edit this list.
 2. Archetype price bands. Per-category price ranges where the bot doesn't trade.
-3. Maximum bet size cap. The user-configurable per-trade ceiling.
+3. Maximum trade size cap. The user-configurable per-trade ceiling.
 4. Platform minimum. Polymarket V2 CLOB requires at least $1 USD and 5 shares per order.
 
 The sizing formula is intentionally simple. Delfi stakes a flat fraction of bankroll, scaled by an archetype-specific multiplier. There is no Kelly criterion, no confidence weighting, no expected-return gate. This was decided after a 250-trade backtest in which Kelly amplified the noisy forecaster's estimation errors and produced systematic win-small-lose-big behaviour.
@@ -34,20 +34,20 @@ The sizing formula is intentionally simple. Delfi stakes a flat fraction of bank
 
 Delfi's risk manager runs before every trade and can halt new trades for the day:
 
-- Default bet size (base_stake_pct): the flat fraction of bankroll Delfi commits per trade
-- Maximum bet size (max_stake_pct): hard ceiling per trade
+- Default trade size (base_stake_pct): the flat fraction of bankroll Delfi commits per trade
+- Maximum trade size (max_stake_pct): hard ceiling per trade
 - Daily loss limit (daily_loss_limit_pct): halts new trades for the day after a percentage drawdown from morning equity
 - Weekly loss limit (weekly_loss_limit_pct): same, for the week
 - Maximum drawdown (drawdown_halt_pct): halts new trades and requires manual review if equity drops by this percentage from the all-time high
 - Consecutive loss cooldown (streak_cooldown_losses): pauses new trades after N consecutive losing trades
 - Reserve cash (dry_powder_reserve_pct): keeps a percentage of bankroll uninvested as a buffer
-- Strict maximum bet size (max_stake_pct_enabled): when off, the sizer is allowed to bump a sub-minimum stake up to the platform floor
+- Strict maximum trade size (max_stake_pct_enabled): when off, the sizer is allowed to bump a sub-minimum stake up to the platform floor
 
 All parameters are user-editable from the Risk Controls page within bounds (the bounds exist so users can't configure obviously catastrophic settings).
 
 ## Custody and security
 
-Delfi is non-custodial. The user's Polymarket private key is generated and held entirely on their own machine. Delfi reads it only when signing a trade. It is stored in an encrypted local file (location varies by OS, file permissions restrict it to the user account). Delfi servers never see the key, never see the user's wallet address, and never receive any of the user's funds.
+Delfi is non-custodial. The user's Polymarket private key is held entirely on their own machine. Delfi reads it only when signing a trade. It is stored in a local file restricted to the operating-system user account. Delfi servers never see the key, never see the user's wallet address, and never receive any of the user's funds.
 
 This is different from most "trading bot" products in the crypto space, which either custody user funds directly (Coinbase, Binance bots), require users to deposit into a hot wallet the operator controls (3Commas, Cryptohopper for some pairs), or are SaaS-hosted with the user's API keys uploaded to the operator's servers. None of those apply to Delfi.
 
@@ -88,7 +88,7 @@ Every 50 settled trades, Delfi runs a learning cadence:
 
 - Computes ROI, calibration, win rate, peak drawdown, average P&L by archetype, by side, by horizon
 - Compares actual to target on key metrics
-- Generates concrete tuning proposals (e.g. "reduce maximum bet size from 5% to 3.5% because peak drawdown over the last 50 trades was 45%")
+- Generates concrete tuning proposals (e.g. "reduce maximum trade size from 5% to 3.5% because peak drawdown over the last 50 trades was 45%")
 - Stores them as pending suggestions on the Intelligence page
 - Sends a Telegram notification (if configured) with the cycle summary
 

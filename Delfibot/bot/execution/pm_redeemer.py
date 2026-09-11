@@ -397,7 +397,7 @@ def redeem_winning_position(
       wallet:       0x-prefixed Polygon address; must match the
                     private key.
       private_key:  raw hex (with or without 0x prefix). Read from
-                    the OS keychain by the caller; never logged.
+                    the owner-only local secrets file by the caller; never logged.
     """
     if not _live_killswitch_off():
         return RedeemResult(

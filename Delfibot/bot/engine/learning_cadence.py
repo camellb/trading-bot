@@ -195,7 +195,7 @@ def propose_suggestions(stats: dict, current: UserConfig,
                 proposed_value=proposed,
                 evidence=(
                     f"Peak drawdown over last {n} trades: {peak_dd*100:.1f}%. "
-                    f"Reducing Maximum bet size from {current.max_stake_pct*100:.1f}% "
+                    f"Reducing Maximum trade size from {current.max_stake_pct*100:.1f}% "
                     f"to {proposed*100:.1f}% limits single-trade risk."
                 ),
                 proposal_metadata={

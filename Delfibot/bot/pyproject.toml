@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 # every transitive into the Tauri sidecar binary, so each new dep widens
 # the installer download. The list below is what the SaaS bot used minus
 # psycopg2 (no Postgres any more) and python-dotenv (env handling moved
-# into config.py + the OS keychain).
+# into config.py + an owner-only local secrets file).
 dependencies = [
     # LLMs.
     "anthropic>=0.40",
@@ -25,7 +25,7 @@ dependencies = [
     # Local DB.
     "sqlalchemy>=2.0",
 
-    # OS keychain for Polymarket private key + Anthropic API key.
+    # Legacy keychain access is retained for one-time secret migration.
     "keyring>=25",
 
     # Polymarket V2 signing (offshore Polygon EIP-712 against the V2

@@ -59,6 +59,7 @@ import {
   DELFI_SKU_PERSONAL_V1,
 } from "@/lib/license";
 import { sendLicenseEmail } from "@/lib/email/license-issued";
+import { sendMetaPurchase } from "@/lib/meta-conversions";
 import { createInvoiceForPurchase, recordRefund } from "@/lib/zoho";
 import {
   markPurchaseSynced,
@@ -284,6 +285,45 @@ export async function POST(request: Request): Promise<NextResponse> {
             email,
             sku: DELFI_SKU_PERSONAL_V1,
           });
+
+          if (
+            session.payment_status === "paid" &&
+            session.amount_total != null &&
+            session.currency &&
+            session.metadata?.meta_tracking_allowed === "true"
+          ) {
+            const purchaseValue = session.amount_total / 100;
+            const purchaseCurrency = session.currency.toUpperCase();
+            after(async () => {
+              try {
+                const result = await sendMetaPurchase({
+                  eventId: session.id,
+                  eventTime: event.created,
+                  email,
+                  value: purchaseValue,
+                  currency: purchaseCurrency,
+                  sourceUrl: "https://delfibot.com/checkout/return",
+                  clientIp: session.metadata?.meta_client_ip,
+                  clientUserAgent: session.metadata?.meta_client_user_agent,
+                  fbc: session.metadata?.fbc,
+                  fbp: session.metadata?.fbp,
+                });
+                if (result.sent) {
+                  console.log("[stripe-webhook] Meta purchase recorded", {
+                    sessionId: session.id,
+                    eventsReceived: result.eventsReceived,
+                  });
+                } else {
+                  console.warn("[stripe-webhook] Meta purchase not configured");
+                }
+              } catch (error) {
+                console.error("[stripe-webhook] Meta purchase failed", {
+                  sessionId: session.id,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            });
+          }
 
           // Mirror the sale into Zoho Books. NEVER throws out of
           // here: a Zoho outage must not block the webhook (which

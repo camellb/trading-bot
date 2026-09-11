@@ -28,7 +28,7 @@
 //! There is no auth between Tauri and the sidecar. We bind to 127.0.0.1
 //! and trust everything on the loopback interface, on the assumption
 //! that any process running as the user could already read the SQLite
-//! DB and OS keychain entries directly.
+//! DB and owner-only secrets file directly.
 
 use std::path::PathBuf;
 use std::sync::Mutex;

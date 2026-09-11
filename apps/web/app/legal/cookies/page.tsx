@@ -2,16 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { clearConsent, readConsent, type CookieConsent } from "../../components/CookieBanner";
+import {
+  readConsent,
+  saveConsent,
+  type CookieConsent,
+} from "../../components/CookieBanner";
 import "../../styles/content.css";
-
-// Cookies policy page. Mounted at /legal/cookies.
-//
-// Static legal copy on the left, plus a small interactive panel that
-// shows the visitor's current consent state and lets them clear it
-// to bring the banner back on the next page render. The panel is the
-// reason this page is "use client" rather than a plain server
-// component like terms / privacy / risk.
 
 export default function CookiesPage() {
   return (
@@ -19,99 +15,79 @@ export default function CookiesPage() {
       <div className="content-eyebrow">Legal</div>
       <h1 className="content-h1">Cookies Policy</h1>
       <p className="content-lede">
-        We try to set the smallest number of cookies we can while still
-        running a working site. This page explains what we use and how
-        you can change your choice.
+        This page explains the cookies and browser storage used on delfibot.com and lets you enable or disable
+        analytics and advertising measurement.
       </p>
-      <div className="content-meta">Effective 2026-04-01 &middot; Last updated 2026-05-04</div>
+      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-09-11</div>
 
       <div className="content-body">
-        <h2>1. What is a cookie</h2>
-        <p>
-          A cookie is a small file a website asks your browser to store. The next time you visit, your browser
-          sends the file back so the site can remember things like that you&apos;re signed in, your preference
-          for dark mode, or whether you&apos;ve seen a banner before. Some cookies are strictly necessary;
-          others are used for analytics or marketing.
-        </p>
-
-        <h2>2. Cookies we use</h2>
-        <p>We split cookies into two buckets, mirroring how the cookie banner works:</p>
-
-        <h3>Necessary (always on)</h3>
+        <h2>1. Browser storage</h2>
         <ul>
           <li>
-            <strong>Cookie-consent flag</strong> in your browser&apos;s local storage under the key{" "}
-            <code>delfi.cookie-consent</code>. Records whether you accepted or rejected the analytics
-            bucket. Without this we would re-prompt you on every visit. This value never leaves your
-            browser.
+            <strong>Consent preference:</strong> <code>delfi.cookie-consent</code> in local storage remembers
+            whether analytics and advertising measurement are enabled. It remains until you change the choice or
+            clear browser storage.
+          </li>
+          <li>
+            <strong>Checkout attribution:</strong> <code>delfi.attribution</code> in session storage retains
+            campaign parameters, the landing path, referring origin, and the Delfi button used to reach
+            checkout. Advertising click identifiers are included only when advertising measurement is enabled.
+            The stored data expires when the browser tab session ends.
+          </li>
+          <li>
+            <strong>Stripe Checkout:</strong> Stripe may use cookies or similar storage in the embedded payment
+            form to process payments, prevent fraud, and protect the checkout.
           </li>
         </ul>
         <p>
-          We have no signed-in marketing-site account, so there are no authentication cookies on
-          delfibot.com. Your Polymarket credentials live exclusively in your operating system&apos;s
-          keychain on the machine where you installed Delfi; they are not cookies, they are not stored on
-          our servers, and they never travel through the website.
+          The marketing site has no signed-in customer account and does not store Polymarket credentials. The
+          desktop app stores those credentials locally on the computer where Delfi is installed.
         </p>
 
-        <h3>Analytics (only if you accept)</h3>
+        <h2>2. Analytics and advertising technologies</h2>
         <p>
-          The following load only after you click <strong>Accept</strong> on the banner. They help us see
-          which pages people read and which links they click, so we can fix what doesn&apos;t work.
+          For visitors in the EU, EEA, United Kingdom, Switzerland, and locations where the visitor&apos;s country
+          cannot be determined, these tools load only after the visitor selects <strong>Accept</strong>. In other
+          locations they may load by default unless the visitor disables them below.
         </p>
         <ul>
           <li>
-            <strong>Google Analytics 4</strong>. Aggregate page views and outbound link clicks. Provides us
-            with traffic data only.
+            <strong>Google Analytics 4:</strong> measures visits, sessions, page use, and checkout events. It
+            commonly sets <code>_ga</code> and a property-specific <code>_ga_*</code> cookie.
           </li>
           <li>
-            <strong>Meta Pixel</strong>. Page-view tracking that lets us measure ads on Meta platforms if and
-            when we run them.
+            <strong>Meta Pixel and Conversions API:</strong> measure visits, checkout starts, and purchases from
+            Meta advertising. Browser measurement may set <code>_fbp</code> and <code>_fbc</code>. When allowed,
+            server measurement may send a purchase event containing campaign data and hashed customer data.
           </li>
           <li>
-            <strong>Microsoft Clarity</strong>. Anonymised heatmaps and session replays so we can see where
-            visitors get stuck. Clarity masks form inputs by default.
+            <strong>Microsoft Clarity:</strong> provides heatmaps and session replays. It may set first-party and
+            third-party cookies including <code>_clck</code> and <code>_clsk</code>. Form inputs are masked by
+            default.
           </li>
           <li>
-            <strong>Vercel Speed Insights</strong>. Web-vital measurements (LCP, CLS, INP) attributed by
-            page. Sampled and aggregated; no individual user identifiers.
+            <strong>Vercel Speed Insights:</strong> collects sampled web-performance measurements such as LCP,
+            CLS, and INP.
           </li>
         </ul>
 
-        <h2>3. We do NOT use</h2>
-        <ul>
-          <li>Advertising cookies that follow you across the web.</li>
-          <li>Affiliate-tracking cookies.</li>
-          <li>Any cookie tied to your trading data. Your trading happens on your computer; we do not see it.</li>
-        </ul>
-
-        <h2>4. Change your mind</h2>
+        <h2>3. Change your choice</h2>
         <ConsentControls />
-
-        <h2>5. Browser-level controls</h2>
         <p>
-          Every modern browser lets you clear stored cookies and local storage from its settings. Doing so
-          will reset your consent choice and the banner will reappear on the next visit. Most browsers also
-          offer a setting that blocks all third-party cookies; the analytics tools listed above respect that
-          setting and will not load.
+          Disabling analytics prevents these tools from loading on the next page load and removes the known
+          first-party analytics cookies Delfi can access. You can also clear all site data in your browser. Your
+          browser, extensions, or the providers&apos; own opt-out controls may offer additional choices.
         </p>
 
-        <h2>6. Changes to this policy</h2>
+        <h2>4. Changes and contact</h2>
         <p>
-          If we add a tool that sets new cookies we will list it here and the next visit will prompt you for
-          consent again. Material changes will also be reflected on the homepage footer.
-        </p>
-
-        <h2>7. Contact</h2>
-        <p>
-          Questions can be sent to{" "}
+          We update this page when we change the technologies used on delfibot.com. Questions can be sent to{" "}
           <a href="mailto:info@delfibot.com">info@delfibot.com</a>.
         </p>
       </div>
     </main>
   );
 }
-
-// ── Consent state + reset control ───────────────────────────────────
 
 function ConsentControls() {
   const [state, setState] = useState<CookieConsent | null | "loading">("loading");
@@ -124,28 +100,39 @@ function ConsentControls() {
   }, []);
 
   let label = "Loading...";
-  if (state === "accepted") label = "You have accepted analytics cookies.";
-  else if (state === "rejected") label = "You have rejected analytics cookies.";
-  else if (state === null) label = "You have not made a choice yet.";
+  if (state === "accepted") label = "Analytics and advertising measurement are enabled.";
+  else if (state === "rejected") label = "Analytics and advertising measurement are disabled.";
+  else if (state === null) label = "No preference has been saved.";
+
+  const choose = (value: CookieConsent) => {
+    saveConsent(value);
+    setState(value);
+    window.location.reload();
+  };
 
   return (
     <div className="consent-control">
       <p className="consent-state">{label}</p>
-      <button
-        type="button"
-        className="consent-reset"
-        onClick={() => {
-          clearConsent();
-          setState(null);
-        }}
-        disabled={state === "loading" || state === null}
-      >
-        Reset my choice
-      </button>
+      <div className="consent-actions">
+        <button
+          type="button"
+          className="consent-reset"
+          onClick={() => choose("accepted")}
+          disabled={state === "loading" || state === "accepted"}
+        >
+          Enable analytics
+        </button>
+        <button
+          type="button"
+          className="consent-reset"
+          onClick={() => choose("rejected")}
+          disabled={state === "loading" || state === "rejected"}
+        >
+          Disable analytics
+        </button>
+      </div>
       <p className="consent-hint">
-        Resetting clears your stored choice. The banner will appear again on your next page load so you can
-        choose differently.{" "}
-        <Link href="/">Back to home.</Link>
+        Your choice applies on this browser. <Link href="/">Back to home.</Link>
       </p>
     </div>
   );

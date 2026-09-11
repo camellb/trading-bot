@@ -10,13 +10,14 @@ export default function TermsPage() {
         desktop application, activating a license key, or using the delfibot.com website, you accept these
         terms. If you do not accept them, do not use Delfi.
       </p>
-      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-05-04</div>
+      <div className="content-meta">Effective 2026-04-01 · Last updated 2026-09-11</div>
 
       <div className="content-body">
         <h2>1. Who we are</h2>
         <p>
-          Delfi is an autonomous trading system that evaluates prediction markets and executes positions on
-          Polymarket and similar venues on behalf of its users. The Delfi software and the delfibot.com
+          Delfi is desktop software that evaluates prediction markets and can submit trades to Polymarket using
+          settings and credentials supplied by the user. Delfi is not Polymarket, a prediction-market venue, a
+          broker, or a custodian. The Delfi software and the delfibot.com
           website are operated by <strong>WLDK Limited</strong>, a company registered in England and
           Wales under company number <strong>16182403</strong>, with its registered office at Lytchett
           House, 13 Freeland Park, Wareham Road, Poole, Dorset, BH16 6FA, United Kingdom (the
@@ -35,9 +36,10 @@ export default function TermsPage() {
         <h2>3. License and credentials</h2>
         <p>
           You are responsible for maintaining the confidentiality of your license key and any private keys
-          used to authorize trades. Delfi runs entirely on your computer; we never receive your wallet
-          private key or seed phrase, and we will never ask for them. If you suspect a license key has been
-          compromised, contact support so we can reissue it.
+          used to authorize trades. Trading and forecasting run on your computer. License activation and status
+          checks contact delfibot.com using the license identifier and a hashed device identifier. We never
+          receive your wallet private key or seed phrase, and we will never ask for them. If you suspect a
+          license key has been compromised, contact support so we can reissue it.
         </p>
         <ul>
           <li>Keep your license key and wallet keys private.</li>

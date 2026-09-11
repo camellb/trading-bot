@@ -15,6 +15,7 @@ class ProcessHealth:
         self._lock = threading.Lock()
         self._job_last_ok: dict[str, datetime] = {}
         self._job_last_error: dict[str, datetime] = {}
+        self._job_last_blocked: dict[str, tuple[datetime, str]] = {}
         self._error_count: int = 0
         self._bot_start_time: Optional[datetime] = None
 
@@ -40,6 +41,10 @@ class ProcessHealth:
             self._job_last_error[job_name] = datetime.now(timezone.utc)
             self._error_count += 1
 
+    def record_job_blocked(self, job_name: str, reason: str) -> None:
+        with self._lock:
+            self._job_last_blocked[job_name] = (datetime.now(timezone.utc), reason)
+
     @property
     def error_count(self) -> int:
         return self._error_count
@@ -50,14 +55,33 @@ class ProcessHealth:
 
     def snapshot(self) -> dict:
         with self._lock:
-            all_jobs = sorted(set(self._job_last_ok) | set(self._job_last_error))
+            all_jobs = sorted(
+                set(self._job_last_ok)
+                | set(self._job_last_error)
+                | set(self._job_last_blocked)
+            )
             jobs = {}
             for name in all_jobs:
                 ok_ts = self._job_last_ok.get(name)
                 err_ts = self._job_last_error.get(name)
+                blocked = self._job_last_blocked.get(name)
+                blocked_ts = blocked[0] if blocked else None
+                candidates = [
+                    (ok_ts, "ok"),
+                    (err_ts, "error"),
+                    (blocked_ts, "blocked"),
+                ]
+                state = max(
+                    ((timestamp, value) for timestamp, value in candidates if timestamp),
+                    default=(None, "unknown"),
+                    key=lambda item: item[0],
+                )[1]
                 jobs[name] = {
+                    "state": state,
                     "last_ok": ok_ts.isoformat() if ok_ts else None,
                     "last_error": err_ts.isoformat() if err_ts else None,
+                    "last_blocked": blocked_ts.isoformat() if blocked_ts else None,
+                    "blocked_reason": blocked[1] if blocked else None,
                 }
             return {
                 "uptime_s": self.uptime_seconds,

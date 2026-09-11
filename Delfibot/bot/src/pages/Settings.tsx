@@ -990,7 +990,7 @@ function DbBackupPanel() {
  * Lets the user see the license currently activated on this machine
  * and sign out of it. "Sign out" calls /api/license/deactivate which
  * (a) tells Lemon Squeezy to free the activation slot for this
- * instance, then (b) wipes the local keychain. After that the
+ * instance, then (b) wipes the local secret. After that the
  * LicenseGate re-mounts and the user can paste a different key.
  *
  * Used for: moving Delfi to a new computer, handing the machine to
@@ -2029,7 +2029,7 @@ function NotificationsPanel({ goto }: { goto: Goto }) {
  *      by visiting `https://api.telegram.org/bot<TOKEN>/getUpdates`).
  *   4. User pastes both into this card and clicks "Test + save". The
  *      sidecar sends a probe message; on success it persists the
- *      pair (token to keychain, chat id to user_config). On failure
+ *      pair (token to local secret storage, chat id to user_config). On failure
  *      nothing is persisted and the user sees Telegram's error.
  *
  * The token is treated as a secret: the GET endpoint returns only

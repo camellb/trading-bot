@@ -430,7 +430,7 @@ learning_reports = Table(
 # Multi-tenant SaaS had a row per user; local has exactly one row keyed
 # by user_id='local'. Subscription / Telegram / Polymarket-US columns
 # from the SaaS schema are gone. Polymarket private key + Anthropic API
-# key live in the OS keychain (`engine/user_config.py`), not the DB.
+# key live in the owner-only local secrets file (`engine/user_config.py`), not the DB.
 user_config = Table(
     "user_config",
     metadata,
@@ -533,10 +533,10 @@ user_config = Table(
            server_default=sa_text("0")),
 
     # Polymarket EIP-712 wallet address (the matching private key lives
-    # in the OS keychain). Empty string until the user pastes one in.
+    # in the owner-only local secrets file). Empty until the user pastes one in.
     Column("wallet_address",  Text, nullable=True),
 
-    # Telegram. Bot token lives in the OS keychain (it's a secret); the
+    # Telegram. Bot token lives in the local secrets file; the
     # chat id is just the recipient identifier so it stays in the DB.
     # Notification prefs is a JSON object of {category: bool} where the
     # categories are NOTIFICATION_CATEGORIES from engine/user_config.py.

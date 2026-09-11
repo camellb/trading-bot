@@ -437,7 +437,7 @@ function GuidePolymarketKey({ anchor, clearAnchor }: GuideHookProps) {
       <p>
         Delfi signs Polymarket orders with the private key of the
         wallet that controls the Polymarket account. The key stays in
-        the operating system keychain on this device.
+        an owner-only local file on this device.
       </p>
       <p>
         Everything else about the Polymarket account auto-derives from
@@ -643,17 +643,17 @@ function Troubleshooting() {
           <p>
             The most common cause is sizing math falling under the
             Polymarket platform minimum (every order must clear $1
-            and 5 shares). Open <strong>Risk controls &rarr; Bet sizing
+            and 5 shares). Open <strong>Risk controls &rarr; Trade sizing
             and risk limits</strong> and check:
           </p>
           <ul>
             <li>
-              <strong>Strict maximum bet size</strong>: at small live
+              <strong>Strict maximum trade size</strong>: at small live
               bankrolls (under roughly $50) leave this off. The
               sizer bumps each order to whatever Polymarket accepts.
             </li>
             <li>
-              <strong>Default bet size</strong>: default bet size &times;
+              <strong>Default trade size</strong>: default trade size &times;
               bankroll has to clear the minimum at the
               favourite&apos;s price. At $10 bankroll and 2%, the
               default stake is $0.20, under the platform minimum.

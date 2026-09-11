@@ -8,7 +8,7 @@ the dashboard open. The bot is BYO: the user creates a bot via
 @userinfobot), and pastes both into Settings -> Notifications.
 
 The token is a secret (anyone with it can read messages and post on
-behalf of the bot) so it lives in the OS keychain. The chat id is
+behalf of the bot) so it lives in the owner-only local secrets file. The chat id is
 just a recipient identifier and lives in `user_config.telegram_chat_id`.
 
 Inbound commands:

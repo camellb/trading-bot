@@ -23,9 +23,8 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 # drags in submodules + data files + binaries. Cheap insurance for
 # libraries that load plugins by name at runtime.
 bundled_pkgs = [
-    # OS keychain. Loads platform backends (macOS keyring, Windows
-    # Credential Locker, SecretService on Linux) via importlib at
-    # runtime, so static analysis misses them.
+    # Legacy keychain migration. Loads platform backends via importlib
+    # at runtime, so static analysis misses them.
     "keyring",
 
     # SQLAlchemy loads dialect modules by name when create_engine is

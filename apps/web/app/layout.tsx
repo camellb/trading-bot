@@ -88,7 +88,10 @@ export default async function RootLayout({
   const consentRequired = consentRequiredForCountry(country);
 
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      data-consent-required={consentRequired ? "true" : "false"}
+    >
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link

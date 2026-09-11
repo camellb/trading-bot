@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
+import { checkoutUrl } from "@/lib/attribution";
 import "./styles/homepage.css";
 
 // Checkout destination. Default is the embedded checkout at
@@ -27,11 +28,10 @@ const CHECKOUT_URL = process.env.NEXT_PUBLIC_CHECKOUT_URL || "/checkout";
 //   fbq('trackCustom', 'CtaClick', { cta_location }) → Meta Pixel
 //
 // Plus an `IntersectionObserver` per section to record `section_view`
-// once when 50% of it scrolls into view — that gives us scroll-depth
-// and a per-section heatmap inside Clarity's segments. UTM params
-// are appended to CHECKOUT_URL so LS records the originating CTA on
-// the order itself; combining LS orders + GA4 events gives us CVR
-// per CTA.
+// once when 50% of it scrolls into view. Acquisition parameters from
+// the landing URL are preserved through checkout, while `delfi_cta`
+// records which button was clicked without overwriting the ad's
+// utm_content value.
 //
 // Providers are loaded by `lib/analytics.tsx` and gated by the
 // cookie banner (`ConsentGate`). Before consent, `window.gtag` and
@@ -68,18 +68,6 @@ function trackSectionView(section: string) {
   }
 }
 
-function withUtm(url: string, location: string): string {
-  // Don't decorate mailto: fallback - would break the address.
-  if (url.startsWith("mailto:")) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  const params = new URLSearchParams({
-    utm_source:  "delfi-site",
-    utm_medium:  "cta",
-    utm_content: location,
-  });
-  return `${url}${sep}${params.toString()}`;
-}
-
 /** Tracked checkout CTA. Use everywhere on the landing page. The
  *  visible label is variable per location so we can A/B and so the
  *  analytics events carry the actual button text the user clicked. */
@@ -97,11 +85,20 @@ function CtaLink({
   text?: string;
 }) {
   const ctaText = text ?? "Get Delfi";
+  const [href, setHref] = useState(CHECKOUT_URL);
+
+  useEffect(() => {
+    setHref(checkoutUrl(CHECKOUT_URL, location));
+  }, [location]);
+
   return (
     <a
       className={className}
-      href={withUtm(CHECKOUT_URL, location)}
-      onClick={() => trackCta(location, ctaText)}
+      href={href}
+      onClick={(event) => {
+        event.currentTarget.href = checkoutUrl(CHECKOUT_URL, location);
+        trackCta(location, ctaText);
+      }}
     >
       {children}
     </a>
@@ -489,7 +486,7 @@ function CustodyPromise() {
         </div>
         <div className="custody-grid">
           <p className="custody-body">
-            Delfi runs on your computer, not ours. Your Polymarket key never leaves your OS keychain. Delfi reads it only when it places a trade. Your wallet stays invisible to us by design.
+            Delfi runs on your computer, not ours. Your Polymarket key is stored in an owner-only local file. Delfi reads it only when it places a trade. Your wallet stays invisible to us by design.
           </p>
           <ul className="custody-list">
             <li><span className="custody-tick">✓</span> We never see your wallet address.</li>
@@ -659,12 +656,12 @@ function FAQ() {
   const [open, setOpen] = useState(0);
   const items = [
     { q: "What exactly is Delfi?", a: "Delfi is an autonomous Polymarket trader that runs entirely on your machine. It continuously scans every active prediction market, produces its own probability forecasts, and backs those forecasts with small, flat-sized stakes, all within the risk limits you set. You install it once like any other desktop app." },
-    { q: "Where do my private keys live?", a: "In an encrypted file on your machine, owned only by your user account. Delfi reads them only inside its own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
+    { q: "Where do my private keys live?", a: "In a local file restricted to your operating-system user account. Delfi reads them only inside its own process; they never travel to any server we control. We can't see your wallet address even if we wanted to." },
     { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It runs locally on your machine, never custodies your funds, sizes every trade by the same flat-fractional math regardless of how strong the signal looks, and shows you the full reasoning on every position." },
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, sizing discipline plus following the market favourite compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
     { q: "How much does it cost?", a: "$249 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
-    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in your OS keychain, not on Delfi servers. Delfi reads it only inside your process, only when signing a trade: never at rest, never in logs, never transmitted. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time." },
+    { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key is stored in an owner-only local file, not on Delfi servers. Delfi reads it only inside the desktop process when signing a trade. It is never logged or transmitted to us. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time." },
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
     { q: "Can I turn Delfi off?", a: "Any time. The dashboard has an emergency stop button. Open positions stay open until they resolve. No new trades are placed until you turn it back on." },
     { q: "Is this legal?", a: "Polymarket and prediction markets are regulated differently in every jurisdiction. Some permit it, some restrict it, some prohibit it. Confirm legality in your own region before trading. If in doubt, consult a local advisor." },
@@ -870,7 +867,7 @@ const FAQ_JSONLD = {
       "name":  "Where do my private keys live?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text":  "In an encrypted file on your machine, owned only by your user account. Delfi reads them only inside its own process; they never travel to any server we control. We can't see your wallet address even if we wanted to.",
+        "text":  "In a local file restricted to your operating-system user account. Delfi reads them only inside its own process; they never travel to any server we control. We can't see your wallet address even if we wanted to.",
       },
     },
     {
@@ -910,7 +907,7 @@ const FAQ_JSONLD = {
       "name":  "Is my money safe?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text":  "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key lives in an encrypted file on your machine, not on Delfi servers. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time.",
+        "text":  "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key is stored in a local file restricted to your operating-system user account, not on Delfi servers. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time.",
       },
     },
     {

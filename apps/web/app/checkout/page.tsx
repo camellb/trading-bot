@@ -8,9 +8,9 @@
 // SAQ A.
 //
 // Flow:
-//   1. Component mounts. Reads UTM tags from `?utm_*` query
-//      params (the homepage's `withUtm()` helper appends them).
-//   2. POST /api/checkout/create-session with the UTMs.
+//   1. Component mounts. Reads campaign and click identifiers preserved
+//      from the original landing page.
+//   2. POST /api/checkout/create-session with the attribution data.
 //   3. Server returns `clientSecret`. We hand it to Stripe.js
 //      via <EmbeddedCheckoutProvider>.
 //   4. Stripe renders the form. On successful payment Stripe
@@ -30,7 +30,9 @@ import {
   EmbeddedCheckoutProvider,
   EmbeddedCheckout,
 } from "@stripe/react-stripe-js";
+import { checkoutAttribution } from "@/lib/attribution";
 import { trackInitiateCheckout } from "@/lib/track";
+import { readConsent } from "../components/CookieBanner";
 import "./checkout.css";
 
 // loadStripe is async + idempotent; cache the promise at the module
@@ -57,16 +59,7 @@ export default function CheckoutPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Pull UTM params from the URL the marketing site appended
-    // (utm_source, utm_medium, utm_content). Forward to the server
-    // so they land on `metadata` of the Stripe session for later
-    // attribution.
-    const params = new URLSearchParams(window.location.search);
-    const utm = {
-      source:  params.get("utm_source")  || undefined,
-      medium:  params.get("utm_medium")  || undefined,
-      content: params.get("utm_content") || undefined,
-    };
+    const attribution = checkoutAttribution();
 
     let cancelled = false;
 
@@ -80,7 +73,10 @@ export default function CheckoutPage() {
     fetch("/api/checkout/create-session", {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ utm }),
+      body: JSON.stringify({
+        attribution,
+        trackingConsent: readConsent(),
+      }),
     })
       .then(async (res) => {
         const body = (await res.json()) as CreateSessionResponse;
@@ -162,7 +158,7 @@ export default function CheckoutPage() {
             <div className="checkout-guarantee-body">
               <div className="checkout-guarantee-head">14-day money-back guarantee</div>
               <p className="checkout-guarantee-text">
-                No questions, no forms. Email <a href="mailto:info@delfibot.com">info@delfibot.com</a> from the address you bought with and you&apos;re refunded.
+                Email <a href="mailto:info@delfibot.com">info@delfibot.com</a> within 14 days, before activating your license, for a full refund.
               </p>
             </div>
           </div>

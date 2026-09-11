@@ -675,9 +675,9 @@ function SuggestionCard({
 // Risk page (Risk.tsx) one-to-one. The Risk page is the source of
 // truth for risk-param vocabulary across the app.
 const PARAM_LABELS: Record<string, string> = {
-  base_stake_pct:              "Default bet size",
-  max_stake_pct:               "Maximum bet size",
-  max_stake_pct_enabled:       "Strict maximum bet size",
+  base_stake_pct:              "Default trade size",
+  max_stake_pct:               "Maximum trade size",
+  max_stake_pct_enabled:       "Strict maximum trade size",
   daily_loss_limit_pct:        "Daily loss limit",
   weekly_loss_limit_pct:       "Weekly loss limit",
   drawdown_halt_pct:           "Maximum drawdown",

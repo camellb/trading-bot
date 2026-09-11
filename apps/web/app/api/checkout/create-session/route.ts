@@ -20,12 +20,14 @@
 //   STRIPE_SECRET_KEY  - sk_live_... (or sk_test_... in Preview)
 //   STRIPE_PRICE_ID    - price_... from Stripe Products
 //
-// Optional UTM forwarding: the client may pass a `utm` object
-// in the POST body; we stash it in `metadata` on the session
-// so the webhook log can attribute the conversion.
+// Acquisition forwarding: the client passes campaign, click, browser,
+// and consent data. We keep the approved fields in Stripe metadata so
+// a paid order can be attributed and deduplicated with Meta.
 
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
+import type { AttributionData } from "@/lib/attribution";
+import { consentRequiredForCountry } from "@/lib/regions";
 
 export const runtime = "nodejs";
 
@@ -39,14 +41,37 @@ function stripe(): Stripe {
 }
 
 interface CreateSessionBody {
-  /** Optional UTM tags from the click that opened the page. We
-   *  stash them as metadata on the session so the webhook log
-   *  can tie a conversion back to a CTA location. */
-  utm?: {
-    source?: string;
-    medium?: string;
-    content?: string;
-  };
+  attribution?: AttributionData;
+  trackingConsent?: "accepted" | "rejected" | null;
+}
+
+const ATTRIBUTION_FIELDS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+  "utm_term",
+  "utm_id",
+  "fbclid",
+  "gclid",
+  "msclkid",
+  "landing_path",
+  "referrer_origin",
+  "delfi_cta",
+  "fbc",
+  "fbp",
+] as const;
+
+function metadataValue(value: unknown): string {
+  return typeof value === "string" ? value.trim().slice(0, 500) : "";
+}
+
+function clientIp(req: Request): string {
+  return (
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    req.headers.get("x-real-ip")?.trim() ||
+    ""
+  ).slice(0, 100);
 }
 
 function originFromRequest(req: Request): string {
@@ -85,6 +110,26 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
 
   const origin = originFromRequest(req);
+  const country = req.headers.get("x-vercel-ip-country");
+  const requiresConsent = consentRequiredForCountry(country);
+  const trackingAllowed = body.trackingConsent === "accepted" || (
+    !requiresConsent && body.trackingConsent !== "rejected"
+  );
+  const attribution = body.attribution ?? {};
+  const metadata: Record<string, string> = {
+    meta_tracking_allowed: trackingAllowed ? "true" : "false",
+  };
+
+  for (const field of ATTRIBUTION_FIELDS) {
+    const isMetaIdentifier = field === "fbclid" || field === "fbc" || field === "fbp";
+    metadata[field] = isMetaIdentifier && !trackingAllowed
+      ? ""
+      : metadataValue(attribution[field]);
+  }
+  if (trackingAllowed) {
+    metadata.meta_client_ip = clientIp(req);
+    metadata.meta_client_user_agent = metadataValue(req.headers.get("user-agent"));
+  }
 
   try {
     const session = await stripe().checkout.sessions.create({
@@ -106,14 +151,7 @@ export async function POST(req: Request): Promise<NextResponse> {
       // /checkout/return page reads the id, queries the session
       // status, and shows the confirmation copy.
       return_url: `${origin}/checkout/return?session_id={CHECKOUT_SESSION_ID}`,
-      metadata: {
-        // Stash UTM tags so they land in the webhook log alongside
-        // the license issue. Empty strings are filtered by Stripe
-        // automatically; missing keys are simply omitted.
-        utm_source:  body.utm?.source  ?? "",
-        utm_medium:  body.utm?.medium  ?? "",
-        utm_content: body.utm?.content ?? "",
-      },
+      metadata,
       // Surfaces an "Add promotion code" affordance on Stripe's
       // embedded checkout. Off by default in the API; without this
       // the field never renders even when valid Promotion Codes

@@ -69,7 +69,7 @@
             this set but mode=simulation in the dashboard, no real
             orders fire (executor falls through to simulation
             fills). Once the user toggles mode=live AND pastes a
-            Polymarket private key into the OS keychain, _open_live
+            Polymarket private key into the local secrets file, _open_live
             will route to py-clob-client-v2.
         -->
         <key>DELFI_LIVE_KILLSWITCH_OFF</key>

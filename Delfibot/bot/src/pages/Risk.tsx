@@ -728,8 +728,8 @@ function RiskPanel({
     // User-facing labels for validation messages on circuit-breaker
     // fields. Matches the input labels rendered below.
     const fieldLabels: Record<string, string> = {
-      base_stake_pct:         "Default bet size",
-      max_stake_pct:          "Maximum bet size",
+      base_stake_pct:         "Default trade size",
+      max_stake_pct:          "Maximum trade size",
       daily_loss_limit_pct:   "Daily loss limit",
       weekly_loss_limit_pct:  "Weekly loss limit",
       drawdown_halt_pct:      "Maximum drawdown",
@@ -779,18 +779,18 @@ function RiskPanel({
   return (
     <div className="panel">
       <div className="panel-head">
-        <h2 className="panel-title">Bet sizing and risk limits</h2>
+        <h2 className="panel-title">Trade sizing and risk limits</h2>
       </div>
       <form onSubmit={saveRisk}>
         <div className="risk-grid risk-grid-3">
           <PercentField
-            label="Default bet size" step="0.1"
+            label="Default trade size" step="0.1"
             fractionRange={BOUNDS.base_stake_pct}
             fractionValue={risk.base_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, base_stake_pct: v })}
           />
           <PercentField
-            label="Maximum bet size" step="0.1"
+            label="Maximum trade size" step="0.1"
             fractionRange={BOUNDS.max_stake_pct}
             fractionValue={risk.max_stake_pct}
             onChangeFraction={(v) => setRisk({ ...risk, max_stake_pct: v })}
@@ -827,7 +827,7 @@ function RiskPanel({
           />
           <div className="risk-grid-full">
             <ToggleRow
-              label="Strict maximum bet size"
+              label="Strict maximum trade size"
               checked={risk.max_stake_pct_enabled}
               onChange={(v) => setRisk({ ...risk, max_stake_pct_enabled: v })}
             />

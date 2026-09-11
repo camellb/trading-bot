@@ -9,7 +9,7 @@ Trust boundary
 ==============
 We bind to 127.0.0.1 only. There is no auth header, no API key, no
 token. The threat model assumes that any process running on the user's
-machine could already read the SQLite DB and the OS keychain entries
+machine could already read the SQLite DB and owner-only secrets file
 directly, so adding a static secret on top of loopback would be theatre.
 If we ever expose this beyond loopback (we won't, but if), this whole
 file needs an auth layer first.
@@ -26,7 +26,7 @@ GET  /api/state                     bot state summary (mode, started_at, etc.)
 GET  /api/config                    current user_config (no secrets)
 PUT  /api/config                    partial update of user_config (validated)
 GET  /api/credentials               which credentials are present (booleans + wallet)
-PUT  /api/credentials               write Polymarket / Anthropic creds to OS keychain
+PUT  /api/credentials               write Polymarket / Anthropic creds locally
 GET  /api/positions                 open + recent pm_positions rows
 GET  /api/events                    recent event_log rows
 POST /api/bot/start                 set mode=live (requires creds + wallet)
@@ -736,6 +736,25 @@ class LocalAPI:
     # ── Handlers ────────────────────────────────────────────────────────────
     async def _health(self, _req: web.Request) -> web.Response:
         snap = proc_health.snapshot()
+        try:
+            from engine.connectivity_probe import connectivity_blocks_trading
+            blocked, blocked_reason = connectivity_blocks_trading()
+            connectivity = "unknown"
+            state_file = app_data_dir() / "connectivity_state.json"
+            if state_file.exists():
+                cached = json.loads(state_file.read_text(encoding="utf-8"))
+                connectivity = str(cached.get("state") or "unknown")
+            if blocked:
+                connectivity = str(blocked_reason or connectivity)
+                snap["status"] = "degraded"
+            elif connectivity == "ok":
+                snap["status"] = "ok"
+            else:
+                snap["status"] = "unknown"
+            snap["connectivity"] = connectivity
+        except Exception:
+            snap["status"] = "unknown"
+            snap["connectivity"] = "unknown"
         # Surface loop pump latency. The watchdog updates a timestamp
         # every 5s; large values (>10s) mean the loop is starting to
         # wedge. /api/health is the cheapest endpoint, so an external
@@ -2636,7 +2655,7 @@ class LocalAPI:
 
         We never return the bot token. The UI cares only about the
         binary state (configured or not); the actual token is read by
-        the notifier from the keychain on each send.
+        the notifier from the owner-only local secrets file on each send.
         """
         return _ok(await self._offload(get_user_telegram_config))
 
