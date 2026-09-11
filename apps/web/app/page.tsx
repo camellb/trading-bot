@@ -700,7 +700,11 @@ function FinalCTA() {
       <div className="container final-inner">
         <h2 className="final-head balanced">Stop reading. Start trading.</h2>
         <div className="price-card">
-          <div className="price-card-price">$249</div>
+          <div className="price-card-sale-label">Launch sale</div>
+          <div className="price-card-price" aria-label="Regular price $799, sale price $249">
+            <s className="price-card-regular" aria-hidden="true">$799</s>
+            <span aria-hidden="true">$249</span>
+          </div>
           <div className="price-card-tagline">One-time payment. Lifetime access.</div>
           <ul className="price-card-list">
             <li>24/7 automated trading on Polymarket</li>

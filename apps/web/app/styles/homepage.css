@@ -764,13 +764,40 @@ html, body { scroll-behavior: smooth; }
   border-radius: 8px;
   text-align: left;
 }
+.price-card-sale-label {
+  width: fit-content;
+  margin: 0 auto 12px;
+  padding: 5px 10px;
+  border: 1px solid var(--gold-line, rgba(212,175,55,0.35));
+  border-radius: 999px;
+  color: var(--gold);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+}
 .price-card-price {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 14px;
   font-family: var(--font-display);
   font-size: 56px;
   line-height: 1;
   color: var(--gold);
   letter-spacing: -0.02em;
   text-align: center;
+}
+.price-card-regular {
+  color: var(--vellum-40);
+  font-family: var(--font-body);
+  font-size: 24px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 1px;
 }
 .price-card-tagline {
   font-family: var(--font-body);
