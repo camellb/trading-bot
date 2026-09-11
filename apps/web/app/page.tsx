@@ -15,6 +15,7 @@ import "./styles/homepage.css";
 // is delivered in the post-purchase email, never embedded
 // here.
 const CHECKOUT_URL = process.env.NEXT_PUBLIC_CHECKOUT_URL || "/checkout";
+const SHOW_HERO_PRESS = process.env.NEXT_PUBLIC_SHOW_PRESS_STRIP === "true";
 
 // ─── Landing-page analytics ──────────────────────────────
 //
@@ -230,7 +231,7 @@ function Hero() {
           <CtaLink className="btn-primary" location="hero" text="Get Delfi">Get Delfi</CtaLink>
           <a className="btn-ghost" href="#how">See How It Works →</a>
         </div>
-        <HeroPress />
+        {SHOW_HERO_PRESS && <HeroPress />}
       </div>
     </section>
   );
