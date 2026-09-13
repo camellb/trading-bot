@@ -120,6 +120,7 @@ from engine.user_config import (
     # Multi-provider LLM connections + role wiring (Settings > Connections).
     add_llm_connection,
     delete_llm_connection,
+    get_llm_connection,
     get_llm_connections,
     get_llm_roles,
     has_forecaster_connection,
@@ -352,8 +353,12 @@ class LocalAPI:
         port: int = 0,
         *,
         watchdog: Optional[Any] = None,
+        job_loop_silence_getter=None,
     ) -> None:
         self._analyst = analyst
+        # Seconds since the scheduler job loop last ran a callback
+        # (main.job_loop_silence_seconds). Surfaced in /api/health.
+        self._job_loop_silence_getter = job_loop_silence_getter
         self._host = host
         self._requested_port = port
         self._scheduler = None
@@ -476,6 +481,8 @@ class LocalAPI:
                             self._put_llm_connection)
         app.router.add_delete("/api/llm/connections/{conn_id}",
                             self._delete_llm_connection)
+        app.router.add_post("/api/llm/connections/{conn_id}/test",
+                            self._post_llm_connection_test)
         app.router.add_get("/api/llm/roles",        self._get_llm_roles)
         app.router.add_put("/api/llm/roles",        self._put_llm_roles)
         app.router.add_get("/api/positions",   self._get_positions)
@@ -767,6 +774,24 @@ class LocalAPI:
                 )
             except Exception:
                 pass
+        # The scheduler job loop has its own heartbeat. A large value
+        # means scans, exits and settlements are not running even though
+        # this endpoint answers; report it and degrade the status.
+        if self._job_loop_silence_getter is not None:
+            try:
+                job_silence = float(self._job_loop_silence_getter())
+                snap["job_loop_silence_s"] = round(job_silence, 2)
+                if job_silence > 120.0 and snap.get("status") == "ok":
+                    snap["status"] = "degraded"
+            except Exception:
+                pass
+        # Paused forecast/search connections (quota, billing, auth,
+        # missing model) so the dashboard can explain an idle scan.
+        try:
+            from engine.llm_client import get_llm
+            snap["llm_cooldowns"] = get_llm().cooldown_snapshot()
+        except Exception:
+            pass
         # Open file descriptors. CLOSE_WAIT leaks (handler tasks that
         # never returned) show up here as a steady climb. Healthy
         # baseline is ~150-200 on macOS; >500 means a leak in flight.
@@ -1635,6 +1660,20 @@ class LocalAPI:
         self._reset_llm_runtime()
         roles = await self._offload(get_llm_roles)
         return _ok({"deleted": conn_id, "roles": roles})
+
+    async def _post_llm_connection_test(self, req: web.Request) -> web.Response:
+        """One tiny round trip on a single connection so a bad key, an
+        account with no credit, or an unavailable model shows up on the
+        Settings page immediately instead of after a paid scan cycle.
+        20 s cap keeps it under the 25 s handler ceiling."""
+        conn_id = req.match_info.get("conn_id", "")
+        conn = await self._offload(get_llm_connection, conn_id)
+        if not conn:
+            return _err("connection not found", 404)
+        from engine.llm_client import get_llm
+        result = await get_llm().test_connection(conn, timeout_s=20.0)
+        result["id"] = conn_id
+        return _ok(result)
 
     async def _get_llm_roles(self, _req: web.Request) -> web.Response:
         return _ok({"roles": await self._offload(get_llm_roles)})

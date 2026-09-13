@@ -55,6 +55,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from typing import Any, Optional
 
 import anthropic
@@ -82,14 +83,169 @@ _TRANSIENT_MARKERS = (
 )
 
 
-def _is_transient_llm_error(exc: Exception) -> bool:
+def _exc_status(exc: Exception) -> Optional[int]:
     status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    if isinstance(status, int):
+    return status if isinstance(status, int) else None
+
+
+# Failure classes that will NOT clear by retrying the same connection
+# a few seconds later. Each maps to a cooldown so the scan stops paying
+# a round trip (and a 3 s backoff) per market for a key that is out of
+# quota, out of credit, rejected, or pointed at a missing model.
+# 2026-09-12 log: 13,203 identical daily-quota exhaustions in two days,
+# each retried after a 3 s sleep, on every market of every scan.
+_QUOTA_MARKERS = (
+    "resource_exhausted", "quota", "daily limit", "exceeded your current",
+    "insufficient_quota",
+)
+_BILLING_MARKERS = (
+    "credit balance", "billing", "purchase credits", "no credit",
+    "payment required", "insufficient funds",
+)
+_AUTH_MARKERS = (
+    "invalid x-api-key", "authentication", "api key not valid",
+    "invalid api key", "invalid_api_key", "incorrect api key",
+    "unauthorized", "permission denied", "permission_denied",
+)
+_MODEL_MARKERS = (
+    "not_found", "model not found", "does not exist",
+    "not found for api version", "unknown model", "no longer supported",
+    "is not supported", "decommissioned",
+)
+_COOLDOWN_SECONDS = {
+    "quota":   900.0,
+    "billing": 1800.0,
+    "auth":    1800.0,
+    "model":   1800.0,
+}
+
+
+def classify_cooldown(exc: Exception) -> Optional[tuple[float, str]]:
+    """(cooldown_seconds, reason) for failures that retrying cannot fix
+    in the short term, else None. Reasons: quota | billing | auth | model."""
+    status = _exc_status(exc)
+    msg = f"{type(exc).__name__}: {exc}".lower()
+    if status == 429 or " 429" in msg or msg.startswith("429"):
+        if any(m in msg for m in _QUOTA_MARKERS):
+            return (_COOLDOWN_SECONDS["quota"], "quota")
+        return None
+    if status in (401, 403) or any(m in msg for m in _AUTH_MARKERS):
+        return (_COOLDOWN_SECONDS["auth"], "auth")
+    if any(m in msg for m in _BILLING_MARKERS):
+        return (_COOLDOWN_SECONDS["billing"], "billing")
+    if status == 404 or any(m in msg for m in _MODEL_MARKERS):
+        return (_COOLDOWN_SECONDS["model"], "model")
+    return None
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    if classify_cooldown(exc) is not None:
+        # Quota / billing / auth / missing model: a second attempt three
+        # seconds later is guaranteed to fail the same way.
+        return False
+    status = _exc_status(exc)
+    if status is not None:
         return status in (429, 500, 502, 503, 504, 529)
     msg = f"{type(exc).__name__}: {exc}".lower()
     if "not_found" in msg or "404" in msg:
         return False
     return any(marker in msg for marker in _TRANSIENT_MARKERS)
+
+
+def short_error(exc: BaseException, limit: int = 300) -> str:
+    """`Type: message` with the message collapsed to one line and capped.
+    Provider SDK errors embed the full JSON body (Gemini's quota error is
+    ~1.5 KB with help links); printing it per attempt per market grew
+    sidecar.log to 53 MB in two days."""
+    text = " ".join(str(exc).split())
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return f"{type(exc).__name__}: {text}"
+
+
+class EmptyLLMResponse(RuntimeError):
+    """The provider answered without any usable text (thinking-only
+    output, safety block, refusal, or max_tokens hit before the first
+    text block). Raised so call() fails over to the next connection
+    instead of returning an empty string as success."""
+
+
+def extract_anthropic_text(response) -> str:
+    """Join the text blocks of a Messages API response.
+
+    Current models run adaptive thinking by default, so `content` starts
+    with a thinking block that has no `.text`; `response.content[0].text`
+    raised AttributeError on every forecast after the tokens were billed
+    (335 times in the 2026-09-12 log). Only `type == "text"` blocks carry
+    the answer."""
+    parts: list[str] = []
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            text = getattr(block, "text", None)
+            if text:
+                parts.append(text)
+    joined = "\n".join(parts).strip()
+    if not joined:
+        raise EmptyLLMResponse(
+            "provider returned no text "
+            f"(stop_reason={getattr(response, 'stop_reason', None)})"
+        )
+    return joined
+
+
+# Model families that reject non-default sampling parameters (a
+# non-default `temperature` returns 400). The default 1.0 is omitted for
+# every model; a non-default value is forwarded only to families that
+# still accept it.
+_NO_SAMPLING_PREFIXES = (
+    "claude-sonnet-5", "claude-opus-5", "claude-opus-4-7", "claude-opus-4-8",
+    "claude-fable", "claude-mythos",
+)
+
+
+def _anthropic_accepts_sampling(model: str) -> bool:
+    m = (model or "").lower()
+    return not any(m.startswith(p) for p in _NO_SAMPLING_PREFIXES)
+
+
+# User-facing detail for the "Forecast provider unavailable" alert.
+# Plain copy, no vendor names, says what to do next.
+_FAILURE_COPY = {
+    "quota":   ("The forecast provider's usage quota is used up. Add billing to "
+                "that key or add a backup connection in Settings > Connections. "
+                "Delfi retries every 15 minutes."),
+    "billing": ("The forecast provider declined the request because the account "
+                "has no credit. Top up the provider account or switch keys in "
+                "Settings > Connections. Delfi retries every 30 minutes."),
+    "auth":    ("The forecast provider rejected the API key. Check the key in "
+                "Settings > Connections. Delfi retries every 30 minutes."),
+    "model":   ("The model set on the forecast connection is not available for "
+                "that key. Pick another model in Settings > Connections. "
+                "Delfi retries every 30 minutes."),
+    "network": ("The forecast provider could not be reached. Delfi retries on "
+                "the next scan."),
+    "empty":   ("The forecast provider returned no usable answer. Delfi retries "
+                "on the next scan."),
+    "error":   ("The forecast provider returned an error. Delfi retries on the "
+                "next scan."),
+}
+
+
+def failure_detail(reason: Optional[str]) -> str:
+    return _FAILURE_COPY.get(reason or "error", _FAILURE_COPY["error"])
+
+
+def _reason_for_exception(exc: Optional[BaseException]) -> str:
+    if exc is None:
+        return "error"
+    cls = classify_cooldown(exc) if isinstance(exc, Exception) else None
+    if cls is not None:
+        return cls[1]
+    if isinstance(exc, EmptyLLMResponse):
+        return "empty"
+    if isinstance(exc, Exception) and _is_transient_llm_error(exc):
+        return "network"
+    return "error"
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────
@@ -134,10 +290,120 @@ class LLMClient:
     def __init__(self) -> None:
         self._clients: dict[tuple, Any] = {}
         self._lock = threading.Lock()
+        # Per-connection cooldowns: connection key -> (until, reason).
+        # Set by note_failure() for quota / billing / auth / model
+        # failures; cleared by note_success() or when `until` passes.
+        self._cooldowns: dict[str, tuple[float, str]] = {}
+        self._last_exhausted_log: dict[str, float] = {}
 
     def reset(self) -> None:
         with self._lock:
             self._clients = {}
+            self._cooldowns = {}
+
+    # ── cooldown bookkeeping ────────────────────────────────────────────
+
+    @staticmethod
+    def _conn_key(conn: dict) -> str:
+        return str(conn.get("id") or f"{conn.get('provider')}:{conn.get('label')}")
+
+    def cooldown_remaining(self, conn: dict) -> float:
+        with self._lock:
+            entry = self._cooldowns.get(self._conn_key(conn))
+        if not entry:
+            return 0.0
+        remaining = entry[0] - time.monotonic()
+        return remaining if remaining > 0 else 0.0
+
+    def cooldown_reason(self, conn: dict) -> Optional[str]:
+        if self.cooldown_remaining(conn) <= 0:
+            return None
+        with self._lock:
+            entry = self._cooldowns.get(self._conn_key(conn))
+        return entry[1] if entry else None
+
+    def note_failure(self, conn: dict, exc: Exception, label: str = "") -> Optional[str]:
+        """Record a failed call. Returns the cooldown reason when the
+        failure class pauses the connection, else None."""
+        cls = classify_cooldown(exc)
+        if cls is None:
+            return None
+        seconds, reason = cls
+        with self._lock:
+            self._cooldowns[self._conn_key(conn)] = (time.monotonic() + seconds, reason)
+        who = f"{label} " if label else ""
+        print(f"[llm_client] {who}{conn.get('provider')} connection paused for "
+              f"{int(seconds)}s ({reason}): {short_error(exc)}",
+              file=sys.stderr)
+        return reason
+
+    def note_success(self, conn: dict) -> None:
+        with self._lock:
+            self._cooldowns.pop(self._conn_key(conn), None)
+
+    def cooldown_snapshot(self) -> dict[str, dict]:
+        """{connection key: {reason, remaining_s}} for /api/health and tests."""
+        now = time.monotonic()
+        with self._lock:
+            items = list(self._cooldowns.items())
+        return {
+            key: {"reason": reason, "remaining_s": int(until - now)}
+            for key, (until, reason) in items if until > now
+        }
+
+    def _log_exhausted(self, use_case: str, last_exc: Optional[BaseException],
+                       skipped: list) -> None:
+        """One stderr line per use case per minute, not one per market."""
+        now = time.monotonic()
+        if now - self._last_exhausted_log.get(use_case, 0.0) < 60.0:
+            return
+        self._last_exhausted_log[use_case] = now
+        if last_exc is None and skipped:
+            paused = ", ".join(
+                f"{label} {conn.get('provider')} ({reason}, {int(rem)}s left)"
+                for label, conn, reason, rem in skipped
+            )
+            print(f"[llm_client] {use_case}: every connection is paused: {paused}",
+                  file=sys.stderr)
+        else:
+            print(f"[llm_client] {use_case} chain exhausted; last: "
+                  f"{short_error(last_exc) if last_exc else 'None'}",
+                  file=sys.stderr)
+
+    async def test_connection(self, conn: dict, timeout_s: float = 25.0) -> dict:
+        """One tiny round trip on a single connection, for the Settings
+        page. Never raises; returns {ok, latency_ms, model, error_kind,
+        error}. Does not touch or clear cooldowns."""
+        kind = _providers.provider_kind(conn.get("provider"))
+        model = _providers.model_for(conn)
+        prompt = "Reply with the single word OK."
+        t0 = time.monotonic()
+        try:
+            if kind == "anthropic":
+                coro = self._call_anthropic(conn, None, prompt, 256, 1.0, False)
+            elif kind == "gemini":
+                coro = self._call_gemini(conn, None, prompt, 256, 1.0)
+            elif kind == "openai":
+                coro = self._call_openai(conn, None, prompt, 256, 1.0)
+            else:
+                return {"ok": False, "latency_ms": 0, "model": model,
+                        "error_kind": "provider",
+                        "error": f"unknown provider {conn.get('provider')!r}"}
+            reply = await asyncio.wait_for(coro, timeout=timeout_s)
+            return {
+                "ok": True,
+                "latency_ms": int((time.monotonic() - t0) * 1000),
+                "model": model,
+                "reply": (reply or "").strip()[:80],
+            }
+        except asyncio.TimeoutError:
+            return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "model": model, "error_kind": "timeout",
+                    "error": f"no reply within {int(timeout_s)}s"}
+        except Exception as exc:
+            return {"ok": False, "latency_ms": int((time.monotonic() - t0) * 1000),
+                    "model": model, "error_kind": _reason_for_exception(exc),
+                    "error": short_error(exc, 300)}
 
     async def call(
         self,
@@ -170,6 +436,8 @@ class LLMClient:
             return None
 
         last_exc: Optional[Exception] = None
+        last_reason: Optional[str] = None
+        skipped: list[tuple[str, dict, str, float]] = []
         for i, conn in enumerate(chain):
             kind = _providers.provider_kind(conn.get("provider"))
             label = "primary" if i == 0 else f"backup{i}"
@@ -177,6 +445,11 @@ class LLMClient:
                 print(f"[llm_client] {use_case} {label}: unknown kind for "
                       f"provider {conn.get('provider')!r}; skipping",
                       file=sys.stderr)
+                continue
+            remaining = self.cooldown_remaining(conn)
+            if remaining > 0:
+                skipped.append((label, conn, self.cooldown_reason(conn) or "error",
+                                remaining))
                 continue
             # Two attempts per connection: transient failures (5xx,
             # overloaded, rate limit, network blip) get one short-backoff
@@ -198,33 +471,41 @@ class LLMClient:
                         response = await self._call_openai(
                             conn, system, user, max_tokens, temperature,
                         )
+                    if not (response or "").strip():
+                        # Treat an empty answer as a failure so the
+                        # backup connection gets a chance; returning
+                        # "" here used to count as success and skip
+                        # the failover entirely.
+                        raise EmptyLLMResponse("provider returned an empty response")
+                    self.note_success(conn)
                     if use_case == "forecaster":
                         from engine.runtime_alerts import report_recovery
                         report_recovery("forecast_provider")
                     return response
                 except Exception as exc:
                     last_exc = exc
+                    reason = self.note_failure(conn, exc, label=label)
+                    if reason:
+                        last_reason = reason
                     transient = _is_transient_llm_error(exc)
                     print(f"[llm_client] {use_case} {label} "
                           f"{conn.get('provider')} failed "
                           f"(attempt {attempt + 1}, "
                           f"{'transient' if transient else 'permanent'}): "
-                          f"{type(exc).__name__}: {exc}", file=sys.stderr)
+                          f"{short_error(exc)}", file=sys.stderr)
                     if transient and attempt == 0:
                         await asyncio.sleep(3.0)
                         continue
                     break
 
-        print(f"[llm_client] {use_case} chain exhausted; last exc: "
-              f"{type(last_exc).__name__ if last_exc else 'None'}: "
-              f"{last_exc}", file=sys.stderr)
+        if last_reason is None and skipped:
+            last_reason = skipped[0][2]
+        if last_reason is None:
+            last_reason = _reason_for_exception(last_exc)
+        self._log_exhausted(use_case, last_exc, skipped)
         if use_case == "forecaster":
             from engine.runtime_alerts import report_failure
-            error_name = type(last_exc).__name__ if last_exc else "UnknownError"
-            report_failure(
-                "forecast_provider",
-                f"Every configured forecast provider failed ({error_name}).",
-            )
+            report_failure("forecast_provider", failure_detail(last_reason))
         return None
 
     # ── provider call paths ─────────────────────────────────────────────────
@@ -276,16 +557,21 @@ class LLMClient:
         else:
             system_arg = system
 
+        create_kwargs: dict = {
+            "model":      model,
+            "max_tokens": max_tokens,
+            "system":     system_arg,
+            "messages":   [{"role": "user", "content": user}],
+        }
+        # The API default temperature is 1.0; only forward a different
+        # value, and only to model families that still accept sampling
+        # parameters (current models return 400 on a non-default one).
+        if temperature != 1.0 and _anthropic_accepts_sampling(model):
+            create_kwargs["temperature"] = temperature
         loop = asyncio.get_running_loop()
         response = await loop.run_in_executor(
             None,
-            lambda: client.messages.create(
-                model       = model,
-                max_tokens  = max_tokens,
-                temperature = temperature,
-                system      = system_arg,
-                messages    = [{"role": "user", "content": user}],
-            ),
+            lambda: client.messages.create(**create_kwargs),
         )
 
         # Surface cache usage in stderr so the operator can confirm
@@ -302,7 +588,7 @@ class LLMClient:
         except Exception:
             pass
 
-        return response.content[0].text
+        return extract_anthropic_text(response)
 
     async def _call_gemini(
         self,
@@ -351,7 +637,22 @@ class LLMClient:
                 config   = cfg,
             ),
         )
-        return response.text
+        try:
+            text = response.text
+        except Exception:
+            text = None
+        if not text or not str(text).strip():
+            finish = None
+            try:
+                cands = getattr(response, "candidates", None) or []
+                finish = getattr(cands[0], "finish_reason", None) if cands else None
+            except Exception:
+                pass
+            raise EmptyLLMResponse(
+                f"provider returned no text (finish_reason={finish}, "
+                f"prompt_feedback={getattr(response, 'prompt_feedback', None)})"
+            )
+        return str(text)
 
     async def _call_openai(
         self,
@@ -415,4 +716,13 @@ class LLMClient:
             else:
                 raise
 
-        return response.choices[0].message.content
+        choices = getattr(response, "choices", None) or []
+        content = choices[0].message.content if choices else None
+        if not content or not str(content).strip():
+            finish = getattr(choices[0], "finish_reason", None) if choices else None
+            refusal = getattr(choices[0].message, "refusal", None) if choices else None
+            raise EmptyLLMResponse(
+                f"provider returned no text (finish_reason={finish}, "
+                f"refusal={refusal})"
+            )
+        return str(content)

@@ -186,6 +186,35 @@ def _live_killswitch_off() -> bool:
     return os.environ.get("DELFI_LIVE_KILLSWITCH_OFF", "").strip() in ("1", "true", "True")
 
 
+def _resolve_funder_address(creds: dict) -> Optional[str]:
+    """Address that HOLDS this account's positions.
+
+    The stored `wallet_address` is the signing EOA derived from the
+    private key. Positions live at the FUNDER: the same EOA for
+    signature type 0, but the proxy / deposit wallet for types 1-3
+    (the V2 default). Probing data-api with the EOA for a proxy
+    account returns an empty list with HTTP 200, which the close path
+    read as "no shares on chain" and ghost-closed real positions with
+    $0 P&L. Reads the signer cache first (no network); falls back to
+    the cached probe in get_poly_signer_info. None when unknown, so
+    callers must treat "unknown" as "do not conclude anything".
+    """
+    pk = (creds.get("private_key") or "").strip()
+    if not pk:
+        return None
+    try:
+        from feeds.polymarket_wallet import (
+            get_cached_poly_signer_info, get_poly_signer_info,
+        )
+        info = get_cached_poly_signer_info(pk) or get_poly_signer_info(pk)
+    except Exception as exc:
+        print(f"[pm_executor] funder lookup failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return None
+    funder = ((info or {}).get("funder") or "").strip()
+    return funder or None
+
+
 def _get_clob_client(wallet_address: str, private_key: str):
     """
     Build (or reuse) a py-clob-client-v2 ClobClient bound to the user's
@@ -2312,14 +2341,14 @@ class PMExecutor:
             # DB value so a transient blip can't permanently block exits.
             sell_shares = float(shares)
             try:
+                _funder_for_clip = _resolve_funder_address(
+                    get_active_polymarket_creds(self._user_config),
+                )
                 _on_chain = _lookup_on_chain_position(
-                    funder_address=(
-                        get_active_polymarket_creds(self._user_config)
-                        .get("wallet_address") or ""
-                    ).strip(),
+                    funder_address=_funder_for_clip or "",
                     condition_id=condition_id,
                     side=side,
-                )
+                ) if _funder_for_clip else None
                 if _on_chain is not None:
                     _oc_size = float(_on_chain.get("size") or 0.0)
                     if 0.0 < _oc_size < sell_shares:
@@ -2488,7 +2517,10 @@ class PMExecutor:
                     # through to the user-visible Telegram so a
                     # data-api outage cannot mass-close real positions.
                     creds = get_active_polymarket_creds(self._user_config)
-                    wallet = (creds.get("wallet_address") or "").strip()
+                    # Probe the FUNDER (where positions live), never the
+                    # signing EOA. With the EOA, every proxy account read
+                    # "absent" and a real position was ghost-closed.
+                    wallet = _resolve_funder_address(creds) or ""
                     probe_state = "unknown"
                     if wallet and condition_id:
                         try:

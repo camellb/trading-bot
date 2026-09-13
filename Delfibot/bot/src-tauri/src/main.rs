@@ -626,7 +626,15 @@ fn spawn_sidecar(
     let cmd = cmd
         .env("DELFI_PORT", port.to_string())
         .env("DELFI_DB_PATH", db_path.to_string_lossy().into_owned())
-        .env("PYTHONUNBUFFERED", "1");
+        .env("PYTHONUNBUFFERED", "1")
+        // Same authorisation the macOS LaunchAgent plist grants
+        // (see ensure_macos_launchagent). Without it a GUI-spawned
+        // sidecar (Windows, or macOS before the agent is registered)
+        // in live mode wrote paper fills stamped mode='live': the
+        // dashboard showed live trades and P&L while the wallet never
+        // moved. Live orders still require the user's explicit Live
+        // toggle plus saved Polymarket credentials.
+        .env("DELFI_LIVE_KILLSWITCH_OFF", "1");
     // DELFI_PARENT_PID was used to drive a parent-death watchdog
     // that killed the sidecar when the GUI quit. Removed 2026-04-30:
     // the sidecar is now a 24/7 launchd-managed daemon that must

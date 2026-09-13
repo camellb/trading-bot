@@ -330,6 +330,14 @@ export interface HealthSnapshot {
   uptime_s: number;
   started_at: string | null;
   error_count: number;
+  /** Seconds since the API event loop last pumped its heartbeat. */
+  loop_silence_s?: number;
+  /** Seconds since the scheduler job loop last ran a callback. Large
+   *  values mean scans and exits are stalled even though the API answers. */
+  job_loop_silence_s?: number;
+  /** Forecast/search connections paused after quota, billing, auth or
+   *  model failures, keyed by connection id. */
+  llm_cooldowns?: Record<string, { reason: string; remaining_s: number }>;
   jobs: Record<string, { last_ok: string | null; last_error: string | null }>;
 }
 
@@ -429,6 +437,18 @@ export interface LLMRoles {
 }
 
 export type LLMRole = keyof LLMRoles;
+
+/** Result of POST /api/llm/connections/{id}/test: one tiny round trip
+ *  on that connection so a bad key or empty account shows up on save. */
+export interface LLMConnectionTestResult {
+  id?: string;
+  ok: boolean;
+  latency_ms: number;
+  model: string;
+  reply?: string;
+  error_kind?: string;
+  error?: string;
+}
 
 export interface LLMConnectionsResponse {
   connections: LLMConnection[];
@@ -1001,6 +1021,11 @@ export const api = {
     request<{ deleted: string; roles: LLMRoles }>(
       `/api/llm/connections/${encodeURIComponent(id)}`,
       { method: "DELETE" },
+    ),
+  testLlmConnection: (id: string) =>
+    request<LLMConnectionTestResult>(
+      `/api/llm/connections/${encodeURIComponent(id)}/test`,
+      { method: "POST", timeoutMs: 30_000 },
     ),
   setLlmRoles: (roles: Partial<LLMRoles>) =>
     request<{ roles: LLMRoles }>("/api/llm/roles", {

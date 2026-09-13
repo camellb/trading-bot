@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Optional
@@ -39,6 +40,7 @@ from engine.archetype_classifier import classify_archetype
 from engine.notifier_state import is_trading_paused
 from engine.polymarket_evaluator import PolymarketEvaluator, MarketEvaluation
 from engine.risk_manager import evaluate as evaluate_risk
+from engine.scan_budget import TimeBudget
 from engine.user_config import (
     get_user_config,
     list_onboarded_user_ids,
@@ -673,10 +675,17 @@ class PMAnalyst:
         )
 
     # ── Batch scan ───────────────────────────────────────────────────────────
+    # Hard cap on one market's research + forecast + order phase. A
+    # provider that hangs to its 90 s SDK timeout twice would otherwise
+    # eat the whole scan; the next market's budget check then ends the
+    # scan cleanly instead of the scheduler fence killing it mid-order.
+    PER_MARKET_CAP_S = 150.0
+
     async def scan_and_analyze(
         self,
         limit:          int   = 20,
         min_volume_24h: float = 5_000.0,
+        time_budget_s:  Optional[float] = None,
     ) -> dict:
         """
         SaaS fan-out:
@@ -857,6 +866,10 @@ class PMAnalyst:
             "users":       0,
             "outcomes":    [],
         }
+        # Wall-clock budget for this scan (None = unbounded, used by
+        # tests and the CLI). The scheduler passes ~210 s so the scan
+        # stops between markets before its 240 s fence.
+        budget = TimeBudget(time_budget_s)
 
         if is_trading_paused():
             print("[pm_analyst] trading paused - skipping scan", flush=True)
@@ -907,7 +920,7 @@ class PMAnalyst:
             # per-market pre-filter doesn't hit SQLite per-market.
             user_cfgs = {uid: get_user_config(uid) for uid in user_ids}
 
-            for mk in markets:
+            for _mk_idx, mk in enumerate(markets):
                 # ─────────────────────────────────────────────────────
                 # AFFORDABILITY GATE (FIRST CHECK)
                 # ─────────────────────────────────────────────────────
@@ -1111,10 +1124,45 @@ class PMAnalyst:
                     summary["risk_reasons"] = dict(_halt_reasons_now)
                     break
 
-                # Shared work: one Claude call per market, period.
-                shared = await self._shared_evaluate(mk)
+                # Time budget: stop cleanly between markets when the
+                # next one cannot fit before the scheduler's fence.
+                # Markets left over are picked up by the next scan
+                # (recently evaluated ones are skipped, so the list
+                # advances tick by tick).
+                if not budget.can_start_market():
+                    left = len(markets) - _mk_idx
+                    summary["skip_reason"] = "time_budget"
+                    summary["budget_exhausted"] = True
+                    summary["markets_left"] = left
+                    print(
+                        f"[pm_analyst] scan time budget reached after "
+                        f"{budget.elapsed():.0f}s (about "
+                        f"{budget.expected_market_s:.0f}s per market, "
+                        f"{budget.remaining():.0f}s left); {left} markets "
+                        f"wait for the next scan",
+                        flush=True,
+                    )
+                    break
+
+                # Shared work: one forecaster call per market, period.
+                _market_t0 = time.monotonic()
+                _market_cap = budget.per_market_timeout(self.PER_MARKET_CAP_S)
+                try:
+                    shared = await asyncio.wait_for(
+                        self._shared_evaluate(mk), timeout=_market_cap,
+                    )
+                except asyncio.TimeoutError:
+                    print(
+                        f"[pm_analyst] market {mk.id} exceeded its "
+                        f"{_market_cap:.0f}s time cap; skipping it this scan",
+                        file=sys.stderr,
+                    )
+                    summary["errors"] += 1
+                    budget.note_market_duration(time.monotonic() - _market_t0)
+                    continue
                 if shared is None:
                     summary["errors"] += 1
+                    budget.note_market_duration(time.monotonic() - _market_t0)
                     continue
                 evaluation, research, prediction_id = shared
                 summary["analyzed"] += 1
@@ -1148,7 +1196,9 @@ class PMAnalyst:
                         summary["skipped"] += 1
                     elif outcome.status == "ERROR":
                         summary["errors"] += 1
+                budget.note_market_duration(time.monotonic() - _market_t0)
 
+        summary["elapsed_s"] = round(budget.elapsed(), 1)
         print(f"[pm_analyst] scan complete: "
               f"users={summary['users']} "
               f"fetched={summary['fetched']} "
@@ -1156,7 +1206,10 @@ class PMAnalyst:
               f"opened={summary['opened']} "
               f"no_trade={summary['no_trade']} "
               f"skipped={summary['skipped']} "
-              f"errors={summary['errors']}", flush=True)
+              f"errors={summary['errors']} "
+              f"elapsed={summary['elapsed_s']}s"
+              f"{' budget_exhausted' if summary.get('budget_exhausted') else ''}",
+              flush=True)
         return summary
 
     # ── Notifications ────────────────────────────────────────────────────────

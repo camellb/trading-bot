@@ -74,19 +74,24 @@ def record_equity_snapshot(user_id: str = "local") -> bool:
 
         executor = PMExecutor(user_id=user_id, user_config=cfg)
 
-        # Use the canonical executor accessors. They read from the
-        # wallet probe cache (warmed every 60s by pm_balance_refresh)
-        # in live mode, and from the DB-derived formula in sim.
-        # `get_portfolio_stats()` returns None for `bankroll` /
-        # `equity` whenever the wallet probe is cold - those Nones
-        # are intentional because /api/summary applies its own live
-        # overlay on top. We can't reuse that overlay here, so we
-        # call the underlying accessors directly.
-        bankroll = float(executor.get_bankroll())
-        equity = float(executor.get_equity())
-        # open_cost is the difference - same identity the rest of
-        # the codebase relies on (equity = bankroll + open_cost).
-        open_cost = max(0.0, equity - bankroll)
+        # RULE #1: the chart must plot the same number the Equity tile
+        # shows. /api/summary reads `get_portfolio_stats()["equity"]`
+        # (wallet + pending payout + mark-to-market of open positions),
+        # so the snapshot reads the same dict. Until 2026-09-13 this
+        # called `get_equity()`, whose simulation branch is cost basis,
+        # so the chart's newest point and the tile disagreed by the
+        # unrealized P&L on every tick (3071.18 vs 3081.54 observed).
+        stats = executor.get_portfolio_stats()
+        if stats.get("bankroll") is None or stats.get("equity") is None:
+            print(
+                "[equity_snapshot] skip: portfolio stats not ready "
+                "(cold wallet cache)",
+                file=sys.stderr, flush=True,
+            )
+            return False
+        bankroll = float(stats["bankroll"])
+        equity = float(stats["equity"])
+        open_cost = max(0.0, float(stats.get("locked_capital") or 0.0))
 
         # Wallet-probe-failure guard. In live mode, a snapshot with
         # bankroll=0 AND open_cost>0 is impossible in reality - the

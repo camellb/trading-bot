@@ -43,6 +43,7 @@ async def scan_and_analyze(
     limit:          int   = 20,
     min_volume_24h: float = 5_000.0,
     analyst:        PMAnalyst | None = None,
+    time_budget_s:  float | None = None,
 ) -> dict:
     """
     Delegate to PMAnalyst. Returns the analyst's summary dict.
@@ -56,7 +57,8 @@ async def scan_and_analyze(
         if analyst is None:
             analyst = PMAnalyst()
         return await analyst.scan_and_analyze(limit=limit,
-                                                min_volume_24h=min_volume_24h)
+                                                min_volume_24h=min_volume_24h,
+                                                time_budget_s=time_budget_s)
 
 
 # ── Resolve positions + legacy predictions ──────────────────────────────────

@@ -1,6 +1,6 @@
 [package]
 name = "delfi"
-version = "1.5.82"
+version = "1.5.83"
 description = "Delfi - autonomous Polymarket trader (Tauri shell)"
 authors = ["Delfi"]
 edition = "2021"

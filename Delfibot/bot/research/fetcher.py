@@ -607,16 +607,11 @@ async def _curate_bundle_for_event(
     if m:
         status = m.group(1).lower()
     if status == "insufficient":
-        # No on-event evidence: return a minimal stub block so the
-        # forecaster sees the curation verdict and skips. The
-        # same_event_verified gate already handles this downstream.
-        stub = (
-            f"(post-fetch curation found NO on-event research for "
-            f"this market. The original bundle described different "
-            f"editions/dates/matchups. The forecaster should set "
-            f"same_event_verified=no.)"
-        )
-        return stub, "insufficient"
+        # No on-event web evidence. Fall back to the RAW bundle so the
+        # forecaster still gets the live market data, Wikipedia, sports
+        # data and base rate (the old stub replaced all of that and
+        # referenced a same_event_verified field that no longer exists).
+        return None, "insufficient"
     return curated, status
 
 
@@ -854,92 +849,24 @@ async def _fetch_live_market_data(
 
 
 # ── DuckDuckGo web search ──────────────────────────────────────────────────
-_DDG_SEARCH_URL = "https://html.duckduckgo.com/html/"
-_DDG_SEARCH_TIMEOUT = (3, 10)
-_DDG_SEARCH_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131 Safari/537.36"
-    ),
-}
+# Search backends live in research.web_search (DuckDuckGo primary, Bing
+# fallback, per-backend circuit breaker so an unreachable host is skipped
+# for ten minutes instead of costing every market a connect timeout).
+# The names below are kept for callers and tests that reference the
+# DuckDuckGo request shape.
+from research import web_search as _web_search
 
-
-class _DuckDuckGoResultsParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.results: list[dict] = []
-        self._result: dict | None = None
-        self._capture: str | None = None
-        self._capture_tag: str | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr_map = dict(attrs)
-        classes = set((attr_map.get("class") or "").split())
-        if tag == "a" and "result__a" in classes:
-            self._append_result()
-            self._result = {
-                "href": _unwrap_duckduckgo_url(attr_map.get("href") or ""),
-                "title": "",
-                "body": "",
-            }
-            self._capture = "title"
-            self._capture_tag = tag
-        elif self._result and "result__snippet" in classes:
-            self._capture = "body"
-            self._capture_tag = tag
-
-    def handle_data(self, data: str) -> None:
-        if self._result is not None and self._capture is not None:
-            self._result[self._capture] += data
-
-    def handle_endtag(self, tag: str) -> None:
-        if self._capture_tag == tag:
-            self._capture = None
-            self._capture_tag = None
-
-    def close(self) -> None:
-        super().close()
-        self._append_result()
-
-    def _append_result(self) -> None:
-        if self._result is None:
-            return
-        self._result["title"] = " ".join(self._result["title"].split())
-        self._result["body"] = " ".join(self._result["body"].split())
-        if self._result["href"] and self._result["title"]:
-            self.results.append(self._result)
-        self._result = None
-
-
-def _unwrap_duckduckgo_url(raw_url: str) -> str:
-    if raw_url.startswith("//"):
-        raw_url = f"https:{raw_url}"
-    parsed = urlsplit(raw_url)
-    if parsed.netloc.endswith("duckduckgo.com"):
-        redirect_url = parse_qs(parsed.query).get("uddg", [""])[0]
-        if redirect_url:
-            return redirect_url
-    return raw_url
+_DDG_SEARCH_URL = _web_search.DDG_SEARCH_URL
+_DDG_SEARCH_TIMEOUT = _web_search.DDG_SEARCH_TIMEOUT
+_DDG_SEARCH_HEADERS = _web_search.DDG_SEARCH_HEADERS
+_DuckDuckGoResultsParser = _web_search.DuckDuckGoResultsParser
+_unwrap_duckduckgo_url = _web_search.unwrap_duckduckgo_url
 
 
 def _ddg_search_sync(query: str, max_results: int = 8) -> list[dict]:
-    try:
-        response = requests.get(
-            _DDG_SEARCH_URL,
-            params={"q": query},
-            headers=_DDG_SEARCH_HEADERS,
-            timeout=_DDG_SEARCH_TIMEOUT,
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        print(f"[research] DuckDuckGo search failed for {query[:60]!r}: {exc}",
-              file=sys.stderr)
-        return []
-
-    parser = _DuckDuckGoResultsParser()
-    parser.feed(response.text)
-    parser.close()
-    return parser.results[:max_results]
+    """One query through the search backend chain (DuckDuckGo, then
+    Bing). Name kept for existing callers; never raises."""
+    return _web_search.search_sync(query, max_results)
 
 
 def _format_ddg_results(
@@ -1328,20 +1255,26 @@ async def _fetch_web_search_raw(
 
     loop = asyncio.get_running_loop()
 
-    def _search_queries():
-        all_results: list[dict] = []
-        for query in queries:
-            all_results.extend(_ddg_search_sync(query, 8))
-        return all_results
-
+    # One executor thread per query, all in flight at once, under one
+    # 30 s ceiling. Sequential queries meant a blocked search host cost
+    # up to 30 s per market for nothing (2026-09-13 log: 7,114 failed
+    # DuckDuckGo calls, 0 hits, every market paying the full wait).
+    futures = [
+        loop.run_in_executor(None, _ddg_search_sync, query, 8)
+        for query in queries
+    ]
     try:
-        return await asyncio.wait_for(
-            loop.run_in_executor(None, _search_queries),
-            timeout=30,
+        batches = await asyncio.wait_for(
+            asyncio.gather(*futures, return_exceptions=True), timeout=30,
         )
     except asyncio.TimeoutError:
-        print("[research] DuckDuckGo search batch timed out", file=sys.stderr)
+        print("[research] web search batch timed out", file=sys.stderr)
         return []
+    all_results: list[dict] = []
+    for batch in batches:
+        if isinstance(batch, list):
+            all_results.extend(batch)
+    return all_results
 
 
 
@@ -1501,7 +1434,12 @@ async def _fetch_page_text(
         print(f"[research] page fetch failed {url[:80]}: {exc}", file=sys.stderr)
         return None
 
-    text, pub_date = _extract_text_and_date(html, max_chars)
+    # trafilatura is CPU-bound (hundreds of ms on a long page); keep it
+    # off the event loop so it cannot delay scan cancellation or the
+    # exit-policy tick.
+    text, pub_date = await asyncio.get_running_loop().run_in_executor(
+        None, _extract_text_and_date, html, max_chars,
+    )
     if len(text) < 100:
         return None
 

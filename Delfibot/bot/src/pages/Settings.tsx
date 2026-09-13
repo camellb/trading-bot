@@ -18,6 +18,7 @@ import {
   TelegramConfig,
   tauriRestartSidecar,
   waitForSidecar,
+  LLMConnectionTestResult,
 } from "../api";
 import {
   COMMON_TIMEZONES,
@@ -1096,6 +1097,23 @@ function LicensePanel() {
 }
 
 // ── Connections ──────────────────────────────────────────────────────────
+const TEST_ERROR_COPY: Record<string, string> = {
+  quota: "This key's usage quota is used up.",
+  billing: "This provider account has no credit.",
+  auth: "The provider rejected this API key.",
+  model: "This model is not available for this key.",
+  timeout: "No reply within 20 seconds.",
+  network: "The provider could not be reached.",
+  empty: "The provider returned no usable answer.",
+  provider: "Unknown provider.",
+};
+
+function describeTest(r: LLMConnectionTestResult): string {
+  if (r.ok) return `Connected. Replied in ${r.latency_ms} ms using ${r.model}.`;
+  const head = TEST_ERROR_COPY[r.error_kind ?? ""] ?? "The provider returned an error.";
+  const detail = (r.error ?? "").slice(0, 160);
+  return detail ? `${head} (${detail})` : head;
+}
 
 // Shared add/edit payload for an LLM connection. `api_key` is "" in edit
 // mode when the user leaves it blank (the sidecar keeps the stored secret).
@@ -1162,6 +1180,29 @@ function ConnectionsPanel({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [roleBusy, setRoleBusy] = useState(false);
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, LLMConnectionTestResult>>({});
+
+  const testConnection = async (id: string) => {
+    setTestingId(id);
+    try {
+      const r = await api.testLlmConnection(id);
+      setTestResults((m) => ({ ...m, [id]: r }));
+    } catch (err) {
+      setTestResults((m) => ({
+        ...m,
+        [id]: {
+          ok: false,
+          latency_ms: 0,
+          model: "",
+          error_kind: "network",
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }));
+    } finally {
+      setTestingId(null);
+    }
+  };
 
   const reloadLlm = async () => {
     const data = await api.llmConnections();
@@ -1312,8 +1353,27 @@ function ConnectionsPanel({
                           ))}
                         </div>
                       )}
+                      {testResults[c.id] && (
+                        <div
+                          className="form-hint"
+                          style={{
+                            marginTop: 6,
+                            color: testResults[c.id].ok ? undefined : "var(--danger, #d33)",
+                          }}
+                        >
+                          {describeTest(testResults[c.id])}
+                        </div>
+                      )}
                     </div>
                     <div className="conn-card-actions">
+                      <button
+                        type="button"
+                        className="btn small ghost"
+                        disabled={testingId === c.id || !c.has_key}
+                        onClick={() => testConnection(c.id)}
+                      >
+                        {testingId === c.id ? "Testing..." : "Test"}
+                      </button>
                       <button
                         type="button"
                         className="btn small ghost"

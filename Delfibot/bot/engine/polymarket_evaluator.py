@@ -23,6 +23,7 @@ Design goals:
 from __future__ import annotations
 
 import json
+import math
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -217,6 +218,10 @@ def _clamp01(x, default=0.5, *, field: str = ""):
         v = float(x)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(v):
+        # json.loads accepts NaN/Infinity; max(0, min(1, nan)) is 1.0,
+        # which would read as a perfectly confident YES.
+        return default
     if v < 0.0 or v > 1.0:
         import sys as _sys
         label = f"[{field}]" if field else ""
@@ -256,10 +261,15 @@ class PolymarketEvaluator:
         # 50+ calls within the 5-min ephemeral TTL hit it at 0.1x
         # input pricing. llm_client logs cache write/read tokens to
         # stderr when present so we can confirm the savings.
+        # max_tokens covers thinking AND the answer on current models
+        # (adaptive thinking is on by default). 2000 left the JSON at
+        # risk of truncation once the model spent a thousand tokens
+        # reasoning; 6000 keeps the answer intact and costs nothing
+        # when unused.
         raw = await get_llm().call(
             system       = _system_prompt(),
             user         = user,
-            max_tokens   = 2000,
+            max_tokens   = 6000,
             cache_system = True,
         )
         if not raw:
@@ -311,7 +321,29 @@ class PolymarketEvaluator:
         # evaluation is rejected entirely - we'd rather skip than act
         # on incoherent reasoning. The downstream analyst already
         # treats `None` evaluations as SKIP_INVALID.
-        prob_yes = _clamp01(obj.get("probability_yes"), 0.5)
+        # probability_yes must be a finite number. A missing, null, or
+        # textual value used to fall back to 0.5 silently, pass the
+        # consistency gate for either direction, and get logged as a
+        # real prediction that the learning loop then calibrated on.
+        p_raw = obj.get("probability_yes")
+        try:
+            prob_yes = float(p_raw)
+        except (TypeError, ValueError):
+            prob_yes = float("nan")
+        if not math.isfinite(prob_yes):
+            print(
+                f"[polymarket_eval] missing or non-numeric probability_yes "
+                f"on {market.id}: {p_raw!r} - skipping",
+                file=sys.stderr,
+            )
+            return None
+        if prob_yes < 0.0 or prob_yes > 1.0:
+            print(
+                f"[polymarket_eval] probability_yes {prob_yes!r} out of range "
+                f"on {market.id}; clamping to [0,1]",
+                file=sys.stderr,
+            )
+            prob_yes = max(0.0, min(1.0, prob_yes))
         rd_raw = str(obj.get("reasoning_direction") or "").strip().upper()
         if rd_raw not in ("YES", "NO"):
             print(
@@ -339,7 +371,11 @@ class PolymarketEvaluator:
             probability_yes = prob_yes,
             confidence      = _clamp01(obj.get("confidence"),      0.5),
             category        = str(obj.get("category") or "other")[:40],
-            key_factors     = [str(x)[:200] for x in (obj.get("key_factors") or [])][:6],
+            key_factors     = [
+                str(x)[:200]
+                for x in (obj.get("key_factors")
+                          if isinstance(obj.get("key_factors"), list) else [])
+            ][:6],
             reasoning       = str(obj.get("reasoning") or "")[:4000],
             raw             = raw,
             reasoning_short = reasoning_short_raw,

@@ -107,8 +107,22 @@ class LoopHeartbeat:
         self_probe_interval_s: float = 10.0,
         self_probe_timeout_s: float = 5.0,
         self_probe_max_failures: int = 2,
+        # Optional second loop to watch (the scheduler's persistent job
+        # loop). `aux_silence_getter` returns seconds since that loop
+        # last ran a callback (see engine.loop_pulse.LoopPulse). A job
+        # loop blocked in synchronous code cannot deliver the scan's
+        # wait_for cancellation, so every scheduled job dies at its
+        # outer fence while /api/health stays green; nothing restarted
+        # the daemon in that state before 2026-09-13.
+        aux_silence_getter=None,
+        aux_warn_s: float = 120.0,
+        aux_max_silence_s: float = 600.0,
     ) -> None:
         self._loop = loop
+        self._aux_silence_getter = aux_silence_getter
+        self._aux_warn_s = aux_warn_s
+        self._aux_max_silence_s = aux_max_silence_s
+        self._aux_warned = False
         self._heartbeat_interval_s = heartbeat_interval_s
         self._early_warning_s = early_warning_s
         self._max_silence_s = max_silence_s
@@ -144,6 +158,15 @@ class LoopHeartbeat:
         """
         return time.monotonic() - self._last_pump
 
+    def aux_silence_seconds(self) -> float:
+        """Silence of the secondary (job) loop, 0.0 when none is wired."""
+        if self._aux_silence_getter is None:
+            return 0.0
+        try:
+            return float(self._aux_silence_getter())
+        except Exception:
+            return 0.0
+
     def _pump(self) -> None:
         self._last_pump = time.monotonic()
         # Loop is alive again - reset the warning gate so the next slow
@@ -162,6 +185,35 @@ class LoopHeartbeat:
             if silence > self._early_warning_s and not self._warned_for_period:
                 self._warn(silence)
                 self._warned_for_period = True
+            # Secondary loop (scheduler job loop). Same escalation:
+            # dump tracebacks at the warning threshold, SIGKILL for
+            # launchd to respawn once it is clearly wedged.
+            aux = self.aux_silence_seconds()
+            if aux > self._aux_max_silence_s:
+                self._abort(
+                    aux,
+                    reason=(
+                        f"job loop silent for {aux:.0f}s (scheduler event "
+                        "loop blocked in synchronous code; scans and exits "
+                        "cannot run)"
+                    ),
+                )
+                return
+            if aux > self._aux_warn_s and not self._aux_warned:
+                self._aux_warned = True
+                try:
+                    print(
+                        f"[watchdog] job loop silent for {aux:.0f}s "
+                        f"(warning at {self._aux_warn_s:.0f}s, abort at "
+                        f"{self._aux_max_silence_s:.0f}s). Dumping tracebacks; "
+                        "daemon still running.",
+                        file=sys.stderr, flush=True,
+                    )
+                    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                except Exception:
+                    pass
+            elif aux <= self._aux_warn_s:
+                self._aux_warned = False
             # Self-probe: catches the "loop alive but accept stopped"
             # wedge that the heartbeat alone misses.
             now = time.monotonic()

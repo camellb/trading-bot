@@ -244,8 +244,40 @@ def _ensure_job_loop() -> asyncio.AbstractEventLoop:
             daemon=True,
         )
         t.start()
+        # Heartbeat so the watchdog and /api/health can tell a blocked
+        # job loop from an idle one (see engine.loop_pulse).
+        global _job_loop_pulse
+        try:
+            from engine.loop_pulse import LoopPulse
+            _job_loop_pulse = LoopPulse(loop)
+            _job_loop_pulse.start()
+        except Exception as exc:
+            print(f"[delfi] job loop heartbeat not started: {exc}",
+                  file=sys.stderr, flush=True)
         _job_loop = loop
         return loop
+
+
+_job_loop_pulse = None
+
+
+def job_loop_silence_seconds() -> float:
+    """Seconds since the scheduler job loop last ran a callback. 0.0
+    before the loop exists. Surfaced in /api/health and watched by the
+    loop watchdog."""
+    pulse = _job_loop_pulse
+    if pulse is None:
+        return 0.0
+    try:
+        return float(pulse.silence_seconds())
+    except Exception:
+        return 0.0
+
+
+# Wall-clock budget handed to each market scan. The scan stops between
+# markets once the next one would not fit (engine.scan_budget), so the
+# 240 s inner / 260 s outer fences below only fire on a real wedge.
+SCAN_TIME_BUDGET_S = 210
 
 
 # Dedicated ThreadPoolExecutor for sync scheduler jobs that touch
@@ -303,7 +335,7 @@ def _submit_job(coro, outer_timeout_s: int) -> None:
     """
     future = asyncio.run_coroutine_threadsafe(coro, _ensure_job_loop())
     try:
-        future.result(timeout=outer_timeout_s)
+        return future.result(timeout=outer_timeout_s)
     except _cf.TimeoutError:
         future.cancel()
         raise TimeoutError(
@@ -1030,8 +1062,19 @@ async def main() -> None:
         api_port_getter=lambda: _api_port_holder["port"],
         self_probe_interval_s=20.0,
         self_probe_max_failures=2,
+        # Also watch the scheduler job loop: warn at 2 min of silence,
+        # SIGKILL (launchd respawns) at 10 min. A blocked job loop
+        # cannot run scans or stop-losses and used to be invisible.
+        aux_silence_getter=job_loop_silence_seconds,
+        aux_warn_s=120.0,
+        aux_max_silence_s=600.0,
     )
     watchdog.start()
+
+    # Trim oversized logs left by the previous run before we add to
+    # them (launchd never rotates its StandardOutPath/StandardErrorPath
+    # files; 156 MB of sidecar.err was found on 2026-09-13).
+    _rotate_logs_now()
 
     bot_start_time = datetime.now(timezone.utc)
     monitor.set_bot_start_time(bot_start_time)
@@ -1172,6 +1215,7 @@ async def main() -> None:
     api_port = int(os.environ.get("DELFI_PORT", "0"))
     api = LocalAPI(
         analyst=analyst, host=api_host, port=api_port, watchdog=watchdog,
+        job_loop_silence_getter=job_loop_silence_seconds,
     )
     bound_port = await api.start()
     # Tell the watchdog where to self-probe. Until this is set the
@@ -1515,12 +1559,14 @@ async def main() -> None:
     # downstream library is unresponsive to graceful cancellation.
     async def _bounded(coro, timeout_s: int, label: str):
         try:
-            await _asyncio_module.wait_for(coro, timeout=timeout_s)
+            return await _asyncio_module.wait_for(coro, timeout=timeout_s)
         except _asyncio_module.TimeoutError:
             print(f"[delfi] {label} exceeded {timeout_s}s wall-clock "
                   f"ceiling - aborted to keep the scheduler healthy",
                   file=sys.stderr, flush=True)
             raise
+
+    _scan_state = {"fence_streak": 0}
 
     def _run_scan():
         if not bool(getattr(config, "PM_SCAN_ENABLED", True)):
@@ -1617,29 +1663,51 @@ async def main() -> None:
                 file=sys.stderr, flush=True,
             )
         try:
-            _submit_job(
+            result = _submit_job(
                 _bounded(
                     scan_and_analyze(
                         limit          = int(getattr(config, "PM_SCAN_LIMIT", 100)),
                         min_volume_24h = float(getattr(config, "PM_MIN_VOLUME_24H_USD", 10_000.0)),
                         analyst        = analyst,
+                        time_budget_s  = SCAN_TIME_BUDGET_S,
                     ),
                     timeout_s=240,
                     label="scan",
                 ),
                 outer_timeout_s=260,
             )
+            _scan_state["fence_streak"] = 0
             proc_health.record_job_ok("pm_scan")
+            if isinstance(result, dict) and result.get("budget_exhausted"):
+                # Normal completion: the scan used its time budget and
+                # left the tail of the list for the next tick. Not an
+                # error and not a trading block.
+                print(
+                    f"[delfi] scan stopped at its {SCAN_TIME_BUDGET_S}s budget: "
+                    f"analyzed={result.get('analyzed')} "
+                    f"opened={result.get('opened')} "
+                    f"markets_left={result.get('markets_left')} "
+                    f"(picked up next scan)",
+                    flush=True,
+                )
             from engine.runtime_alerts import report_recovery
             report_recovery("market_scan")
         except Exception as exc:
             proc_health.record_job_error("pm_scan")
+            _scan_state["fence_streak"] += 1
             print(f"[delfi] scan failed: {exc}", file=sys.stderr, flush=True)
-            from engine.runtime_alerts import report_failure
-            report_failure(
-                "market_scan",
-                "The latest market scan did not finish before its safety limit.",
-            )
+            # One fence hit is noise (a single wedged provider call);
+            # the user-visible alert fires only when two scans in a row
+            # could not finish. Before 2026-09-13 every fence hit pushed
+            # "Market scan failed" to the dashboard and Telegram and the
+            # next clean scan pushed "recovered": 30 flips in 12 hours.
+            if _scan_state["fence_streak"] >= 2:
+                from engine.runtime_alerts import report_failure
+                report_failure(
+                    "market_scan",
+                    "Two market scans in a row did not finish before their "
+                    "safety limit. Delfi keeps retrying every scan.",
+                )
 
     def _run_resolve():
         try:
@@ -2426,6 +2494,16 @@ async def main() -> None:
         executor="threadpool",
         misfire_grace_time=3600,
     )
+    # Hourly log trim: keeps sidecar.log / sidecar.err / the tee file
+    # under 25 MB each on a daemon that runs for weeks.
+    scheduler.add_job(
+        _run_log_rotation, IntervalTrigger(hours=1),
+        id="log_rotation",
+        next_run_time=now_utc + timedelta(minutes=5),
+        max_instances=1, coalesce=True,
+        executor="threadpool",
+        misfire_grace_time=3600,
+    )
     # Weekly summary at 23:30 UTC every Sunday. Half-hour offset
     # from daily so they don't both fire at the same instant on
     # Sundays (small detail, but the daily would otherwise hit the
@@ -2518,6 +2596,37 @@ async def main() -> None:
     print("[delfi] bye", flush=True)
 
 
+# Handle + path of the tee file so the hourly rotation can trim it.
+_LOG_TEE: dict = {"fh": None, "path": None}
+
+
+def _rotate_logs_now() -> int:
+    """Trim stdout/stderr (launchd's log files) and the tee file when
+    they exceed the size cap. Safe to call from any thread; never
+    raises. Returns the number of files trimmed."""
+    trimmed = 0
+    try:
+        from engine.log_rotation import rotate_fd_if_large, rotate_stdio_logs
+        trimmed += rotate_stdio_logs()
+        fh = _LOG_TEE.get("fh")
+        path = _LOG_TEE.get("path")
+        if fh is not None and path is not None:
+            from pathlib import Path as _P
+            if rotate_fd_if_large(fh.fileno(), prev_path=_P(str(path) + ".prev"),
+                                  src_path=_P(str(path))):
+                trimmed += 1
+    except Exception as exc:
+        try:
+            print(f"[delfi] log rotation failed: {exc}", file=sys.stderr, flush=True)
+        except Exception:
+            pass
+    return trimmed
+
+
+def _run_log_rotation() -> None:
+    _rotate_logs_now()
+
+
 def _install_log_file_tee() -> None:
     """Mirror every print() to <app-data>/logs/sidecar.log.
 
@@ -2554,6 +2663,8 @@ def _install_log_file_tee() -> None:
             except Exception:
                 pass
         fh = open(log_path, "a", encoding="utf-8", buffering=1)
+        _LOG_TEE["fh"] = fh
+        _LOG_TEE["path"] = log_path
     except Exception as exc:
         # If we can't open the file, don't die - just print and
         # carry on without the tee.
