@@ -18,6 +18,17 @@ class ProcessHealth:
         self._job_last_blocked: dict[str, tuple[datetime, str]] = {}
         self._error_count: int = 0
         self._bot_start_time: Optional[datetime] = None
+        # Monotonic sequence per recorded event. Windows' wall clock
+        # ticks every ~15 ms, so record_job_ok() followed by
+        # record_job_blocked() in the same tick produced equal
+        # timestamps and the max() tie went to the wrong state.
+        self._seq: int = 0
+        self._job_seq: dict[tuple[str, str], int] = {}
+
+    def _stamp(self, job_name: str, state: str) -> datetime:
+        self._seq += 1
+        self._job_seq[(job_name, state)] = self._seq
+        return datetime.now(timezone.utc)
 
     def set_start_time(self, t: datetime) -> None:
         self._bot_start_time = t
@@ -34,16 +45,16 @@ class ProcessHealth:
 
     def record_job_ok(self, job_name: str) -> None:
         with self._lock:
-            self._job_last_ok[job_name] = datetime.now(timezone.utc)
+            self._job_last_ok[job_name] = self._stamp(job_name, "ok")
 
     def record_job_error(self, job_name: str) -> None:
         with self._lock:
-            self._job_last_error[job_name] = datetime.now(timezone.utc)
+            self._job_last_error[job_name] = self._stamp(job_name, "error")
             self._error_count += 1
 
     def record_job_blocked(self, job_name: str, reason: str) -> None:
         with self._lock:
-            self._job_last_blocked[job_name] = (datetime.now(timezone.utc), reason)
+            self._job_last_blocked[job_name] = (self._stamp(job_name, "blocked"), reason)
 
     @property
     def error_count(self) -> int:
@@ -67,15 +78,15 @@ class ProcessHealth:
                 blocked = self._job_last_blocked.get(name)
                 blocked_ts = blocked[0] if blocked else None
                 candidates = [
-                    (ok_ts, "ok"),
-                    (err_ts, "error"),
-                    (blocked_ts, "blocked"),
+                    (ok_ts, self._job_seq.get((name, "ok"), 0), "ok"),
+                    (err_ts, self._job_seq.get((name, "error"), 0), "error"),
+                    (blocked_ts, self._job_seq.get((name, "blocked"), 0), "blocked"),
                 ]
                 state = max(
-                    ((timestamp, value) for timestamp, value in candidates if timestamp),
-                    default=(None, "unknown"),
-                    key=lambda item: item[0],
-                )[1]
+                    ((ts, seq, value) for ts, seq, value in candidates if ts),
+                    default=(None, 0, "unknown"),
+                    key=lambda item: (item[0], item[1]),
+                )[2]
                 jobs[name] = {
                     "state": state,
                     "last_ok": ok_ts.isoformat() if ok_ts else None,
