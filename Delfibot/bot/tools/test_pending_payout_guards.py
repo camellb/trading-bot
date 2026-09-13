@@ -50,7 +50,7 @@ def _read_source() -> str:
             f"FATAL: pm_executor.py not found at {SOURCE_PATH}\n"
         )
         sys.exit(2)
-    return SOURCE_PATH.read_text()
+    return SOURCE_PATH.read_text(encoding="utf-8")
 
 
 def _pending_block(src: str) -> str:
