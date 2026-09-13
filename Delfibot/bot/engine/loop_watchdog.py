@@ -115,11 +115,13 @@ class LoopHeartbeat:
         # outer fence while /api/health stays green; nothing restarted
         # the daemon in that state before 2026-09-13.
         aux_silence_getter=None,
+        aux_reset=None,
         aux_warn_s: float = 120.0,
         aux_max_silence_s: float = 600.0,
     ) -> None:
         self._loop = loop
         self._aux_silence_getter = aux_silence_getter
+        self._aux_reset = aux_reset
         self._aux_warn_s = aux_warn_s
         self._aux_max_silence_s = aux_max_silence_s
         self._aux_warned = False
@@ -177,7 +179,21 @@ class LoopHeartbeat:
 
     def _watch(self) -> None:
         while not self._stop.is_set():
+            _slept_from = time.monotonic()
             time.sleep(self._check_interval_s)
+            _slept = time.monotonic() - _slept_from
+            if _slept > 3.0 * self._check_interval_s:
+                # The clock jumped: system sleep/wake (Windows' monotonic
+                # clock keeps counting while asleep) or a debugger pause.
+                # Neither loop had a chance to pump; judging silence now
+                # would restart a healthy daemon on every lid-open.
+                self._last_pump = time.monotonic()
+                if self._aux_reset is not None:
+                    try:
+                        self._aux_reset()
+                    except Exception:
+                        pass
+                continue
             silence = time.monotonic() - self._last_pump
             if silence > self._max_silence_s:
                 self._abort(silence, reason="loop silent")

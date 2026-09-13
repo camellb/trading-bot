@@ -124,6 +124,13 @@ def get_engine():
         url,
         pool_pre_ping=True,
         connect_args={"check_same_thread": False},
+        # Up to ~64 threads touch SQLite (job loop executor 16, API
+        # executor 8, blocking pool 16, default executor 32). The
+        # QueuePool default (5 + 10 overflow, 30 s wait) would raise
+        # "QueuePool limit reached" under a scan burst instead of
+        # letting busy_timeout do its job.
+        pool_size=32,
+        max_overflow=32,
         future=True,
     )
 

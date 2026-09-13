@@ -55,7 +55,15 @@ async function fetchPort(): Promise<number> {
 
 async function port(): Promise<number> {
   if (cachedPort) return cachedPort;
-  if (!portPromise) portPromise = fetchPort();
+  if (!portPromise) {
+    // Reset on failure so one slow boot (120 s deadline) does not pin
+    // every later request to "took too long to start" for the rest of
+    // the session even after the daemon comes up.
+    portPromise = fetchPort().catch((err) => {
+      portPromise = null;
+      throw err;
+    });
+  }
   return portPromise;
 }
 

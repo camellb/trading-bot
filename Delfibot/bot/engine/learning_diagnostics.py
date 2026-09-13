@@ -261,7 +261,7 @@ def exit_threshold_backtest(
                 "       cost_usd, shares, realized_pnl_usd "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND status IN ('settled','closed_early') "
                 "  AND entry_price IS NOT NULL "
                 "  AND cost_usd IS NOT NULL "
                 "  AND shares IS NOT NULL "
@@ -364,7 +364,7 @@ def horizon_pnl_attribution(
                 "FROM pm_positions pp "
                 "JOIN predictions pr ON pr.id = pp.prediction_id "
                 "WHERE pp.user_id = :uid AND pp.mode = :m "
-                "  AND pp.status IN ('settled','invalid','closed_early') "
+                "  AND pp.status IN ('settled','closed_early') "
                 "  AND pp.cost_usd IS NOT NULL "
                 "  AND pp.realized_pnl_usd IS NOT NULL "
                 "  AND pr.horizon_hours IS NOT NULL"
@@ -387,6 +387,7 @@ def horizon_pnl_attribution(
         cost_sum = sum(c for c, _ in bucket_rows)
         pnl_sum = sum(p for _, p in bucket_rows)
         wins = sum(1 for _, p in bucket_rows if p > 0)
+        losses = sum(1 for _, p in bucket_rows if p < 0)
         roi = (pnl_sum / cost_sum) if cost_sum > 0 else None
         # Per-position ROI for CI.
         per_pos_roi = [
@@ -399,7 +400,7 @@ def horizon_pnl_attribution(
             "pnl":      round(pnl_sum, 2),
             "cost":     round(cost_sum, 2),
             "roi":      round(roi, 4) if roi is not None else None,
-            "win_rate": round(wins / n, 4) if n else None,
+            "win_rate": round(wins / (wins + losses), 4) if (wins + losses) else None,
             "ci_lo":    round(ci_lo, 4),
             "ci_hi":    round(ci_hi, 4),
             "usable":   n >= 8,
@@ -448,7 +449,7 @@ def loss_day_recovery(
                 "WHERE user_id = :uid AND mode = :m "
                 "  AND settled_at IS NOT NULL "
                 "  AND realized_pnl_usd IS NOT NULL "
-                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND status IN ('settled','closed_early') "
                 "GROUP BY d ORDER BY d ASC"
             ), {"uid": user_id, "m": mode}).fetchall()
     except Exception as exc:
@@ -515,7 +516,7 @@ def loss_week_recovery(
                 "WHERE user_id = :uid AND mode = :m "
                 "  AND settled_at IS NOT NULL "
                 "  AND realized_pnl_usd IS NOT NULL "
-                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND status IN ('settled','closed_early') "
                 "GROUP BY w ORDER BY w ASC"
             ), {"uid": user_id, "m": mode}).fetchall()
     except Exception as exc:
@@ -587,7 +588,7 @@ def loss_streak_analysis(
                 "SELECT realized_pnl_usd "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND status IN ('settled','closed_early') "
                 "  AND realized_pnl_usd IS NOT NULL "
                 "  AND settled_at IS NOT NULL "
                 "ORDER BY settled_at ASC"
@@ -655,7 +656,7 @@ def archetype_price_band_pnl(
                 "       cost_usd, realized_pnl_usd "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND status IN ('settled','closed_early') "
                 "  AND market_archetype IS NOT NULL "
                 "  AND entry_price IS NOT NULL "
                 "  AND cost_usd IS NOT NULL "
@@ -734,7 +735,7 @@ def aggregate_roi_and_drawdown(
                 "SELECT realized_pnl_usd, cost_usd, settled_at "
                 "FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled','invalid','closed_early') "
+                "  AND status IN ('settled','closed_early') "
                 "  AND realized_pnl_usd IS NOT NULL "
                 "  AND cost_usd IS NOT NULL "
                 "ORDER BY settled_at ASC"

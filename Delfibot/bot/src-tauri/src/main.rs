@@ -103,6 +103,8 @@ fn ensure_macos_launchagent() {
     let agent_path = format!("{agent_dir}/com.delfi.bot.plist");
     let log_dir = format!("{home}/Library/Logs/Delfi");
     let appdata_dir = format!("{home}/Library/Application Support/com.delfi.desktop");
+    // PyInstaller extraction dir for the daemon (see TMPDIR in the plist).
+    let _ = std::fs::create_dir_all(format!("{appdata_dir}/runtime"));
 
     // Detect what's already in place. The LaunchAgent's `ProgramArguments`
     // must point at THIS bundle's sub-bundle path - if the user
@@ -212,6 +214,8 @@ fn ensure_macos_launchagent() {
         <string>1</string>
         <key>DELFI_LIVE_KILLSWITCH_OFF</key>
         <string>1</string>
+        <key>TMPDIR</key>
+        <string>{appdata_dir}/runtime</string>
     </dict>
     <key>StandardOutPath</key>
     <string>{log_dir}/sidecar.log</string>
@@ -496,6 +500,20 @@ async fn restart_sidecar(
         }
         let service = format!("gui/{uid}/com.delfi.bot");
 
+        // Auto-start OFF boots the agent out of launchd; a kickstart on
+        // a booted-out service fails silently and the user was stuck on
+        // the boot screen with a Restart button that could never work.
+        // Bootstrap first (a no-op when the agent is already loaded).
+        let plist = format!(
+            "{}/Library/LaunchAgents/com.delfi.bot.plist",
+            std::env::var("HOME").unwrap_or_default(),
+        );
+        let _ = run_with_timeout(
+            "/bin/launchctl",
+            &["bootstrap", &format!("gui/{uid}"), &plist],
+            std::time::Duration::from_secs(5),
+        );
+
         match run_with_timeout(
             "/bin/launchctl",
             &["kickstart", "-k", &service],
@@ -623,6 +641,18 @@ fn spawn_sidecar(
         }
     };
 
+    // PyInstaller extracts into $TMPDIR (macOS/Linux) or %TEMP% / %TMP%
+    // (Windows). Point them at a dir under app data so the OS temp
+    // cleaner cannot delete the running daemon's files (macOS purges
+    // /var/folders after 3 days) and the sidecar can reap stale
+    // extractions itself.
+    let runtime_dir = db_path
+        .parent()
+        .map(|p| p.join("runtime"))
+        .unwrap_or_else(|| PathBuf::from("runtime"));
+    let _ = std::fs::create_dir_all(&runtime_dir);
+    let runtime_dir = runtime_dir.to_string_lossy().into_owned();
+
     let cmd = cmd
         .env("DELFI_PORT", port.to_string())
         .env("DELFI_DB_PATH", db_path.to_string_lossy().into_owned())
@@ -634,7 +664,10 @@ fn spawn_sidecar(
         // dashboard showed live trades and P&L while the wallet never
         // moved. Live orders still require the user's explicit Live
         // toggle plus saved Polymarket credentials.
-        .env("DELFI_LIVE_KILLSWITCH_OFF", "1");
+        .env("DELFI_LIVE_KILLSWITCH_OFF", "1")
+        .env("TMPDIR", &runtime_dir)
+        .env("TEMP", &runtime_dir)
+        .env("TMP", &runtime_dir);
     // DELFI_PARENT_PID was used to drive a parent-death watchdog
     // that killed the sidecar when the GUI quit. Removed 2026-04-30:
     // the sidecar is now a 24/7 launchd-managed daemon that must
@@ -967,8 +1000,12 @@ fn main() {
                 //           from a previous run that we used to keep
                 //           probing for 60 iterations × 1.5s = 90s
                 //           was the headline "loads forever" symptom.
+                // read_existing_sidecar_port is itself a 30 x 0.5 s
+                // loop (~15 s when nothing listens), so 2 iterations
+                // is the ~30 s budget the comments describe; 60 was
+                // 15 minutes before the kickstart fallback fired.
                 let probe_iterations: u32 =
-                    if cfg!(target_os = "macos") { 60 } else { 1 };
+                    if cfg!(target_os = "macos") { 2 } else { 1 };
                 let mut probed_dead = false;
                 for _ in 0..probe_iterations {
                     if let Some(p) = read_existing_sidecar_port(&app_handle).await {
@@ -1174,6 +1211,13 @@ fn main() {
                             if uid.is_empty() || !uid.chars().all(|c| c.is_ascii_digit()) {
                                 return None;
                             }
+                            let plist = format!(
+                                "{}/Library/LaunchAgents/com.delfi.bot.plist",
+                                std::env::var("HOME").unwrap_or_default(),
+                            );
+                            let _ = std::process::Command::new("/bin/launchctl")
+                                .args(["bootstrap", &format!("gui/{uid}"), &plist])
+                                .output();
                             std::process::Command::new("/bin/launchctl")
                                 .args(["kickstart", &format!("gui/{uid}/com.delfi.bot")])
                                 .output()

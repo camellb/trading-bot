@@ -1321,7 +1321,8 @@ def _count_settled_trades(user_id: str, mode: str) -> int:
     """Count of trades that have a closed outcome.
 
     Must match the CANONICAL ALGORITHM in CLAUDE.md RULE #1:
-    `trades = COUNT WHERE status IN ('settled', 'closed_early', 'invalid')`.
+    `trades = COUNT WHERE status IN ('settled', 'closed_early')` (invalid
+    rows are refunded and excluded, matching get_portfolio_stats).
 
     Earlier this counter excluded `closed_early` rows, which silently
     starved the learning cadence: a user could hit 50 real closed
@@ -1337,7 +1338,7 @@ def _count_settled_trades(user_id: str, mode: str) -> int:
             return int(conn.execute(text(
                 "SELECT COUNT(*) FROM pm_positions "
                 "WHERE user_id = :uid AND mode = :m "
-                "  AND status IN ('settled', 'closed_early', 'invalid')"
+                "  AND status IN ('settled', 'closed_early')"
             ), {"uid": user_id, "m": mode}).scalar() or 0)
     except Exception as exc:
         print(f"[learning_cadence] count_settled failed: {exc}", file=sys.stderr)

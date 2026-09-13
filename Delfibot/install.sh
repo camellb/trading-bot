@@ -330,6 +330,22 @@ mkdir -p "$LAUNCH_AGENT_DIR" "$LOG_DIR"
 if [[ -f "$PLIST_TEMPLATE" ]]; then
   # Substitute __HOME__ with the user's actual home dir.
   sed "s|__HOME__|${HOME}|g" "$PLIST_TEMPLATE" > "$LAUNCH_AGENT_PLIST"
+  mkdir -p "$HOME/Library/Application Support/com.delfi.desktop/runtime"
+  # Dev-only owner bypass: the token lives in ~/.delfi-owner-token,
+  # never in the repo. Shipped builds get no such variable.
+  if [[ -f "$HOME/.delfi-owner-token" ]]; then
+    OWNER_TOKEN="$(tr -d '[:space:]' < "$HOME/.delfi-owner-token")" \
+    PLIST_PATH="$LAUNCH_AGENT_PLIST" python3 - <<'PY'
+import os, plistlib
+p = os.environ["PLIST_PATH"]
+with open(p, "rb") as fh:
+    d = plistlib.load(fh)
+d.setdefault("EnvironmentVariables", {})["DELFI_OWNER_BYPASS_TOKEN"] = os.environ["OWNER_TOKEN"]
+with open(p, "wb") as fh:
+    plistlib.dump(d, fh)
+print("[install] owner bypass token injected from ~/.delfi-owner-token")
+PY
+  fi
 
   USER_GUI="gui/$(id -u)"
   # Idempotent (re-)bootstrap. `bootout` first to clear any prior

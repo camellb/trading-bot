@@ -65,8 +65,22 @@ class MacroCalendar:
         """Load local calendar, then schedule weekly refresh via APScheduler."""
         loaded = self._load_local()
         if not loaded or self._is_stale():
-            print("[macro_calendar] No valid local calendar - fetching now...")
-            await self.refresh()
+            # Do NOT await the scrape here: it runs before the API
+            # binds and its three 15 s fetches held the port file for
+            # up to 45 s on every first boot (and every 7 days), which
+            # pushed cold Windows launches past the GUI's deadline.
+            print("[macro_calendar] No valid local calendar - fetching in the background...")
+
+            def _log_refresh_result(task) -> None:
+                if task.cancelled():
+                    return
+                exc = task.exception()
+                if exc is not None:
+                    print(f"[macro_calendar] background refresh failed: {exc}")
+
+            asyncio.get_running_loop().create_task(self.refresh()).add_done_callback(
+                _log_refresh_result
+            )
         else:
             print(
                 f"[macro_calendar] Loaded {len(self._events)} events from local cache"

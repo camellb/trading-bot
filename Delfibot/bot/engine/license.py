@@ -84,12 +84,15 @@ EMBEDDED_PUBLIC_KEY_B64 = "X3B9bL0nWTAznXfL2Rqhamd3CDgFWmor9EIvT6jOYVY="
 
 # ── Owner bypass ──────────────────────────────────────────────────────────
 #
-# Skip the crypto check on the maintainer's own machine. The bypass
-# token is a hard-coded constant - anyone reading the binary can find
-# it - but it only unlocks Delfi on the device it was pasted on,
-# does NOT generate real signed licenses, and grants no extra
-# privileges. Acceptable risk for a single-tenant desktop app.
-OWNER_BYPASS_TOKEN = "DELFI-OWNER-LOCAL-2026"
+# Skip the crypto check on the maintainer's own machine. The token is
+# NOT in the source tree: it comes from the DELFI_OWNER_BYPASS_TOKEN
+# environment variable of the daemon (the dev installer injects it
+# from ~/.delfi-owner-token). Shipped builds run without the variable,
+# so there is no bypass to find in the public repo or in the binary.
+# The previous hard-coded constant unlocked any install for free.
+OWNER_BYPASS_TOKEN: Optional[str] = (
+    (os.environ.get("DELFI_OWNER_BYPASS_TOKEN") or "").strip() or None
+)
 
 
 # ── Public results ────────────────────────────────────────────────────────
@@ -172,7 +175,7 @@ def verify_license(blob: str) -> LicenseValidationResult:
     cleaned = blob.strip()
 
     # Owner bypass first: it is not a signed blob.
-    if cleaned == OWNER_BYPASS_TOKEN:
+    if OWNER_BYPASS_TOKEN and cleaned == OWNER_BYPASS_TOKEN:
         return LicenseValidationResult(
             valid=True,
             error=None,

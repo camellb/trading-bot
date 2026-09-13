@@ -688,8 +688,7 @@ function RestartPanel() {
       }
       setError(
         "Delfi did not come back within 60 seconds. " +
-        "Quit Delfi from the macOS menu bar and reopen " +
-        "it from /Applications.",
+        "Quit Delfi completely and reopen it.",
       );
       setPhase("error");
     } catch (err) {

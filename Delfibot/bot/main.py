@@ -261,6 +261,50 @@ def _ensure_job_loop() -> asyncio.AbstractEventLoop:
 _job_loop_pulse = None
 
 
+def _reset_job_loop_pulse() -> None:
+    """Called by the watchdog after a sleep/wake clock jump."""
+    pulse = _job_loop_pulse
+    if pulse is not None:
+        try:
+            pulse.reset()
+        except Exception:
+            pass
+
+
+def _cleanup_stale_runtime_dirs() -> None:
+    """Remove PyInstaller extraction dirs left by earlier daemons.
+
+    The launcher points TMPDIR/TEMP at <app-data>/runtime so the
+    one-file bootloader extracts there instead of the system temp dir,
+    which macOS purges after 3 days while the daemon is still running
+    (168 missing-data-file errors in one two-day log). Every hard
+    restart (watchdog, Restart button, installer) leaves a 450 MB
+    `_MEI*` dir behind; the singleton lock guarantees only this
+    process is alive, so every sibling older than 30 minutes is stale.
+    """
+    import shutil as _shutil
+    import time as _time
+    own = getattr(sys, "_MEIPASS", None)
+    if not own:
+        return
+    own = os.path.realpath(own)
+    parent = os.path.dirname(own)
+    runtime = os.environ.get("TMPDIR") or os.environ.get("TEMP") or ""
+    if not runtime or os.path.realpath(runtime) != parent:
+        return  # extraction is not under our runtime dir; leave the system temp alone
+    cutoff = _time.time() - 1800
+    for name in os.listdir(parent):
+        path = os.path.join(parent, name)
+        if not name.startswith("_MEI") or os.path.realpath(path) == own:
+            continue
+        try:
+            if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                _shutil.rmtree(path, ignore_errors=True)
+                print(f"[delfi] removed stale runtime dir {name}", flush=True)
+        except Exception:
+            pass
+
+
 def job_loop_silence_seconds() -> float:
     """Seconds since the scheduler job loop last ran a callback. 0.0
     before the loop exists. Surfaced in /api/health and watched by the
@@ -293,8 +337,19 @@ SCAN_TIME_BUDGET_S = 210
 # APScheduler worker, dropping pm_scan / pm_evaluate_exits / etc.
 import concurrent.futures as _cf_blocking
 _BLOCKING_JOB_POOL = _cf_blocking.ThreadPoolExecutor(
-    max_workers=8, thread_name_prefix="delfi-blocking-job",
+    max_workers=16, thread_name_prefix="delfi-blocking-job",
 )
+# Threads still running past their fence. Each one holds a pool slot
+# until its socket dies; when the count reaches the pool size every
+# later bounded job times out before it even starts. Surfaced in
+# /api/health as blocking_pool_abandoned.
+_BLOCKING_ABANDONED = {"n": 0}
+_BLOCKING_ABANDONED_LOCK = _threading.Lock()
+
+
+def blocking_pool_abandoned() -> int:
+    with _BLOCKING_ABANDONED_LOCK:
+        return int(_BLOCKING_ABANDONED["n"])
 
 
 def _run_bounded_sync(fn, timeout_s: int, label: str):
@@ -312,11 +367,28 @@ def _run_bounded_sync(fn, timeout_s: int, label: str):
     try:
         return future.result(timeout=timeout_s)
     except _cf_blocking.TimeoutError:
-        print(
-            f"[delfi] {label} exceeded {timeout_s}s wall-clock ceiling - "
-            f"worker thread abandoned (will drain when I/O unblocks)",
-            file=sys.stderr, flush=True,
-        )
+        if future.cancel():
+            # Never started (queued behind stuck work): drop it so it
+            # does not run later against a caller that is gone.
+            print(
+                f"[delfi] {label} waited {timeout_s}s for a blocking-pool "
+                f"slot and was dropped (pool busy with stuck calls)",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            with _BLOCKING_ABANDONED_LOCK:
+                _BLOCKING_ABANDONED["n"] += 1
+
+            def _drain(_f):
+                with _BLOCKING_ABANDONED_LOCK:
+                    _BLOCKING_ABANDONED["n"] = max(0, _BLOCKING_ABANDONED["n"] - 1)
+            future.add_done_callback(_drain)
+            print(
+                f"[delfi] {label} exceeded {timeout_s}s wall-clock ceiling - "
+                f"worker thread abandoned (will drain when I/O unblocks; "
+                f"{blocking_pool_abandoned()} abandoned now)",
+                file=sys.stderr, flush=True,
+            )
         raise TimeoutError(f"{label} timeout {timeout_s}s")
 
 
@@ -1066,6 +1138,7 @@ async def main() -> None:
         # SIGKILL (launchd respawns) at 10 min. A blocked job loop
         # cannot run scans or stop-losses and used to be invisible.
         aux_silence_getter=job_loop_silence_seconds,
+        aux_reset=_reset_job_loop_pulse,
         aux_warn_s=120.0,
         aux_max_silence_s=600.0,
     )
@@ -1216,6 +1289,7 @@ async def main() -> None:
     api = LocalAPI(
         analyst=analyst, host=api_host, port=api_port, watchdog=watchdog,
         job_loop_silence_getter=job_loop_silence_seconds,
+        blocking_abandoned_getter=blocking_pool_abandoned,
     )
     bound_port = await api.start()
     # Tell the watchdog where to self-probe. Until this is set the
@@ -1487,7 +1561,7 @@ async def main() -> None:
                   file=sys.stderr, flush=True)
             return
 
-        base_url = _os.environ.get(
+        base_url = os.environ.get(
             "DELFI_LICENSE_API_BASE",
             "https://delfibot.com/api/license",
         )
@@ -1993,7 +2067,11 @@ async def main() -> None:
         """
         try:
             from engine.equity_snapshot import record_equity_snapshot
-            record_equity_snapshot()
+            # Live mode touches the wallet caches (network); fence it
+            # like the other network jobs so a hung socket cannot pin
+            # an APScheduler worker for good.
+            _run_bounded_sync(record_equity_snapshot, timeout_s=30,
+                              label="equity_snapshot")
             proc_health.record_job_ok("equity_snapshot")
         except Exception as exc:
             proc_health.record_job_error("equity_snapshot")
@@ -2104,6 +2182,13 @@ async def main() -> None:
                   file=sys.stderr, flush=True)
 
     def _run_daily_summary():
+        try:
+            _run_bounded_sync(_run_daily_summary_impl, timeout_s=45,
+                              label="daily_summary")
+        except Exception as exc:
+            print(f"[delfi] daily_summary fence: {exc}", file=sys.stderr, flush=True)
+
+    def _run_daily_summary_impl():
         """End-of-day recap to Telegram. Fires every day at 23:00 UTC.
         Aggregates the last 24h of resolved positions + the day's
         analysed-market count, formats via telegram_messages.daily_
@@ -2139,19 +2224,19 @@ async def main() -> None:
                     "  COALESCE(SUM(CASE WHEN realized_pnl_usd < 0 THEN 1 ELSE 0 END), 0) AS losses24, "
                     "  COALESCE(SUM(realized_pnl_usd), 0) AS pnl24 "
                     "FROM pm_positions "
-                    "WHERE user_id = :uid AND mode = 'live' "
+                    "WHERE user_id = :uid AND mode = :m "
                     "  AND status IN ('settled', 'closed_early') "
                     "  AND settled_at > datetime('now', '-24 hours')"
-                ), {"uid": DEFAULT_USER_ID}).fetchone()
+                ), {"uid": DEFAULT_USER_ID, "m": executor.mode}).fetchone()
                 resolved24 = int(row24[0] or 0)
                 wins24     = int(row24[1] or 0)
                 losses24   = int(row24[2] or 0)
                 pnl24      = float(row24[3] or 0.0)
                 cnt24_row = conn.execute(text(
                     "SELECT COUNT(*) FROM market_evaluations "
-                    "WHERE user_id = :uid "
+                    "WHERE user_id = :uid AND mode = :m "
                     "  AND evaluated_at > datetime('now', '-24 hours')"
-                ), {"uid": DEFAULT_USER_ID}).fetchone()
+                ), {"uid": DEFAULT_USER_ID, "m": executor.mode}).fetchone()
                 cnt24 = int(cnt24_row[0] or 0)
 
             # Quiet days: no resolved positions AND no markets even
@@ -2163,7 +2248,11 @@ async def main() -> None:
             # win rate" label in the message. Old all-time variant
             # was dropped in the 2026-05-26 message-shape rework
             # (too many different win-rate numbers in one message).
-            win_pct_today = (wins24 / resolved24 * 100.0) if resolved24 else 0.0
+            # RULE #1: wins / (wins + losses); break-even is neither.
+            win_pct_today = (
+                (wins24 / (wins24 + losses24) * 100.0)
+                if (wins24 + losses24) else 0.0
+            )
             telegram_html = _tm.daily_summary(
                 equity=equity,
                 bankroll=bankroll,
@@ -2188,6 +2277,13 @@ async def main() -> None:
                   file=sys.stderr, flush=True)
 
     def _run_weekly_summary():
+        try:
+            _run_bounded_sync(_run_weekly_summary_impl, timeout_s=45,
+                              label="weekly_summary")
+        except Exception as exc:
+            print(f"[delfi] weekly_summary fence: {exc}", file=sys.stderr, flush=True)
+
+    def _run_weekly_summary_impl():
         """Weekly performance recap. Fires Sunday at 23:30 UTC.
         Same gating model as daily_summary: event_type='weekly_
         summary', so the toggle in Settings -> Notifications
@@ -2218,10 +2314,10 @@ async def main() -> None:
                     "  COALESCE(SUM(CASE WHEN realized_pnl_usd < 0 THEN 1 ELSE 0 END), 0) AS losses7, "
                     "  COALESCE(SUM(realized_pnl_usd), 0) AS pnl7 "
                     "FROM pm_positions "
-                    "WHERE user_id = :uid AND mode = 'live' "
+                    "WHERE user_id = :uid AND mode = :m "
                     "  AND status IN ('settled', 'closed_early') "
                     "  AND settled_at > datetime('now', '-7 days')"
-                ), {"uid": DEFAULT_USER_ID}).fetchone()
+                ), {"uid": DEFAULT_USER_ID, "m": executor.mode}).fetchone()
                 resolved7 = int(row7[0] or 0)
                 wins7     = int(row7[1] or 0)
                 losses7   = int(row7[2] or 0)
@@ -2231,7 +2327,10 @@ async def main() -> None:
             if resolved7 == 0:
                 return
 
-            win_pct_week = (wins7 / resolved7 * 100.0) if resolved7 else 0.0
+            win_pct_week = (
+                (wins7 / (wins7 + losses7) * 100.0)
+                if (wins7 + losses7) else 0.0
+            )
             telegram_html = _tm.weekly_summary(
                 equity=equity,
                 bankroll=bankroll,
@@ -2309,6 +2408,9 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(seconds=60),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        # APScheduler's default grace is 1 s: any lateness (GC pause,
+        # slow handler, wake from sleep) dropped the whole run.
+        misfire_grace_time=60,
     )
     scheduler.add_job(
         _run_resolve, IntervalTrigger(minutes=resolve_interval_min),
@@ -2316,6 +2418,7 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(minutes=5),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        misfire_grace_time=60,
     )
     scheduler.add_job(
         _run_resolve_fast, IntervalTrigger(seconds=fast_resolve_sec),
@@ -2329,6 +2432,7 @@ async def main() -> None:
         # matter.
         max_instances=1, coalesce=False,
         executor="threadpool",
+        misfire_grace_time=30,
     )
     scheduler.add_job(
         _run_markouts, IntervalTrigger(hours=1),
@@ -2440,6 +2544,7 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(seconds=1),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        misfire_grace_time=30,
     )
     # Polymarket connectivity probe every 60s. Fires Telegram on
     # state TRANSITIONS only (ok -> unreachable / geo_blocked, and
@@ -2482,6 +2587,7 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(seconds=30),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        misfire_grace_time=120,
     )
     # Daily summary at 23:00 UTC every day. Cron rather than
     # interval so the message lands at a consistent local clock
@@ -2526,6 +2632,7 @@ async def main() -> None:
         next_run_time=now_utc + timedelta(seconds=90),
         max_instances=1, coalesce=True,
         executor="threadpool",
+        misfire_grace_time=600,
     )
     # One-shot boot claim. Fires once at boot+30s and never again
     # (DateTrigger). Closes the upgrade-path gap: an already-activated
@@ -2542,6 +2649,8 @@ async def main() -> None:
         id="license_boot_claim",
         max_instances=1, coalesce=False,
         executor="threadpool",
+        # One-shot: must run even if the scheduler is late at boot.
+        misfire_grace_time=None,
     )
 
     scheduler.start()
@@ -2625,6 +2734,10 @@ def _rotate_logs_now() -> int:
 
 def _run_log_rotation() -> None:
     _rotate_logs_now()
+    try:
+        _cleanup_stale_runtime_dirs()
+    except Exception as exc:
+        print(f"[delfi] runtime dir cleanup failed: {exc}", file=sys.stderr, flush=True)
 
 
 def _install_log_file_tee() -> None:

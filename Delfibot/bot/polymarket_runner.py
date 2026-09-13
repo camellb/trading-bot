@@ -274,7 +274,13 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                 # tm.settled_win / tm.settled_loss differ in glyph and
                 # P&L line wording, picked off the win/loss boolean.
                 telegram_html: str | None = None
-                try:
+
+                def _render_settlement_sync() -> str | None:
+                    """Cache refresh, portfolio stats and Telegram render.
+                    Every call in here is synchronous HTTP, so it runs on an
+                    executor thread: inline it blocked the job loop for up to
+                    a minute per settled position and delayed stop-loss ticks.
+                    """
                     from feeds import telegram_messages as _tm
                     # Force-refresh the Polymarket /positions cache
                     # before fetching stats so the just-settled
@@ -404,18 +410,28 @@ async def resolve_positions(short_horizon_only: bool = False) -> dict:
                         mode=p.get("mode") or "simulation",
                     )
                     if outcome == side:
-                        telegram_html = _tm.settled_win(**common)
+                        return _tm.settled_win(**common)
                     else:
-                        telegram_html = _tm.settled_loss(**common)
+                        return _tm.settled_loss(**common)
+
+                try:
+                    telegram_html = await asyncio.get_running_loop().run_in_executor(
+                        None, _render_settlement_sync,
+                    )
                 except Exception as exc:
                     print(f"[pm_runner] telegram render failed: {exc}",
                           file=sys.stderr)
-                log_event(
-                    event_type="position_settled",
-                    severity=20,
-                    description=description,
-                    source="polymarket_runner",
-                    telegram_html=telegram_html,
+                # log_event posts to Telegram synchronously (urlopen, 6 s
+                # timeout); keep it off the job loop too.
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: log_event(
+                        event_type="position_settled",
+                        severity=20,
+                        description=description,
+                        source="polymarket_runner",
+                        telegram_html=telegram_html,
+                    ),
                 )
             except Exception as exc:
                 print(f"[pm_runner] event log write failed: {exc}",

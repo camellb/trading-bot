@@ -74,6 +74,10 @@
         -->
         <key>DELFI_LIVE_KILLSWITCH_OFF</key>
         <string>1</string>
+        <!-- PyInstaller extraction dir. The system temp dir is purged
+             by macOS after 3 days while the daemon still runs. -->
+        <key>TMPDIR</key>
+        <string>__HOME__/Library/Application Support/com.delfi.desktop/runtime</string>
     </dict>
 
     <key>StandardOutPath</key>

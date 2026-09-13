@@ -374,8 +374,7 @@ function ConnErrorBannerWithRestart({ error }: { error: string }) {
         window.location.reload();
       } else {
         setRestartError(
-          "Delfi did not come back. Quit Delfi from the macOS menu " +
-          "bar and reopen from /Applications.",
+          "Delfi did not come back. Quit Delfi completely and reopen it.",
         );
         setRestarting(false);
       }
@@ -446,8 +445,7 @@ function BootScreen({ error }: { error: string | null }) {
         window.location.reload();
       } else {
         setRestartError(
-          "Delfi did not come back. Quit Delfi from the macOS menu " +
-          "bar and reopen from /Applications.",
+          "Delfi did not come back. Quit Delfi completely and reopen it.",
         );
         setRestarting(false);
       }
@@ -510,7 +508,7 @@ function BootScreen({ error }: { error: string | null }) {
         </>
       ) : (
         <>
-          <p className="boot-detail">This may take up to 30 seconds</p>
+          <p className="boot-detail">This can take a couple of minutes on first launch</p>
           <div className="boot-progress" aria-hidden="true" />
         </>
       )}

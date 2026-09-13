@@ -2,11 +2,19 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
+needs_fd_path = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="tail copy needs a readable path for the fd (F_GETPATH or /proc)",
+)
+
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from engine import log_rotation
 
 
+@needs_fd_path
 def test_rotate_fd_truncates_and_keeps_tail(tmp_path) -> None:
     log = tmp_path / "sidecar.log"
     fd = os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
@@ -54,6 +62,7 @@ def test_fd_path_resolves_regular_file(tmp_path) -> None:
         os.close(fd)
 
 
+@needs_fd_path
 def test_rotate_stdio_dedupes_shared_file(tmp_path, monkeypatch) -> None:
     log = tmp_path / "sidecar.log"
     fd = os.open(str(log), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)

@@ -354,7 +354,9 @@ class LocalAPI:
         *,
         watchdog: Optional[Any] = None,
         job_loop_silence_getter=None,
+        blocking_abandoned_getter=None,
     ) -> None:
+        self._blocking_abandoned_getter = blocking_abandoned_getter
         self._analyst = analyst
         # Seconds since the scheduler job loop last ran a callback
         # (main.job_loop_silence_seconds). Surfaced in /api/health.
@@ -783,6 +785,14 @@ class LocalAPI:
                 snap["job_loop_silence_s"] = round(job_silence, 2)
                 if job_silence > 120.0 and snap.get("status") == "ok":
                     snap["status"] = "degraded"
+            except Exception:
+                pass
+        # Blocking-pool threads abandoned at their fence (stuck network
+        # calls). Climbing towards the pool size means scans, exits and
+        # balance refreshes are about to stall.
+        if self._blocking_abandoned_getter is not None:
+            try:
+                snap["blocking_pool_abandoned"] = int(self._blocking_abandoned_getter())
             except Exception:
                 pass
         # Paused forecast/search connections (quota, billing, auth,
@@ -2082,17 +2092,24 @@ class LocalAPI:
         # user deposits more capital and wants to rebaseline).
         if stats.get("mode") == "live":
             stored: Optional[float] = None
-            try:
+
+            def _read_pinned() -> Optional[float]:
                 with get_engine().begin() as conn:
                     row = conn.execute(text(
                         "SELECT live_starting_cash FROM user_config "
                         "WHERE user_id = :uid"
                     ), {"uid": "local"}).fetchone()
-                    if row is not None and row[0] is not None:
-                        try:
-                            stored = float(row[0])
-                        except (TypeError, ValueError):
-                            stored = None
+                if row is not None and row[0] is not None:
+                    try:
+                        return float(row[0])
+                    except (TypeError, ValueError):
+                        return None
+                return None
+
+            try:
+                # Off the event loop: a scan-job write holding the
+                # SQLite lock used to stall every API request here.
+                stored = await self._offload(_read_pinned)
             except Exception as exc:
                 # If the column doesn't exist yet (race against
                 # migrate_schema) just fall through to the derived
@@ -2100,7 +2117,11 @@ class LocalAPI:
                 print(f"[summary] live_starting_cash read failed: {exc}",
                       file=sys.stderr, flush=True)
 
-            if stored is not None and stored > 0:
+            # A stored value of $1.00 or less is the signature of the
+            # old cold-cache bug (max(1.0, 0.0) written on the first
+            # poll before the wallet probe warmed): treat it as unset
+            # so it heals itself on the next usable read.
+            if stored is not None and stored > 1.0:
                 starting = stored
             else:
                 # First observation OR a previous one was unusable.
@@ -2114,29 +2135,40 @@ class LocalAPI:
                 # than back-deriving from a possibly-wrong realized
                 # sum.
                 pm_lifetime = stats.get("data_api_total_pnl")
+                equity_f = float(equity or 0.0)
                 if pm_lifetime is not None:
-                    snapshot = max(1.0, equity - float(pm_lifetime))
+                    snapshot = max(1.0, equity_f - float(pm_lifetime))
                 else:
-                    snapshot = max(1.0, equity)
+                    snapshot = max(1.0, equity_f)
                 starting = snapshot
-                try:
-                    with get_engine().begin() as conn:
-                        conn.execute(text(
-                            "UPDATE user_config "
-                            "SET live_starting_cash = :v "
-                            "WHERE user_id = :uid"
-                        ), {"v": float(snapshot), "uid": "local"})
-                    print(
-                        f"[summary] snapshotted live_starting_cash="
-                        f"${snapshot:.4f} for user='local' (equity="
-                        f"${equity:.4f}, pm_lifetime_pnl="
-                        f"{pm_lifetime}). ROI denominator is now "
-                        f"PINNED to this value.",
-                        file=sys.stderr, flush=True,
-                    )
-                except Exception as exc:
-                    print(f"[summary] live_starting_cash write failed: {exc}",
-                          file=sys.stderr, flush=True)
+                # Pin ONLY when the live overlay actually read the
+                # wallet (data_ready) and the number is a real balance.
+                # Pinning on a cold or failed probe wrote $1.00 forever:
+                # ROI in the thousands of percent and every risk gate
+                # scaled to one dollar. This tick just uses the derived
+                # value; the next poll after the wallet cache warms
+                # (60 s job) pins the real baseline.
+                if data_ready and snapshot > 1.0:
+                    def _write_pin(value: float) -> None:
+                        with get_engine().begin() as conn:
+                            conn.execute(text(
+                                "UPDATE user_config "
+                                "SET live_starting_cash = :v "
+                                "WHERE user_id = :uid"
+                            ), {"v": float(value), "uid": "local"})
+                    try:
+                        await self._offload(_write_pin, float(snapshot))
+                        print(
+                            f"[summary] snapshotted live_starting_cash="
+                            f"${snapshot:.4f} for user='local' (equity="
+                            f"${equity_f:.4f}, pm_lifetime_pnl="
+                            f"{pm_lifetime}). ROI denominator is now "
+                            f"PINNED to this value.",
+                            file=sys.stderr, flush=True,
+                        )
+                    except Exception as exc:
+                        print(f"[summary] live_starting_cash write failed: {exc}",
+                              file=sys.stderr, flush=True)
 
         # Total P&L: DEFINITIONAL via equity - starting.
         #
@@ -3087,6 +3119,17 @@ class LocalAPI:
                     "DELETE FROM pm_positions WHERE mode = 'simulation' "
                     "  AND user_id = :uid"
                 ), {"uid": DEFAULT_USER_ID})
+                # The chart, the 50-trade review bookmark and pending
+                # proposals are simulation ledgers too. Leaving them
+                # made the equity chart keep the pre-reset curve and
+                # parked the learning cadence until the trade counter
+                # caught up with the old bookmark.
+                for tbl in ("equity_snapshots", "learning_reports",
+                            "pending_suggestions"):
+                    conn.execute(text(
+                        f"DELETE FROM {tbl} WHERE mode = 'simulation' "
+                        "  AND user_id = :uid"
+                    ), {"uid": DEFAULT_USER_ID})
         try:
             await self._offload(_do_reset)
         except Exception as exc:

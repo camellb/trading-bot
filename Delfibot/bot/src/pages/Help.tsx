@@ -681,9 +681,9 @@ function Troubleshooting() {
             </li>
             <li>
               <strong>Negative-risk multi-outcome market.</strong>
-              These use a different on-chain contract that Delfi
-              does not redeem yet. Click Redeem on polymarket.com
-              for these.
+              These use a different on-chain contract. Delfi redeems
+              them through the relayer as well, usually within 10
+              minutes of resolution.
             </li>
             <li>
               <strong>Market not resolved on-chain yet.</strong>
@@ -714,8 +714,8 @@ function Troubleshooting() {
           </p>
           <p>
             If after a full minute the dashboard is still on
-            &quot;Restarting...&quot;, quit Delfi from the macOS
-            menu bar and relaunch it from /Applications. The bot
+            &quot;Restarting...&quot;, quit Delfi completely and
+            reopen it. The bot
             itself keeps running in the background; only the
             dashboard window needs to come back.
           </p>

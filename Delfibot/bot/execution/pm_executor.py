@@ -1253,12 +1253,18 @@ class PMExecutor:
                     cached_user_total_pnl,
                     cached_closed_realized_pnl,
                     cached_redeemable_cashPnl,
-                    get_poly_signer_info,
+                    get_cached_poly_signer_info,
                 )
                 creds = get_user_polymarket_creds(self.user_id)
                 pk = (creds or {}).get("private_key") if creds else None
                 if pk:
-                    info = get_poly_signer_info(pk)
+                    # Cache-only: get_portfolio_stats sits on the
+                    # /api/summary request path. The probing variant
+                    # ran a 10 s CLOB call plus up to 3 x 10 s RPC calls
+                    # whenever the signer cache was cold (67 x 10 s
+                    # stalls, 10 x 504s in one run). pm_balance_refresh
+                    # warms this cache every 60 s.
+                    info = get_cached_poly_signer_info(pk)
                     funder = (info or {}).get("funder")
                     if funder:
                         # currentValue is the cheap sub-second probe;
@@ -3341,19 +3347,30 @@ class PMExecutor:
                 pnl      = proceeds - cost_usd
                 status   = "invalid" if outcome == "INVALID" else "settled"
 
-                conn.execute(text(
+                _settle_res = conn.execute(text(
                     "UPDATE pm_positions SET "
                     "  status              = :st, "
                     "  settled_at          = CURRENT_TIMESTAMP, "
                     "  settlement_outcome  = :out, "
                     "  settlement_price    = :sp, "
                     "  realized_pnl_usd    = :pnl "
-                    "WHERE id = :pid"
+                    "WHERE id = :pid AND status = 'open'"
                 ), {
                     "st": status, "out": outcome,
                     "sp": float(settlement_price), "pnl": float(pnl),
                     "pid": position_id,
                 })
+                if _settle_res.rowcount == 0:
+                    # Lost a race: pm_resolve and pm_resolve_fast (or an
+                    # exit) settled or closed this row between our SELECT
+                    # and this UPDATE. Without this guard both callers
+                    # redeemed and both pushed a WIN/LOSS card.
+                    print(
+                        f"[pm_executor] settle_position: pos #{position_id} "
+                        f"was no longer open; skipping duplicate settlement",
+                        file=sys.stderr,
+                    )
+                    return False
 
             # ── On-chain redemption (live winners only) ────────────────
             # Runs OUTSIDE the begin() block above so a slow Polygon

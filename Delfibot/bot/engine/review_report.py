@@ -394,8 +394,9 @@ def gather_cycle_data(user_id: str, mode: str, cycle_size: int) -> dict:
     pnl_total  = sum(float(r["pnl"] or 0.0)  for r in rows)
     cost_total = sum(float(r["cost"] or 0.0) for r in rows) or 1.0
     wins = sum(1 for r in rows if (r["pnl"] or 0.0) > 0)
+    losses = sum(1 for r in rows if (r["pnl"] or 0.0) < 0)
     roi = pnl_total / cost_total
-    win_rate = wins / n if n else 0.0
+    win_rate = wins / (wins + losses) if (wins + losses) else 0.0
 
     briers = [
         float(r["brier"]) for r in rows
@@ -584,6 +585,12 @@ def _fetch_lifetime_stats(user_id: str, mode: str) -> dict:
     try:
         cfg = get_user_config(user_id)
         starting = float(getattr(cfg, "starting_cash", 0.0) or 0.0)
+        # Live mode: the ROI denominator is the pinned baseline, never
+        # the simulation starting_cash (RULE #1 with the Dashboard).
+        if mode == "live":
+            _pinned = getattr(cfg, "live_starting_cash", None)
+            if _pinned is not None and float(_pinned) > 1.0:
+                starting = float(_pinned)
     except Exception as exc:
         print(f"[review_report] starting_cash lookup failed: {exc}",
               file=sys.stderr)
@@ -593,16 +600,19 @@ def _fetch_lifetime_stats(user_id: str, mode: str) -> dict:
         with get_engine().begin() as conn:
             row = conn.execute(text(
                 "SELECT "
-                "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid')) AS settled_n, "
-                "  COUNT(*) FILTER (WHERE status IN ('settled', 'invalid') "
+                "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early')) AS settled_n, "
+                "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early') "
                 "                    AND realized_pnl_usd > 0) AS wins, "
+                "  COUNT(*) FILTER (WHERE status IN ('settled', 'closed_early') "
+                "                    AND realized_pnl_usd < 0) AS losses, "
                 "  COALESCE(SUM(realized_pnl_usd) "
-                "           FILTER (WHERE status IN ('settled', 'invalid')), 0) AS realized "
+                "           FILTER (WHERE status IN ('settled', 'closed_early')), 0) AS realized "
                 "FROM pm_positions WHERE user_id = :uid AND mode = :m"
             ), {"uid": user_id, "m": mode}).fetchone()
         settled_n = int((row[0] if row else 0) or 0)
         wins      = int((row[1] if row else 0) or 0)
-        realized  = float((row[2] if row else 0.0) or 0.0)
+        losses    = int((row[2] if row else 0) or 0)
+        realized  = float((row[3] if row else 0.0) or 0.0)
     except Exception as exc:
         print(f"[review_report] lifetime stats query failed: {exc}",
               file=sys.stderr)
@@ -614,7 +624,7 @@ def _fetch_lifetime_stats(user_id: str, mode: str) -> dict:
     out.update({
         "settled_total":  settled_n,
         "wins":           wins,
-        "win_rate":       (wins / settled_n) if settled_n else None,
+        "win_rate":       (wins / (wins + losses)) if (wins + losses) else None,
         "realized_pnl":   round(realized, 2),
         "starting_cash":  round(starting, 2),
         "equity":         round(equity, 2),
@@ -647,7 +657,7 @@ def _fetch_settled_rows(user_id: str, mode: str,
                 # `exit_policy` block built in gather_cycle_data
                 # surfaces them separately so the user can see how
                 # the policy affected the cycle.
-                "  AND p.status IN ('settled', 'invalid', 'closed_early') "
+                "  AND p.status IN ('settled', 'closed_early') "
                 "ORDER BY p.settled_at DESC LIMIT :lim"
             ), {"uid": user_id, "m": mode,
                 "lim": int(cycle_size)}).fetchall()

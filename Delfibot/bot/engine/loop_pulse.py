@@ -44,6 +44,11 @@ class LoopPulse:
         with self._lock:
             self._stopped = True
 
+    def reset(self) -> None:
+        """Forgive the current silence (sleep/wake clock jump)."""
+        with self._lock:
+            self._last_pump = time.monotonic()
+
     def _pump(self) -> None:
         with self._lock:
             self._last_pump = time.monotonic()
