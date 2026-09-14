@@ -304,6 +304,119 @@ struct ApiPort {
     ready: bool,
 }
 
+/// Single read of `<app-data>/sidecar.port`, no waiting. `None` when the
+/// file is missing, empty or not a port number.
+fn read_port_file_once(app: &tauri::AppHandle) -> Option<u16> {
+    let dir = app.path().resolve("", BaseDirectory::AppData).ok()?;
+    std::fs::read_to_string(dir.join("sidecar.port"))
+        .ok()?
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|&p| p != 0)
+}
+
+/// POST /api/system/shutdown on the loopback API. Plain std TCP so the
+/// shell needs no HTTP client dependency. True when the daemon answered
+/// 200 (it then finishes its current order, closes the DB, removes the
+/// port file and exits on its own).
+fn post_local_shutdown(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr: std::net::SocketAddr = match format!("127.0.0.1:{port}").parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    let mut sock = match std::net::TcpStream::connect_timeout(
+        &addr,
+        std::time::Duration::from_secs(2),
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+    let _ = sock.set_write_timeout(Some(std::time::Duration::from_secs(3)));
+    let req = format!(
+        "POST /api/system/shutdown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    if sock.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = Vec::new();
+    let _ = sock.read_to_end(&mut buf);
+    let head = String::from_utf8_lossy(&buf);
+    head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200")
+}
+
+fn port_closed(port: u16) -> bool {
+    let addr: std::net::SocketAddr = match format!("127.0.0.1:{port}").parse() {
+        Ok(a) => a,
+        Err(_) => return true,
+    };
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_err()
+}
+
+/// Ask the sidecar on `port` to exit cleanly and wait up to `wait` for
+/// its listener to close. Blocking; call from a blocking thread when
+/// inside the async runtime. False when there was no port, the daemon
+/// refused, or it did not exit in time (callers then hard-kill).
+fn stop_sidecar_gracefully(port: Option<u16>, wait: std::time::Duration) -> bool {
+    let Some(p) = port else { return false };
+    if !post_local_shutdown(p) {
+        return false;
+    }
+    let deadline = std::time::Instant::now() + wait;
+    while std::time::Instant::now() < deadline {
+        if port_closed(p) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    false
+}
+
+/// Windows hard-kill fallback. Compiles everywhere; only called on Windows.
+fn taskkill_sidecar() {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/IM", "delfi-sidecar.exe"])
+        .output();
+}
+
+/// Stop the sidecar before the updater replaces the bundle.
+///
+/// Windows: the installer cannot overwrite delfi-sidecar.exe while it
+/// runs, and tauri-plugin-updater ends this process without running
+/// our Exit handler, so nothing else would stop the bot. Halt the
+/// respawn loop, ask the daemon to finish its current order and exit,
+/// hard-kill only if it does not. macOS: no-op (launchd restarts the
+/// daemon from the new bundle after the GUI relaunches).
+#[tauri::command]
+async fn prepare_for_update(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ApiState>,
+) -> Result<(), String> {
+    if !cfg!(target_os = "windows") {
+        let _ = (&app, &state);
+        return Ok(());
+    }
+    state
+        .shutting_down
+        .store(true, std::sync::atomic::Ordering::Release);
+    let port = { *state.port.lock().unwrap() }.or_else(|| read_port_file_once(&app));
+    *state.port.lock().unwrap() = None;
+    let stopped = tokio::task::spawn_blocking(move || {
+        stop_sidecar_gracefully(port, std::time::Duration::from_secs(10))
+    })
+    .await
+    .unwrap_or(false);
+    if !stopped {
+        taskkill_sidecar();
+    }
+    let _ = state.child.lock().unwrap().take();
+    println!("[delfi] sidecar stopped for update (graceful={stopped})");
+    Ok(())
+}
+
 #[tauri::command]
 fn get_api_port(state: tauri::State<ApiState>) -> ApiPort {
     let guard = state.port.lock().unwrap();
@@ -344,24 +457,24 @@ async fn restart_sidecar(
     app: tauri::AppHandle,
     state: tauri::State<'_, ApiState>,
 ) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        // Windows: kill the sidecar; the respawn loop in setup() picks
-        // up the Terminated event and spawns a fresh one. The user
-        // sees the BootScreen briefly during the ~12s cold-start
-        // window, then the dashboard reconnects automatically via
+    if cfg!(target_os = "windows") {
+        // Windows: ask the sidecar to finish its current order and
+        // exit; the respawn loop in setup() sees the child terminate
+        // and spawns a fresh one. Hard-kill only if it does not exit.
+        // The user sees the BootScreen briefly during the ~12s
+        // cold-start window, then the dashboard reconnects via
         // `refresh_api_port`.
-        let _ = app;
+        let _ = &app;
+        let port = { *state.port.lock().unwrap() };
         *state.port.lock().unwrap() = None;
-        let result = tokio::task::spawn_blocking(|| {
-            std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/IM", "delfi-sidecar.exe"])
-                .output()
-                .map_err(|e| format!("taskkill failed: {e}"))
+        let stopped = tokio::task::spawn_blocking(move || {
+            stop_sidecar_gracefully(port, std::time::Duration::from_secs(10))
         })
         .await
         .map_err(|e| format!("restart task panicked: {e}"))?;
-        result?;
+        if !stopped {
+            taskkill_sidecar();
+        }
         return Ok(());
     }
     #[cfg(target_os = "linux")]
@@ -847,6 +960,7 @@ fn main() {
             get_api_port,
             refresh_api_port,
             restart_sidecar,
+            prepare_for_update,
         ])
         // Window close button = hide, NOT quit.
         //
@@ -912,8 +1026,16 @@ fn main() {
             let show_item = MenuItem::with_id(
                 app, "tray_show", "Show Delfi", true, None::<&str>,
             )?;
+            // On macOS the daemon outlives the GUI (launchd), so Quit
+            // only closes the window. On Windows the GUI supervises the
+            // sidecar, so quitting stops trading: say so in the label.
+            let quit_label = if cfg!(target_os = "macos") {
+                "Quit Delfi"
+            } else {
+                "Stop trading and quit"
+            };
             let quit_item = MenuItem::with_id(
-                app, "tray_quit", "Quit Delfi", true, None::<&str>,
+                app, "tray_quit", quit_label, true, None::<&str>,
             )?;
             let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
             dlog("tray: building");
@@ -962,6 +1084,17 @@ fn main() {
             dlog("tray: built");
             } // end if let Some(icon)
 
+            // `--minimized` is what the Windows autostart entry passes:
+            // start hidden in the tray so logging in does not pop the
+            // dashboard. The bot still runs; the tray icon brings the
+            // window back.
+            if std::env::args().any(|a| a == "--minimized") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                    dlog("setup: started minimized to tray");
+                }
+            }
+
             // Two paths to a running sidecar:
             //
             //   1. Daemon already running (production: launchd
@@ -1004,8 +1137,18 @@ fn main() {
                 // loop (~15 s when nothing listens), so 2 iterations
                 // is the ~30 s budget the comments describe; 60 was
                 // 15 minutes before the kickstart fallback fired.
-                let probe_iterations: u32 =
-                    if cfg!(target_os = "macos") { 2 } else { 1 };
+                // Windows: 0. The GUI is the supervisor there, so it
+                // never attaches to a sidecar it does not own (a
+                // leftover from an updater exit or a GUI crash had no
+                // respawn loop and could not be restarted from the
+                // app). The spawn branch below takes it over instead.
+                let probe_iterations: u32 = if cfg!(target_os = "macos") {
+                    2
+                } else if cfg!(target_os = "windows") {
+                    0
+                } else {
+                    1
+                };
                 let mut probed_dead = false;
                 for _ in 0..probe_iterations {
                     if let Some(p) = read_existing_sidecar_port(&app_handle).await {
@@ -1069,6 +1212,27 @@ fn main() {
                     // loop: launchd's KeepAlive=true is the canonical
                     // respawn supervisor there. Running both would
                     // race.
+                    if cfg!(target_os = "windows") {
+                        // Take over any sidecar left by a previous GUI
+                        // session: ask it to finish its order and exit
+                        // (10 s), hard-kill if it will not, drop its
+                        // port file, then spawn our own below.
+                        let existing = read_port_file_once(&app_handle);
+                        if existing.is_some() {
+                            dlog(&format!("async: windows takeover of sidecar on port {:?}", existing));
+                            let stopped = tokio::task::spawn_blocking(move || {
+                                stop_sidecar_gracefully(existing, std::time::Duration::from_secs(10))
+                            })
+                            .await
+                            .unwrap_or(false);
+                            if !stopped {
+                                taskkill_sidecar();
+                            }
+                        }
+                        if let Ok(dir) = app_handle.path().resolve("", BaseDirectory::AppData) {
+                            let _ = std::fs::remove_file(dir.join("sidecar.port"));
+                        }
+                    }
                     let mut backoff_secs: u64 = 0;
                     loop {
                         {
@@ -1297,29 +1461,36 @@ fn main() {
                 }
                 if cfg!(debug_assertions) || !cfg!(target_os = "macos") {
                     // Dev mode, or any non-macOS release: the GUI is
-                    // the sidecar's parent so kill it on exit, else
-                    // we leak a Python process every relaunch.
+                    // the sidecar's parent, so it must stop it on exit
+                    // or we leak a Python process every relaunch.
+                    // Windows: graceful first (finish the current
+                    // order, close the DB, drop the port file), then
+                    // the hard kill only if it does not exit in 8 s.
                     let state = app_handle.state::<ApiState>();
+                    let stopped = if cfg!(target_os = "windows") {
+                        let port = { *state.port.lock().unwrap() }
+                            .or_else(|| read_port_file_once(&app_handle));
+                        stop_sidecar_gracefully(port, std::time::Duration::from_secs(8))
+                    } else {
+                        false
+                    };
                     // Bind the lock guard to a local so it drops before
                     // `state` does (otherwise the borrow checker sees
                     // the guard's destructor running after `state` is
                     // gone).
                     let mut child_slot = state.child.lock().unwrap();
                     if let Some(child) = child_slot.take() {
-                        let _ = child.kill();
+                        if !stopped {
+                            let _ = child.kill();
+                        }
                     }
-                    // Windows safety net: even if state.child is None
-                    // (the GUI attached to a sidecar from a previous
-                    // session and never owned a CommandChild handle),
+                    // Windows safety net: even if state.child is None,
                     // taskkill any lingering delfi-sidecar.exe. The
                     // singleton mutex guarantees there's at most one,
                     // and PyInstaller's bootloader + child are both
                     // named delfi-sidecar.exe so /T sweeps the tree.
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/F", "/T", "/IM", "delfi-sidecar.exe"])
-                            .output();
+                    if cfg!(target_os = "windows") && !stopped {
+                        taskkill_sidecar();
                     }
                 } else {
                     // macOS release: drop the handle without killing.

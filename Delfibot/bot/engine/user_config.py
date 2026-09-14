@@ -1717,6 +1717,9 @@ def get_active_polymarket_creds(cfg: UserConfig) -> dict:
 # source of truth.
 SECRETS_LLM_CONNECTIONS = "llm_connections"
 SECRETS_LLM_ROLES = "llm_roles"
+# use case -> ordered list of connection ids. Source of truth since
+# v1.5.85; `llm_roles` is rewritten as a derived view on every save.
+SECRETS_LLM_ASSIGNMENTS = "llm_assignments"
 
 
 def _new_connection_id() -> str:
@@ -1818,34 +1821,101 @@ def _save_llm_connections(conns: list[dict], roles: Optional[dict] = None) -> No
     _write_secrets(secrets_map)
 
 
-def get_llm_roles() -> dict:
-    """Return the role->connection-id map. Always has all four role keys
-    present; pointers to deleted connections are coerced to None."""
-    valid_ids = {c["id"] for c in get_llm_connections()}
-    secrets_map = _read_secrets()
-    raw = secrets_map.get(SECRETS_LLM_ROLES) or {}
-    roles = _empty_roles()
+def _empty_assignments() -> dict:
+    return {k: [] for k in _providers.USE_CASE_KEYS}
+
+
+def _clean_assignments(raw, valid_ids: set) -> dict:
+    """Normalise a use-case -> [connection id] map: known use cases only,
+    known ids only, order kept, duplicates dropped."""
+    out = _empty_assignments()
     if isinstance(raw, dict):
-        for k in roles:
-            v = raw.get(k)
-            if isinstance(v, str) and v in valid_ids:
-                roles[k] = v
+        for uc in out:
+            seen: set = set()
+            for cid in (raw.get(uc) or []):
+                if isinstance(cid, str) and cid in valid_ids and cid not in seen:
+                    seen.add(cid)
+                    out[uc].append(cid)
+    return out
+
+
+def _assignments_from_roles(roles: dict) -> dict:
+    """Legacy primary/backup role slots -> ordered lists."""
+    out = _empty_assignments()
+    for uc, role_keys in _providers.USE_CASE_CHAINS.items():
+        for rk in role_keys:
+            cid = roles.get(rk) if isinstance(roles, dict) else None
+            if isinstance(cid, str) and cid and cid not in out[uc]:
+                out[uc].append(cid)
+    return out
+
+
+def _roles_from_assignments(assign: dict) -> dict:
+    """Derived legacy view: the first two entries of each chained use case."""
+    roles = _empty_roles()
+    for uc, role_keys in _providers.USE_CASE_CHAINS.items():
+        ids = list(assign.get(uc) or [])
+        for i, rk in enumerate(role_keys):
+            roles[rk] = ids[i] if i < len(ids) else None
     return roles
 
 
-def set_llm_roles(roles: dict) -> dict:
-    """Persist the full role map. Unknown role keys are ignored; pointers
-    to non-existent connections are stored as None."""
+def get_llm_assignments() -> dict:
+    """use case -> ordered connection ids (priority order). Installs that
+    predate the map are migrated from the primary/backup role slots on
+    first read; ids of deleted connections are dropped."""
     valid_ids = {c["id"] for c in get_llm_connections()}
-    clean = _empty_roles()
-    if isinstance(roles, dict):
-        for k in clean:
-            v = roles.get(k)
-            clean[k] = v if (isinstance(v, str) and v in valid_ids) else None
     secrets_map = _read_secrets()
-    secrets_map[SECRETS_LLM_ROLES] = clean
+    raw = secrets_map.get(SECRETS_LLM_ASSIGNMENTS)
+    if not isinstance(raw, dict):
+        raw = _assignments_from_roles(secrets_map.get(SECRETS_LLM_ROLES) or {})
+    return _clean_assignments(raw, valid_ids)
+
+
+def set_llm_assignments(assign: dict) -> dict:
+    """Persist the full use-case map (replaces it). Unknown use cases and
+    unknown ids are dropped, order is kept, and the legacy role slots are
+    rewritten as a derived view so nothing reads a stale value."""
+    valid_ids = {c["id"] for c in get_llm_connections()}
+    clean = _clean_assignments(assign, valid_ids)
+    secrets_map = _read_secrets()
+    secrets_map[SECRETS_LLM_ASSIGNMENTS] = clean
+    secrets_map[SECRETS_LLM_ROLES] = _roles_from_assignments(clean)
     _write_secrets(secrets_map)
     return clean
+
+
+def assign_connection_everywhere(conn_id: str) -> dict:
+    """Put one connection first in every use case; the others keep their
+    order behind it. The Settings "Use for everything" action."""
+    if conn_id not in {c["id"] for c in get_llm_connections()}:
+        raise ValueError("connection not found")
+    assign = get_llm_assignments()
+    for uc in assign:
+        assign[uc] = [conn_id] + [c for c in assign[uc] if c != conn_id]
+    return set_llm_assignments(assign)
+
+
+def get_llm_roles() -> dict:
+    """Legacy view of the assignments: primary = first entry, backup =
+    second. Kept for callers that still think in slots."""
+    return _roles_from_assignments(get_llm_assignments())
+
+
+def set_llm_roles(roles: dict) -> dict:
+    """Legacy setter: writes the slots into the ordered lists (other use
+    cases keep their lists)."""
+    valid_ids = {c["id"] for c in get_llm_connections()}
+    assign = get_llm_assignments()
+    for uc, role_keys in _providers.USE_CASE_CHAINS.items():
+        ids: list[str] = []
+        for rk in role_keys:
+            v = roles.get(rk) if isinstance(roles, dict) else None
+            if isinstance(v, str) and v in valid_ids and v not in ids:
+                ids.append(v)
+        assign[uc] = ids
+    set_llm_assignments(assign)
+    return get_llm_roles()
 
 
 def set_llm_role(role: str, conn_id: Optional[str]) -> dict:
@@ -1910,11 +1980,10 @@ def delete_llm_connection(conn_id: str) -> bool:
     remaining = [c for c in conns if c["id"] != conn_id]
     if len(remaining) == len(conns):
         return False
-    roles = get_llm_roles()
-    for k in roles:
-        if roles[k] == conn_id:
-            roles[k] = None
-    _save_llm_connections(remaining, roles)
+    _save_llm_connections(remaining)
+    # Drop the id from every use-case list (also rewrites the derived
+    # legacy role slots).
+    set_llm_assignments(get_llm_assignments())
     return True
 
 
@@ -1929,19 +1998,20 @@ def resolve_llm_chain(use_case: str) -> list[dict]:
     search role is set, so a single key still powers research. Drops
     unusable entries (no key / unknown provider) and de-dupes by id.
     """
-    roles = get_llm_roles()
+    assign = get_llm_assignments()
 
     def _chain_for(uc: str) -> list[dict]:
         out: list[dict] = []
-        for role in _providers.USE_CASE_CHAINS.get(uc, ()):
-            conn = get_llm_connection(roles.get(role))
+        for cid in assign.get(uc) or []:
+            conn = get_llm_connection(cid)
             if conn and _providers.validate_connection(conn) is None:
                 out.append(conn)
         return out
 
     chain = _chain_for(use_case)
-    if not chain and use_case == "search":
-        chain = _chain_for("forecaster")
+    fallback = _providers.USE_CASE_FALLBACK.get(use_case)
+    if not chain and fallback:
+        chain = _chain_for(fallback)
 
     seen: set[str] = set()
     deduped: list[dict] = []
@@ -1965,21 +2035,11 @@ def has_search_connection() -> bool:
 
 
 def has_dedicated_search_connection() -> bool:
-    """True only when a search role (primary or backup) is explicitly
-    wired to a usable connection.
-
-    Distinct from has_search_connection(), which is also True when the
-    search use case is merely borrowing the forecaster chain. Callers
-    that run an *optional, cost-bearing* search pass (research bundle
-    curation, news summarisation) use this so those passes fire only
-    when the user dedicated a cheap model to search - never silently on
-    the expensive forecaster model. Mirrors the old "skip unless a
-    Gemini key is set" behaviour after the legacy->connections
-    migration.
-    """
-    roles = get_llm_roles()
-    for role in ("search_primary", "search_backup"):
-        conn = get_llm_connection(roles.get(role))
+    """True only when the Research list holds at least one usable
+    connection. Distinct from has_search_connection(), which is also
+    True when research is riding on the Forecasting list."""
+    for cid in get_llm_assignments().get("search") or []:
+        conn = get_llm_connection(cid)
         if conn and _providers.validate_connection(conn) is None:
             return True
     return False

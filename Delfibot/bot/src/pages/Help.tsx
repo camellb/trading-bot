@@ -715,9 +715,12 @@ function Troubleshooting() {
           <p>
             If after a full minute the dashboard is still on
             &quot;Restarting...&quot;, quit Delfi completely and
-            reopen it. The bot
-            itself keeps running in the background; only the
-            dashboard window needs to come back.
+            reopen it. On macOS the bot itself keeps running in the
+            background; only the dashboard window needs to come back.
+            On Windows the bot runs while Delfi is open or minimized
+            to the tray, so use the tray icon rather than quitting;
+            &quot;Stop trading and quit&quot; ends trading until you
+            open Delfi again (it starts at login by default).
           </p>
         </Guide>
 

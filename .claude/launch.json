@@ -4,9 +4,22 @@
     {
       "name": "dashboard",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "autoPort": true,
       "cwd": "apps/web"
+    },
+    {
+      "name": "delfi-ui",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": [
+        "-c",
+        "VITE_DELFI_API_PORT=$(tr -d '[:space:]' < \"$HOME/Library/Application Support/com.delfi.desktop/sidecar.port\") npm run dev"
+      ],
+      "port": 1420,
+      "cwd": "Delfibot/bot"
     }
   ]
 }

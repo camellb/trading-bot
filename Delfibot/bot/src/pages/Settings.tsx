@@ -11,8 +11,8 @@ import {
   LicenseStatus,
   LLMConnection,
   LLMProvider,
-  LLMRole,
-  LLMRoles,
+  LLMAssignments,
+  LLMUseCase,
   LoginItemStatus,
   NotificationsConfig,
   TelegramConfig,
@@ -1124,38 +1124,6 @@ type ConnEntry = {
   base_url?: string;
 };
 
-// The two use cases the bot routes through connections, each with a
-// primary + backup slot. Forecasting = the per-market call; Research =
-// keyword extraction + headline filtering (cheaper models are fine, and
-// it falls back to the forecasting model when left unset).
-const LLM_ROLE_ROWS: {
-  title: string;
-  hint: string;
-  primary: LLMRole;
-  backup: LLMRole;
-}[] = [
-  {
-    title: "Forecasting",
-    hint: "Reads every market and produces the forecast. Primary runs first; backup takes over on error or rate-limit.",
-    primary: "forecaster_primary",
-    backup: "forecaster_backup",
-  },
-  {
-    title: "Research and news",
-    hint: "Keyword extraction and headline filtering. Falls back to the forecasting model when left unset. Cheap models work well here.",
-    primary: "search_primary",
-    backup: "search_backup",
-  },
-];
-
-// Short badge shown on a connection card for each role it currently holds.
-const ROLE_BADGE_LABEL: Record<LLMRole, string> = {
-  forecaster_primary: "Forecasting",
-  forecaster_backup: "Forecasting backup",
-  search_primary: "Research",
-  search_backup: "Research backup",
-};
-
 function ConnectionsPanel({
   creds,
   onSaved,
@@ -1167,18 +1135,14 @@ function ConnectionsPanel({
 }) {
   const [providers, setProviders] = useState<LLMProvider[]>([]);
   const [connections, setConnections] = useState<LLMConnection[]>([]);
-  const [roles, setRoles] = useState<LLMRoles>({
-    forecaster_primary: null,
-    forecaster_backup: null,
-    search_primary: null,
-    search_backup: null,
-  });
+  const [assignments, setAssignments] = useState<LLMAssignments>({});
+  const [useCases, setUseCases] = useState<LLMUseCase[]>([]);
   const [llmLoading, setLlmLoading] = useState(true);
   const [llmMsg, setLlmMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [roleBusy, setRoleBusy] = useState(false);
+  const [assignBusy, setAssignBusy] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, LLMConnectionTestResult>>({});
 
@@ -1206,7 +1170,8 @@ function ConnectionsPanel({
   const reloadLlm = async () => {
     const data = await api.llmConnections();
     setConnections(data.connections);
-    setRoles(data.roles);
+    setAssignments(data.assignments);
+    setUseCases(data.use_cases);
   };
 
   useEffect(() => {
@@ -1220,7 +1185,8 @@ function ConnectionsPanel({
         if (!alive) return;
         setProviders(prov.providers);
         setConnections(conns.connections);
-        setRoles(conns.roles);
+        setAssignments(conns.assignments);
+        setUseCases(conns.use_cases);
       } catch (err) {
         if (!alive) return;
         setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
@@ -1270,7 +1236,7 @@ function ConnectionsPanel({
     try {
       const res = await api.deleteLlmConnection(id);
       setConnections((cs) => cs.filter((c) => c.id !== id));
-      setRoles(res.roles);
+      setAssignments(res.assignments);
       setLlmMsg({ kind: "ok", text: "Connection removed." });
       onSaved();
     } catch (err) {
@@ -1280,25 +1246,66 @@ function ConnectionsPanel({
     }
   };
 
-  const changeRole = async (role: LLMRole, connId: string | null) => {
-    setRoleBusy(true);
+  // Two connections can share a label (the default label is the provider name),
+  // so a bare label cannot tell them apart in the job lists. Number the twins in
+  // card order so the cards, the rows and the pickers all agree.
+  const connName = (c: LLMConnection) => {
+    const base = c.label || providerLabel(c.provider);
+    const twins = connections.filter((o) => (o.label || providerLabel(o.provider)) === base);
+    if (twins.length < 2) return base;
+    return `${base} ${twins.findIndex((o) => o.id === c.id) + 1}`;
+  };
+
+  const saveAssignments = async (next: LLMAssignments) => {
+    setAssignBusy(true);
     setLlmMsg(null);
-    // set_llm_roles REPLACES the whole map on the sidecar, so always send
-    // all four keys (the merged map), not just the one that changed.
-    const next: LLMRoles = { ...roles, [role]: connId };
+    const prev = assignments;
+    setAssignments(next);
     try {
-      const res = await api.setLlmRoles(next);
-      setRoles(res.roles);
+      const res = await api.setLlmAssignments(next);
+      setAssignments(res.assignments);
+      onSaved();
+    } catch (err) {
+      setAssignments(prev);
+      setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setAssignBusy(false);
+    }
+  };
+
+  const addToUseCase = (uc: string, id: string) =>
+    saveAssignments({ ...assignments, [uc]: [...(assignments[uc] ?? []), id] });
+
+  const removeFromUseCase = (uc: string, id: string) =>
+    saveAssignments({ ...assignments, [uc]: (assignments[uc] ?? []).filter((x) => x !== id) });
+
+  const moveInUseCase = (uc: string, from: number, to: number) => {
+    const list = [...(assignments[uc] ?? [])];
+    if (from === to || from < 0 || to < 0 || from >= list.length || to >= list.length) return;
+    const [item] = list.splice(from, 1);
+    list.splice(to, 0, item);
+    void saveAssignments({ ...assignments, [uc]: list });
+  };
+
+  const useEverywhere = async (c: LLMConnection) => {
+    setAssignBusy(true);
+    setLlmMsg(null);
+    try {
+      const res = await api.useConnectionEverywhere(c.id);
+      setAssignments(res.assignments);
+      setLlmMsg({ kind: "ok", text: `${connName(c)} now handles every job first.` });
       onSaved();
     } catch (err) {
       setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
     } finally {
-      setRoleBusy(false);
+      setAssignBusy(false);
     }
   };
 
-  const rolesForConn = (id: string): LLMRole[] =>
-    (Object.keys(roles) as LLMRole[]).filter((r) => roles[r] === id);
+  const usesForConn = (id: string): { uc: LLMUseCase; rank: number }[] =>
+    useCases
+      .map((uc) => ({ uc, rank: (assignments[uc.key] ?? []).indexOf(id) }))
+      .filter((x) => x.rank >= 0);
 
   return (
     <>
@@ -1335,7 +1342,7 @@ function ConnectionsPanel({
                   <div className="conn-card" key={c.id}>
                     <div className="conn-card-main">
                       <div className="conn-card-title">
-                        {c.label || providerLabel(c.provider)}
+                        {connName(c)}
                       </div>
                       <div className="conn-card-sub">
                         {providerLabel(c.provider)} &middot; {c.model || "default model"}
@@ -1343,15 +1350,17 @@ function ConnectionsPanel({
                           <span className="conn-card-warn"> &middot; no key</span>
                         )}
                       </div>
-                      {rolesForConn(c.id).length > 0 && (
-                        <div className="conn-card-roles">
-                          {rolesForConn(c.id).map((r) => (
-                            <span className="conn-role-badge" key={r}>
-                              {ROLE_BADGE_LABEL[r]}
+                      <div className="conn-card-roles">
+                        {usesForConn(c.id).length === 0 ? (
+                          <span className="conn-role-badge muted">Not used by any job yet</span>
+                        ) : (
+                          usesForConn(c.id).map(({ uc, rank }) => (
+                            <span className="conn-role-badge" key={uc.key}>
+                              {uc.label} {rankWord(rank)}
                             </span>
-                          ))}
-                        </div>
-                      )}
+                          ))
+                        )}
+                      </div>
                       {testResults[c.id] && (
                         <div
                           className="form-hint"
@@ -1365,6 +1374,15 @@ function ConnectionsPanel({
                       )}
                     </div>
                     <div className="conn-card-actions">
+                      <button
+                        type="button"
+                        className="btn small ghost"
+                        disabled={assignBusy || !c.has_key}
+                        title="Put this connection first for every job"
+                        onClick={() => useEverywhere(c)}
+                      >
+                        Use for everything
+                      </button>
                       <button
                         type="button"
                         className="btn small ghost"
@@ -1417,36 +1435,34 @@ function ConnectionsPanel({
 
             {connections.length > 0 && (
               <div className="conn-roles">
-                <h3 className="form-section-title">Use cases</h3>
+                <h3 className="form-section-title">What each connection does</h3>
                 <p className="form-hint" style={{ marginBottom: 12 }}>
-                  Choose which connection serves each use case.
+                  Each job tries its connections top to bottom: the first
+                  one answers, the next takes over on an error, a rate
+                  limit, or a paused key. Add as many as you like and drag
+                  to reorder.
                 </p>
-                <div className="conn-role-selects">
-                  {LLM_ROLE_ROWS.map((row) => (
-                    <div className="conn-role-row" key={row.title}>
-                      <div className="conn-role-row-head">
-                        <span className="conn-role-row-title">{row.title}</span>
-                        <span className="form-hint">{row.hint}</span>
-                      </div>
-                      <div className="conn-role-pair">
-                        <RoleSelect
-                          label="Primary"
-                          value={roles[row.primary]}
-                          connections={connections}
-                          providerLabel={providerLabel}
-                          disabled={roleBusy}
-                          onChange={(v) => changeRole(row.primary, v)}
-                        />
-                        <RoleSelect
-                          label="Backup"
-                          value={roles[row.backup]}
-                          connections={connections}
-                          providerLabel={providerLabel}
-                          disabled={roleBusy}
-                          onChange={(v) => changeRole(row.backup, v)}
-                        />
-                      </div>
-                    </div>
+                <div className="uc-list">
+                  {useCases.map((uc) => (
+                    <UseCaseCard
+                      key={uc.key}
+                      useCase={uc}
+                      fallbackLabel={
+                        uc.fallback
+                          ? useCases.find((u) => u.key === uc.fallback)?.label ?? uc.fallback
+                          : null
+                      }
+                      fallbackEmpty={
+                        !!uc.fallback && (assignments[uc.fallback] ?? []).length === 0
+                      }
+                      ids={assignments[uc.key] ?? []}
+                      connections={connections}
+                      connName={connName}
+                      busy={assignBusy}
+                      onAdd={(id) => addToUseCase(uc.key, id)}
+                      onRemove={(id) => removeFromUseCase(uc.key, id)}
+                      onMove={(from, to) => moveInUseCase(uc.key, from, to)}
+                    />
                   ))}
                 </div>
               </div>
@@ -1620,37 +1636,149 @@ function ConnectionEditor({
 }
 
 /** One labelled dropdown that assigns a connection (or "None") to a role. */
-function RoleSelect({
-  label,
-  value,
+function rankWord(rank: number): string {
+  if (rank === 0) return "first";
+  if (rank === 1) return "second";
+  return `#${rank + 1}`;
+}
+
+/** One job (forecasting, research, reviews) with its ordered connection
+ *  list. Rows drag to reorder (HTML5 drag and drop) and also have arrow
+ *  buttons so the order can be changed without a mouse. */
+function UseCaseCard({
+  useCase,
+  fallbackLabel,
+  fallbackEmpty,
+  ids,
   connections,
-  providerLabel,
-  disabled,
-  onChange,
+  connName,
+  busy,
+  onAdd,
+  onRemove,
+  onMove,
 }: {
-  label: string;
-  value: string | null;
+  useCase: LLMUseCase;
+  fallbackLabel: string | null;
+  fallbackEmpty: boolean;
+  ids: string[];
   connections: LLMConnection[];
-  providerLabel: (key: string) => string;
-  disabled: boolean;
-  onChange: (connId: string | null) => void;
+  connName: (c: LLMConnection) => string;
+  busy: boolean;
+  onAdd: (id: string) => void;
+  onRemove: (id: string) => void;
+  onMove: (from: number, to: number) => void;
 }) {
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const byId = new Map(connections.map((c) => [c.id, c]));
+  const rows = ids.map((id) => byId.get(id)).filter((c): c is LLMConnection => !!c);
+  const remaining = connections.filter((c) => !ids.includes(c.id));
+
+  const finishDrag = (to: number | null) => {
+    if (dragIdx !== null && to !== null && to !== dragIdx) onMove(dragIdx, to);
+    setDragIdx(null);
+    setOverIdx(null);
+  };
+
+  let empty: { text: string; warn: boolean } | null = null;
+  if (rows.length === 0) {
+    if (!fallbackLabel) {
+      empty = { text: `No connection assigned. ${useCase.label} is paused until you add one.`, warn: true };
+    } else if (fallbackEmpty) {
+      empty = { text: `Uses the ${fallbackLabel} list, which is also empty.`, warn: true };
+    } else {
+      empty = { text: `Uses the ${fallbackLabel} list until you add a connection here.`, warn: false };
+    }
+  }
+
   return (
-    <label className="conn-role-select">
-      <span className="conn-role-select-label">{label}</span>
-      <select
-        value={value ?? ""}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value || null)}
-      >
-        <option value="">None</option>
-        {connections.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.label || providerLabel(c.provider)}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="uc-card">
+      <div>
+        <div className="uc-title">{useCase.label}</div>
+        <div className="uc-desc">{useCase.description}</div>
+      </div>
+      {empty ? (
+        <div className={`uc-empty${empty.warn ? " warn" : ""}`}>{empty.text}</div>
+      ) : (
+        <div className="uc-rows">
+          {rows.map((c, i) => (
+            <div
+              key={c.id}
+              className={`uc-row${i > 0 ? " later" : ""}${dragIdx === i ? " dragging" : ""}${overIdx === i ? " drop-target" : ""}`}
+              draggable={!busy}
+              onDragStart={() => setDragIdx(i)}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (overIdx !== i) setOverIdx(i);
+              }}
+              onDragLeave={() => setOverIdx((cur) => (cur === i ? null : cur))}
+              onDrop={(e) => {
+                e.preventDefault();
+                finishDrag(i);
+              }}
+              onDragEnd={() => finishDrag(null)}
+            >
+              <span className="uc-handle" aria-hidden="true">&#8801;</span>
+              <span className="uc-rank">{rankWord(i)}</span>
+              <span className="uc-name">
+                <span>{connName(c)}</span>
+                <span className="uc-model">{c.model || "default model"}</span>
+              </span>
+              <div className="uc-row-actions">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Move up"
+                  aria-label={`Move ${connName(c)} up`}
+                  disabled={busy || i === 0}
+                  onClick={() => onMove(i, i - 1)}
+                >
+                  &#9650;
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Move down"
+                  aria-label={`Move ${connName(c)} down`}
+                  disabled={busy || i === rows.length - 1}
+                  onClick={() => onMove(i, i + 1)}
+                >
+                  &#9660;
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Remove from this job"
+                  aria-label={`Remove ${connName(c)} from ${useCase.label}`}
+                  disabled={busy}
+                  onClick={() => onRemove(c.id)}
+                >
+                  &#10005;
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {remaining.length > 0 && (
+        <label className="uc-add">
+          <select
+            value=""
+            disabled={busy}
+            onChange={(e) => {
+              if (e.target.value) onAdd(e.target.value);
+            }}
+          >
+            <option value="">{rows.length ? "Add another connection..." : "Add a connection..."}</option>
+            {remaining.map((c) => (
+              <option key={c.id} value={c.id}>
+                {connName(c)}{c.model ? ` (${c.model})` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+    </div>
   );
 }
 

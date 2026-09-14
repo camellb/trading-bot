@@ -2243,6 +2243,118 @@ input::placeholder, textarea::placeholder { color: var(--vellum-40); }
   text-transform: uppercase;
   color: var(--vellum-40);
 }
+.conn-role-badge.muted {
+  color: var(--vellum-40);
+  background: transparent;
+  border-color: var(--vellum-10);
+}
+
+/* Per-use-case ordered connection lists (Settings > Connections). */
+.uc-list {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+}
+.uc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: rgba(232, 228, 216, 0.02);
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-2);
+}
+.uc-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vellum);
+}
+.uc-desc {
+  font-size: 12px;
+  color: var(--vellum-60);
+  margin-top: 2px;
+}
+.uc-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.uc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--vellum-10);
+  border-radius: var(--radius-2);
+  background: rgba(232, 228, 216, 0.03);
+  cursor: grab;
+}
+.uc-row.dragging { opacity: 0.45; }
+.uc-row.drop-target { border-color: var(--gold-line); }
+.uc-handle {
+  color: var(--vellum-40);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  user-select: none;
+}
+.uc-rank {
+  flex: 0 0 auto;
+  min-width: 52px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.uc-row.later .uc-rank { color: var(--vellum-40); }
+.uc-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
+  color: var(--vellum);
+}
+.uc-name > span:first-child,
+.uc-model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.uc-model {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--vellum-60);
+}
+.uc-row-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.icon-btn {
+  appearance: none;
+  border: 1px solid var(--vellum-10);
+  background: transparent;
+  color: var(--vellum-60);
+  border-radius: var(--radius-2);
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.icon-btn:hover:not(:disabled) { color: var(--vellum); border-color: var(--border-bright); }
+.icon-btn:disabled { opacity: 0.35; cursor: default; }
+.uc-empty {
+  font-size: 12px;
+  color: var(--vellum-60);
+  padding: 8px 10px;
+  border: 1px dashed var(--vellum-10);
+  border-radius: var(--radius-2);
+}
+.uc-empty.warn { color: var(--warn); border-color: var(--warn-dim); }
+.uc-add select { width: 100%; }
 
 /* Inline two-step confirm (Remove -> Confirm / Cancel). */
 .confirm-pair {

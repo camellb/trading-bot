@@ -898,7 +898,7 @@ def _call_model_blocking(system: str, user: str, max_tokens: int) -> Optional[st
             user        = user,
             max_tokens  = max_tokens,
             temperature = 1.0,
-            use_case    = "forecaster",
+            use_case    = "review",
         )
 
     try:

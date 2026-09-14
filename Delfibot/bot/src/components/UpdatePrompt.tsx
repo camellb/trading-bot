@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { invoke } from "@tauri-apps/api/core";
 import { formatDate } from "../lib/format";
 
 /**
@@ -111,6 +112,15 @@ export function UpdatePrompt() {
     setProgress(null);
     setPhase("downloading");
     try {
+      // Windows: the installer cannot replace a running sidecar and
+      // the updater exits this process without our shutdown hook, so
+      // stop the bot cleanly first. No-op on macOS (launchd restarts
+      // the daemon from the new bundle after relaunch).
+      try {
+        await invoke("prepare_for_update");
+      } catch {
+        // Best effort; the installer will report if the file is locked.
+      }
       await update.downloadAndInstall((event) => {
         switch (event.event) {
           case "Started":

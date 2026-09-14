@@ -120,9 +120,12 @@ from engine.user_config import (
     # Multi-provider LLM connections + role wiring (Settings > Connections).
     add_llm_connection,
     delete_llm_connection,
+    assign_connection_everywhere,
+    get_llm_assignments,
     get_llm_connection,
     get_llm_connections,
     get_llm_roles,
+    set_llm_assignments,
     has_forecaster_connection,
     set_llm_roles,
     update_llm_connection,
@@ -355,8 +358,14 @@ class LocalAPI:
         watchdog: Optional[Any] = None,
         job_loop_silence_getter=None,
         blocking_abandoned_getter=None,
+        request_shutdown=None,
     ) -> None:
         self._blocking_abandoned_getter = blocking_abandoned_getter
+        # Callable that asks the daemon to exit cleanly (main.py wires
+        # it to the same path as SIGTERM). Used by the Windows shell,
+        # which cannot send a signal to the sidecar, before quitting or
+        # updating.
+        self._request_shutdown = request_shutdown
         self._analyst = analyst
         # Seconds since the scheduler job loop last ran a callback
         # (main.job_loop_silence_seconds). Surfaced in /api/health.
@@ -487,6 +496,12 @@ class LocalAPI:
                             self._post_llm_connection_test)
         app.router.add_get("/api/llm/roles",        self._get_llm_roles)
         app.router.add_put("/api/llm/roles",        self._put_llm_roles)
+        # Ordered per-use-case connection lists (source of truth since
+        # v1.5.85; the role endpoints above are a derived legacy view).
+        app.router.add_get("/api/llm/assignments",  self._get_llm_assignments)
+        app.router.add_put("/api/llm/assignments",  self._put_llm_assignments)
+        app.router.add_post("/api/llm/connections/{conn_id}/use-everywhere",
+                            self._post_llm_use_everywhere)
         app.router.add_get("/api/positions",   self._get_positions)
         app.router.add_get("/api/open-orders", self._get_open_orders)
         app.router.add_get("/api/events",      self._get_events)
@@ -554,6 +569,7 @@ class LocalAPI:
         # macOS-only - other platforms return supported=false.
         app.router.add_get("/api/system/autostart",  self._get_autostart)
         app.router.add_put("/api/system/autostart",  self._put_autostart)
+        app.router.add_post("/api/system/shutdown",  self._post_shutdown)
 
         # System operations (restart, logs, backup, launch stats,
         # login item / window-at-login). All are user-initiated from
@@ -1608,7 +1624,12 @@ class LocalAPI:
         """The configured connections (redacted) + the role map."""
         def _read() -> dict:
             conns = [self._redact_connection(c) for c in get_llm_connections()]
-            return {"connections": conns, "roles": get_llm_roles()}
+            return {
+                "connections": conns,
+                "roles":       get_llm_roles(),
+                "assignments": get_llm_assignments(),
+                "use_cases":   _llm_providers.use_cases(),
+            }
         return _ok(await self._offload(_read))
 
     async def _post_llm_connection(self, req: web.Request) -> web.Response:
@@ -1669,7 +1690,8 @@ class LocalAPI:
             return _err("connection not found", 404)
         self._reset_llm_runtime()
         roles = await self._offload(get_llm_roles)
-        return _ok({"deleted": conn_id, "roles": roles})
+        assignments = await self._offload(get_llm_assignments)
+        return _ok({"deleted": conn_id, "roles": roles, "assignments": assignments})
 
     async def _post_llm_connection_test(self, req: web.Request) -> web.Response:
         """One tiny round trip on a single connection so a bad key, an
@@ -1684,6 +1706,45 @@ class LocalAPI:
         result = await get_llm().test_connection(conn, timeout_s=20.0)
         result["id"] = conn_id
         return _ok(result)
+
+    async def _get_llm_assignments(self, _req: web.Request) -> web.Response:
+        return _ok({
+            "assignments": await self._offload(get_llm_assignments),
+            "use_cases":   _llm_providers.use_cases(),
+        })
+
+    async def _put_llm_assignments(self, req: web.Request) -> web.Response:
+        """Replace the whole use-case map: {"assignments": {use_case:
+        [connection ids in priority order]}} (the bare map is accepted
+        too). Unknown ids and use cases are dropped."""
+        try:
+            body = await req.json()
+        except Exception:
+            return _err("invalid json", 400)
+        if isinstance(body, dict) and "assignments" in body:
+            assign_in = body.get("assignments")
+        else:
+            assign_in = body
+        if not isinstance(assign_in, dict):
+            return _err("body must be a use-case map object", 400)
+        try:
+            clean = await self._offload(set_llm_assignments, assign_in)
+        except Exception as exc:
+            return _err(f"failed to save assignments: {exc}", 500)
+        self._reset_llm_runtime()
+        return _ok({"assignments": clean, "roles": await self._offload(get_llm_roles)})
+
+    async def _post_llm_use_everywhere(self, req: web.Request) -> web.Response:
+        """Put one connection first for every use case."""
+        conn_id = req.match_info.get("conn_id", "")
+        try:
+            clean = await self._offload(assign_connection_everywhere, conn_id)
+        except ValueError as exc:
+            return _err(str(exc), 404)
+        except Exception as exc:
+            return _err(f"failed to assign connection: {exc}", 500)
+        self._reset_llm_runtime()
+        return _ok({"assignments": clean, "roles": await self._offload(get_llm_roles)})
 
     async def _get_llm_roles(self, _req: web.Request) -> web.Response:
         return _ok({"roles": await self._offload(get_llm_roles)})
@@ -3255,8 +3316,10 @@ class LocalAPI:
                     "autostart requires the installed Delfi bundle."
                 )
             # Wrap in quotes so paths with spaces (Program Files) work
-            # when Windows shells out to the value at login.
-            value = f'"{gui}"'
+            # when Windows shells out to the value at login. --minimized
+            # starts the GUI hidden in the tray (main.rs setup), so the
+            # bot comes up at login without the dashboard popping.
+            value = f'"{gui}" --minimized'
             try:
                 with winreg.OpenKey(
                     winreg.HKEY_CURRENT_USER,
@@ -3333,6 +3396,43 @@ class LocalAPI:
             "enabled":   r.returncode == 0,
             "reason":    None,
         }
+
+    async def _post_shutdown(self, _req: web.Request) -> web.Response:
+        """Clean exit on request (loopback only, same trust model as the
+        rest of this API). The Tauri shell calls it on Windows before
+        quitting, restarting or updating so an in-flight order finishes
+        and the port file is removed instead of a hard kill mid-write."""
+        if self._request_shutdown is None:
+            return _err("shutdown hook not wired", 501)
+        try:
+            self._request_shutdown()
+        except Exception as exc:
+            return _err(f"shutdown request failed: {exc}", 500)
+        return _ok({"ok": True, "detail": "Delfi is stopping."})
+
+    def maybe_default_windows_autostart(self) -> None:
+        """First boot on Windows: register the GUI to start at login
+        (minimized to the tray) unless the user already decided. Marker
+        file keeps a later "off" from being re-enabled. The GUI is the
+        sidecar's supervisor on Windows, so without this the bot only
+        traded while the user remembered to open the app."""
+        import platform
+        if platform.system() != "Windows":
+            return
+        try:
+            marker = app_data_dir() / "data" / "autostart_defaulted"
+            if marker.exists():
+                return
+            status = self._autostart_status_windows()
+            if status.get("supported") and not status.get("enabled"):
+                ok, err = self._put_autostart_windows(True)
+                print(f"[delfi] windows autostart defaulted on: ok={ok} err={err}",
+                      flush=True)
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+        except Exception as exc:
+            print(f"[delfi] windows autostart default failed: {exc}",
+                  file=sys.stderr, flush=True)
 
     async def _get_autostart(self, _req: web.Request) -> web.Response:
         return _ok(await self._autostart_status())

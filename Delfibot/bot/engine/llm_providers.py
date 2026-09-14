@@ -194,6 +194,43 @@ USE_CASE_CHAINS: dict[str, tuple[str, ...]] = {
     "search":     ("search_primary", "search_backup"),
 }
 
+# Use cases the bot routes through connections, in display order. Each
+# holds an ORDERED list of connection ids (see user_config
+# get_llm_assignments): the first usable one answers, the next takes
+# over on an error, a rate limit or a paused key. `fallback` names the
+# use case whose list applies when this one is empty, so a single key
+# still powers everything. The primary/backup role slots above are a
+# legacy view derived from these lists.
+USE_CASES: tuple[dict, ...] = (
+    {
+        "key":         "forecaster",
+        "label":       "Forecasting",
+        "description": ("Reads every market and produces the probability the "
+                        "sizer acts on. Put your most capable model first."),
+        "fallback":    None,
+    },
+    {
+        "key":         "search",
+        "label":       "Research",
+        "description": ("Extracts search keywords and filters research before "
+                        "each forecast. A fast, inexpensive model is enough."),
+        "fallback":    "forecaster",
+    },
+    {
+        "key":         "review",
+        "label":       "Reviews",
+        "description": "Writes the performance review after every 50 trades.",
+        "fallback":    "forecaster",
+    },
+)
+USE_CASE_KEYS: tuple[str, ...] = tuple(u["key"] for u in USE_CASES)
+USE_CASE_FALLBACK: dict[str, Optional[str]] = {u["key"]: u["fallback"] for u in USE_CASES}
+
+
+def use_cases() -> list[dict]:
+    """Public catalogue for the Settings page."""
+    return [dict(u) for u in USE_CASES]
+
 VALID_KINDS: tuple[str, ...] = ("anthropic", "gemini", "openai")
 
 

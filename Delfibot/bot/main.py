@@ -1290,7 +1290,15 @@ async def main() -> None:
         analyst=analyst, host=api_host, port=api_port, watchdog=watchdog,
         job_loop_silence_getter=job_loop_silence_seconds,
         blocking_abandoned_getter=blocking_pool_abandoned,
+        request_shutdown=lambda: (
+            _SHUTDOWN_HOOK["fn"]() if _SHUTDOWN_HOOK["fn"] else False
+        ),
     )
+    try:
+        api.maybe_default_windows_autostart()
+    except Exception as exc:
+        print(f"[delfi] autostart default check failed: {exc}",
+              file=sys.stderr, flush=True)
     bound_port = await api.start()
     # Tell the watchdog where to self-probe. Until this is set the
     # self-probe is a no-op; safe during the cold-start window.
@@ -2698,6 +2706,17 @@ async def main() -> None:
             # Windows: signal.signal works, loop.add_signal_handler doesn't.
             signal.signal(sig, _handle_signal)
 
+    # POST /api/system/shutdown takes the same path as SIGTERM. The
+    # Windows shell cannot signal the sidecar, so this is how it asks
+    # for a clean exit before quitting, restarting or updating.
+    def _shutdown_from_api() -> None:
+        print("[delfi] shutdown requested via /api/system/shutdown", flush=True)
+        _handle_signal(signal.SIGTERM, None)
+
+    _SHUTDOWN_HOOK["fn"] = lambda: (
+        loop.call_soon_threadsafe(_shutdown_from_api) or True
+    )
+
     await shutdown_event.wait()
     print("[delfi] stopping scheduler", flush=True)
     scheduler.shutdown(wait=False)
@@ -2707,6 +2726,10 @@ async def main() -> None:
 
 # Handle + path of the tee file so the hourly rotation can trim it.
 _LOG_TEE: dict = {"fh": None, "path": None}
+
+# Filled in by main() once the shutdown event exists; the API's
+# /api/system/shutdown handler calls it (see LocalAPI.request_shutdown).
+_SHUTDOWN_HOOK: dict = {"fn": None}
 
 
 def _rotate_logs_now() -> int:

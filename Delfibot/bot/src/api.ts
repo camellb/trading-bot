@@ -458,9 +458,24 @@ export interface LLMConnectionTestResult {
   error?: string;
 }
 
+/** One job the bot routes through connections. `fallback` names the use
+ *  case whose list applies when this one is empty. */
+export interface LLMUseCase {
+  key: string;
+  label: string;
+  description: string;
+  fallback: string | null;
+}
+
+/** use case -> connection ids in priority order (first answers, the
+ *  next takes over on failure). */
+export type LLMAssignments = Record<string, string[]>;
+
 export interface LLMConnectionsResponse {
   connections: LLMConnection[];
   roles: LLMRoles;
+  assignments: LLMAssignments;
+  use_cases: LLMUseCase[];
 }
 
 /** A raw row from the CLOB `/orders` endpoint, surfaced via
@@ -1026,7 +1041,7 @@ export const api = {
       { method: "PUT", body: JSON.stringify(patch) },
     ),
   deleteLlmConnection: (id: string) =>
-    request<{ deleted: string; roles: LLMRoles }>(
+    request<{ deleted: string; roles: LLMRoles; assignments: LLMAssignments }>(
       `/api/llm/connections/${encodeURIComponent(id)}`,
       { method: "DELETE" },
     ),
@@ -1040,6 +1055,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(roles),
     }),
+  llmAssignments: () =>
+    request<{ assignments: LLMAssignments; use_cases: LLMUseCase[] }>(
+      "/api/llm/assignments",
+    ),
+  setLlmAssignments: (assignments: LLMAssignments) =>
+    request<{ assignments: LLMAssignments; roles: LLMRoles }>(
+      "/api/llm/assignments",
+      { method: "PUT", body: JSON.stringify({ assignments }) },
+    ),
+  useConnectionEverywhere: (id: string) =>
+    request<{ assignments: LLMAssignments; roles: LLMRoles }>(
+      `/api/llm/connections/${encodeURIComponent(id)}/use-everywhere`,
+      { method: "POST" },
+    ),
 
   // Bot lifecycle
   start: () => request<{ mode: string }>("/api/bot/start", { method: "POST" }),
