@@ -1161,10 +1161,12 @@ async def main() -> None:
 
     # Surface live-trading killswitch state at boot. If
     # `DELFI_LIVE_KILLSWITCH_OFF=1` is set, real CLOB orders will
-    # fire on every live-mode trade. Default is unset (kill-switch
-    # ON); the boot line lets the operator confirm intent on every
-    # restart. If a poisoned plist or env injection ever flips
-    # this without the user knowing, the alert shows up here.
+    # fire on every live-mode trade. Every customer launch path sets
+    # it to 1 (the LaunchAgent plist the app writes, the web installer's
+    # plist, and the GUI-spawned sidecar on Windows), so on a customer
+    # machine the user-facing gate is the sidebar Live switch plus saved
+    # credentials. Only a bare `python main.py` runs with it unset. The
+    # boot line records the state on every restart.
     _ks_off = os.environ.get("DELFI_LIVE_KILLSWITCH_OFF", "").strip() in ("1", "true", "True")
     if _ks_off:
         print(
@@ -1436,6 +1438,19 @@ async def main() -> None:
             return
 
         if not isinstance(body, dict):
+            return
+
+        # The server has no row for this license id (`valid: false` with a
+        # null `revoked_at`). That is what an empty or freshly rebuilt
+        # license database looks like; a refund, dispute or admin revoke
+        # always carries `revoked_at`. Treating "not found" as a revoke
+        # would wipe every paying customer's key and stop their bot the day
+        # the database is restored without its rows (2026-09-18: the
+        # production database was found down). Inconclusive: keep the key.
+        if body.get("valid") is False and not body.get("revoked_at"):
+            print("[delfi] revocation_check: server has no record of this "
+                  "license id - treating as inconclusive, will retry next cycle",
+                  flush=True)
             return
 
         # First check: licence revoked (refund, dispute, admin action).
@@ -2722,6 +2737,19 @@ async def main() -> None:
     scheduler.shutdown(wait=False)
     await api.stop()
     print("[delfi] bye", flush=True)
+    if sys.platform.startswith("win"):
+        # The GUI treats "port closed" as "sidecar gone", but non-daemon
+        # worker threads (an in-flight forecast, an HTTP call) keep the
+        # interpreter alive until they finish. Meanwhile delfi-sidecar.exe
+        # and its singleton mutex stay held: a relaunch bounces off the
+        # mutex and the updater finds the exe locked. The database and the
+        # port file are already closed and removed here, so exit now.
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except Exception:
+            pass
+        os._exit(0)
 
 
 # Handle + path of the tee file so the hourly rotation can trim it.

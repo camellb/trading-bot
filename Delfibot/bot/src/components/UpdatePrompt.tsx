@@ -111,17 +111,13 @@ export function UpdatePrompt() {
     setError(null);
     setProgress(null);
     setPhase("downloading");
+    // True once the bot has been stopped for the installer (Windows).
+    let botStopped = false;
     try {
-      // Windows: the installer cannot replace a running sidecar and
-      // the updater exits this process without our shutdown hook, so
-      // stop the bot cleanly first. No-op on macOS (launchd restarts
-      // the daemon from the new bundle after relaunch).
-      try {
-        await invoke("prepare_for_update");
-      } catch {
-        // Best effort; the installer will report if the file is locked.
-      }
-      await update.downloadAndInstall((event) => {
+      // Download first with the bot still trading. Stopping it before a
+      // 130 MB download left open positions unmanaged for minutes, and
+      // a failed download left no bot and no supervisor loop at all.
+      await update.download((event) => {
         switch (event.event) {
           case "Started":
             setPhase("downloading");
@@ -141,6 +137,17 @@ export function UpdatePrompt() {
             break;
         }
       });
+      // Windows: the installer cannot replace a running sidecar and
+      // the updater exits this process without our shutdown hook, so
+      // stop the bot cleanly now. No-op on macOS (launchd restarts the
+      // daemon from the new bundle after relaunch).
+      try {
+        botStopped = (await invoke<boolean>("prepare_for_update")) === true;
+      } catch {
+        // Best effort; the installer will report if the file is locked.
+      }
+      setPhase("installing");
+      await update.install();
       setPhase("relaunching");
       // Hand the new binary the steering wheel. The Tauri shell
       // process exits and the new one boots from the freshly-
@@ -150,6 +157,17 @@ export function UpdatePrompt() {
       // run of the new bundle), then the dashboard reappears.
       await relaunch();
     } catch (err) {
+      if (botStopped) {
+        // The install failed after the bot was stopped. The supervisor
+        // loop has exited with it, so restart the app: the new process
+        // starts a fresh, supervised bot on the current version.
+        try {
+          await relaunch();
+          return;
+        } catch {
+          // Fall through to the error screen.
+        }
+      }
       setError(err instanceof Error ? err.message : String(err));
       setPhase("error");
     }

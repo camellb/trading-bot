@@ -40,7 +40,6 @@ interface Props {
 export default function Onboarding({ creds, onComplete }: Props) {
   const [step, setStep] = useState<Step>("welcome");
   const [polymarketKey, setPolymarketKey] = useState("");
-  const [wallet, setWallet] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,11 +67,12 @@ export default function Onboarding({ creds, onComplete }: Props) {
     setBusy(true);
     setError(null);
     try {
-      if (polymarketKey.trim() || wallet.trim()) {
-        const payload: Record<string, string> = {};
-        if (polymarketKey.trim()) payload.polymarket_private_key = polymarketKey.trim();
-        if (wallet.trim()) payload.wallet_address = wallet.trim();
-        await api.saveCredentials(payload);
+      if (polymarketKey.trim()) {
+        // The wallet address is derived from the key on the backend. A
+        // separate wallet field used to sit here; buyers pasted the
+        // deposit address polymarket.com shows them, which is not the
+        // address the key signs as, and the save was rejected.
+        await api.saveCredentials({ polymarket_private_key: polymarketKey.trim() });
         setPolymarketKey("");
       }
       await finish();
@@ -123,10 +123,9 @@ export default function Onboarding({ creds, onComplete }: Props) {
         )}
         {step === "polymarket" && (
           <PolymarketStep
-            keyValue={polymarketKey} walletValue={wallet}
-            onKeyChange={setPolymarketKey} onWalletChange={setWallet}
+            keyValue={polymarketKey}
+            onKeyChange={setPolymarketKey}
             hasStored={creds?.has_polymarket_key ?? false}
-            existingWallet={creds?.wallet_address ?? null}
             busy={busy} error={error}
             onBack={back}
             onSave={savePolymarketAndFinish}
@@ -175,15 +174,12 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
 }
 
 function PolymarketStep({
-  keyValue, walletValue, onKeyChange, onWalletChange,
-  hasStored, existingWallet, busy, error, onBack, onSave, onSkip,
+  keyValue, onKeyChange,
+  hasStored, busy, error, onBack, onSave, onSkip,
 }: {
   keyValue: string;
-  walletValue: string;
   onKeyChange: (v: string) => void;
-  onWalletChange: (v: string) => void;
   hasStored: boolean;
-  existingWallet: string | null;
   busy: boolean;
   error: string | null;
   onBack: () => void;
@@ -208,19 +204,14 @@ function PolymarketStep({
             onChange={(e) => onKeyChange(e.target.value)}
           />
         </div>
-        <div className="ob-field">
-          <label>Wallet address</label>
-          <input
-            type="text"
-            autoComplete="off"
-            placeholder={existingWallet ?? "0x..."}
-            value={walletValue}
-            onChange={(e) => onWalletChange(e.target.value)}
-          />
-        </div>
         <div className="ob-hint">
           Your private key never leaves this machine. Delfi signs every
           Polymarket trade locally and sends only the signed transaction.
+          The wallet address is read from the key.
+        </div>
+        <div className="ob-hint">
+          Before you fund the account, check that polymarket.com lets you
+          place an order from your location.
         </div>
         {error && <div className="form-error">{error}</div>}
       </div>

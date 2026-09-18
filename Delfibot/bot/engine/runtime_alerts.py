@@ -11,6 +11,7 @@ _ACTIVE_FAILURES: dict[str, str] = {}
 _FAILURE_LABELS = {
     "forecast_provider": "Forecast provider unavailable",
     "market_scan": "Market scan failed",
+    "live_balance": "Live balance too low to place orders",
 }
 
 
@@ -24,7 +25,7 @@ def report_failure(kind: str, detail: str) -> None:
         event_type="trading_blocked",
         severity=30,
         description=(
-            f"{label}. No new positions can open until Delfi recovers. "
+            f"{label}. No new positions can open until this clears. "
             f"{detail}"
         ),
         source="engine.runtime_alerts",

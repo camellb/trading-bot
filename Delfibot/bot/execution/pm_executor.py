@@ -143,6 +143,46 @@ _BALANCE_ALLOWANCE_SYNCED: set = set()
 _V2_SIGNER_MISMATCH_DETECTED: bool = False
 _V2_SIGNER_MISMATCH_NOTIFIED: bool = False
 
+
+def _report_low_live_balance(info: Optional[dict], wallet_bal: float) -> None:
+    """Live orders are skipped while the tradeable balance is below the
+    platform minimum. The only trace used to be a stdout line: Balance
+    showed the deposit, the bot showed ON, and no position ever opened.
+    runtime_alerts de-dupes, so this is one alert per episode."""
+    try:
+        from engine import runtime_alerts
+        from engine.user_config import get_polymarket_relayer_api_key
+        usdce = float((info or {}).get("usdce_legacy") or 0.0)
+        if usdce >= 1.0 and get_polymarket_relayer_api_key() is None:
+            detail = (
+                f"${usdce:.2f} of the deposit is USDC.e, which Polymarket does "
+                f"not accept for orders until it is converted. Add a Polymarket "
+                f"Relayer API key in Settings > Connections and Delfi converts "
+                f"it within 10 minutes."
+            )
+        elif usdce >= 1.0:
+            detail = (
+                f"${usdce:.2f} of the deposit is USDC.e and is being converted. "
+                f"Orders resume within 10 minutes."
+            )
+        else:
+            detail = (
+                f"The Polymarket balance available for orders is "
+                f"${wallet_bal:.2f}. Add funds to the Polymarket account to resume."
+            )
+        runtime_alerts.report_failure("live_balance", detail)
+    except Exception as exc:
+        print(f"[pm_executor] low-balance alert failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def _report_live_balance_ok() -> None:
+    try:
+        from engine import runtime_alerts
+        runtime_alerts.report_recovery("live_balance")
+    except Exception:
+        pass
+
 # Last-known live wallet bankroll per user_id. Populated on every
 # successful get_cached_total_funder_balance() call in get_bankroll;
 # read as a fallback when the wallet probe misses (cold cache + lock
@@ -1601,7 +1641,9 @@ class PMExecutor:
                         f"- skipping order on '{market.question[:60]}'",
                         flush=True,
                     )
+                    _report_low_live_balance(_info, wallet_bal)
                     return None
+                _report_live_balance_ok()
                 if decision.stake_usd > wallet_bal:
                     old_stake = decision.stake_usd
                     decision.stake_usd = round(wallet_bal, 4)
@@ -1835,12 +1877,11 @@ class PMExecutor:
                         "(Magic.link session key) and the MetaMask key "
                         "pasted into Delfi was never registered as a "
                         "trading signer. "
-                        "FIX: go to polymarket.com -> Settings -> API Keys, "
-                        "generate Trading API Keys, and paste the api-key, "
-                        "secret, and passphrase into Delfi -> Settings -> "
-                        "Polymarket API Key. Until then live orders fall "
-                        "back to simulation fills so trading data keeps "
-                        "flowing."
+                        "FIX: on polymarket.com, export the private key of "
+                        "the account you funded, then replace the key in "
+                        "Delfi under Settings > Connections > Polymarket "
+                        "private key. Until then live orders fall back to "
+                        "simulation fills so trading data keeps flowing."
                     )
                     telegram_html = None
                     try:

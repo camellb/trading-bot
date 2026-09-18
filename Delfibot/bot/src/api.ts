@@ -33,6 +33,17 @@ async function fetchPort(): Promise<number> {
     );
   }
 
+  // A copy launched from the disk image (or translocated by Gatekeeper)
+  // can never start the trading service. Say so now instead of after
+  // the 120 s deadline. Older shells lack the command; ignore that.
+  let installProblem: string | null = null;
+  try {
+    installProblem = await invoke<string | null>("install_problem");
+  } catch {
+    installProblem = null;
+  }
+  if (installProblem) throw new Error(installProblem);
+
   // Inside Tauri: poll the IPC command until it reports ready. Mirror
   // the 120s deadline on the Rust side - PyInstaller cold-start on a
   // first launch can take tens of seconds while the bundled Python
@@ -1022,7 +1033,7 @@ export const api = {
     model?: string;
     base_url?: string;
   }) =>
-    request<{ connection: LLMConnection }>("/api/llm/connections", {
+    request<{ connection: LLMConnection; assignments?: LLMAssignments }>("/api/llm/connections", {
       method: "POST",
       body: JSON.stringify(entry),
     }),

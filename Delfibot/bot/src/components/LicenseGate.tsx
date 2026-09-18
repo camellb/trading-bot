@@ -25,6 +25,13 @@ interface Props {
   children: React.ReactNode;
 }
 
+// api.ts prefixes every error with the request path
+// ("/api/license/activate: ..."). A buyer should not see that.
+function readableError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  return raw.replace(/^\/api\/[^\s:]+:\s*/, "");
+}
+
 export function LicenseGate({ children }: Props) {
   const [status, setStatus] = useState<LicenseStatus | "loading" | "error">(
     "loading",
@@ -65,12 +72,12 @@ export function LicenseGate({ children }: Props) {
         // in the app while the daemon recovers.
         setStatus((prev) => prev === "loading" ? "error" : prev);
         if (status === "loading") {
-          setErrorMsg(err instanceof Error ? err.message : String(err));
+          setErrorMsg(readableError(err));
         }
         return;
       }
       setStatus("error");
-      setErrorMsg(err instanceof Error ? err.message : String(err));
+      setErrorMsg(readableError(err));
     }
   };
 
@@ -169,7 +176,7 @@ function LicenseGateScreen({
       if (err instanceof LicenseConflictError) {
         setConflict(err);
       } else {
-        setSubmitError(err instanceof Error ? err.message : String(err));
+        setSubmitError(readableError(err));
       }
     } finally {
       setBusy(false);

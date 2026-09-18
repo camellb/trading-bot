@@ -113,9 +113,18 @@ fn ensure_macos_launchagent() {
     // cheap freshness check.
     let agent_exists = std::path::Path::new(&agent_path).exists();
     let sub_bundle_exists = sub_bundle_sidecar.exists();
+    // The plist must also carry TMPDIR=<app-data>/runtime. The web
+    // installer wrote its own plist without it until 2026-09-18, so every
+    // script-installed daemon extracted into the system temp dir, which
+    // macOS purges after 3 days while the daemon still runs. Treat such a
+    // plist as stale so it is rewritten on the next GUI launch.
+    let runtime_dir = format!("{appdata_dir}/runtime");
     let agent_matches_current_bundle = if agent_exists {
         std::fs::read_to_string(&agent_path)
-            .map(|s| s.contains(&*sub_bundle_sidecar.to_string_lossy()))
+            .map(|s| {
+                s.contains(&*sub_bundle_sidecar.to_string_lossy())
+                    && s.contains(&runtime_dir)
+            })
             .unwrap_or(false)
     } else {
         false
@@ -394,10 +403,13 @@ fn taskkill_sidecar() {
 async fn prepare_for_update(
     app: tauri::AppHandle,
     state: tauri::State<'_, ApiState>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    // Returns true when the sidecar was stopped (Windows). The frontend
+    // uses it to know that a failed install leaves no running bot and no
+    // supervisor loop, so it must relaunch the app to bring trading back.
     if !cfg!(target_os = "windows") {
         let _ = (&app, &state);
-        return Ok(());
+        return Ok(false);
     }
     state
         .shutting_down
@@ -414,7 +426,40 @@ async fn prepare_for_update(
     }
     let _ = state.child.lock().unwrap().take();
     println!("[delfi] sidecar stopped for update (graceful={stopped})");
-    Ok(())
+    Ok(true)
+}
+
+/// A launch location the trading service cannot be installed from. On
+/// macOS the sidecar wrapper lives inside the .app and launchd runs it
+/// from there, so a read-only disk image or a Gatekeeper-translocated
+/// copy can never start the bot. Without this the user waited two
+/// minutes for "Delfi took too long to start" and Restart failed too.
+#[tauri::command]
+fn install_problem() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        if cfg!(debug_assertions) {
+            return None;
+        }
+        let exe = std::env::current_exe().ok()?;
+        let path = exe.to_string_lossy().to_string();
+        let translocated = path.contains("/AppTranslocation/");
+        let on_volume = path.starts_with("/Volumes/");
+        let writable = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|contents| std::fs::create_dir_all(contents.join("Library/Daemon")).is_ok())
+            .unwrap_or(false);
+        if translocated || (on_volume && !writable) {
+            return Some(
+                "Delfi is running from the disk image or the Downloads folder, so the \
+                 trading service cannot start. Quit Delfi, open Terminal and paste: \
+                 curl -fsSL https://delfibot.com/install/mac | bash"
+                    .to_string(),
+            );
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -961,6 +1006,7 @@ fn main() {
             refresh_api_port,
             restart_sidecar,
             prepare_for_update,
+            install_problem,
         ])
         // Window close button = hide, NOT quit.
         //

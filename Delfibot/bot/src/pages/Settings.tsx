@@ -1205,10 +1205,16 @@ function ConnectionsPanel({
   const addConnection = async (entry: ConnEntry) => {
     setLlmMsg(null);
     try {
-      await api.addLlmConnection(entry);
+      const res = await api.addLlmConnection(entry);
       await reloadLlm();
       setAdding(false);
-      setLlmMsg({ kind: "ok", text: "Connection added." });
+      const first = res.assignments?.forecaster?.[0] === res.connection.id;
+      setLlmMsg({
+        kind: "ok",
+        text: first
+          ? "Connection added. It now handles Forecasting, Research and Reviews."
+          : "Connection added. Add it to a job below to use it.",
+      });
       onSaved();
     } catch (err) {
       setLlmMsg({ kind: "err", text: err instanceof Error ? err.message : String(err) });
@@ -1886,7 +1892,7 @@ function OtherCredentialsPanel({
           stored={hasPmRelayerKey}
           storedPlaceholder="(stored)"
           emptyPlaceholder="019d9954-..."
-          hint="Enables auto-redeem of winning positions."
+          hint="Enables auto-redeem of winning positions and converts USDC.e deposits into a balance Polymarket accepts for orders."
           helpAnchor={HELP_ANCHORS.polymarketRelayer}
           goto={goto}
           onSaved={onSaved}

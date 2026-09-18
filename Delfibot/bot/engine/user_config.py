@@ -1688,11 +1688,53 @@ def set_user_polymarket_creds(
     wallet_address: Optional[str] = None,
     private_key:    Optional[str] = None,
 ) -> None:
-    """Store the public wallet address and local private key."""
+    """Store the public wallet address and local private key.
+
+    `wallet_address` is by definition the signing EOA derived from the
+    private key (the funder is probed separately), so a key saved on its
+    own also writes the derived address. Settings sends the key alone;
+    before this the wallet stayed empty, the Live toggle stayed disabled
+    and mode=live was rejected for a field the UI does not have."""
     if wallet_address is not None:
         update_user_config(user_id, wallet_address=wallet_address)
     if private_key is not None:
         _keyring_set(KEYRING_POLYMARKET_KEY, private_key)
+        if wallet_address is None and private_key.strip():
+            derived = derive_polymarket_address(private_key)
+            if derived:
+                update_user_config(user_id, wallet_address=derived)
+
+
+def derive_polymarket_address(private_key: str) -> Optional[str]:
+    """Checksum address of the signing EOA for a Polymarket private key,
+    or None when the key does not parse. Local only, no network."""
+    raw = (private_key or "").strip()
+    if raw.lower().startswith("0x"):
+        raw = raw[2:]
+    if len(raw) != 64:
+        return None
+    try:
+        from eth_account import Account
+        return Account.from_key(bytes.fromhex(raw)).address
+    except Exception:
+        return None
+
+
+def heal_wallet_address(user_id: str = DEFAULT_USER_ID) -> Optional[str]:
+    """Repair installs that hold a private key but an empty (or stale)
+    wallet address. Returns the address written, or None when the stored
+    value already matches the key or no key is stored."""
+    pk = _keyring_get(KEYRING_POLYMARKET_KEY)
+    if not pk:
+        return None
+    derived = derive_polymarket_address(pk)
+    if not derived:
+        return None
+    current = (get_user_config(user_id).wallet_address or "").strip()
+    if current.lower() == derived.lower():
+        return None
+    update_user_config(user_id, wallet_address=derived)
+    return derived
 
 
 def get_active_polymarket_creds(cfg: UserConfig) -> dict:
@@ -1939,6 +1981,14 @@ def add_llm_connection(entry: dict) -> dict:
     conns = get_llm_connections()
     conns.append(norm)
     _save_llm_connections(conns)
+    # A fresh install has no job lists yet. Put the first connection on
+    # Forecasting so adding a key is enough to start scanning; Research
+    # and Reviews fall back to that list. Later connections are placed
+    # by the user from the job cards (or "Use for everything").
+    assign = get_llm_assignments()
+    if not assign.get("forecaster"):
+        assign["forecaster"] = [norm["id"]]
+        set_llm_assignments(assign)
     return norm
 
 
@@ -2021,6 +2071,18 @@ def resolve_llm_chain(use_case: str) -> list[dict]:
         seen.add(c["id"])
         deduped.append(c)
     return deduped
+
+
+def llm_setup_flags() -> dict:
+    """Provider-neutral booleans for the Help setup checklist. The old
+    flags were tied to one vendor (`has_anthropic_key`), so a user whose
+    forecaster ran on any other provider saw the required row as missing."""
+    forecaster = resolve_llm_chain("forecaster")
+    return {
+        "has_llm_key":        bool(forecaster),
+        "has_llm_backup_key": len(forecaster) >= 2,
+        "has_search_llm":     has_dedicated_search_connection(),
+    }
 
 
 def has_forecaster_connection() -> bool:

@@ -54,7 +54,7 @@ _DEVICE_ID_LEN = 32
 _DEVICE_LABEL_MAX = 80
 
 
-def _run(cmd: list[str], timeout: float = 2.0) -> Optional[str]:
+def _run(cmd: list[str], timeout: float = 5.0) -> Optional[str]:
     """Run a process, return stdout stripped, None on any failure."""
     try:
         proc = subprocess.run(
@@ -173,7 +173,47 @@ def get_device_id() -> str:
     # device_ids across unrelated products. Pure paranoia given the
     # values are only useful inside Delfi's licence table, but cheap.
     digest = hashlib.sha256(("delfi-device-v1|" + raw).encode("utf-8")).hexdigest()
-    return digest[:_DEVICE_ID_LEN]
+    device_id = digest[:_DEVICE_ID_LEN]
+
+    # The identifier comes from a subprocess (`ioreg` / `reg query`). One
+    # slow call at login used to drop the process onto the hostname
+    # fallback, which hashes differently: the boot claim then saw "another
+    # device" (409), wiped the customer's key and stopped the bot. The last
+    # id computed from the real platform UUID is remembered and preferred
+    # over the fallback. A successful real read always wins, so copying
+    # the file to another machine does not carry the slot with it.
+    saved_file = _device_id_file()
+    if raw.startswith("delfi-fallback:"):
+        saved = _read_saved_device_id(saved_file)
+        if saved:
+            return saved
+    elif saved_file is not None:
+        try:
+            saved_file.parent.mkdir(parents=True, exist_ok=True)
+            saved_file.write_text(device_id, encoding="utf-8")
+        except Exception:
+            pass
+    return device_id
+
+
+def _device_id_file():
+    try:
+        from db.engine import app_data_dir
+        return app_data_dir() / "data" / "device_id"
+    except Exception:
+        return None
+
+
+def _read_saved_device_id(path) -> Optional[str]:
+    if path is None:
+        return None
+    try:
+        saved = path.read_text(encoding="utf-8").strip().lower()
+    except Exception:
+        return None
+    if len(saved) == _DEVICE_ID_LEN and all(c in "0123456789abcdef" for c in saved):
+        return saved
+    return None
 
 
 def _hostname_macos() -> Optional[str]:

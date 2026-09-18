@@ -114,6 +114,8 @@ from engine.user_config import (
     set_newsapi_key,
     set_polymarket_api_creds,
     set_user_polymarket_creds,
+    derive_polymarket_address,
+    heal_wallet_address,
     set_user_telegram_config,
     update_user_config,
     validated_update_payload,
@@ -127,6 +129,7 @@ from engine.user_config import (
     get_llm_roles,
     set_llm_assignments,
     has_forecaster_connection,
+    llm_setup_flags,
     set_llm_roles,
     update_llm_connection,
 )
@@ -366,6 +369,8 @@ class LocalAPI:
         # which cannot send a signal to the sidecar, before quitting or
         # updating.
         self._request_shutdown = request_shutdown
+        # One-shot repair of key-without-wallet installs (see heal_wallet_address).
+        self._wallet_heal_done = False
         self._analyst = analyst
         # Seconds since the scheduler job loop last ran a callback
         # (main.job_loop_silence_seconds). Surfaced in /api/health.
@@ -834,6 +839,18 @@ class LocalAPI:
         # under DB contention with the scan/resolve scheduler jobs;
         # the GUI's 30s splash timeout fires and the user sees
         # "Delfi could not start". Offload to the default thread pool.
+        if not self._wallet_heal_done:
+            self._wallet_heal_done = True
+            try:
+                healed = await asyncio.get_event_loop().run_in_executor(
+                    self._api_executor, heal_wallet_address,
+                )
+                if healed:
+                    print(f"[local_api] wallet address derived from the stored key: {healed}",
+                          file=sys.stderr, flush=True)
+            except Exception as exc:
+                print(f"[local_api] wallet heal failed: {type(exc).__name__}: {exc}",
+                      file=sys.stderr, flush=True)
         cfg = await asyncio.get_event_loop().run_in_executor(
             self._api_executor, get_user_config,
         )
@@ -1233,13 +1250,14 @@ class LocalAPI:
         except asyncio.TimeoutError:
             return _err(
                 "keychain access is blocked. macOS may be waiting for you to "
-                "click Always Allow in the keychain prompt — check for a "
+                "click Always Allow in the keychain prompt. Check for a "
                 "password dialog and try again.",
                 503,
             )
 
-        # Vendor-neutral alias surfaced alongside the back-compat name.
-        booleans["has_llm_key"] = booleans["has_anthropic_key"]
+        # Provider-neutral flags for the setup checklist (any provider on
+        # the Forecasting list counts, not just one vendor).
+        booleans.update(await self._offload(llm_setup_flags))
         self._creds_cache = booleans
         return _ok({"wallet_address": cfg.wallet_address, **booleans})
 
@@ -1278,6 +1296,16 @@ class LocalAPI:
             err = _validate_polymarket_private_key(pm_key, wallet)
             if err:
                 return _err(err, 400)
+            if wallet is None:
+                # The wallet address IS the address this key signs as.
+                # Settings and onboarding send the key alone.
+                wallet = derive_polymarket_address(pm_key)
+        elif wallet is not None:
+            stored_key = await self._offload(_keyring_get, KEYRING_POLYMARKET_KEY)
+            if stored_key:
+                err = _validate_polymarket_private_key(stored_key, wallet)
+                if err:
+                    return _err(err, 400)
         if pm_key is not None or wallet is not None:
             try:
                 await self._offload(
@@ -1489,7 +1517,7 @@ class LocalAPI:
                 "has_cryptopanic_key": get_cryptopanic_key() is not None,
             }
         snap = await self._offload(_read_all_post_write)
-        snap["has_llm_key"] = snap["has_anthropic_key"]
+        snap.update(await self._offload(llm_setup_flags))
         return _ok({"wrote": wrote, **snap})
 
     async def _delete_credential(self, req: web.Request) -> web.Response:
@@ -1530,9 +1558,10 @@ class LocalAPI:
 
         def _clear() -> None:
             if field in ("polymarket_private_key", "polymarket"):
+                # The wallet address is derived from the key, so it goes
+                # with it (Settings says so).
                 set_user_polymarket_creds(private_key="")
-                if field == "polymarket":
-                    set_user_polymarket_creds(wallet_address="")
+                set_user_polymarket_creds(wallet_address="")
             elif field == "wallet_address":
                 set_user_polymarket_creds(wallet_address="")
             elif field == "newsapi_key":
@@ -1653,7 +1682,9 @@ class LocalAPI:
         except Exception as exc:
             return _err(f"failed to add connection: {exc}", 500)
         self._reset_llm_runtime()
-        return _ok({"connection": self._redact_connection(conn)}, status=201)
+        assignments = await self._offload(get_llm_assignments)
+        return _ok({"connection": self._redact_connection(conn),
+                    "assignments": assignments}, status=201)
 
     async def _put_llm_connection(self, req: web.Request) -> web.Response:
         conn_id = req.match_info.get("conn_id", "")
@@ -1898,7 +1929,7 @@ class LocalAPI:
         if cfg.bot_enabled:
             return _ok({"bot_enabled": True, "mode": cfg.mode})
         if not (await self._offload(has_forecaster_connection)):
-            return _err("no forecaster LLM connection is configured", 400)
+            return _err("Add a connection in Settings > Connections before starting.", 400)
         if cfg.mode == "live":
             if not cfg.wallet_address:
                 return _err("wallet_address is not set", 400)
@@ -3055,8 +3086,19 @@ class LocalAPI:
                 status=409,
             )
         if claim.get("status") != 200:
+            status = claim.get("status") or 500
+            if status >= 500:
+                # A server-side outage, not a problem with the key. The raw
+                # server string ("license lookup failed") read like a bad
+                # key to a buyer who had just paid.
+                return _err(
+                    "The activation server is temporarily unavailable. Your "
+                    "license key is fine. Try again in a few minutes, or "
+                    "email info@delfibot.com.",
+                    503,
+                )
             err = (claim.get("body") or {}).get("error") or "activation failed"
-            return _err(err, claim.get("status") or 500)
+            return _err(err, status)
 
         # Slot is ours. Persist locally now.
         set_license_key(key)

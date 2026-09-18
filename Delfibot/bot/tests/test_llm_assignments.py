@@ -94,3 +94,29 @@ def test_legacy_set_roles_writes_the_ordered_lists(store) -> None:
     })
     assert roles["forecaster_primary"] == "b" and roles["forecaster_backup"] == "a"
     assert uc.get_llm_assignments() == {"forecaster": ["b", "a"], "search": ["c"], "review": ["c"]}
+
+
+def test_first_connection_lands_on_forecasting_later_ones_do_not(store) -> None:
+    store["llm_connections"] = []
+    a = uc.add_llm_connection(_conn("a"))
+    assert uc.get_llm_assignments() == {"forecaster": [a["id"]], "search": [], "review": []}
+    assert _ids(uc.resolve_llm_chain("search")) == [a["id"]]
+    assert _ids(uc.resolve_llm_chain("review")) == [a["id"]]
+    b = uc.add_llm_connection(_conn("b", "gemini", "gemini-flash-latest"))
+    assert uc.get_llm_assignments()["forecaster"] == [a["id"]]
+    assert b["id"] not in uc.get_llm_assignments()["forecaster"]
+
+
+def test_setup_flags_do_not_depend_on_the_provider(store) -> None:
+    uc.set_llm_assignments({"forecaster": [], "search": [], "review": []})
+    assert uc.llm_setup_flags() == {
+        "has_llm_key": False, "has_llm_backup_key": False, "has_search_llm": False,
+    }
+    uc.set_llm_assignments({"forecaster": ["c"], "search": [], "review": []})
+    assert uc.llm_setup_flags() == {
+        "has_llm_key": True, "has_llm_backup_key": False, "has_search_llm": False,
+    }
+    uc.set_llm_assignments({"forecaster": ["c", "a"], "search": ["b"], "review": []})
+    assert uc.llm_setup_flags() == {
+        "has_llm_key": True, "has_llm_backup_key": True, "has_search_llm": True,
+    }

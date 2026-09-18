@@ -82,9 +82,9 @@ function SetupChecklist({
   const c = (creds ?? {}) as Record<string, unknown>;
   const cfg = (config ?? {}) as Record<string, unknown>;
 
-  const hasLlm        = c.has_llm_key === true || c.has_anthropic_key === true;
+  const hasLlm        = c.has_llm_key === true;
   const hasLlmBackup  = c.has_llm_backup_key === true;
-  const hasSearchLlm  = c.has_gemini_key === true; // server still keys this as "gemini"
+  const hasSearchLlm  = c.has_search_llm === true;
   const hasPmKey      = c.has_polymarket_key === true;
   const hasRelayerKey = c.has_polymarket_relayer_api_key === true;
   const hasNewsapi    = c.has_newsapi_key === true;
@@ -98,27 +98,27 @@ function SetupChecklist({
       title: "Forecaster",
       rows: [
         {
-          title: "LLM API key",
+          title: "Forecasting connection",
           ok: hasLlm,
           required: true,
           done: "Connected.",
-          todo: "BYO API key from any LLM provider.",
+          todo: "Add an API key from any supported provider. The first one you add handles Forecasting.",
           actionTab: "connections",
         },
         {
-          title: "Backup LLM API key",
+          title: "Second forecasting connection",
           ok: hasLlmBackup,
           required: false,
           done: "Connected.",
-          todo: "Second LLM used when the primary errors or rate-limits.",
+          todo: "Takes over when the first one errors or hits a rate limit.",
           actionTab: "connections",
         },
         {
-          title: "Search LLM",
+          title: "Research connection",
           ok: hasSearchLlm,
           required: false,
           done: "Connected.",
-          todo: "Used for keyword extraction and headline filtering. Cheap models recommended.",
+          todo: "Used for keyword extraction and headline filtering. A fast, inexpensive model is enough.",
           actionTab: "connections",
         },
       ],
@@ -463,8 +463,14 @@ function GuidePolymarketKey({ anchor, clearAnchor }: GuideHookProps) {
       </Step>
       <Step n={3} title="Paste it into Delfi">
         Open <strong>Settings &rarr; Connections</strong> and paste
-        into <em>Polymarket private key</em>. Save. The wallet
-        address auto-fills.
+        into <em>Polymarket private key</em>. Save. Delfi reads the
+        wallet address from the key, and the Live switch in the
+        sidebar becomes available.
+      </Step>
+      <Step n={4} title="Check your location before funding">
+        Polymarket restricts trading in some countries. Before you
+        fund the account, confirm that polymarket.com lets you place
+        an order from where you are.
       </Step>
       <CommonIssues>
         <Issue title="Polymarket account does not expose an export option">
@@ -639,6 +645,50 @@ function Troubleshooting() {
         <h2 className="panel-title">Troubleshooting</h2>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <Guide title="macOS says Delfi is damaged or cannot be verified">
+          <p>
+            This happens when the app was downloaded in a browser
+            instead of through the install command. Open Terminal and
+            paste the command from your license email:
+          </p>
+          <p>
+            <code>curl -fsSL https://delfibot.com/install/mac | bash</code>
+          </p>
+          <p>
+            It installs Delfi into Applications, clears the macOS
+            download flag and starts the trading service. Your license
+            and trade history are kept.
+          </p>
+        </Guide>
+
+        <Guide title="Delfi could not start right after installing (macOS)">
+          <p>
+            Delfi cannot start its trading service when it is opened
+            from the disk image or from the Downloads folder. Quit
+            Delfi, run the install command above, and open Delfi from
+            Applications. Delfi for macOS needs a Mac with Apple
+            Silicon (M1 or later).
+          </p>
+        </Guide>
+
+        <Guide title="Live mode is on and Balance shows money, but no position opens">
+          <ul>
+            <li>
+              <strong>The deposit is USDC.e.</strong> Polymarket only
+              accepts its own collateral for orders. Add a{" "}
+              <strong>Polymarket Relayer API key</strong> in Settings
+              &rarr; Connections and Delfi converts the deposit within
+              10 minutes. Deposits made through polymarket.com do not
+              need this.
+            </li>
+            <li>
+              <strong>The balance is under the minimum order.</strong>{" "}
+              Every Polymarket order must clear $1 and 5 shares. The
+              dashboard shows a notice when this is the reason.
+            </li>
+          </ul>
+        </Guide>
+
         <Guide title="Bot keeps skipping every market">
           <p>
             The most common cause is sizing math falling under the
