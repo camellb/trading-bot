@@ -1,5 +1,60 @@
 # Delfi Launch Checklist
 
+## Status on 2026-09-18 (read this first; sections 6 to 8 and 10 below are historical)
+
+Audited path: buy on delfibot.com, receive the key, install on macOS or
+Windows, activate, run Simulation, switch to Live.
+
+**Blocking right now**
+
+- [ ] **The production license database is unreachable.** `GET
+  https://delfibot.com/api/license/check?id=00000000-0000-4000-8000-000000000000`
+  answers HTTP 500; healthy is HTTP 200 with `"revoke_reason": "license id not found"`.
+  The hosted Postgres project no longer resolves in DNS (a free-tier
+  project pauses after a week without queries). While it is down a buyer
+  is charged and gets no key, and nobody can activate on either platform.
+  Restore the project from its dashboard (keeps the `licenses` rows), then
+  apply `ops/supabase/migrations/032_licenses_email_sent_at.sql`. Recovery
+  notes: `ops/supabase/migrations/README_LICENSE_DB.md`.
+- [ ] After it is back: Stripe dashboard, Webhooks, resend failed
+  `checkout.session.completed` deliveries.
+- [ ] One real end-to-end purchase (a 100 percent promotion code now
+  works on the return page) through install and activation on both
+  platforms. The Windows app has never been run on a Windows machine.
+
+**Not code, owner action**
+
+- [ ] DNS at the registrar: the apex has two SPF records (invalid). Keep
+  the mailbox provider's record on the apex, move
+  `v=spf1 include:amazonses.com ~all` to the `send` host. Confirm the
+  domain shows Verified in the email provider, send a test to Gmail and
+  Outlook.
+- [ ] `https://www.delfibot.com` has no certificate (the apex is fine).
+  Re-add the www domain in the hosting project so a certificate is issued.
+- [ ] Hosting plan: the project is on the free plan (non-commercial
+  terms, 100 GB bandwidth a month, about 800 installer downloads).
+- [ ] Stripe: confirm card-only payment methods. The webhook issues the
+  license on `checkout.session.completed`, which also fires for
+  asynchronous methods before the money arrives.
+
+**How the shipped flow works today**
+
+- Downloads: `/api/download/mac` and `/api/download/win` stream the latest
+  GitHub release asset. The email and the return page give one-line
+  installers (`/install/mac`, `/install/win`); the macOS one clears the
+  download flag, writes the LaunchAgent (with TMPDIR under app data) and
+  refuses Intel Macs. macOS builds are Apple Silicon only.
+- Releases: bump the version, push, `git tag -a vX.Y.Z`, push the tag. CI
+  builds macOS + Windows, signs the updater bundles, publishes
+  `latest.json`. Installed apps offer the update.
+- Live trading needs no Terminal work: `DELFI_LIVE_KILLSWITCH_OFF=1` is
+  set by the app on every customer launch path. The user-facing gate is
+  the sidebar Live switch plus a saved Polymarket private key (the wallet
+  address is derived from it).
+
+---
+
+
 What you (the human) need to do to take Delfi from "code on
 GitHub" to "people can buy and use it." Everything Claude can do
 without you is already done; this list is the rest.

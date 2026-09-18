@@ -56,7 +56,10 @@ try {
 }
 
 $installer = Join-Path $env:TEMP 'Delfi-Setup.exe'
-Say "Downloading installer to $installer..."
+Say "Downloading installer to $installer (about 130 MB, this can take a few minutes)..."
+# Windows PowerShell 5.1 redraws the progress bar for every chunk, which
+# makes a large download several times slower.
+$ProgressPreference = 'SilentlyContinue'
 Invoke-WebRequest -Uri 'https://delfibot.com/api/download/win' -OutFile $installer
 
 # Sanity-check the file is actually an installer, not an error page.
@@ -76,7 +79,7 @@ Unblock-File -Path $installer -ErrorAction SilentlyContinue
 Say 'Installing Delfi (silent)...'
 $proc = Start-Process -FilePath $installer -ArgumentList '/S' -PassThru -Wait
 if ($proc.ExitCode -ne 0) {
-    throw "Installer exited with code $($proc.ExitCode). Try downloading the .exe manually from your email."
+    throw "Installer exited with code $($proc.ExitCode). Download it from https://delfibot.com/api/download/win and run it. If Windows shows 'Windows protected your PC', click More info, then Run anyway."
 }
 Remove-Item $installer -Force -ErrorAction SilentlyContinue
 

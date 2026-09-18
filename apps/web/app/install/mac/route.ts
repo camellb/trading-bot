@@ -58,6 +58,20 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+# Delfi for macOS is built for Apple Silicon only. An Intel Mac would
+# download, install and then refuse to open the app, so stop here.
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "[delfi] Delfi for macOS needs a Mac with Apple Silicon (M1 or later). This Mac has an Intel processor." >&2
+  echo "[delfi] Nothing was installed. Reply to your license email and we will help or refund you." >&2
+  exit 1
+fi
+
+if [[ ! -w /Applications ]]; then
+  echo "[delfi] This account cannot write to /Applications. Log in as an administrator of this Mac and run the command again." >&2
+  echo "[delfi] Nothing was installed." >&2
+  exit 1
+fi
+
 DOWNLOAD_URL="https://delfibot.com/api/download/mac"
 APP_PATH="/Applications/Delfi.app"
 LAUNCHAGENT_DIR="$HOME/Library/LaunchAgents"
@@ -65,6 +79,7 @@ LAUNCHAGENT="$LAUNCHAGENT_DIR/com.delfi.bot.plist"
 LOG_DIR="$HOME/Library/Logs/Delfi"
 APPDATA_DIR="$HOME/Library/Application Support/Delfi"
 DESKTOP_ID_DIR="$HOME/Library/Application Support/com.delfi.desktop"
+RUNTIME_DIR="$DESKTOP_ID_DIR/runtime"
 SIDECAR_WRAPPER="$APP_PATH/Contents/Library/Daemon/DelfiSidecar.app"
 SIDECAR_REAL="$APP_PATH/Contents/MacOS/delfi-sidecar"
 USER_GUI="gui/$(id -u)"
@@ -204,7 +219,7 @@ chmod 0755 "$SIDECAR_WRAPPER/Contents/MacOS/delfi-sidecar"
 #    flow has been missing. Without it, the sidecar never runs on
 #    macOS release builds (the GUI delegates lifecycle to launchd).
 say "Installing the LaunchAgent so the sidecar runs 24/7..."
-mkdir -p "$LAUNCHAGENT_DIR" "$LOG_DIR"
+mkdir -p "$LAUNCHAGENT_DIR" "$LOG_DIR" "$RUNTIME_DIR"
 cat > "$LAUNCHAGENT" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -235,6 +250,8 @@ cat > "$LAUNCHAGENT" <<PLIST
         <string>1</string>
         <key>DELFI_LIVE_KILLSWITCH_OFF</key>
         <string>1</string>
+        <key>TMPDIR</key>
+        <string>$RUNTIME_DIR</string>
     </dict>
 
     <key>StandardOutPath</key>
@@ -248,19 +265,20 @@ cat > "$LAUNCHAGENT" <<PLIST
 </plist>
 PLIST
 
+# 8. Clear stale runtime state from any earlier broken install. Keeps
+#    license + DB intact; only resets the singleton lock and port file.
+#    Runs BEFORE the daemon starts so it cannot delete a fresh port file.
+say "Resetting runtime state..."
+rm -f "$DESKTOP_ID_DIR/sidecar.lock"
+rm -f "$APPDATA_DIR/sidecar.port"
+rm -f "$DESKTOP_ID_DIR/sidecar.port"
+
 # Idempotent (re-)bootstrap. bootout first in case a prior plist is
 # still registered, then bootstrap the new one. kickstart -k to
 # force-start now without waiting for ThrottleInterval.
 launchctl bootout   "$USER_GUI" "$LAUNCHAGENT"          >/dev/null 2>&1 || true
 launchctl bootstrap "$USER_GUI" "$LAUNCHAGENT"          >/dev/null 2>&1 || true
 launchctl kickstart -k "$USER_GUI/com.delfi.bot"        >/dev/null 2>&1 || true
-
-# 8. Clear stale runtime state from any earlier broken install. Keeps
-#    license + DB intact; only resets the singleton lock and port file.
-say "Resetting runtime state..."
-rm -f "$DESKTOP_ID_DIR/sidecar.lock"
-rm -f "$APPDATA_DIR/sidecar.port"
-rm -f "$DESKTOP_ID_DIR/sidecar.port"
 
 # 9. Wait briefly for the daemon to come up + write its port file,
 #    then launch the GUI. The GUI is a viewer; it reads the port file

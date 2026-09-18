@@ -11,10 +11,22 @@ const AUTH_ROUTES = ["/auth", "/login"];
 // /geoblocked itself (else infinite redirect), auth callback so a user
 // who started logging in from outside a blocked region can still finish,
 // and /api/auth for internal Supabase session flows.
+// The paid path is exempt too: Stripe's webhook, the return page that
+// shows the license, the license endpoints the desktop app calls, the
+// installers and the downloads. A customer who has paid must never be
+// redirected to /geoblocked, and a redirect on /api/license/* would
+// break activation for every install in a listed region.
 const GEOBLOCK_BYPASS_PREFIXES = [
   "/geoblocked",
   "/auth/callback",
   "/api/auth",
+  "/api/webhooks",
+  "/api/checkout",
+  "/api/license",
+  "/api/download",
+  "/api/cron",
+  "/checkout/return",
+  "/install",
 ];
 
 export async function updateSession(request: NextRequest) {

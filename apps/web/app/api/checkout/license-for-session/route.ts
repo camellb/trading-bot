@@ -72,7 +72,11 @@ export async function GET(req: Request): Promise<NextResponse> {
       { status: 404 },
     );
   }
-  if (session.status !== "complete" || session.payment_status !== "paid") {
+  if (
+    session.status !== "complete" ||
+    (session.payment_status !== "paid" &&
+      session.payment_status !== "no_payment_required")
+  ) {
     return NextResponse.json(
       {
         error: "session is not paid yet",

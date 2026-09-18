@@ -20,11 +20,12 @@
 
 import { NextResponse } from "next/server";
 
-// Override Vercel's default 10s edge / serverless timeout for this
-// route. 60s is the Pro-tier maximum for Node serverless functions.
-// A 120 MB download at ~3 MB/s = 40s, fits comfortably; users on
-// slow connections may still time out but get to retry.
-export const maxDuration = 60;
+// The whole installer (about 125 MB) streams through this function, so
+// the duration cap is the slowest connection we support. 300 s is the
+// ceiling with Fluid compute (enabled on this project, checked
+// 2026-09-18) and carries a buyer down to roughly 0.45 MB/s. The old
+// 60 s cap cut off anyone below about 2.1 MB/s mid-download.
+export const maxDuration = 300;
 
 // Force Node runtime (not Edge) so the streaming response body
 // passthrough works with Vercel's full bandwidth allowance. Edge

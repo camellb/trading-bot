@@ -83,7 +83,7 @@ function ReturnInner() {
   useEffect(() => {
     if (!sessionId) return;
     if (status?.status !== "complete") return;
-    if (status?.paymentStatus !== "paid") return;
+    if (status?.paymentStatus !== "paid" && status?.paymentStatus !== "no_payment_required") return;
     if (license?.blob) return;
 
     let cancelled = false;
@@ -102,19 +102,27 @@ function ReturnInner() {
           setLicense(body);
           return;
         }
-        // 202 = webhook still in flight; back off and retry.
-        if (!cancelled && res.status === 202 && attempts < maxAttempts) {
+        // 202 = webhook still in flight, 5xx = a transient server
+        // error. Back off and retry both; a single 500 used to leave
+        // the spinner up forever with no retry scheduled.
+        if (
+          !cancelled &&
+          (res.status === 202 || res.status >= 500) &&
+          attempts < maxAttempts
+        ) {
           setTimeout(tick, 3000);
           return;
         }
-        if (!cancelled && attempts >= maxAttempts) {
-          // Don't surface as an error: the email path still works,
-          // and we don't want a transient failure to scare the buyer.
+        if (!cancelled) {
+          // Out of attempts, or an answer that will not change (4xx).
+          // Swap the spinner for the email fallback below.
           setLicense({ error: "license-not-ready" });
         }
       } catch {
         if (!cancelled && attempts < maxAttempts) {
           setTimeout(tick, 3000);
+        } else if (!cancelled) {
+          setLicense({ error: "license-not-ready" });
         }
       }
     };
@@ -182,7 +190,11 @@ function ReturnInner() {
     );
   }
 
-  if (status.status === "complete" && status.paymentStatus === "paid") {
+  if (
+    status.status === "complete" &&
+    (status.paymentStatus === "paid" ||
+      status.paymentStatus === "no_payment_required")
+  ) {
     return (
       <div className="checkout-return-card">
         <div className="checkout-return-eyebrow">Payment confirmed</div>
@@ -212,28 +224,42 @@ function ReturnInner() {
             </div>
             <pre className="checkout-return-license-blob">{license.blob}</pre>
           </div>
+        ) : license?.error ? (
+          <div className="checkout-return-license-pending">
+            <span>
+              Your license key has been emailed to{" "}
+              {status.email ?? "the address you entered"}. If it has not
+              arrived in five minutes, email info@delfibot.com.
+            </span>
+          </div>
         ) : (
           <div className="checkout-return-license-pending">
             <span className="checkout-spinner" aria-hidden="true" />
-            <span>Loading your license key…</span>
+            <span>Loading your license key...</span>
           </div>
         )}
 
         <div className="checkout-return-section-label">Download Delfi</div>
 
         <p className="checkout-return-body muted">
-          macOS &middot; open Terminal and paste:
+          macOS (Apple Silicon, M1 or later) &middot; open Terminal and paste:
         </p>
         <code className="checkout-return-cmd">
           curl -fsSL https://delfibot.com/install/mac | bash
         </code>
 
         <p className="checkout-return-body muted">
-          Windows &middot; open PowerShell and paste:
+          Windows 10 or 11 &middot; open PowerShell and paste:
         </p>
         <code className="checkout-return-cmd">
           iwr https://delfibot.com/install/win -UseBasicParsing | iex
         </code>
+        <p className="checkout-return-body muted">
+          Or download the Windows installer from{" "}
+          https://delfibot.com/api/download/win. If Windows shows
+          &quot;Windows protected your PC&quot;, click More info, then Run
+          anyway.
+        </p>
 
         <p className="checkout-return-body muted">
           Nothing in your inbox in five minutes?

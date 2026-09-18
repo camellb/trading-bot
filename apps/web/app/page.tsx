@@ -661,6 +661,7 @@ function FAQ() {
     { q: "How is this different from other Polymarket bots?", a: "Most Polymarket bots are either arbitrage scanners (exploiting price inconsistencies at high speed), copy-trading tools (mirroring top traders), or basic momentum systems. Delfi is none of those. It runs locally on your machine, never custodies your funds, sizes every trade by the same flat-fractional math regardless of how strong the signal looks, and shows you the full reasoning on every position." },
     { q: "What happens if Delfi is wrong?", a: "You lose money on that trade. Delfi is probabilistic, not psychic. It aims to be right more often than wrong, not infallible. Over hundreds of trades, sizing discipline plus following the market favourite compounds into real returns. Daily and weekly loss caps you set during onboarding stop a bad streak from compounding." },
     { q: "How much does it cost?", a: "$249 once. No subscription. All future updates included. Beyond that, you pay your model provider directly for forecasting API usage and Polymarket on-chain fees for trades." },
+    { q: "What do I need to run it?", a: "A Mac with Apple Silicon (M1 or later), or a PC on 64-bit Windows 10 or 11. Intel Macs are not supported. Delfi trades while the computer is on and awake. You also need an API key from a supported model provider for forecasting." },
     { q: "Do I need a Polymarket account first?", a: "Not to start. You can install Delfi and run it in Simulation mode forever, with synthetic capital and the same forecasts and risk math as live mode. When you want to switch to Live trading, you'll need a funded Polymarket account and its private key, both of which you already control." },
     { q: "Is my money safe?", a: "Delfi never custodies your funds. Your capital stays in your own Polymarket wallet. Your private key is stored in an owner-only local file, not on Delfi servers. Delfi reads it only inside the desktop process when signing a trade. It is never logged or transmitted to us. We can't withdraw funds, transfer them, or see your wallet address. You can pause Delfi or delete the app at any time." },
     { q: "Will my Delfi keep working if you go away?", a: "Yes. Delfi runs locally and does not phone home for trading decisions. Once installed, the app runs entirely on your computer." },
@@ -708,7 +709,7 @@ function FinalCTA() {
           <div className="price-card-tagline">One-time payment. Lifetime access.</div>
           <ul className="price-card-list">
             <li>24/7 automated trading on Polymarket</li>
-            <li>macOS and Windows</li>
+            <li>macOS (Apple Silicon) and Windows</li>
             <li>Non-custodial: your keys never leave your computer</li>
             <li>Full trade history and reasoning</li>
             <li>Free lifetime updates</li>
@@ -821,7 +822,7 @@ const SOFTWARE_JSONLD = {
   "@type":          "SoftwareApplication",
   "name":           "Delfi",
   "applicationCategory": "FinanceApplication",
-  "operatingSystem": "macOS, Windows",
+  "operatingSystem": "macOS (Apple Silicon), Windows 10, Windows 11",
   "description":
     "Autonomous trading bot for Polymarket. Runs on your computer. Non-custodial: keys never leave your machine. Trades 24/7 with full reasoning on every position.",
   "url":            "https://delfibot.com/",

@@ -63,6 +63,10 @@ export async function GET(req: Request): Promise<NextResponse> {
       sessionId,
       err: e instanceof Error ? e.message : String(e),
     });
+    const code = (e as { code?: string } | null)?.code;
+    if (code === "resource_missing") {
+      return NextResponse.json({ error: "session not found" }, { status: 404 });
+    }
     return NextResponse.json(
       { error: "could not load session" },
       { status: 500 },

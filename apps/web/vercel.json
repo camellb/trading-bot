@@ -3,5 +3,11 @@
   "framework": "nextjs",
   "installCommand": "npm install --workspaces=false",
   "buildCommand": "next build",
-  "outputDirectory": ".next"
+  "outputDirectory": ".next",
+  "crons": [
+    {
+      "path": "/api/cron/keepalive",
+      "schedule": "17 5 * * *"
+    }
+  ]
 }

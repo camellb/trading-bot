@@ -113,6 +113,37 @@ interface InsertedLicense {
   fresh: boolean;
 }
 
+/**
+ * email_sent_at arrives with migration 032. Both helpers tolerate a
+ * database that does not have the column yet: marking is skipped and
+ * "pending" reads as false, which is the behaviour before 032.
+ */
+async function markLicenseEmailed(licenseId: string): Promise<void> {
+  try {
+    await db().query(
+      `UPDATE licenses SET email_sent_at = now() WHERE id = $1`,
+      [licenseId],
+    );
+  } catch (exc) {
+    console.warn("[stripe-webhook] could not stamp email_sent_at (migration 032 not applied?)", {
+      licenseId,
+      err: exc instanceof Error ? exc.message : String(exc),
+    });
+  }
+}
+
+async function licenseEmailPending(licenseId: string): Promise<boolean> {
+  try {
+    const r = await db().query(
+      `SELECT email_sent_at FROM licenses WHERE id = $1`,
+      [licenseId],
+    );
+    return r.rows.length > 0 && r.rows[0].email_sent_at == null;
+  } catch {
+    return false;
+  }
+}
+
 async function insertLicense(args: {
   email: string;
   session: Stripe.Checkout.Session;
@@ -274,11 +305,29 @@ export async function POST(request: Request): Promise<NextResponse> {
         const license = await insertLicense({ email, session });
 
         if (license.fresh) {
-          await sendLicenseEmail({
-            to: email,
-            blob: license.blob,
-            email,
-          });
+          // The row is committed. If the email fails, answer 500 so
+          // Stripe redelivers; the duplicate branch below then sends it
+          // (it reads email_sent_at, migration 032). Before this, the
+          // redelivery hit "duplicate session; skip email" and a buyer
+          // who had closed the return page never got the key.
+          try {
+            await sendLicenseEmail({
+              to: email,
+              blob: license.blob,
+              email,
+            });
+          } catch (exc) {
+            console.error("[stripe-webhook] license email failed; asking Stripe to retry", {
+              licenseId: license.id,
+              sessionId: session.id,
+              err: exc instanceof Error ? exc.message : String(exc),
+            });
+            return NextResponse.json(
+              { error: "license email failed; will retry" },
+              { status: 500 },
+            );
+          }
+          await markLicenseEmailed(license.id);
           console.log("[stripe-webhook] license issued", {
             licenseId: license.id,
             sessionId: session.id,
@@ -387,6 +436,29 @@ export async function POST(request: Request): Promise<NextResponse> {
               // will still find it.
             }
           }
+        } else if (await licenseEmailPending(license.id)) {
+          try {
+            await sendLicenseEmail({
+              to: email,
+              blob: license.blob,
+              email,
+            });
+          } catch (exc) {
+            console.error("[stripe-webhook] license email retry failed", {
+              licenseId: license.id,
+              sessionId: session.id,
+              err: exc instanceof Error ? exc.message : String(exc),
+            });
+            return NextResponse.json(
+              { error: "license email failed; will retry" },
+              { status: 500 },
+            );
+          }
+          await markLicenseEmailed(license.id);
+          console.log("[stripe-webhook] license email sent on redelivery", {
+            licenseId: license.id,
+            sessionId: session.id,
+          });
         } else {
           console.log("[stripe-webhook] duplicate session; skip email", {
             licenseId: license.id,

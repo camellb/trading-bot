@@ -91,11 +91,13 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
     ``,
     `Install Delfi:`,
     ``,
-    `  macOS    -- open Terminal and paste:`,
+    `  macOS (Apple Silicon, M1 or later) -- open Terminal and paste:`,
     `             curl -fsSL https://delfibot.com/install/mac | bash`,
     ``,
-    `  Windows  -- open PowerShell and paste:`,
+    `  Windows 10 or 11 -- open PowerShell and paste:`,
     `             iwr https://delfibot.com/install/win -UseBasicParsing | iex`,
+    `             Or download https://delfibot.com/api/download/win and run it.`,
+    `             If Windows shows "Windows protected your PC", click More info, then Run anyway.`,
     ``,
     `Each command downloads Delfi, installs it, and launches it for you.`,
     ``,
@@ -174,7 +176,7 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
               </div>
 
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 12px 0;">
-                Install on macOS
+                Install on macOS (Apple Silicon, M1 or later)
               </div>
               <p style="font-size:14px;line-height:1.65;color:#cfcabd;margin:0 0 10px 0;">
                 Open Terminal and paste:
@@ -182,14 +184,17 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
               <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:12px 14px;margin:0 0 24px 0;white-space:pre-wrap;word-break:break-all;">curl -fsSL https://delfibot.com/install/mac | bash</pre>
 
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 12px 0;">
-                Install on Windows
+                Install on Windows 10 or 11
               </div>
               <p style="font-size:14px;line-height:1.65;color:#cfcabd;margin:0 0 10px 0;">
                 Open PowerShell and paste:
               </p>
               <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:12px 14px;margin:0 0 12px 0;white-space:pre-wrap;word-break:break-all;">iwr https://delfibot.com/install/win -UseBasicParsing | iex</pre>
-              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
+              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 10px 0;">
                 Each command downloads Delfi, installs it, and launches it for you.
+              </p>
+              <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
+                On Windows you can also download the installer from https://delfibot.com/api/download/win. If Windows shows &quot;Windows protected your PC&quot;, click More info, then Run anyway.
               </p>
 
               <div style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10px;letter-spacing:0.22em;text-transform:uppercase;color:#8c8675;margin:0 0 14px 0;">
@@ -202,7 +207,7 @@ export function renderLicenseEmail({ blob, email }: LicenseEmailArgs): {
               </ol>
 
               <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 8px 0;">
-                On macOS you may see a warning that Apple cannot verify Delfi. To avoid it, open Terminal once and paste:
+                If macOS says Delfi is damaged or that Apple cannot verify it, the app was downloaded outside the command above. Open Terminal and paste:
               </p>
               <pre style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.4;color:#daaa4c;background:#0a0a0c;border:1px solid #1f2026;border-radius:4px;padding:10px 12px;margin:0 0 8px 0;white-space:pre-wrap;word-break:break-all;">xattr -cr /Applications/Delfi.app</pre>
               <p style="font-size:13px;line-height:1.65;color:#8c8675;margin:0 0 28px 0;">
